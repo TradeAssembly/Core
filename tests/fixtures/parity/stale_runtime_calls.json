@@ -1,0 +1,32 @@
+{
+  "needles": [
+    "tradeassembly.cli",
+    "uvicorn",
+    "FastAPI",
+    "make dev.api",
+    "make dev.start",
+    "runtime/.venv/bin/python",
+    "$(PY) -m tradeassembly"
+  ],
+  "skip_path_contains": [
+    "/target/",
+    "/node_modules/",
+    "/.git/",
+    "/.next/",
+    "/.sdlc/run-packets/",
+    "/runtime/.venv",
+    "/runtime/.venv-research",
+    "/runtime/.pytest_cache",
+    "/runtime-rs/tests/full_parity_gap_closure.rs",
+    "/xtask/src/architecture_check.rs",
+    "/AGENTS.md",
+    "/docs/history/",
+    "/docs/rust-rewrite-harness.md",
+    "/docs/planning/roadmaps/",
+    "/docs/planning/plans/",
+    "/docs/audits/porting-audit",
+    "/docs/audits/runtime-parity-audit",
+    "/docs/source-parity-map.md",
+    "/tests/fixtures/parity/stale_runtime_calls.json"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "spec_version": "2.0",
+  "strategy_id": "migration.predecessor_v2",
+  "name": "Predecessor StrategyContract V2 Migration Input",
+  "capabilities": {
+    "data": "bars",
+    "execution": "orders"
+  },
+  "stages": {
+    "inputs": {"operation": "bars"},
+    "screener": {"operation": "static"},
+    "exit": {"mode": "synthetic"},
+    "order": {"type": "limit"},
+    "price": {"source": "close"}
+  },
+  "runtime": {
+    "provider_ref": "migration-only-provider",
+    "account_ref": "migration-only-account"
+  }
+}

@@ -1,0 +1,490 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tradeassembly.org/plugin-manifest-0.1.schema.json",
+  "title": "TradeAssembly Plugin Manifest",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "manifestVersion",
+    "runtime",
+    "capabilities",
+    "permissions",
+    "hostApis",
+    "operations",
+    "configuration",
+    "health",
+    "trust",
+    "forbidden"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "tradeassembly.org/v1alpha1" },
+    "kind": { "const": "TradeAssemblyPluginManifest" },
+    "manifestVersion": { "const": "0.1" },
+    "metadata": {
+      "type": "object",
+      "required": ["id", "name", "version", "provider"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "provider": {
+          "type": "object",
+          "required": ["id", "name"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["protocol", "entrypoint", "timeoutSeconds"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": { "enum": ["stdio", "grpc", "rest", "rust-native"] },
+        "entrypoint": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 60 }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/capabilityDeclaration" },
+      "minItems": 1
+    },
+    "permissions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/declaration" },
+      "minItems": 1
+    },
+    "hostApis": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/declaration" },
+      "minItems": 1
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "capability",
+          "protocol",
+          "effect",
+          "riskClass",
+          "resourceType",
+          "credentialGrantRequired",
+          "accountBindingRequired",
+          "financeAction",
+          "mandateRequired",
+          "purpose",
+          "sessionAdmission",
+          "approval",
+          "supervision",
+          "detectors",
+          "contextProviders",
+          "policyRefs",
+          "traits",
+          "dependencies",
+          "evidence",
+          "pepCoverage",
+          "checkPacks",
+          "receiptClass",
+          "redaction",
+          "noAdvice",
+          "supportedProtocols",
+          "inputSchema",
+          "outputSchema"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "capability": { "$ref": "#/$defs/capabilityRef" },
+          "protocol": {
+            "enum": [
+              "local-rust",
+              "stdio",
+              "grpc",
+              "rest",
+              "mcp",
+              "openapi",
+              "graphql",
+              "native-sdk",
+              "constrained-code",
+              "webhook"
+            ]
+          },
+          "effect": { "enum": ["read", "research", "draft", "write", "credential", "export", "admin"] },
+          "riskClass": { "enum": ["low", "medium", "high", "critical"] },
+          "resourceType": { "type": "string", "minLength": 1 },
+          "credentialGrantRequired": { "type": "boolean" },
+          "accountBindingRequired": { "type": "boolean" },
+          "financeAction": {
+            "type": "object",
+            "required": ["actionId", "resourceType"],
+            "properties": {
+              "actionId": { "type": "string", "minLength": 1 },
+              "resourceType": { "type": "string", "minLength": 1 }
+            }
+          },
+          "mandateRequired": { "type": "boolean" },
+          "purpose": { "type": "string", "minLength": 1 },
+          "sessionAdmission": {
+            "type": "object",
+            "required": ["mode"],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "none",
+                  "user_session",
+                  "agent_session",
+                  "user_or_agent_session",
+                  "service_account"
+                ]
+              }
+            }
+          },
+          "approval": {
+            "type": "object",
+            "required": ["mode"],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "none",
+                  "policy_configured",
+                  "human_confirmation",
+                  "human_confirmation_or_policy",
+                  "supervisor"
+                ]
+              }
+            }
+          },
+          "supervision": {
+            "type": "object",
+            "required": ["mode"],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "none",
+                  "automated_policy",
+                  "human_in_the_loop",
+                  "human_on_the_loop"
+                ]
+              }
+            }
+          },
+          "detectors": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "contextProviders": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "policyRefs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "traits": { "$ref": "#/$defs/operationTraits" },
+          "dependencies": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/operationDependency" }
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "pepCoverage": { "enum": ["c0", "c1", "c2", "c3", "c4", "c5"] },
+          "checkPacks": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "receiptClass": { "type": "string", "minLength": 1 },
+          "redaction": { "type": "string", "minLength": 1 },
+          "noAdvice": { "const": true },
+          "supportedProtocols": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "inputSchema": { "const": "json-schema" },
+          "outputSchema": { "const": "json-schema" }
+        }
+      },
+      "minItems": 1
+    },
+    "configuration": {
+      "type": "object",
+      "required": ["fields"],
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/configurationField" }
+        },
+        "oauth": {
+          "type": "object",
+          "required": ["label", "provider", "credentialField", "environments", "scopes"],
+          "additionalProperties": false,
+          "properties": {
+            "label": { "type": "string", "minLength": 1 },
+            "provider": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$" },
+            "credentialField": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+            "environments": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/oauthEnvironment" }
+            },
+            "scopes": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/oauthScope" },
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "required": ["requiredConfiguration", "requiredCredentials", "connectionCheckOperation"],
+      "additionalProperties": false,
+      "properties": {
+        "requiredConfiguration": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "requiredCredentials": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "credentialAlternatives": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        },
+        "connectionCheckOperation": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "required": ["sandbox", "level"],
+      "additionalProperties": false,
+      "properties": {
+        "sandbox": { "enum": ["in-process-core", "external-process", "remote-service"] },
+        "level": { "type": "string", "minLength": 1 }
+      }
+    },
+    "forbidden": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "declaration": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "capabilityDeclaration": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/capabilityRef" },
+        "description": { "type": "string" }
+      }
+    },
+    "capabilityRef": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+(@[1-9][0-9]*(\\.[0-9]+){0,2})?$"
+    },
+    "operationTraits": {
+      "type": "object",
+      "required": [
+        "modes",
+        "instrumentFamilies",
+        "dataShapes",
+        "fields",
+        "inputSchemaRefs",
+        "outputSchemaRefs",
+        "timeframes",
+        "deterministic",
+        "replayable"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "modes": {
+          "type": "array",
+          "items": {
+            "enum": ["authoring", "research", "backtest", "simulation", "paper", "live"]
+          },
+          "uniqueItems": true
+        },
+        "instrumentFamilies": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "equity",
+              "fund",
+              "crypto_spot",
+              "option_contract",
+              "future_contract",
+              "fixed_income",
+              "fx_pair",
+              "event_contract",
+              "custom"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "dataShapes": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+          "uniqueItems": true
+        },
+        "operations": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]*$" },
+          "uniqueItems": true
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+          "uniqueItems": true
+        },
+        "inputPaths": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]*$" },
+          "uniqueItems": true
+        },
+        "inputSchemaRefs": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^schema://\\S+@[1-9][0-9]*(\\.[0-9]+){0,2}$" },
+          "uniqueItems": true
+        },
+        "outputSchemaRefs": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^schema://\\S+@[1-9][0-9]*(\\.[0-9]+){0,2}$" },
+          "uniqueItems": true
+        },
+        "timeframes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "maxFreshness": { "type": ["string", "null"], "minLength": 1 },
+        "maxLatencyMs": { "type": ["integer", "null"], "minimum": 0 },
+        "deterministic": { "type": "boolean" },
+        "replayable": { "type": "boolean" }
+      }
+    },
+    "operationDependency": {
+      "type": "object",
+      "required": ["dependencyId", "capability", "required", "traits"],
+      "additionalProperties": false,
+      "properties": {
+        "dependencyId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]*$" },
+        "capability": { "$ref": "#/$defs/capabilityRef" },
+        "operationId": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$" },
+        "required": { "type": "boolean" },
+        "traits": { "$ref": "#/$defs/operationTraits" }
+      }
+    },
+    "configurationField": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "description",
+        "inputType",
+        "required",
+        "storageClass"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "label": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "inputType": { "enum": ["text", "password", "url", "number", "boolean", "select"] },
+        "required": { "type": "boolean" },
+        "storageClass": { "enum": ["configuration", "credential"] },
+        "default": {},
+        "defaultByAccountMode": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 2,
+          "additionalProperties": false,
+          "properties": {
+            "paper": {},
+            "live": {}
+          }
+        },
+        "options": {
+          "type": "array",
+          "items": { "type": ["string", "number", "boolean"] },
+          "minItems": 1
+        },
+        "validation": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "storageClass": { "const": "credential" } } },
+          "then": {
+            "properties": {
+              "inputType": { "const": "password" },
+              "default": false,
+              "defaultByAccountMode": { "not": {} }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "inputType": { "const": "select" } } },
+          "then": { "required": ["options"] }
+        }
+      ]
+    },
+    "oauthEnvironment": {
+      "type": "object",
+      "required": ["id", "label", "relayBaseUrl"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$" },
+        "label": { "type": "string", "minLength": 1 },
+        "relayBaseUrl": { "type": "string", "pattern": "^https://[^@/?#\\s]+$" }
+      }
+    },
+    "oauthScope": {
+      "type": "object",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]*$" },
+        "label": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

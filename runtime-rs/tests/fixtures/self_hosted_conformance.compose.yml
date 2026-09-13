@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tradeassembly
+      POSTGRES_PASSWORD: tradeassembly
+      POSTGRES_DB: tradeassembly
+    ports:
+      - "55432:5432"
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "54222:4222"

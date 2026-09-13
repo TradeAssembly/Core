@@ -1,0 +1,450 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+apiVersion: tradeassembly.org/v1alpha1
+kind: TradeAssemblyPluginManifest
+manifestVersion: "0.1"
+metadata:
+  id: tradeassembly.core-runtime
+  name: TradeAssembly Core Runtime
+  version: 0.1.0
+  provider:
+    id: tradeassembly
+    name: TradeAssembly
+runtime:
+  protocol: rust-native
+  entrypoint: runtime-rs::service::providers::CoreRuntime
+  timeoutSeconds: 5
+capabilities:
+  - id: plugin.capability_matrix
+    description: Report plugin capabilities, operations, APF metadata, and host compatibility.
+  - id: market_data.bars.read@1
+    description: Read bars from an immutable local dataset snapshot for deterministic research.
+  - id: expression.cel.evaluate@1
+    description: Evaluate deterministic StrategySpec CEL expressions.
+  - id: calendar.session.resolve@1
+    description: Resolve deterministic market-session eligibility.
+  - id: order.intent.build@1
+    description: Build broker-neutral order intents.
+  - id: order.option.submit@1
+    description: Build broker-neutral single-leg option order intents.
+  - id: order.option_combo.submit@1
+    description: Build broker-neutral multi-leg option order intents.
+  - id: indicator.bars.normalize@1
+    description: Normalize bar inputs for indicator calculations.
+  - id: indicator.stateful.calculate@1
+    description: Calculate deterministic stateful indicators.
+permissions:
+  - id: local.state.read
+    description: Read immutable local StrategySpec and run inputs.
+hostApis:
+  - id: tradeassembly.journal.append
+    description: Append redacted deterministic runtime evidence.
+  - id: tradeassembly.clock.now
+    description: Read the host-provided deterministic event time.
+operations:
+  - id: plugin.capability_matrix
+    capability: plugin.capability_matrix
+    protocol: local-rust
+    effect: read
+    riskClass: low
+    resourceType: plugin
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: plugin.capability_matrix
+      resourceType: plugin
+    mandateRequired: false
+    purpose: plugin_administration
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+      - plugin_manifest_integrity
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes: []
+      instrumentFamilies: []
+      dataShapes:
+        - capability_matrix
+      fields: []
+      inputSchemaRefs:
+        - schema://plugin/capability-request@1
+      outputSchemaRefs:
+        - schema://plugin/capability-matrix@1
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence:
+      - request_hash
+      - plugin_manifest_hash
+    pepCoverage: c1
+    checkPacks:
+      - plugin_manifest_integrity
+    receiptClass: admin_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: dataset.snapshot.read_v1
+    capability: market_data.bars.read@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [backtest, simulation]
+      instrumentFamilies: [equity, crypto_spot, option_contract]
+      dataShapes: [bars]
+      operations: [read]
+      fields: [open, high, low, close, volume]
+      inputPaths: [market_data.source_bars]
+      inputSchemaRefs: [schema://market-data/bars@1]
+      outputSchemaRefs: [schema://market-data/bars@1]
+      timeframes: ["*"]
+      maxFreshness: PT0S
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:backtest", "mode:simulation", "asset:equity", "asset:crypto_spot", "asset:option_contract"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: expression.cel.evaluate_v1
+    capability: expression.cel.evaluate@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.strategy_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes: [authoring, research, backtest, simulation, paper, live]
+      instrumentFamilies: [equity, crypto_spot, option_contract]
+      dataShapes: [strategy_envelope, positions]
+      operations: [evaluate]
+      fields: []
+      inputPaths: [positions.current]
+      inputSchemaRefs: [schema://strategy/positions@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:authoring", "mode:research", "mode:backtest", "mode:simulation", "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot", "asset:option_contract"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: calendar.session.resolve_v1
+    capability: calendar.session.resolve@1
+    protocol: local-rust
+    effect: read
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: false
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest, simulation, paper, live]
+      instrumentFamilies: [equity, crypto_spot, option_contract, future_contract]
+      dataShapes: [event_time, calendar]
+      operations: [resolve]
+      fields: [event_time]
+      inputPaths: [run.event_time]
+      inputSchemaRefs: [schema://runtime/event-time@1]
+      outputSchemaRefs: [schema://runtime/calendar-session@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "mode:simulation", "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot", "asset:option_contract", "asset:future_contract"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: order.intent.build_v1
+    capability: order.intent.build@1
+    protocol: local-rust
+    effect: draft
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: false
+    purpose: strategy_execution
+    sessionAdmission: {mode: user_or_agent_session}
+    approval: {mode: policy_configured}
+    supervision: {mode: automated_policy}
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [paper, live]
+      instrumentFamilies: [equity, crypto_spot, option_contract, future_contract]
+      dataShapes: [order_intent]
+      operations: [build]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/order-intent@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot", "asset:option_contract", "asset:future_contract"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: order.option.submit_v1
+    capability: order.option.submit@1
+    protocol: local-rust
+    effect: draft
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction: {actionId: strategy.runtime.evaluate, resourceType: strategy_runtime}
+    mandateRequired: false
+    purpose: strategy_execution
+    sessionAdmission: {mode: user_or_agent_session}
+    approval: {mode: policy_configured}
+    supervision: {mode: automated_policy}
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [paper, live]
+      instrumentFamilies: [option_contract]
+      dataShapes: [order_intent]
+      operations: [build]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/order-intent@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:paper", "mode:live", "asset:option_contract"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: order.option_combo.submit_v1
+    capability: order.option_combo.submit@1
+    protocol: local-rust
+    effect: draft
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction: {actionId: strategy.runtime.evaluate, resourceType: strategy_runtime}
+    mandateRequired: false
+    purpose: strategy_execution
+    sessionAdmission: {mode: user_or_agent_session}
+    approval: {mode: policy_configured}
+    supervision: {mode: automated_policy}
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [paper, live]
+      instrumentFamilies: [option_contract]
+      dataShapes: [order_intent]
+      operations: [build]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/order-intent@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:paper", "mode:live", "asset:option_contract"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: indicator.bars.normalize_v1
+    capability: indicator.bars.normalize@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction: {actionId: strategy.runtime.evaluate, resourceType: strategy_runtime}
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission: {mode: user_or_agent_session}
+    approval: {mode: policy_configured}
+    supervision: {mode: automated_policy}
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest, simulation, paper, live]
+      instrumentFamilies: [equity, crypto_spot]
+      dataShapes: [bars]
+      operations: [transform]
+      fields: [open, high, low, close, volume]
+      inputSchemaRefs: [schema://market-data/bars@1]
+      outputSchemaRefs: [schema://market-data/bars@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "mode:simulation", "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: indicator.stateful.calculate_v1
+    capability: indicator.stateful.calculate@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction: {actionId: strategy.runtime.evaluate, resourceType: strategy_runtime}
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission: {mode: user_or_agent_session}
+    approval: {mode: policy_configured}
+    supervision: {mode: automated_policy}
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest, simulation, paper, live]
+      instrumentFamilies: [equity, crypto_spot]
+      dataShapes: [bars, indicator_state]
+      operations: [calculate]
+      fields: [close]
+      inputSchemaRefs: [schema://market-data/bars@1]
+      outputSchemaRefs: [schema://indicator/state@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "mode:simulation", "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+configuration:
+  fields: []
+health:
+  requiredConfiguration: []
+  requiredCredentials: []
+  connectionCheckOperation: null
+trust:
+  sandbox: in-process-core
+  level: core
+forbidden:
+  - trade_advice
+  - raw_secret_output
+  - hosted_oauth_credentials
+  - billing
+  - payouts
+  - enterprise_sso_rbac

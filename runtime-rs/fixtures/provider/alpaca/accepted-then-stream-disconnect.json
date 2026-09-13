@@ -1,0 +1,29 @@
+{
+  "scenario": "accepted-then-stream-disconnect",
+  "provider_ref": "alpaca-paper",
+  "seed": {
+    "broker_order_id": "accepted-disconnect-entry",
+    "client_order_id": "client-disconnect-entry"
+  },
+  "stream": {
+    "stream": "trade_updates",
+    "events": [
+      {
+        "eventId": "evt-accepted-disconnect-1",
+        "event": "accepted",
+        "order": {
+          "orderId": "accepted-disconnect-entry",
+          "clientOrderId": "client-disconnect-entry",
+          "status": "accepted",
+          "filledQty": "0",
+          "qty": "1"
+        }
+      }
+    ],
+    "disconnect_after_event": true
+  },
+  "expected": {
+    "reservation_status": "reserved",
+    "order_status": "accepted"
+  }
+}

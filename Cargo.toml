@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+  "identity-sdk",
+  "plugin-sdk",
+  "runtime-rs",
+  "sightline-sidecar",
+  "xtask",
+]

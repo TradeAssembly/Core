@@ -1,0 +1,24 @@
+{
+  "scenario": "buying-power-rejection",
+  "provider_ref": "alpaca-paper",
+  "request": {
+    "symbol": "BTC/USD",
+    "side": "buy",
+    "quantity": 0.02,
+    "limit_price": 50000.0,
+    "account": {
+      "account_equity": 1000.0,
+      "buying_power": 250.0,
+      "daily_realized_pnl": 0.0
+    }
+  },
+  "provider_error": {
+    "status": 403,
+    "code": "insufficient_buying_power",
+    "message": "insufficient buying power"
+  },
+  "expected": {
+    "denied_reason_contains": "buying_power",
+    "reservation_created": false
+  }
+}

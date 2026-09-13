@@ -1,0 +1,321 @@
+{
+  "spec_version": "2.0",
+  "strategy_id": "strategy.example.equity_sma_cross",
+  "name": "Equity SMA Cross Example",
+  "description": "Schema fixture for a single-symbol equity strategy. Not a trading recommendation.",
+  "labels": [
+    "example",
+    "equity"
+  ],
+  "market_requirements": {
+    "asset_class": "equity",
+    "instrument_family": "equity",
+    "underlyings": [
+      "SPY"
+    ],
+    "primary_timeframe": "1d",
+    "sessions": [
+      "regular"
+    ],
+    "data_window": {
+      "lookback_bars": 250
+    }
+  },
+  "capability_requirements": {
+    "required": [
+      {
+        "requirement_id": "req_bars",
+        "capability": "market_data.bars",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "price_policy"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "data_shape": {
+          "historical": true,
+          "realtime": true,
+          "granularity": [
+            "1d"
+          ],
+          "fields": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+          ],
+          "lookback": "250 bars"
+        }
+      },
+      {
+        "requirement_id": "req_sma",
+        "capability": "indicator.sma",
+        "version": "1",
+        "purpose": "calculation",
+        "required_for": [
+          "authoring",
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "evaluate"
+        ],
+        "operation_ref": "sma",
+        "quality_constraints": {
+          "supports_replay": true,
+          "deterministic": true
+        }
+      },
+      {
+        "requirement_id": "req_equity_order_routing",
+        "capability": "order_routing.equity",
+        "version": "1",
+        "purpose": "live_execution",
+        "required_for": [
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "intent",
+          "order_strategy"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "fallback_policy": "none"
+      }
+    ]
+  },
+  "variables": {
+    "fast_window": {
+      "type": "int",
+      "default": 20,
+      "label": "Fast SMA",
+      "stage": "evaluate",
+      "ui_domain": "number",
+      "ui_domain_config": {
+        "min": 2,
+        "max": 100
+      }
+    },
+    "slow_window": {
+      "type": "int",
+      "default": 50,
+      "label": "Slow SMA",
+      "stage": "evaluate",
+      "ui_domain": "number",
+      "ui_domain_config": {
+        "min": 5,
+        "max": 250
+      }
+    },
+    "sizing_fraction": {
+      "type": "float",
+      "default": 0.25,
+      "label": "Risk-scale fraction",
+      "stage": "sizing"
+    },
+    "stop_loss_pct": {
+      "type": "float",
+      "default": 0.08,
+      "label": "Stop loss percent",
+      "stage": "exit_policy"
+    }
+  },
+  "stages": {
+    "inputs": {
+      "ref": "builtin:market-bars@1",
+      "kind": "data",
+      "reads": [
+        "capability.market_data.bars"
+      ],
+      "writes": [
+        "inputs.bars"
+      ],
+      "fail_closed": true,
+      "config": {
+        "symbols": [
+          "SPY"
+        ],
+        "timeframe": "1d",
+        "adjustment": "split_and_dividend"
+      }
+    },
+    "universe": {
+      "ref": "builtin:static-universe@1",
+      "kind": "universe",
+      "writes": [
+        "universe.candidates"
+      ],
+      "fail_closed": true,
+      "config": {
+        "symbols": [
+          "SPY"
+        ]
+      }
+    },
+    "evaluate": {
+      "ref": "builtin:rule-tree@1",
+      "kind": "rules",
+      "reads": [
+        "inputs.bars",
+        "universe.candidates"
+      ],
+      "writes": [
+        "signals.entry",
+        "signals.exit",
+        "signals.evidence"
+      ],
+      "fail_closed": true,
+      "config": {
+        "indicators": [
+          {
+            "name": "fast_sma",
+            "operation": "sma",
+            "source": "close",
+            "window_var": "fast_window"
+          },
+          {
+            "name": "slow_sma",
+            "operation": "sma",
+            "source": "close",
+            "window_var": "slow_window"
+          }
+        ],
+        "entry": "crosses_above(fast_sma, slow_sma)",
+        "exit": "crosses_below(fast_sma, slow_sma)"
+      }
+    },
+    "intent": {
+      "ref": "builtin:equity-intent@1",
+      "kind": "intent",
+      "reads": [
+        "signals.entry",
+        "signals.exit"
+      ],
+      "writes": [
+        "intent.trade"
+      ],
+      "fail_closed": true,
+      "config": {
+        "instrument": {
+          "symbol": "SPY",
+          "instrument_family": "equity"
+        },
+        "entry": {
+          "action": "open",
+          "side": "buy"
+        },
+        "exit": {
+          "action": "close",
+          "side": "sell"
+        }
+      }
+    },
+    "sizing": {
+      "ref": "builtin:fractional-risk-scale-sizing@1",
+      "kind": "sizing",
+      "reads": [
+        "intent.trade"
+      ],
+      "writes": [
+        "intent.sized"
+      ],
+      "fail_closed": true,
+      "config": {
+        "fraction_var": "sizing_fraction",
+        "rounding": "whole_share"
+      }
+    },
+    "risk": {
+      "ref": "builtin:risk-guards@1",
+      "kind": "risk",
+      "reads": [
+        "intent.sized"
+      ],
+      "writes": [
+        "risk.reservation"
+      ],
+      "fail_closed": true,
+      "config": {
+        "max_open_positions": 1,
+        "dedupe_key": "symbol"
+      }
+    },
+    "exit_policy": {
+      "ref": "builtin:signal-or-stop-exit@1",
+      "kind": "exit",
+      "reads": [
+        "signals.exit",
+        "inputs.bars"
+      ],
+      "writes": [
+        "exit.intent"
+      ],
+      "fail_closed": true,
+      "config": {
+        "signal_ref": "signals.exit",
+        "stop_loss_pct_var": "stop_loss_pct",
+        "unrealized_position_handling": "mark_at_dataset_end"
+      }
+    },
+    "order_strategy": {
+      "ref": "builtin:broker-neutral-order@1",
+      "kind": "order",
+      "reads": [
+        "intent.sized",
+        "exit.intent",
+        "risk.reservation"
+      ],
+      "writes": [
+        "order.intent"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry_order_type": "market",
+        "exit_order_type": "market",
+        "time_in_force": "day",
+        "requires_user_confirmation": false
+      }
+    },
+    "price_policy": {
+      "ref": "builtin:bar-close-price@1",
+      "kind": "price",
+      "reads": [
+        "inputs.bars"
+      ],
+      "writes": [
+        "price.snapshot"
+      ],
+      "fail_closed": true,
+      "config": {
+        "signal_price": "close",
+        "mark_price": "close"
+      }
+    },
+    "market_clock": {
+      "ref": "builtin:market-session-clock@1",
+      "kind": "clock",
+      "writes": [
+        "clock.gate"
+      ],
+      "fail_closed": true,
+      "config": {
+        "session": "regular",
+        "timezone": "America/New_York"
+      }
+    }
+  }
+}

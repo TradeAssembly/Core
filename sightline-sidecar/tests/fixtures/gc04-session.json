@@ -1,0 +1,276 @@
+{
+  "source_rev": "6620d6add943975b1f0a8ec43975420621dcda83",
+  "agent": {
+    "actor_type": "agent",
+    "actor_id": "agent.gc04",
+    "display_name": "GC-04 Agent",
+    "client_name": "TradeAssembly conformance"
+  },
+  "user": {
+    "actor_type": "user",
+    "actor_id": "user.local",
+    "display_name": "Local User"
+  },
+  "room": {
+    "room_id": "room_tradeassembly_local",
+    "app_id": "tradeassembly_studio",
+    "workspace_id": "workspace_local",
+    "owner_user_ref": {
+      "actor_type": "user",
+      "actor_id": "user.local",
+      "display_name": "Local User"
+    },
+    "status": "active",
+    "policy_ref": "tradeassembly.local_sightline_policy.v1",
+    "created_at": "2026-07-19T00:00:00Z",
+    "updated_at": "2026-07-19T00:00:00Z"
+  },
+  "surface": {
+    "surface_id": "surface_strategy_editor_demo",
+    "room_id": "room_tradeassembly_local",
+    "app_id": "tradeassembly_studio",
+    "user_ref": {
+      "actor_type": "user",
+      "actor_id": "user.local",
+      "display_name": "Local User"
+    },
+    "route": "/app/strategies/demo/builder",
+    "title": "Strategy Editor",
+    "active_object": {
+      "app_id": "tradeassembly_studio",
+      "object_type": "strategy_draft",
+      "object_id": "demo",
+      "version": "draft-hash"
+    },
+    "root_node_id": "strategy.demo.root",
+    "visible_snapshot_id": "snapshot_demo",
+    "local_selection_id": "selection_demo",
+    "follow_mode": "independent",
+    "status": "active",
+    "last_seen_at": "2026-07-19T00:00:00Z"
+  },
+  "node": {
+    "node_id": "strategy.demo.risk",
+    "surface_id": "surface_strategy_editor_demo",
+    "parent_node_id": "strategy.demo.root",
+    "type": "strategy.risk_limit",
+    "role": "semantic-context",
+    "label": "Risk",
+    "summary": "User-defined risk limits.",
+    "object_refs": [
+      {
+        "app_id": "tradeassembly_studio",
+        "object_type": "strategy_draft",
+        "object_id": "demo",
+        "version": "draft-hash"
+      }
+    ],
+    "data_refs": [
+      {
+        "ref_id": "data_strategy_risk",
+        "kind": "strategy_spec_path",
+        "path": "strategy.risk"
+      }
+    ],
+    "state": {
+      "credential_status": "connected",
+      "api_key": "fixture_api_value"
+    },
+    "actions": [
+      {
+        "action_id": "share_context",
+        "label": "Share context",
+        "authority_level": "observe"
+      },
+      {
+        "action_id": "create_proposal",
+        "label": "Create proposal",
+        "authority_level": "propose"
+      }
+    ],
+    "context_provider_id": "tradeassembly.strategy_spec_context",
+    "visibility": "visible",
+    "created_at": "2026-07-19T00:00:00Z",
+    "updated_at": "2026-07-19T00:00:00Z"
+  },
+  "selection": {
+    "selection_id": "selection_demo",
+    "room_id": "room_tradeassembly_local",
+    "surface_id": "surface_strategy_editor_demo",
+    "selected_by": {
+      "actor_type": "user",
+      "actor_id": "user.local"
+    },
+    "node_ref": {
+      "surface_id": "surface_strategy_editor_demo",
+      "node_id": "strategy.demo.risk"
+    },
+    "object_refs": [
+      {
+        "app_id": "tradeassembly_studio",
+        "object_type": "strategy_draft",
+        "object_id": "demo",
+        "version": "draft-hash"
+      }
+    ],
+    "summary": "User-defined risk limits.",
+    "context_level": 2,
+    "redaction_policy_ref": "tradeassembly.redaction.agent_safe.v1",
+    "shared": false,
+    "pinned": false,
+    "created_at": "2026-07-19T00:00:00Z"
+  },
+  "snapshot": {
+    "snapshot_id": "snapshot_demo",
+    "room_id": "room_tradeassembly_local",
+    "surface_id": "surface_strategy_editor_demo",
+    "root_node_id": "strategy.demo.root",
+    "active_object": {
+      "app_id": "tradeassembly_studio",
+      "object_type": "strategy_draft",
+      "object_id": "demo",
+      "version": "draft-hash"
+    },
+    "visible_nodes": [],
+    "visible_context": {
+      "summary": "Redacted Strategy Editor context."
+    },
+    "created_at": "2026-07-19T00:00:00Z",
+    "version": 1
+  },
+  "agent_connection": {
+    "agent_connection_id": "connection_gc04",
+    "room_id": "room_tradeassembly_local",
+    "agent_ref": {
+      "actor_type": "agent",
+      "actor_id": "agent.gc04",
+      "client_name": "TradeAssembly conformance"
+    },
+    "client_name": "TradeAssembly conformance",
+    "scopes": ["read_selection", "create_proposal"],
+    "status": "connected",
+    "last_seen_at": "2026-07-19T00:00:00Z"
+  },
+  "presence": {
+    "presence_id": "presence_gc04",
+    "room_id": "room_tradeassembly_local",
+    "actor": {
+      "actor_type": "agent",
+      "actor_id": "agent.gc04",
+      "client_name": "TradeAssembly conformance"
+    },
+    "surface_id": "surface_strategy_editor_demo",
+    "focus_node": {
+      "surface_id": "surface_strategy_editor_demo",
+      "node_id": "strategy.demo.risk"
+    },
+    "status": "inspecting",
+    "updated_at": "2026-07-19T00:00:00Z"
+  },
+  "navigation": {
+    "command_id": "command_nav_demo",
+    "room_id": "room_tradeassembly_local",
+    "issued_by": {
+      "actor_type": "agent",
+      "actor_id": "agent.gc04",
+      "client_name": "TradeAssembly conformance"
+    },
+    "target": {
+      "target_kind": "surface",
+      "surface_id": "surface_strategy_editor_demo",
+      "object_ref": {
+        "app_id": "tradeassembly_studio",
+        "object_type": "strategy_draft",
+        "object_id": "demo"
+      }
+    },
+    "command_type": "navigate_surface",
+    "payload": {
+      "route": "/app/strategies/demo/builder"
+    },
+    "authority_level": "navigate",
+    "idempotency_key": "sightline:command_nav_demo",
+    "status": "requested",
+    "created_at": "2026-07-19T00:00:00Z",
+    "updated_at": "2026-07-19T00:00:00Z"
+  },
+  "proposal": {
+    "proposal_id": "proposal_demo",
+    "room_id": "room_tradeassembly_local",
+    "proposed_by": {
+      "actor_type": "agent",
+      "actor_id": "agent.gc04"
+    },
+    "target_object": {
+      "app_id": "tradeassembly_studio",
+      "object_type": "strategy_draft",
+      "object_id": "demo"
+    },
+    "base_version": "draft-hash",
+    "patch_format": "json-merge-patch",
+    "patches": [
+      {
+        "metadata": {
+          "label": "Reviewed"
+        }
+      }
+    ],
+    "affected_refs": [
+      {
+        "app_id": "tradeassembly_studio",
+        "object_type": "strategy_draft",
+        "object_id": "demo"
+      }
+    ],
+    "explanation": "The agent proposed changing user-defined metadata.",
+    "risk_level": "low",
+    "status": "pending",
+    "created_at": "2026-07-19T00:00:00Z",
+    "updated_at": "2026-07-19T00:00:00Z"
+  },
+  "approval": {
+    "approval_id": "approval_demo",
+    "room_id": "room_tradeassembly_local",
+    "requested_by": {
+      "actor_type": "agent",
+      "actor_id": "agent.gc04"
+    },
+    "action": "request_live_activation",
+    "target": {
+      "app_id": "tradeassembly_studio",
+      "object_type": "strategy_draft",
+      "object_id": "demo"
+    },
+    "authority_level": "high_authority",
+    "summary": "A verified user must review this request.",
+    "consequences": ["TradeAssembly re-runs authority and preflight checks."],
+    "status": "pending",
+    "created_at": "2026-07-19T00:00:00Z"
+  },
+  "selection_event": {
+    "event_id": "event_selection_demo",
+    "room_id": "room_tradeassembly_local",
+    "surface_id": "surface_strategy_editor_demo",
+    "actor": {
+      "actor_type": "user",
+      "actor_id": "user.local"
+    },
+    "type": "selection.changed",
+    "payload": {
+      "selection_id": "selection_demo",
+      "shared": false
+    },
+    "trace_id": "trace_selection_demo",
+    "created_at": "2026-07-19T00:00:00Z",
+    "sequence": 1
+  },
+  "context": {
+    "summary": "User-defined strategy context.",
+    "credential_status": "connected",
+    "api_key": "fixture_api_value",
+    "nested": {
+      "oauth_token": "fixture_oauth_value",
+      "private_key": "fixture_private_value"
+    }
+  }
+}

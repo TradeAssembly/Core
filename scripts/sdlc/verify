@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+set -euo pipefail
+exec cargo xtask verify "$@"

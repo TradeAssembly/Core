@@ -1,0 +1,93 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+schemaVersion: tradeassembly.foss_core_publication.v1
+repository: TradeAssembly/Core
+publicationClass: public_core
+
+publicPathPrefixes:
+  - .cargo/
+  - .codex/
+  - .github/
+  - .sdlc/
+  - docs/
+  - examples/
+  - identity-sdk/
+  - plugin-contracts/
+  - packaging/
+  - plugin-sdk/
+  - runtime-rs/
+  - scripts/
+  - sightline-sidecar/
+  - tests/
+  - xtask/
+
+publicFiles:
+  - .dockerignore
+  - .gitignore
+  - .gitleaksignore
+  - AGENTS.md
+  - CLAUDE.md
+  - Cargo.lock
+  - Cargo.toml
+  - GEMINI.md
+  - Justfile
+  - LICENSE
+  - NOTICE
+  - README.md
+  - EXTRACTION.md
+  - justfile
+  - deny.toml
+  - docker-compose.distributed.yml
+  - foss-core-publication.yaml
+  - render.yaml
+
+metadataOnlyPathPrefixes:
+  - .sdlc/evidence/
+  - .sdlc/imports/
+  - docs/
+  - product/
+
+metadataOnlyFiles:
+  - AGENTS.md
+  - CLAUDE.md
+  - GEMINI.md
+  - LICENSE
+  - README.md
+  - foss-core-publication.yaml
+  - .sdlc/implementation-registry.json
+  - xtask/src/foss_core_boundary.rs
+
+forbiddenPathPrefixes:
+  - webapp/
+  - deploy/
+  - infra/
+  - product/
+  - apps/www/
+  - packages/hosted-
+  - packages/hub-
+  - site/
+
+forbiddenImplementationMarkers:
+  - WORKOS_API_KEY
+  - WORKOS_COOKIE_PASSWORD
+  - WORKOS_CLIENT_ID
+  - WORKOS_REDIRECT_URI
+  - WORKOS_AUTHKIT_DOMAIN
+  - POSTHOG_PROJECT_API_KEY
+  - POSTHOG_HOST
+  - TRADEASSEMBLY_TELEMETRY_RELAY_SECRET
+  - TRADEASSEMBLY_TELEMETRY_RELAY_URL
+  - "@workos-inc/"
+  - "posthog-js"
+  - "api.workos.com"
+  - "i.posthog.com"
+
+forbiddenDependencyPathFragments:
+  - ../TradeAssembly-Product
+  - /TradeAssembly-Product/
+  - TRADEASSEMBLY_PRODUCT_PATH
+
+license:
+  currentStatus: Apache-2.0
+  publicationReady: true
+  decisionOwner: human

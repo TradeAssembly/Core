@@ -1,0 +1,26 @@
+{
+  "scenario": "network-timeout-submit-unknown",
+  "provider_ref": "alpaca-paper",
+  "request": {
+    "activationId": "activation-provider-timeout",
+    "submitOrders": true,
+    "idempotencyKey": "provider-timeout-submit-unknown",
+    "authorityContext": {
+      "actor": "local-user",
+      "surface": "provider-outage-fixture",
+      "accountMode": "paper"
+    },
+    "accountMode": "paper",
+    "symbol": "BTC/USD",
+    "qty": 0.0002
+  },
+  "provider_error": {
+    "kind": "network_timeout",
+    "submit_state": "unknown",
+    "retryable": true
+  },
+  "expected": {
+    "duplicate_submit_count": 1,
+    "reservation_status": "reserved"
+  }
+}

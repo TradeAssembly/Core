@@ -1,0 +1,13 @@
+{
+  "backtestStatus": "completed",
+  "datasetIdPrefix": "ds",
+  "jobBacktestIdPrefix": "backtest",
+  "jobStatus": "completed",
+  "replayDeterministic": true,
+  "replayMismatchCount": 0,
+  "reportSchema": "tradeassembly.report.v1",
+  "workspaceBacktests": 1,
+  "workspaceJobs": 1,
+  "workspaceSweeps": 0,
+  "workspaceUniverses": 1
+}

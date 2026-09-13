@@ -1,0 +1,38 @@
+[advisories]
+version = 2
+yanked = "warn"
+# openidconnect 4.0.1 unconditionally depends on rsa 0.9. TradeAssembly only uses
+# that path to verify provider ID-token signatures; the only private-key use is
+# the loopback mock issuer in tests. Reassess when either crate ships a fix.
+ignore = ["RUSTSEC-2023-0071"]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+]
+exceptions = [
+  { allow = ["MIT-0"], crate = "borrow-or-share@0.2.4" },
+  { allow = ["Zlib"], crate = "foldhash@0.2.0" },
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

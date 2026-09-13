@@ -1,0 +1,740 @@
+{
+  "spec_version": "3.0",
+  "strategy_id": "invalid.expression_parse",
+  "name": "Static Equity Conformance Fixture",
+  "description": "Contract fixture only. Not a trading recommendation.",
+  "labels": [
+    "conformance",
+    "equity"
+  ],
+  "metadata": {},
+  "portfolio_scope": "strategy",
+  "capability_requirements": {
+    "required": [
+      {
+        "requirement_id": "req_bars",
+        "capability": "market_data.bars.read@1",
+        "purpose": "Read normalized bars",
+        "required_for": [
+          "authoring",
+          "research",
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "universe",
+          "evaluate",
+          "price_policy"
+        ],
+        "substep_refs": [
+          "load_bars",
+          "select_universe",
+          "evaluate_signal",
+          "price_order"
+        ],
+        "constraints": {
+          "instrument_families": [
+            "equity"
+          ],
+          "data_shapes": [
+            "bars"
+          ],
+          "operations": [
+            "read"
+          ],
+          "fields": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+          ],
+          "input_paths": [
+            "market_data.source_bars"
+          ],
+          "schema_refs": [
+            "schema://market-data/bars@1"
+          ],
+          "timeframe": "1h",
+          "max_freshness": "PT5M",
+          "deterministic": true,
+          "replayable": true
+        },
+        "dependency_refs": [],
+        "fallback_policy": "none",
+        "policy_tags": []
+      },
+      {
+        "requirement_id": "req_logic",
+        "capability": "expression.cel.evaluate@1",
+        "purpose": "Evaluate deterministic strategy logic",
+        "required_for": [
+          "authoring",
+          "research",
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "intent",
+          "sizing",
+          "risk",
+          "exit_policy"
+        ],
+        "substep_refs": [
+          "build_intent",
+          "relative_size",
+          "risk_guard",
+          "evaluate_exit"
+        ],
+        "constraints": {
+          "instrument_families": [
+            "equity"
+          ],
+          "data_shapes": [
+            "strategy_envelope",
+            "positions"
+          ],
+          "operations": [
+            "evaluate"
+          ],
+          "fields": [],
+          "input_paths": [
+            "positions.current"
+          ],
+          "schema_refs": [
+            "schema://strategy/positions@1"
+          ],
+          "deterministic": true,
+          "replayable": true
+        },
+        "dependency_refs": [
+          "req_bars"
+        ],
+        "fallback_policy": "none",
+        "policy_tags": []
+      },
+      {
+        "requirement_id": "req_order",
+        "capability": "order.intent.build@1",
+        "purpose": "Build broker-neutral order instructions",
+        "required_for": [
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "order_strategy"
+        ],
+        "substep_refs": [
+          "build_order"
+        ],
+        "constraints": {
+          "instrument_families": [
+            "equity"
+          ],
+          "data_shapes": [
+            "order_intent"
+          ],
+          "operations": [
+            "build"
+          ],
+          "fields": [],
+          "input_paths": [],
+          "schema_refs": [
+            "schema://strategy/order-intent@1"
+          ],
+          "deterministic": true,
+          "replayable": true
+        },
+        "dependency_refs": [
+          "req_logic"
+        ],
+        "fallback_policy": "none",
+        "policy_tags": []
+      },
+      {
+        "requirement_id": "req_calendar",
+        "capability": "calendar.session.resolve@1",
+        "purpose": "Resolve strategy clock eligibility",
+        "required_for": [
+          "research",
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "market_clock"
+        ],
+        "substep_refs": [
+          "market_eligibility"
+        ],
+        "constraints": {
+          "instrument_families": [
+            "equity"
+          ],
+          "data_shapes": [
+            "event_time",
+            "calendar"
+          ],
+          "operations": [
+            "resolve"
+          ],
+          "fields": [
+            "event_time"
+          ],
+          "input_paths": [
+            "run.event_time"
+          ],
+          "schema_refs": [
+            "schema://runtime/event-time@1"
+          ],
+          "deterministic": true,
+          "replayable": true
+        },
+        "dependency_refs": [],
+        "fallback_policy": "none",
+        "policy_tags": []
+      }
+    ],
+    "optional": []
+  },
+  "signal_market_requirements": [
+    {
+      "requirement_id": "signal_primary",
+      "asset_class": "equity",
+      "instrument_family": "equity",
+      "role": "primary_signal",
+      "data_shapes": [
+        "bars"
+      ],
+      "fields": [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "timeframes": [
+        "1h"
+      ],
+      "lookback": "200 bars",
+      "availability": {
+        "historical": true,
+        "realtime": true,
+        "delayed_ok": false
+      },
+      "calendar_refs": [
+        "XNYS"
+      ],
+      "selectors": [
+        {
+          "selector_id": "bad",
+          "type": "dynamic",
+          "expression": {
+            "language": "cel@1",
+            "source": "variables.flag &&",
+            "result_type": "boolean",
+            "max_cost": 20
+          }
+        }
+      ],
+      "quality": {
+        "max_freshness": "PT5M",
+        "ordering": "event_time",
+        "replayable": true,
+        "minimum_history": "200 bars"
+      }
+    }
+  ],
+  "trade_market_requirements": [
+    {
+      "requirement_id": "trade_primary",
+      "asset_classes": [
+        "equity"
+      ],
+      "instrument_families": [
+        "equity"
+      ],
+      "signal_requirement_refs": [
+        "signal_primary"
+      ],
+      "supports_single_leg": true,
+      "supports_multi_leg": false,
+      "supports_mixed_instruments": false,
+      "allowed_currencies": [
+        "USD"
+      ],
+      "settlement_types": [
+        "cash"
+      ],
+      "quantity_units": [
+        "share"
+      ],
+      "lifecycle_constraints": [],
+      "required_capability_refs": [
+        "req_order"
+      ]
+    }
+  ],
+  "allocation": {
+    "mode": "none",
+    "targets": [],
+    "capability_requirement_refs": []
+  },
+  "variables": {
+    "flag": {
+      "type": "boolean",
+      "default": true,
+      "stage_ref": "universe",
+      "options": [],
+      "runtime_override_allowed": false
+    }
+  },
+  "stages": {
+    "inputs": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "load_bars",
+          "kind": "fetch",
+          "operation_ref": "market_data.bars.read@1",
+          "capability_requirement_refs": [
+            "req_bars"
+          ],
+          "reads": [
+            "market_data.source_bars"
+          ],
+          "writes": [
+            "market_data.normalized_bars"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {}
+    },
+    "universe": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "select_universe",
+          "kind": "screen",
+          "operation_ref": "universe.static.select@1",
+          "capability_requirement_refs": [
+            "req_bars"
+          ],
+          "reads": [
+            "market_data.normalized_bars"
+          ],
+          "writes": [
+            "assets.candidates"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {}
+    },
+    "evaluate": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "evaluate_signal",
+          "kind": "signal",
+          "operation_ref": "signal.rule.evaluate@1",
+          "capability_requirement_refs": [
+            "req_bars"
+          ],
+          "reads": [
+            "market_data.normalized_bars",
+            "assets.candidates"
+          ],
+          "writes": [
+            "signals.primary"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {}
+    },
+    "intent": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "build_intent",
+          "kind": "intent",
+          "operation_ref": "intent.trade.build@1",
+          "capability_requirement_refs": [
+            "req_logic"
+          ],
+          "reads": [
+            "signals.primary"
+          ],
+          "writes": [
+            "intent.trade"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {}
+    },
+    "sizing": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "relative_size",
+          "kind": "size",
+          "operation_ref": "sizing.relative.apply@1",
+          "capability_requirement_refs": [
+            "req_logic"
+          ],
+          "reads": [
+            "intent.trade"
+          ],
+          "writes": [
+            "sizing.request"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {}
+    },
+    "risk": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "risk_guard",
+          "kind": "guard",
+          "operation_ref": "risk.strategy.guard@1",
+          "capability_requirement_refs": [
+            "req_logic"
+          ],
+          "reads": [
+            "sizing.request"
+          ],
+          "writes": [
+            "risk.guarded_intent"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {}
+    },
+    "exit_policy": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "evaluate_exit",
+          "kind": "exit",
+          "operation_ref": "exit.policy.evaluate@1",
+          "capability_requirement_refs": [
+            "req_logic"
+          ],
+          "reads": [
+            "risk.guarded_intent",
+            "positions.current"
+          ],
+          "writes": [
+            "execution.exit_intent"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {},
+      "policy": {
+        "monitoring": [
+          "broker_native",
+          "synthetic"
+        ],
+        "triggers": [
+          {
+            "id": "end_of_session",
+            "kind": "lifecycle",
+            "scope": "full_position"
+          }
+        ],
+        "composition": "any",
+        "precedence": [],
+        "end_of_data": "preserve_open_positions"
+      }
+    },
+    "order_strategy": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "build_order",
+          "kind": "order",
+          "operation_ref": "order.intent.build@1",
+          "capability_requirement_refs": [
+            "req_order"
+          ],
+          "reads": [
+            "risk.guarded_intent"
+          ],
+          "writes": [
+            "execution.order_instructions"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {},
+      "policy": {
+        "allowed_order_types": [
+          "market",
+          "limit"
+        ],
+        "multi_leg_mode": "not_applicable",
+        "time_in_force": [
+          "day"
+        ],
+        "conditional_orders_allowed": false
+      }
+    },
+    "price_policy": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "price_order",
+          "kind": "price",
+          "operation_ref": "price.snapshot.select@1",
+          "capability_requirement_refs": [
+            "req_bars"
+          ],
+          "reads": [
+            "market_data.normalized_bars",
+            "execution.order_instructions"
+          ],
+          "writes": [
+            "execution.priced_order"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {},
+      "policy": {
+        "snapshot_inputs": [
+          "market_data.normalized_bars"
+        ],
+        "source_precedence": [
+          "normalized_close"
+        ],
+        "max_staleness": "PT5M",
+        "rounding": "nearest_tick",
+        "tick_size": "0.01"
+      }
+    },
+    "market_clock": {
+      "enabled": true,
+      "substeps": [
+        {
+          "id": "market_eligibility",
+          "kind": "clock",
+          "operation_ref": "calendar.session.resolve@1",
+          "capability_requirement_refs": [
+            "req_calendar"
+          ],
+          "reads": [
+            "run.event_time"
+          ],
+          "writes": [
+            "run.market_eligible"
+          ],
+          "output_contract": {
+            "schema_version": "1",
+            "journalable": true,
+            "replayable": true,
+            "content_addressable": true
+          },
+          "optional": false,
+          "failure_policy": "fail_closed",
+          "config": {}
+        }
+      ],
+      "reads": [],
+      "writes": [],
+      "output_contract": {
+        "schema_version": "1",
+        "journalable": true,
+        "replayable": true,
+        "content_addressable": true
+      },
+      "failure_policy": "fail_closed",
+      "config": {},
+      "policy": {
+        "timezone": "America/New_York",
+        "calendar_refs": [
+          "XNYS"
+        ],
+        "windows": [
+          {
+            "start": "09:30",
+            "end": "16:00"
+          }
+        ],
+        "days": [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday"
+        ],
+        "holiday_behavior": "follow_calendar",
+        "early_close_behavior": "follow_calendar",
+        "schedule_capability_requirement_ref": "req_calendar"
+      }
+    }
+  }
+}

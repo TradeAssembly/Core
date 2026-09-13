@@ -1,0 +1,20 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+apiVersion: tradeassembly.org/v1alpha1
+kind: TradeAssemblyPluginBundle
+metadata:
+  name: tradeassembly-default
+  description: Default local plugin bundle contract.
+plugins:
+  - id: tradeassembly.core-runtime
+    locator: core://plugins/tradeassembly.core-runtime
+    manifestPath: plugin-contracts/manifests/core-runtime.manifest.yaml
+    required: true
+  - id: tradeassembly.simbroker
+    locator: core://plugins/tradeassembly.simbroker
+    manifestPath: plugin-contracts/manifests/simbroker.manifest.yaml
+    required: true
+  - id: tradeassembly.local-data
+    locator: core://plugins/tradeassembly.local-data
+    manifestPath: plugin-contracts/manifests/local-data.manifest.yaml
+    required: true

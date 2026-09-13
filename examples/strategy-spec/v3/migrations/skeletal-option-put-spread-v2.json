@@ -1,0 +1,390 @@
+{
+  "spec_version": "2.0",
+  "strategy_id": "strategy.example.option_put_spread",
+  "name": "Option Put Spread Example",
+  "description": "Schema fixture for a two-leg option strategy. Not a trading recommendation.",
+  "labels": [
+    "example",
+    "options",
+    "multi-leg"
+  ],
+  "market_requirements": {
+    "asset_class": "option",
+    "instrument_family": "option_contract",
+    "underlyings": [
+      "SPY"
+    ],
+    "primary_timeframe": "1d",
+    "sessions": [
+      "regular"
+    ],
+    "data_window": {
+      "lookback_bars": 120,
+      "chain_snapshot_frequency": "daily"
+    }
+  },
+  "capability_requirements": {
+    "required": [
+      {
+        "requirement_id": "req_underlying_bars",
+        "capability": "market_data.bars",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "evaluate",
+          "price_policy"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "data_shape": {
+          "historical": true,
+          "realtime": true,
+          "granularity": [
+            "1d"
+          ],
+          "fields": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+          ],
+          "lookback": "120 bars"
+        }
+      },
+      {
+        "requirement_id": "req_option_chain",
+        "capability": "market_data.option_chain",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "universe",
+          "price_policy"
+        ],
+        "instrument_scope": {
+          "family": "option",
+          "market": "US",
+          "underlying_family": "equity"
+        },
+        "data_shape": {
+          "historical": true,
+          "realtime": true,
+          "fields": [
+            "expiration",
+            "strike",
+            "right",
+            "bid",
+            "ask",
+            "mid",
+            "delta",
+            "open_interest",
+            "volume"
+          ]
+        },
+        "quality_constraints": {
+          "supports_replay": true
+        }
+      },
+      {
+        "requirement_id": "req_multi_leg_option_order_routing",
+        "capability": "order_routing.option_combo",
+        "version": "1",
+        "purpose": "live_execution",
+        "required_for": [
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "intent",
+          "order_strategy"
+        ],
+        "instrument_scope": {
+          "family": "option",
+          "market": "US",
+          "underlying_family": "equity"
+        },
+        "fallback_policy": "explicit_only"
+      }
+    ],
+    "optional": [
+      {
+        "requirement_id": "req_option_quotes",
+        "capability": "market_data.option_quotes",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "price_policy"
+        ],
+        "instrument_scope": {
+          "family": "option",
+          "market": "US",
+          "underlying_family": "equity"
+        },
+        "data_shape": {
+          "realtime": true,
+          "fields": [
+            "bid",
+            "ask",
+            "mid",
+            "last"
+          ],
+          "freshness": "mode policy"
+        },
+        "optional": true
+      }
+    ]
+  },
+  "variables": {
+    "min_dte": {
+      "type": "int",
+      "default": 30,
+      "label": "Minimum DTE",
+      "stage": "universe"
+    },
+    "max_dte": {
+      "type": "int",
+      "default": 60,
+      "label": "Maximum DTE",
+      "stage": "universe"
+    },
+    "short_delta_target": {
+      "type": "float",
+      "default": -0.30,
+      "label": "Short put delta target",
+      "stage": "universe"
+    },
+    "long_delta_target": {
+      "type": "float",
+      "default": -0.15,
+      "label": "Long put delta target",
+      "stage": "universe"
+    },
+    "risk_fraction": {
+      "type": "float",
+      "default": 0.10,
+      "label": "Risk-scale fraction",
+      "stage": "sizing"
+    },
+    "profit_target_pct": {
+      "type": "float",
+      "default": 0.50,
+      "label": "Profit target percent",
+      "stage": "exit_policy"
+    },
+    "max_loss_pct": {
+      "type": "float",
+      "default": 0.75,
+      "label": "Max loss percent",
+      "stage": "exit_policy"
+    }
+  },
+  "stages": {
+    "inputs": {
+      "ref": "builtin:option-research-inputs@1",
+      "kind": "data",
+      "reads": [
+        "capability.market_data.bars",
+        "capability.market_data.option_chain"
+      ],
+      "writes": [
+        "inputs.underlying_bars",
+        "inputs.option_chain"
+      ],
+      "fail_closed": true,
+      "config": {
+        "underlying": "SPY",
+        "bar_timeframe": "1d",
+        "chain_snapshot": "latest_at_signal"
+      }
+    },
+    "universe": {
+      "ref": "builtin:option-chain-filter@1",
+      "kind": "universe",
+      "reads": [
+        "inputs.option_chain"
+      ],
+      "writes": [
+        "universe.option_candidates",
+        "universe.spread_candidates"
+      ],
+      "fail_closed": true,
+      "config": {
+        "expiration_filter": {
+          "min_dte_var": "min_dte",
+          "max_dte_var": "max_dte"
+        },
+        "legs": [
+          {
+            "role": "short_put",
+            "target_delta_var": "short_delta_target"
+          },
+          {
+            "role": "long_put",
+            "target_delta_var": "long_delta_target"
+          }
+        ]
+      }
+    },
+    "evaluate": {
+      "ref": "builtin:rule-tree@1",
+      "kind": "rules",
+      "reads": [
+        "inputs.underlying_bars",
+        "universe.spread_candidates"
+      ],
+      "writes": [
+        "signals.entry",
+        "signals.exit",
+        "signals.evidence"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry": "spread_candidate.exists && underlying_trend != 'down'",
+        "exit": "profit_target_hit || max_loss_hit || expires_within(7)"
+      }
+    },
+    "intent": {
+      "ref": "builtin:multi-leg-option-intent@1",
+      "kind": "intent",
+      "reads": [
+        "signals.entry",
+        "signals.exit",
+        "universe.spread_candidates"
+      ],
+      "writes": [
+        "intent.trade"
+      ],
+      "fail_closed": true,
+      "config": {
+        "strategy_kind": "vertical_put_spread",
+        "legs": [
+          {
+            "role": "short_put",
+            "action": "open",
+            "side": "sell_to_open",
+            "ratio": 1
+          },
+          {
+            "role": "long_put",
+            "action": "open",
+            "side": "buy_to_open",
+            "ratio": 1
+          }
+        ],
+        "close_action": "close_all_legs"
+      }
+    },
+    "sizing": {
+      "ref": "builtin:max-loss-risk-scale-sizing@1",
+      "kind": "sizing",
+      "reads": [
+        "intent.trade"
+      ],
+      "writes": [
+        "intent.sized"
+      ],
+      "fail_closed": true,
+      "config": {
+        "risk_fraction_var": "risk_fraction",
+        "rounding": "whole_contract"
+      }
+    },
+    "risk": {
+      "ref": "builtin:option-spread-risk-guards@1",
+      "kind": "risk",
+      "reads": [
+        "intent.sized"
+      ],
+      "writes": [
+        "risk.reservation"
+      ],
+      "fail_closed": true,
+      "config": {
+        "max_open_spreads_per_underlying": 1,
+        "require_defined_risk": true,
+        "dedupe_key": "underlying"
+      }
+    },
+    "exit_policy": {
+      "ref": "builtin:spread-profit-loss-exit@1",
+      "kind": "exit",
+      "reads": [
+        "signals.exit",
+        "inputs.option_chain"
+      ],
+      "writes": [
+        "exit.intent"
+      ],
+      "fail_closed": true,
+      "config": {
+        "profit_target_pct_var": "profit_target_pct",
+        "max_loss_pct_var": "max_loss_pct",
+        "close_before_expiration_days": 7
+      }
+    },
+    "order_strategy": {
+      "ref": "builtin:broker-neutral-multi-leg-order@1",
+      "kind": "order",
+      "reads": [
+        "intent.sized",
+        "exit.intent",
+        "risk.reservation"
+      ],
+      "writes": [
+        "order.intent"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry_order_type": "limit",
+        "exit_order_type": "limit",
+        "time_in_force": "day",
+        "submit_as_combo_when_supported": true
+      }
+    },
+    "price_policy": {
+      "ref": "builtin:midpoint-or-mark-price@1",
+      "kind": "price",
+      "reads": [
+        "inputs.option_chain"
+      ],
+      "writes": [
+        "price.snapshot"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry_price": "spread_midpoint",
+        "fallback": "mark"
+      }
+    },
+    "market_clock": {
+      "ref": "builtin:market-session-clock@1",
+      "kind": "clock",
+      "writes": [
+        "clock.gate"
+      ],
+      "fail_closed": true,
+      "config": {
+        "session": "regular",
+        "timezone": "America/New_York"
+      }
+    }
+  }
+}

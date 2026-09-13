@@ -1,0 +1,484 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+apiVersion: tradeassembly.org/v1alpha1
+kind: TradeAssemblyPluginManifest
+manifestVersion: "0.1"
+metadata:
+  id: tradeassembly.simbroker
+  name: SimBroker
+  version: 0.1.0
+  provider:
+    id: tradeassembly
+    name: TradeAssembly
+runtime:
+  protocol: rust-native
+  entrypoint: runtime-rs::adapters::local::LocalProviderCatalog
+  timeoutSeconds: 5
+capabilities:
+  - id: plugin.capability_matrix
+    description: Report plugin capabilities, operations, APF metadata, and host compatibility.
+  - id: marketdata.quote
+    description: Deterministic local quote fixture reads.
+  - id: marketdata.bars
+    description: Deterministic local bar fixture reads.
+  - id: market_data.bars.read@1
+    description: Read normalized deterministic bars through the versioned StrategySpec contract.
+  - id: broker.order_submit.paper
+    description: Local paper-order simulation only.
+permissions:
+  - id: local.state.read
+    description: Read ignored local state for deterministic replay fixtures.
+  - id: local.state.write
+    description: Write ignored local journal evidence.
+hostApis:
+  - id: tradeassembly.journal.append
+    description: Append redacted local evidence.
+  - id: tradeassembly.clock.now
+    description: Read host clock for deterministic event envelopes.
+operations:
+  - id: plugin.capability_matrix
+    capability: plugin.capability_matrix
+    protocol: local-rust
+    effect: read
+    riskClass: low
+    resourceType: plugin
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: plugin.capability_matrix
+      resourceType: plugin
+    mandateRequired: false
+    purpose: plugin_administration
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+      - plugin_manifest_integrity
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes: []
+      instrumentFamilies: []
+      dataShapes:
+        - capability_matrix
+      fields: []
+      inputSchemaRefs:
+        - schema://plugin/capability-request@1
+      outputSchemaRefs:
+        - schema://plugin/capability-matrix@1
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence:
+      - request_hash
+      - plugin_manifest_hash
+    pepCoverage: c1
+    checkPacks:
+      - plugin_manifest_integrity
+    receiptClass: admin_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: marketdata.quote.read
+    capability: marketdata.quote
+    protocol: local-rust
+    effect: read
+    riskClass: low
+    resourceType: market_data
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: market_data.read
+      resourceType: market_data
+    mandateRequired: false
+    purpose: market_data_research
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+      - data_provenance
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.strategy_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes:
+        - paper
+      instrumentFamilies:
+        - crypto_spot
+        - equity
+      dataShapes:
+        - quote
+      fields:
+        - symbol
+        - price
+        - timestamp
+      inputSchemaRefs:
+        - schema://market-data/quote-request@1
+      outputSchemaRefs:
+        - schema://market-data/quote@1
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence:
+      - request_hash
+      - plugin_manifest_hash
+    pepCoverage: c2
+    checkPacks:
+      - deterministic_fixture
+    receiptClass: read_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+      - mode:paper
+      - asset:crypto
+      - asset:equity
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: marketdata.bars.read
+    capability: marketdata.bars
+    protocol: local-rust
+    effect: read
+    riskClass: low
+    resourceType: market_data
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: market_data.read
+      resourceType: market_data
+    mandateRequired: false
+    purpose: backtest_dataset_setup
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+      - data_provenance
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.strategy_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes:
+        - paper
+      instrumentFamilies:
+        - crypto_spot
+        - equity
+      dataShapes:
+        - bars
+      fields:
+        - open
+        - high
+        - low
+        - close
+        - volume
+        - timestamp
+      inputSchemaRefs:
+        - schema://market-data/bars-request@1
+      outputSchemaRefs:
+        - schema://market-data/bars@1
+      timeframes:
+        - "*"
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence:
+      - request_hash
+      - plugin_manifest_hash
+    pepCoverage: c2
+    checkPacks:
+      - deterministic_fixture
+    receiptClass: read_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+      - mode:paper
+      - asset:crypto
+      - asset:equity
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: marketdata.bars.read_v1
+    capability: market_data.bars.read@1
+    protocol: local-rust
+    effect: read
+    riskClass: low
+    resourceType: market_data
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: market_data.read
+      resourceType: market_data
+    mandateRequired: false
+    purpose: backtest_dataset_setup
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+      - data_provenance
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.strategy_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes:
+        - authoring
+        - research
+        - backtest
+        - simulation
+        - paper
+        - live
+      instrumentFamilies:
+        - crypto_spot
+        - equity
+        - option_contract
+      dataShapes:
+        - bars
+      operations:
+        - read
+      fields:
+        - open
+        - high
+        - low
+        - close
+        - volume
+        - timestamp
+      inputPaths:
+        - market_data.source_bars
+      inputSchemaRefs:
+        - schema://market-data/bars-request@1
+      outputSchemaRefs:
+        - schema://market-data/bars@1
+      timeframes:
+        - "*"
+      maxFreshness: PT5M
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence:
+      - request_hash
+      - plugin_manifest_hash
+    pepCoverage: c2
+    checkPacks:
+      - deterministic_fixture
+    receiptClass: read_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+      - mode:authoring
+      - mode:research
+      - mode:backtest
+      - mode:simulation
+      - mode:paper
+      - mode:live
+      - asset:crypto
+      - asset:equity
+      - asset:option_contract
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: broker.paper_order_preview
+    capability: broker.order_submit.paper
+    protocol: local-rust
+    effect: draft
+    riskClass: medium
+    resourceType: brokerage_account
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: order.preview.paper
+      resourceType: brokerage_account
+    mandateRequired: false
+    purpose: paper_trading
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors:
+      - no_advice
+      - capability_scope
+      - risk_limit
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.strategy_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes:
+        - paper
+      instrumentFamilies:
+        - crypto_spot
+        - equity
+      dataShapes:
+        - order_intent
+      fields:
+        - symbol
+        - side
+        - quantity
+        - order_type
+      inputSchemaRefs:
+        - schema://strategy/order-intent@1
+      outputSchemaRefs:
+        - schema://broker/order-result@1
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence:
+      - request_hash
+      - strategy_version_hash
+      - risk_profile_hash
+    pepCoverage: c3
+    checkPacks:
+      - risk_limits
+    receiptClass: order_preview
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+      - mode:paper
+      - asset:crypto
+      - asset:equity
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: broker.paper_order_submit
+    capability: broker.order_submit.paper
+    protocol: local-rust
+    effect: write
+    riskClass: high
+    resourceType: brokerage_account
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: order.submit.paper
+      resourceType: brokerage_account
+    mandateRequired: true
+    purpose: paper_trading
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: human_confirmation_or_policy
+    supervision:
+      mode: human_on_the_loop
+    detectors:
+      - no_advice
+      - capability_scope
+      - risk_limit
+      - order_authority
+    contextProviders:
+      - sightline.session_context
+      - tradeassembly.strategy_context
+      - tradeassembly.plugin_context
+    policyRefs:
+      - apf.finance.default
+      - tradeassembly.local_full
+    traits:
+      modes:
+        - paper
+      instrumentFamilies:
+        - crypto_spot
+        - equity
+      dataShapes:
+        - order_intent
+      fields:
+        - symbol
+        - side
+        - quantity
+        - order_type
+      inputSchemaRefs:
+        - schema://strategy/order-intent@1
+      outputSchemaRefs:
+        - schema://broker/order-result@1
+      timeframes: []
+      deterministic: false
+      replayable: false
+    dependencies: []
+    evidence:
+      - request_hash
+      - strategy_version_hash
+      - risk_profile_hash
+    pepCoverage: c3
+    checkPacks:
+      - risk_limits
+      - local_simulation
+      - pep_receipt_sink
+    receiptClass: finance_receipt
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols:
+      - mcp
+      - graphql
+      - local-rust
+      - mode:paper
+      - asset:crypto
+      - asset:equity
+    inputSchema: json-schema
+    outputSchema: json-schema
+configuration:
+  fields: []
+health:
+  requiredConfiguration: []
+  requiredCredentials: []
+  connectionCheckOperation: null
+trust:
+  sandbox: in-process-core
+  level: core
+forbidden:
+  - trade_advice
+  - raw_secret_output
+  - hosted_oauth_credentials
+  - billing
+  - payouts
+  - enterprise_sso_rbac

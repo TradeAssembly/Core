@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "tradeassembly.warden-source-lock.v1",
+  "repository": "https://github.com/TradeAssemblyHQ/warden.git",
+  "revision": "ffa6889b141f881fb594c1c46e3c83180c2998ef",
+  "serviceVersion": "0.1.0",
+  "cargoPackage": "warden-service",
+  "binary": "warden"
+}

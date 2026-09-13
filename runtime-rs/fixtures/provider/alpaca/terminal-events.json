@@ -1,0 +1,19 @@
+{
+  "scenario": "terminal-events",
+  "provider_ref": "alpaca-paper",
+  "seed": {
+    "broker_order_id": "terminal-entry",
+    "client_order_id": "client-terminal-entry"
+  },
+  "terminal_events": ["canceled", "rejected", "expired", "done_for_day", "stopped"],
+  "expected": {
+    "normalized_status": {
+      "canceled": "canceled",
+      "rejected": "rejected",
+      "expired": "canceled",
+      "done_for_day": "canceled",
+      "stopped": "canceled"
+    },
+    "reservation_status": "released"
+  }
+}

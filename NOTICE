@@ -1,0 +1,7 @@
+TradeAssembly Core
+Copyright 2026 OptionLab LLC
+
+TradeAssembly-owned Core source is licensed under Apache-2.0. See LICENSE.
+Third-party components retain their own licenses and attribution notices;
+this grant does not relicense them. Binary distributions must include the
+applicable third-party license texts and notices for the exact shipped artifacts.

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tradeassembly.org/plugin-lock-0.1.schema.json",
+  "title": "TradeAssembly Plugin Lock",
+  "type": "object",
+  "required": ["apiVersion", "kind", "lockfileVersion", "plugins"],
+  "properties": {
+    "apiVersion": { "const": "tradeassembly.org/v1alpha1" },
+    "kind": { "const": "TradeAssemblyPluginLock" },
+    "lockfileVersion": { "type": "integer", "minimum": 1 },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "integrity"],
+        "properties": {
+          "id": { "type": "string" },
+          "source": {
+            "type": "object",
+            "required": ["type", "locator"],
+            "properties": {
+              "type": { "enum": ["core", "git"] },
+              "locator": { "type": "string" },
+              "repo": { "type": "string" },
+              "ref": { "type": "string" },
+              "commit": { "type": "string" },
+              "manifestPath": { "type": "string" }
+            }
+          },
+          "integrity": {
+            "type": "object",
+            "required": ["manifestSha256"],
+            "properties": {
+              "manifestSha256": { "type": "string" }
+            }
+          }
+        }
+      },
+      "minItems": 1
+    }
+  }
+}

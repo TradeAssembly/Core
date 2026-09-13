@@ -1,0 +1,12 @@
+allowed:
+  rust: ["**/*.rs"]
+  config:
+    extensions: [".hcl", ".tf", ".toml", ".json", ".yaml", ".yml", ".md"]
+  shell:
+    allowed_paths: ["scripts/language-invariant.sh", "scripts/sdlc/verify"]
+forbidden:
+  disallowed_extensions: ["**/*.rb", "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js"]
+  policy:
+    python_business_logic: forbidden_by_default
+    shell_orchestration_logic: forbidden_by_default
+    makefile_required: forbidden

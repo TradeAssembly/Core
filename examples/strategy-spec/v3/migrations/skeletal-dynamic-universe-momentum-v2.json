@@ -1,0 +1,369 @@
+{
+  "spec_version": "2.0",
+  "strategy_id": "strategy.example.dynamic_universe_momentum",
+  "name": "Dynamic Universe Momentum Example",
+  "description": "Schema fixture for a strategy whose candidate set comes from a screener capability. Not a trading recommendation.",
+  "labels": [
+    "example",
+    "dynamic-universe",
+    "screener"
+  ],
+  "market_requirements": {
+    "asset_class": "equity",
+    "instrument_family": "equity",
+    "primary_timeframe": "1h",
+    "sessions": [
+      "regular"
+    ],
+    "data_window": {
+      "lookback_bars": 120
+    }
+  },
+  "capability_requirements": {
+    "required": [
+      {
+        "requirement_id": "req_equity_bars",
+        "capability": "market_data.bars",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "evaluate",
+          "price_policy"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "data_shape": {
+          "historical": true,
+          "realtime": true,
+          "granularity": [
+            "1h"
+          ],
+          "fields": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+          ],
+          "lookback": "120 bars"
+        }
+      },
+      {
+        "requirement_id": "req_symbol_rank_screener",
+        "capability": "screeners.symbol_rank",
+        "version": "1",
+        "purpose": "screening",
+        "required_for": [
+          "authoring",
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "universe"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "data_shape": {
+          "historical": true,
+          "realtime": true,
+          "fields": [
+            "symbol",
+            "rank",
+            "score",
+            "evidence_ref"
+          ]
+        },
+        "quality_constraints": {
+          "supports_replay": true,
+          "deterministic": false
+        }
+      },
+      {
+        "requirement_id": "req_equity_order_routing",
+        "capability": "order_routing.equity",
+        "version": "1",
+        "purpose": "live_execution",
+        "required_for": [
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "intent",
+          "order_strategy"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "fallback_policy": "none"
+      }
+    ],
+    "optional": [
+      {
+        "requirement_id": "req_fundamentals_snapshot",
+        "capability": "fundamentals.snapshot",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "authoring",
+          "backtest"
+        ],
+        "stage_refs": [
+          "inputs",
+          "evaluate"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "optional": true
+      },
+      {
+        "requirement_id": "req_sentiment_symbol_score",
+        "capability": "sentiment.symbol_score",
+        "version": "1",
+        "purpose": "data",
+        "required_for": [
+          "authoring",
+          "backtest",
+          "paper",
+          "live"
+        ],
+        "stage_refs": [
+          "inputs",
+          "evaluate"
+        ],
+        "instrument_scope": {
+          "family": "equity",
+          "market": "US"
+        },
+        "optional": true,
+        "fallback_policy": "explicit_only"
+      }
+    ]
+  },
+  "variables": {
+    "candidate_limit": {
+      "type": "int",
+      "default": 10,
+      "label": "Candidate limit",
+      "stage": "universe"
+    },
+    "min_momentum_score": {
+      "type": "float",
+      "default": 0.70,
+      "label": "Minimum momentum score",
+      "stage": "evaluate"
+    },
+    "max_symbols": {
+      "type": "int",
+      "default": 3,
+      "label": "Maximum open symbols",
+      "stage": "risk"
+    },
+    "sleeve_fraction": {
+      "type": "float",
+      "default": 0.20,
+      "label": "Risk-scale sleeve fraction",
+      "stage": "sizing"
+    },
+    "trailing_stop_pct": {
+      "type": "float",
+      "default": 0.06,
+      "label": "Trailing stop percent",
+      "stage": "exit_policy"
+    }
+  },
+  "stages": {
+    "inputs": {
+      "ref": "builtin:dynamic-market-inputs@1",
+      "plugin": "market-data",
+      "kind": "data",
+      "reads": [
+        "capability.market_data.bars",
+        "capability.screeners.symbol_rank"
+      ],
+      "writes": [
+        "inputs.screener_rows",
+        "inputs.bars"
+      ],
+      "fail_closed": true,
+      "config": {
+        "bar_timeframe": "1h",
+        "screener": {
+          "capability": "screeners.symbol_rank",
+          "universe": "user_selected_equity_pool"
+        }
+      }
+    },
+    "universe": {
+      "ref": "plugin:screener.rank-filter@1",
+      "plugin": "screener",
+      "kind": "universe",
+      "reads": [
+        "inputs.screener_rows"
+      ],
+      "writes": [
+        "universe.candidates"
+      ],
+      "fail_closed": true,
+      "config": {
+        "limit_var": "candidate_limit",
+        "required_fields": [
+          "symbol",
+          "rank",
+          "score",
+          "evidence_ref"
+        ]
+      }
+    },
+    "evaluate": {
+      "ref": "builtin:candidate-rule-tree@1",
+      "kind": "rules",
+      "reads": [
+        "inputs.bars",
+        "universe.candidates"
+      ],
+      "writes": [
+        "signals.entries",
+        "signals.exits",
+        "signals.evidence"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry": "candidate.score >= var.min_momentum_score && trend(candidate.symbol) == 'up'",
+        "exit": "momentum_breaks_down(candidate.symbol)"
+      }
+    },
+    "intent": {
+      "ref": "builtin:ranked-equity-intent@1",
+      "kind": "intent",
+      "reads": [
+        "signals.entries",
+        "signals.exits",
+        "universe.candidates"
+      ],
+      "writes": [
+        "intent.trade_set"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry": {
+          "action": "open",
+          "side": "buy"
+        },
+        "exit": {
+          "action": "close",
+          "side": "sell"
+        },
+        "instrument_from": "candidate.symbol"
+      }
+    },
+    "sizing": {
+      "ref": "builtin:equal-sleeve-sizing@1",
+      "kind": "sizing",
+      "reads": [
+        "intent.trade_set"
+      ],
+      "writes": [
+        "intent.sized"
+      ],
+      "fail_closed": true,
+      "config": {
+        "sleeve_fraction_var": "sleeve_fraction",
+        "max_symbols_var": "max_symbols",
+        "rounding": "whole_share"
+      }
+    },
+    "risk": {
+      "ref": "builtin:portfolio-risk-guards@1",
+      "kind": "risk",
+      "reads": [
+        "intent.sized"
+      ],
+      "writes": [
+        "risk.reservations"
+      ],
+      "fail_closed": true,
+      "config": {
+        "max_open_positions_var": "max_symbols",
+        "dedupe_key": "symbol",
+        "correlation_scope": "strategy"
+      }
+    },
+    "exit_policy": {
+      "ref": "builtin:signal-or-trailing-stop-exit@1",
+      "kind": "exit",
+      "reads": [
+        "signals.exits",
+        "inputs.bars"
+      ],
+      "writes": [
+        "exit.intent"
+      ],
+      "fail_closed": true,
+      "config": {
+        "signal_ref": "signals.exits",
+        "trailing_stop_pct_var": "trailing_stop_pct"
+      }
+    },
+    "order_strategy": {
+      "ref": "builtin:broker-neutral-order@1",
+      "kind": "order",
+      "reads": [
+        "intent.sized",
+        "exit.intent",
+        "risk.reservations"
+      ],
+      "writes": [
+        "order.intent_set"
+      ],
+      "fail_closed": true,
+      "config": {
+        "entry_order_type": "limit",
+        "exit_order_type": "market",
+        "time_in_force": "day",
+        "limit_price_policy_ref": "price.snapshot"
+      }
+    },
+    "price_policy": {
+      "ref": "builtin:latest-bar-price@1",
+      "kind": "price",
+      "reads": [
+        "inputs.bars"
+      ],
+      "writes": [
+        "price.snapshot"
+      ],
+      "fail_closed": true,
+      "config": {
+        "signal_price": "last",
+        "limit_offset_bps": 10
+      }
+    },
+    "market_clock": {
+      "ref": "builtin:market-session-clock@1",
+      "kind": "clock",
+      "writes": [
+        "clock.gate"
+      ],
+      "fail_closed": true,
+      "config": {
+        "session": "regular",
+        "timezone": "America/New_York"
+      }
+    }
+  }
+}

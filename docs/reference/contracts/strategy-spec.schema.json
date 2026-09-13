@@ -1,0 +1,1724 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StrategySpec",
+  "type": "object",
+  "properties": {
+    "spec_version": {
+      "$ref": "#/$defs/SpecVersion"
+    },
+    "strategy_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "portfolio_scope": {
+      "$ref": "#/$defs/PortfolioScope"
+    },
+    "capability_requirements": {
+      "$ref": "#/$defs/CapabilityRequirements"
+    },
+    "signal_market_requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SignalMarketRequirement"
+      }
+    },
+    "trade_market_requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TradeMarketRequirement"
+      }
+    },
+    "allocation": {
+      "$ref": "#/$defs/Allocation"
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Variable"
+      }
+    },
+    "stages": {
+      "$ref": "#/$defs/Stages"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "strategy_id",
+    "name",
+    "portfolio_scope",
+    "capability_requirements",
+    "signal_market_requirements",
+    "trade_market_requirements",
+    "allocation",
+    "variables",
+    "stages"
+  ],
+  "$defs": {
+    "SpecVersion": {
+      "type": "string",
+      "enum": [
+        "3.0"
+      ]
+    },
+    "PortfolioScope": {
+      "type": "string",
+      "enum": [
+        "strategy",
+        "account"
+      ]
+    },
+    "CapabilityRequirements": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapabilityRequirement"
+          }
+        },
+        "optional": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapabilityRequirement"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "required"
+      ]
+    },
+    "CapabilityRequirement": {
+      "type": "object",
+      "properties": {
+        "requirement_id": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "required_for": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadinessLevel"
+          }
+        },
+        "stage_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageName"
+          }
+        },
+        "substep_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "constraints": {
+          "$ref": "#/$defs/CapabilityConstraints"
+        },
+        "dependency_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "fallback_policy": {
+          "$ref": "#/$defs/FallbackPolicy"
+        },
+        "policy_tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requirement_id",
+        "capability",
+        "purpose",
+        "required_for",
+        "stage_refs",
+        "constraints",
+        "fallback_policy"
+      ]
+    },
+    "ReadinessLevel": {
+      "type": "string",
+      "enum": [
+        "authoring",
+        "research",
+        "backtest",
+        "simulation",
+        "paper",
+        "live"
+      ]
+    },
+    "StageName": {
+      "type": "string",
+      "enum": [
+        "inputs",
+        "universe",
+        "evaluate",
+        "intent",
+        "sizing",
+        "risk",
+        "exit_policy",
+        "order_strategy",
+        "price_policy",
+        "market_clock"
+      ]
+    },
+    "CapabilityConstraints": {
+      "type": "object",
+      "properties": {
+        "instrument_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InstrumentFamily"
+          },
+          "default": []
+        },
+        "data_shapes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "schema_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "timeframe": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_freshness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_latency_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "deterministic": {
+          "type": "boolean",
+          "default": false
+        },
+        "replayable": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "InstrumentFamily": {
+      "type": "string",
+      "enum": [
+        "equity",
+        "fund",
+        "crypto_spot",
+        "option_contract",
+        "future_contract",
+        "fixed_income",
+        "fx_pair",
+        "event_contract",
+        "custom"
+      ]
+    },
+    "FallbackPolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "explicit_only",
+        "configured"
+      ]
+    },
+    "SignalMarketRequirement": {
+      "type": "object",
+      "properties": {
+        "requirement_id": {
+          "type": "string"
+        },
+        "asset_class": {
+          "$ref": "#/$defs/AssetClass"
+        },
+        "instrument_family": {
+          "$ref": "#/$defs/InstrumentFamily"
+        },
+        "role": {
+          "$ref": "#/$defs/SignalMarketRole"
+        },
+        "data_shapes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeframes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lookback": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "availability": {
+          "$ref": "#/$defs/AvailabilityRequirements"
+        },
+        "calendar_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "selectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InstrumentSelector"
+          }
+        },
+        "quality": {
+          "$ref": "#/$defs/QualityRequirements"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requirement_id",
+        "asset_class",
+        "instrument_family",
+        "role",
+        "data_shapes",
+        "fields",
+        "timeframes",
+        "availability",
+        "selectors",
+        "quality"
+      ]
+    },
+    "AssetClass": {
+      "type": "string",
+      "enum": [
+        "equity",
+        "fund",
+        "crypto",
+        "option",
+        "future",
+        "fixed_income",
+        "fx",
+        "event_contract",
+        "custom"
+      ]
+    },
+    "SignalMarketRole": {
+      "type": "string",
+      "enum": [
+        "primary_signal",
+        "context",
+        "benchmark",
+        "hedge_input",
+        "screener_seed"
+      ]
+    },
+    "AvailabilityRequirements": {
+      "type": "object",
+      "properties": {
+        "historical": {
+          "type": "boolean"
+        },
+        "realtime": {
+          "type": "boolean"
+        },
+        "delayed_ok": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "historical",
+        "realtime",
+        "delayed_ok"
+      ]
+    },
+    "InstrumentSelector": {
+      "type": "object",
+      "properties": {
+        "selector_id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/SelectorType"
+        },
+        "normalized_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alias": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector_id",
+        "type"
+      ]
+    },
+    "SelectorType": {
+      "type": "string",
+      "enum": [
+        "normalized_instrument",
+        "symbolic_alias",
+        "dynamic"
+      ]
+    },
+    "Expression": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/ExpressionLanguage"
+        },
+        "source": {
+          "type": "string"
+        },
+        "result_type": {
+          "type": "string"
+        },
+        "max_cost": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "language",
+        "source",
+        "result_type",
+        "max_cost"
+      ]
+    },
+    "ExpressionLanguage": {
+      "type": "string",
+      "enum": [
+        "cel@1"
+      ]
+    },
+    "QualityRequirements": {
+      "type": "object",
+      "properties": {
+        "max_freshness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ordering": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayable": {
+          "type": "boolean"
+        },
+        "minimum_history": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "replayable"
+      ]
+    },
+    "TradeMarketRequirement": {
+      "type": "object",
+      "properties": {
+        "requirement_id": {
+          "type": "string"
+        },
+        "asset_classes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AssetClass"
+          }
+        },
+        "instrument_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InstrumentFamily"
+          }
+        },
+        "signal_requirement_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "supports_single_leg": {
+          "type": "boolean"
+        },
+        "supports_multi_leg": {
+          "type": "boolean"
+        },
+        "supports_mixed_instruments": {
+          "type": "boolean"
+        },
+        "allowed_currencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "settlement_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "quantity_units": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "lifecycle_constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "required_capability_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requirement_id",
+        "asset_classes",
+        "instrument_families",
+        "supports_single_leg",
+        "supports_multi_leg",
+        "supports_mixed_instruments",
+        "required_capability_refs"
+      ]
+    },
+    "Allocation": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/AllocationMode"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AllocationTarget"
+          },
+          "default": []
+        },
+        "formula": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capability_requirement_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ]
+    },
+    "AllocationMode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "relative_weights",
+        "formula",
+        "operation"
+      ]
+    },
+    "AllocationTarget": {
+      "type": "object",
+      "properties": {
+        "selector_ref": {
+          "type": "string"
+        },
+        "relative_weight": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "formula": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector_ref"
+      ]
+    },
+    "Variable": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/VariableType"
+        },
+        "default": true,
+        "stage_ref": {
+          "$ref": "#/$defs/StageName"
+        },
+        "substep_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "value_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "minimum": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maximum": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_override_allowed": {
+          "type": "boolean"
+        },
+        "override_bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OverrideBounds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ui": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "default",
+        "stage_ref",
+        "runtime_override_allowed"
+      ]
+    },
+    "VariableType": {
+      "type": "string",
+      "enum": [
+        "integer",
+        "decimal",
+        "boolean",
+        "string",
+        "duration",
+        "enum",
+        "json"
+      ]
+    },
+    "OverrideBounds": {
+      "type": "object",
+      "properties": {
+        "minimum": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maximum": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "UiMetadata": {
+      "type": "object",
+      "properties": {
+        "control": {
+          "type": "string"
+        },
+        "group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "control"
+      ]
+    },
+    "Stages": {
+      "type": "object",
+      "properties": {
+        "inputs": {
+          "$ref": "#/$defs/Stage"
+        },
+        "universe": {
+          "$ref": "#/$defs/Stage"
+        },
+        "evaluate": {
+          "$ref": "#/$defs/Stage"
+        },
+        "intent": {
+          "$ref": "#/$defs/Stage"
+        },
+        "sizing": {
+          "$ref": "#/$defs/Stage"
+        },
+        "risk": {
+          "$ref": "#/$defs/Stage"
+        },
+        "exit_policy": {
+          "$ref": "#/$defs/ExitPolicyStage"
+        },
+        "order_strategy": {
+          "$ref": "#/$defs/OrderPolicyStage"
+        },
+        "price_policy": {
+          "$ref": "#/$defs/PricePolicyStage"
+        },
+        "market_clock": {
+          "$ref": "#/$defs/ClockPolicyStage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "universe",
+        "evaluate",
+        "intent",
+        "sizing",
+        "risk",
+        "exit_policy",
+        "order_strategy",
+        "price_policy",
+        "market_clock"
+      ]
+    },
+    "Stage": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "substeps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Substep"
+          },
+          "default": []
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_contract": {
+          "$ref": "#/$defs/OutputContract"
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "documentation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "output_contract",
+        "failure_policy"
+      ]
+    },
+    "Substep": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/SubstepKind"
+        },
+        "operation_ref": {
+          "type": "string"
+        },
+        "capability_requirement_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_contract": {
+          "$ref": "#/$defs/OutputContract"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "selector_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateContract"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "operation_ref",
+        "capability_requirement_refs",
+        "output_contract",
+        "optional",
+        "failure_policy"
+      ]
+    },
+    "SubstepKind": {
+      "type": "string",
+      "enum": [
+        "fetch",
+        "transform",
+        "screen",
+        "calculate",
+        "signal",
+        "combine",
+        "intent",
+        "size",
+        "guard",
+        "exit",
+        "order",
+        "price",
+        "clock",
+        "custom"
+      ]
+    },
+    "OutputContract": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "journalable": {
+          "type": "boolean"
+        },
+        "replayable": {
+          "type": "boolean"
+        },
+        "content_addressable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "journalable",
+        "replayable",
+        "content_addressable"
+      ]
+    },
+    "FailurePolicy": {
+      "type": "string",
+      "enum": [
+        "fail_closed",
+        "skip_optional"
+      ]
+    },
+    "StateContract": {
+      "type": "object",
+      "properties": {
+        "schema_ref": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "checkpoint_namespace": {
+          "type": "string"
+        },
+        "initialization": {
+          "type": "string"
+        },
+        "reset": {
+          "type": "string"
+        },
+        "migration_compatibility": {
+          "type": "string"
+        },
+        "event_time": {
+          "type": "string"
+        },
+        "ordering": {
+          "type": "string"
+        },
+        "replay": {
+          "type": "string"
+        },
+        "sharing_scope": {
+          "$ref": "#/$defs/StateSharingScope"
+        },
+        "sharing_authorization_capability_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_ref",
+        "version",
+        "checkpoint_namespace",
+        "initialization",
+        "reset",
+        "migration_compatibility",
+        "event_time",
+        "ordering",
+        "replay",
+        "sharing_scope"
+      ]
+    },
+    "StateSharingScope": {
+      "type": "string",
+      "enum": [
+        "instrument",
+        "account",
+        "activation",
+        "research_run"
+      ]
+    },
+    "ExitPolicyStage": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "substeps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Substep"
+          },
+          "default": []
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_contract": {
+          "$ref": "#/$defs/OutputContract"
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "policy": {
+          "$ref": "#/$defs/ExitPolicy"
+        },
+        "documentation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "output_contract",
+        "failure_policy",
+        "policy"
+      ]
+    },
+    "ExitPolicy": {
+      "type": "object",
+      "properties": {
+        "monitoring": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExitMonitoringMode"
+          }
+        },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExitTrigger"
+          }
+        },
+        "composition": {
+          "$ref": "#/$defs/ExitComposition"
+        },
+        "precedence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "end_of_data": {
+          "$ref": "#/$defs/EndOfDataBehavior"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "monitoring",
+        "triggers",
+        "composition",
+        "end_of_data"
+      ]
+    },
+    "ExitMonitoringMode": {
+      "type": "string",
+      "enum": [
+        "broker_native",
+        "synthetic"
+      ]
+    },
+    "ExitTrigger": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ExitTriggerKind"
+        },
+        "scope": {
+          "$ref": "#/$defs/ExitScope"
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capability_requirement_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "scope"
+      ]
+    },
+    "ExitTriggerKind": {
+      "type": "string",
+      "enum": [
+        "indicator",
+        "expression",
+        "time",
+        "price",
+        "profit_loss",
+        "lifecycle",
+        "operation"
+      ]
+    },
+    "ExitScope": {
+      "type": "string",
+      "enum": [
+        "full_position",
+        "individual_legs"
+      ]
+    },
+    "ExitComposition": {
+      "type": "string",
+      "enum": [
+        "any",
+        "all",
+        "priority"
+      ]
+    },
+    "EndOfDataBehavior": {
+      "type": "string",
+      "enum": [
+        "fail_closed",
+        "close_synthetic_positions",
+        "preserve_open_positions"
+      ]
+    },
+    "OrderPolicyStage": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "substeps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Substep"
+          },
+          "default": []
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_contract": {
+          "$ref": "#/$defs/OutputContract"
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "policy": {
+          "$ref": "#/$defs/OrderPolicy"
+        },
+        "documentation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "output_contract",
+        "failure_policy",
+        "policy"
+      ]
+    },
+    "OrderPolicy": {
+      "type": "object",
+      "properties": {
+        "allowed_order_types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrderType"
+          }
+        },
+        "multi_leg_mode": {
+          "$ref": "#/$defs/MultiLegMode"
+        },
+        "time_in_force": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "conditional_orders_allowed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "allowed_order_types",
+        "multi_leg_mode",
+        "conditional_orders_allowed"
+      ]
+    },
+    "OrderType": {
+      "type": "string",
+      "enum": [
+        "market",
+        "limit",
+        "stop",
+        "stop_limit",
+        "trailing",
+        "conditional",
+        "multi_leg"
+      ]
+    },
+    "MultiLegMode": {
+      "type": "string",
+      "enum": [
+        "not_applicable",
+        "atomic_required",
+        "deterministic_leg_sequence"
+      ]
+    },
+    "PricePolicyStage": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "substeps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Substep"
+          },
+          "default": []
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_contract": {
+          "$ref": "#/$defs/OutputContract"
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "policy": {
+          "$ref": "#/$defs/PricePolicy"
+        },
+        "documentation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "output_contract",
+        "failure_policy",
+        "policy"
+      ]
+    },
+    "PricePolicy": {
+      "type": "object",
+      "properties": {
+        "snapshot_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_precedence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_staleness": {
+          "type": "string"
+        },
+        "rounding": {
+          "$ref": "#/$defs/PriceRounding"
+        },
+        "tick_size": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "snapshot_inputs",
+        "source_precedence",
+        "max_staleness",
+        "rounding"
+      ]
+    },
+    "PriceRounding": {
+      "type": "string",
+      "enum": [
+        "nearest_tick",
+        "favorable_tick",
+        "unfavorable_tick"
+      ]
+    },
+    "ClockPolicyStage": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "substeps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Substep"
+          },
+          "default": []
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "input_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_contract": {
+          "$ref": "#/$defs/OutputContract"
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "policy": {
+          "$ref": "#/$defs/ClockPolicy"
+        },
+        "documentation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "output_contract",
+        "failure_policy",
+        "policy"
+      ]
+    },
+    "ClockPolicy": {
+      "type": "object",
+      "properties": {
+        "timezone": {
+          "type": "string"
+        },
+        "calendar_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ClockWindow"
+          }
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "holiday_behavior": {
+          "$ref": "#/$defs/HolidayBehavior"
+        },
+        "early_close_behavior": {
+          "$ref": "#/$defs/EarlyCloseBehavior"
+        },
+        "schedule_capability_requirement_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eligibility_expression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "timezone",
+        "calendar_refs",
+        "windows",
+        "days",
+        "holiday_behavior",
+        "early_close_behavior"
+      ]
+    },
+    "ClockWindow": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ]
+    },
+    "HolidayBehavior": {
+      "type": "string",
+      "enum": [
+        "follow_calendar",
+        "closed"
+      ]
+    },
+    "EarlyCloseBehavior": {
+      "type": "string",
+      "enum": [
+        "follow_calendar",
+        "exclude"
+      ]
+    }
+  }
+}

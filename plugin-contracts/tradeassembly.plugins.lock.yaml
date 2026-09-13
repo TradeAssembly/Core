@@ -1,0 +1,27 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+apiVersion: tradeassembly.org/v1alpha1
+kind: TradeAssemblyPluginLock
+lockfileVersion: 1
+plugins:
+  - id: tradeassembly.core-runtime
+    source:
+      type: core
+      locator: core://plugins/tradeassembly.core-runtime
+      manifestPath: plugin-contracts/manifests/core-runtime.manifest.yaml
+    integrity:
+      manifestSha256: 920b3a028e8514847c76abe517ab190a6946c92c65e5b0f1e07d7274759a6875
+  - id: tradeassembly.simbroker
+    source:
+      type: core
+      locator: core://plugins/tradeassembly.simbroker
+      manifestPath: plugin-contracts/manifests/simbroker.manifest.yaml
+    integrity:
+      manifestSha256: f67e0ac257579806341284d2a8a7c24cf4502ec912d0b6ff58b55a1e00d5e598
+  - id: tradeassembly.local-data
+    source:
+      type: core
+      locator: core://plugins/tradeassembly.local-data
+      manifestPath: plugin-contracts/manifests/local-data.manifest.yaml
+    integrity:
+      manifestSha256: 25d5abd7efb508006b99d8d9f5038a596bac4e1b30c3351fe2ef7421a5e33dbe

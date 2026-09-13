@@ -1,0 +1,39 @@
+{
+  "scenario": "duplicate-order-update-event",
+  "provider_ref": "alpaca-paper",
+  "seed": {
+    "broker_order_id": "duplicate-update-entry",
+    "client_order_id": "client-duplicate-update"
+  },
+  "stream": {
+    "stream": "trade_updates",
+    "events": [
+      {
+        "eventId": "evt-duplicate-fill-1",
+        "event": "fill",
+        "order": {
+          "orderId": "duplicate-update-entry",
+          "clientOrderId": "client-duplicate-update",
+          "status": "filled",
+          "filledQty": "1",
+          "qty": "1"
+        }
+      },
+      {
+        "eventId": "evt-duplicate-fill-1",
+        "event": "fill",
+        "order": {
+          "orderId": "duplicate-update-entry",
+          "clientOrderId": "client-duplicate-update",
+          "status": "filled",
+          "filledQty": "1",
+          "qty": "1"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "risk_release_count": 1,
+    "reservation_status": "released"
+  }
+}

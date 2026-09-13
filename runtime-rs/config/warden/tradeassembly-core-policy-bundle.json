@@ -1,0 +1,529 @@
+{
+  "schema_version": "apf.policy_bundle.v1",
+  "bundle_id": "tradeassembly-studio-core",
+  "version": "2026-09-11.2",
+  "owner": {
+    "kind": "application",
+    "id": "tradeassembly-studio-core"
+  },
+  "issued_at_epoch_ms": 1767225600000,
+  "expires_at_epoch_ms": null,
+  "rules": [
+    {
+      "rule_id": "tradeassembly-studio-setup-observe",
+      "action": "studio.setup.observe",
+      "resource_kind": "plugin",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-01-strategy-create",
+      "action": "strategy.create",
+      "resource_kind": "strategy",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-02-strategy-draft-update",
+      "action": "strategy.draft.update",
+      "resource_kind": "strategy",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-03-strategy-draft-patch-propose",
+      "action": "strategy.draft.patch.propose",
+      "resource_kind": "strategy",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-04-strategy-draft-patch-review",
+      "action": "strategy.draft.patch.review",
+      "resource_kind": "strategy",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-05-strategy-version-publish",
+      "action": "strategy.version.publish",
+      "resource_kind": "strategy",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-06-strategy-lifecycle-manage",
+      "action": "strategy.lifecycle.manage",
+      "resource_kind": "strategy",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-07-plugin-configure",
+      "action": "plugin.configure",
+      "resource_kind": "plugin",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-08-plugin-operation-invoke",
+      "action": "plugin.operation.invoke",
+      "resource_kind": "plugin_operation",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-08a-capability-binding-revision-save",
+      "action": "capability.binding.revision.save",
+      "resource_kind": "execution_config",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-09-entitlement-manage",
+      "action": "entitlement.manage",
+      "resource_kind": "entitlement",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-10-credential-configure",
+      "action": "credential.configure",
+      "resource_kind": "plugin",
+      "side_effect_class": "credential",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-11-credential-test",
+      "action": "credential.test",
+      "resource_kind": "plugin",
+      "side_effect_class": "credential",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-12-credential-revoke",
+      "action": "credential.revoke",
+      "resource_kind": "plugin",
+      "side_effect_class": "credential",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-13-research-run-execute",
+      "action": "research.run.execute",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-14-research-dataset-create",
+      "action": "research.dataset.create",
+      "resource_kind": "research_dataset",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-14-research-dataset-cancel",
+      "action": "research.dataset.cancel",
+      "resource_kind": "research_dataset",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-15-research-universe-create",
+      "action": "research.universe.create",
+      "resource_kind": "research_universe",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-16-research-job-manage",
+      "action": "research.job.manage",
+      "resource_kind": "research_job",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-17-research-notebook-update",
+      "action": "research.notebook.update",
+      "resource_kind": "research_notebook",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-18-backtest-run-execute",
+      "action": "backtest.run.execute",
+      "resource_kind": "backtest_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-19-backtest-report-export",
+      "action": "backtest.report.export",
+      "resource_kind": "backtest_report",
+      "side_effect_class": "export",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-20-research-monte_carlo-run",
+      "action": "research.monte_carlo.run",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-21-research-portfolio_risk-run",
+      "action": "research.portfolio_risk.run",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-22-execution-config-save",
+      "action": "execution.config.save",
+      "resource_kind": "execution_config",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-live-mandate-manage",
+      "action": "execution.live_mandate.manage",
+      "resource_kind": "execution_config",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-23-execution-activate-paper",
+      "action": "execution.activate.paper",
+      "resource_kind": "activation",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-24-execution-activate-live",
+      "action": "execution.activate.live",
+      "resource_kind": "activation",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "deny",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-25-execution-control",
+      "action": "execution.control",
+      "resource_kind": "activation",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-25a-execution-cancel-orders",
+      "action": "execution.cancel_orders",
+      "resource_kind": "activation",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-25b-execution-liquidate",
+      "action": "execution.liquidate",
+      "resource_kind": "activation",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-26-execution-deactivate",
+      "action": "execution.deactivate",
+      "resource_kind": "activation",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-27-execution-evaluate-paper",
+      "action": "execution.evaluate.paper",
+      "resource_kind": "activation",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-28-order-submit-paper",
+      "action": "order.submit.paper",
+      "resource_kind": "brokerage_account",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-29-order-submit-live",
+      "action": "order.submit.live",
+      "resource_kind": "brokerage_account",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c5",
+      "required_decision": "deny",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-30-order-manage",
+      "action": "order.manage",
+      "resource_kind": "order",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-30a-external-broker-receipt-record",
+      "action": "external_broker_receipt.record",
+      "resource_kind": "broker_receipt",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-31-scheduler-manage",
+      "action": "scheduler.manage",
+      "resource_kind": "scheduler",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-31a-agent-deployment-manage",
+      "action": "agent.deployment.manage",
+      "resource_kind": "agent_deployment",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-32-execution-emergency_stop",
+      "action": "execution.emergency_stop",
+      "resource_kind": "activation",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-33-risk-manage",
+      "action": "risk.manage",
+      "resource_kind": "risk_envelope",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-34-portfolio-positions-sync",
+      "action": "portfolio.positions.sync",
+      "resource_kind": "portfolio",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-35-sightline-session-mutate",
+      "action": "sightline.session.mutate",
+      "resource_kind": "sightline_session",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-36-sightline-proposal-create",
+      "action": "sightline.proposal.create",
+      "resource_kind": "sightline_proposal",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-37-sightline-approval-request",
+      "action": "sightline.approval.request",
+      "resource_kind": "approval_request",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-38-strategy-share-manage",
+      "action": "strategy.share.manage",
+      "resource_kind": "strategy_share",
+      "side_effect_class": "export",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-39-alert-acknowledge",
+      "action": "alert.acknowledge",
+      "resource_kind": "alert",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-40-instrument-pack-install",
+      "action": "instrument.pack.install",
+      "resource_kind": "instrument_pack",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-41-tradeassembly-policy-manage",
+      "action": "tradeassembly.policy.manage",
+      "resource_kind": "policy",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-42-tradeassembly-install-claim",
+      "action": "tradeassembly.install.claim",
+      "resource_kind": "installation",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-43-tradeassembly-telemetry-manage",
+      "action": "tradeassembly.telemetry.manage",
+      "resource_kind": "telemetry_preference",
+      "side_effect_class": "admin",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-44-research-scenario-valuation-run",
+      "action": "research.scenario_valuation.run",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-45-research-fill-quality-analyze",
+      "action": "research.fill_quality.analyze",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-46-research-lifecycle-calendar-build",
+      "action": "research.lifecycle_calendar.build",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-47-research-attribution-journal-review",
+      "action": "research.attribution_journal.review",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-48-research-report-generate",
+      "action": "research.report.generate",
+      "resource_kind": "research_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-49-execution-position-lifecycle-manage",
+      "action": "execution.position_lifecycle.manage",
+      "resource_kind": "position_lifecycle",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    }
+  ],
+  "extension_schemas": [],
+  "default_decision": "deny",
+  "signature_ref": null
+}

@@ -1,0 +1,9 @@
+[package]
+name = "tradeassembly-sightline-sidecar"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license-file = "../LICENSE"
+
+[dependencies]
+serde_json = "1"

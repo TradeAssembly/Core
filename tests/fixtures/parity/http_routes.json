@@ -22,6 +22,7 @@
   "GET /exit-watches",
   "GET /health",
   "GET /journal/events",
+  "GET /journal/export",
   "GET /marketdata/bars",
   "GET /marketdata/instrument-packs",
   "GET /marketdata/instruments/aliases",

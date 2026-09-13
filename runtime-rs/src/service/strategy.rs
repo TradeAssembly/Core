@@ -713,7 +713,7 @@ pub(crate) fn strategy_value(service: &TradeAssemblyService, id: &str) -> Value 
 }
 
 pub(crate) fn strategy_detail(service: &TradeAssemblyService, id: &str) -> Value {
-    json!({"strategy": strategy_value(service, id), "evidence": workspace_evidence()})
+    json!({"strategy": strategy_value(service, id), "evidence": workspace_evidence(service)})
 }
 
 pub(crate) fn strategy_versions(service: &TradeAssemblyService, id: &str) -> Vec<Value> {

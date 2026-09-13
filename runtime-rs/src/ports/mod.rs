@@ -143,6 +143,7 @@ pub struct ServiceRuntime {
     pub providers: Arc<dyn ProviderPort>,
     pub plugin_operations: Arc<dyn PluginOperationPort>,
     pub journal: Arc<dyn JournalPort>,
+    pub journal_owner: Option<ObjectOwner>,
     pub legal_receipts: Arc<dyn LegalReceiptPort>,
     pub bus: Arc<dyn EventBusPort>,
     pub queue: Arc<dyn DurableQueuePort>,
@@ -209,6 +210,7 @@ impl ServiceRuntime {
             authority: context.authority.clone(),
             idempotency_key: context.idempotency_key.clone(),
             payload,
+            owner: self.journal_owner.clone(),
         })?;
         self.bus.publish(
             "journal.side_effect_recorded",

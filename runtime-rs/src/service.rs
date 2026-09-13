@@ -28,6 +28,7 @@ mod derivatives;
 mod execution;
 mod external_broker_evidence;
 mod fill_quality;
+mod journal_view;
 mod lifecycle_calendar;
 mod live_authorization;
 mod marketdata;
@@ -518,6 +519,7 @@ impl TradeAssemblyService {
             picture: None,
         });
         service.invocation_actor_kind = "user";
+        service.project_journal_owner();
         service.claim_local_seed_strategies();
         service.claim_local_seed_plugin_instances();
         service
@@ -558,6 +560,7 @@ impl TradeAssemblyService {
             picture: None,
         });
         service.invocation_actor_kind = "application";
+        service.project_journal_owner();
         Ok(service.handle_http_from_source("local_setup", "POST", "/plugins/packages", body))
     }
 
@@ -592,6 +595,12 @@ impl TradeAssemblyService {
         self.invocation_principal
             .as_ref()
             .map(|principal| (principal.issuer.as_str(), principal.subject.as_str()))
+    }
+
+    fn project_journal_owner(&mut self) {
+        let mut runtime = self.runtime.as_ref().clone();
+        runtime.journal_owner = self.invocation_owner();
+        self.runtime = Arc::new(runtime);
     }
 
     pub(crate) fn agent_mcp_execution_context(
@@ -732,10 +741,6 @@ impl TradeAssemblyService {
         bearer_credential: Option<&str>,
         request: Value,
     ) -> ServiceResponse {
-        let Some(bearer_credential) = bearer_credential.filter(|value| !value.trim().is_empty())
-        else {
-            return ServiceResponse::unauthorized("studio_transport_authentication_required");
-        };
         let assertion = request
             .get("variables")
             .and_then(|variables| variables.get("_studioSession"))
@@ -743,8 +748,44 @@ impl TradeAssemblyService {
             .and_then(|value| {
                 serde_json::from_value::<crate::ports::TrustedStudioSession>(value).ok()
             });
+        let (service, session) =
+            match self.authenticated_studio_invocation(bearer_credential, assertion) {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+        let request = bind_authenticated_studio_request(request, &session);
+        ServiceResponse::ok(service.execute_graphql_with_session(request, Some(&session)))
+    }
+
+    pub fn handle_studio_http(
+        &self,
+        bearer_credential: Option<&str>,
+        assertion: Option<crate::ports::TrustedStudioSession>,
+        method: &str,
+        path: &str,
+        body: Value,
+    ) -> ServiceResponse {
+        match self.authenticated_studio_invocation(bearer_credential, assertion) {
+            Ok((service, _)) => service.handle_http_from_source("studio", method, path, body),
+            Err(response) => response,
+        }
+    }
+
+    fn authenticated_studio_invocation(
+        &self,
+        bearer_credential: Option<&str>,
+        assertion: Option<crate::ports::TrustedStudioSession>,
+    ) -> Result<(Self, auth::SessionValidationResult), ServiceResponse> {
+        let Some(bearer_credential) = bearer_credential.filter(|value| !value.trim().is_empty())
+        else {
+            return Err(ServiceResponse::unauthorized(
+                "studio_transport_authentication_required",
+            ));
+        };
         let Some(assertion) = assertion else {
-            return ServiceResponse::unauthorized("studio_oidc_session_required");
+            return Err(ServiceResponse::unauthorized(
+                "studio_oidc_session_required",
+            ));
         };
         let claims = match self.runtime.identity.authenticate_studio(
             bearer_credential,
@@ -752,7 +793,7 @@ impl TradeAssemblyService {
             self.runtime.clock.now_ms(),
         ) {
             Ok(claims) => claims,
-            Err(_) => return ServiceResponse::unauthorized("studio_identity_invalid"),
+            Err(_) => return Err(ServiceResponse::unauthorized("studio_identity_invalid")),
         };
         let principal = auth::SessionPrincipal {
             provider: "oidc".to_string(),
@@ -768,12 +809,12 @@ impl TradeAssemblyService {
             reason: "ok".to_string(),
             principal: Some(principal.clone()),
         };
-        let request = bind_authenticated_studio_request(request, &session);
         let mut service = self.clone();
         service.invocation_principal = Some(principal);
+        service.project_journal_owner();
         service.claim_local_seed_strategies();
         service.claim_local_seed_plugin_instances();
-        ServiceResponse::ok(service.execute_graphql_with_session(request, Some(&session)))
+        Ok((service, session))
     }
 
     pub fn handle_http_from_source(
@@ -1697,18 +1738,18 @@ impl TradeAssemblyService {
             ("POST", "/scheduler/tick") | ("POST", "/scheduler/run") => {
                 ServiceResponse::ok(workers::run(self, body))
             }
-            ("GET", "/journal/events") => ServiceResponse::ok(json!(journal_events())),
-            ("POST", "/journal/replay") => ServiceResponse::ok(replay::journal_replay()),
-            ("POST", "/journal/replay-report") => {
-                ServiceResponse::ok(replay::journal_replay_report())
-            }
-            ("POST", "/journal/replay-harness") => {
-                ServiceResponse::ok(replay::journal_replay_harness(body))
-            }
+            ("GET", "/journal/events") => match journal_view::events(self) {
+                Ok(events) => ServiceResponse::ok(json!(events)),
+                Err(response) => response,
+            },
+            ("GET", "/journal/export") => journal_view::export(self),
+            ("POST", "/journal/replay") => replay::journal_replay(self),
+            ("POST", "/journal/replay-report") => replay::journal_replay(self),
+            ("POST", "/journal/replay-harness") => replay::journal_replay_harness(self, body),
             ("POST", "/product/viewer") => ServiceResponse::ok(self.workspace()),
             ("POST", "/product/strategies/get") | ("POST", "/product/strategies/home") => {
                 ServiceResponse::ok(
-                    json!({"strategy": self.strategy_value(&strategy_id_from(&body)), "evidence": workspace_evidence()}),
+                    json!({"strategy": self.strategy_value(&strategy_id_from(&body)), "evidence": workspace_evidence(self)}),
                 )
             }
             ("POST", "/product/strategies/version-history") => ServiceResponse::ok(json!({
@@ -1817,7 +1858,7 @@ impl TradeAssemblyService {
                 json!({"starters": demos::demo_descriptors().into_iter().map(|item| json!({"id": item.id, "title": item.title})).collect::<Vec<_>>(), "proofPackages": []}),
             ),
             ("POST", "/product/strategies/share-workspace") => ServiceResponse::ok(
-                json!({"strategy": self.strategy_value(&strategy_id_from(&body)), "snapshots": [], "evidence": workspace_evidence()}),
+                json!({"strategy": self.strategy_value(&strategy_id_from(&body)), "snapshots": [], "evidence": workspace_evidence(self)}),
             ),
             ("POST", "/product/strategies/share-snapshots/create") => {
                 ServiceResponse::error(501, "durable_share_snapshots_unavailable", false)
@@ -1998,10 +2039,10 @@ impl TradeAssemblyService {
         let value = match op.as_str() {
             "LocalWorkspace" => self.workspace(),
             "StrategyLibrary" => {
-                json!({"strategies": self.strategies(), "lifecycle": strategy_lifecycle(), "evidence": workspace_evidence()})
+                json!({"strategies": self.strategies(), "lifecycle": strategy_lifecycle(), "evidence": workspace_evidence(self)})
             }
             "StrategyHome" | "StrategyDetail" => {
-                json!({"strategy": self.strategy_value(&strategy_id), "evidence": workspace_evidence(), "lifecycle": strategy_lifecycle()})
+                json!({"strategy": self.strategy_value(&strategy_id), "evidence": workspace_evidence(self), "lifecycle": strategy_lifecycle()})
             }
             "StrategyInstrumentContext" => self.instrument_context(&strategy_id),
             "StrategyVersionHistory" => {
@@ -3252,6 +3293,18 @@ impl TradeAssemblyService {
                     .as_str()
                     .unwrap_or("strat_local_btc_demo"),
             ),
+            "tradeassembly.journal.list" => {
+                self.handle_http_from_source("mcp", "GET", "/journal/events", arguments)
+                    .body
+            }
+            "tradeassembly.journal.export" => {
+                self.handle_http_from_source("mcp", "GET", "/journal/export", arguments)
+                    .body
+            }
+            "tradeassembly.journal.replay" => {
+                self.handle_http_from_source("mcp", "POST", "/journal/replay-report", arguments)
+                    .body
+            }
             "tradeassembly.strategy.create" => self.create_strategy(arguments),
             "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
                 self.save_builder_draft(arguments)
@@ -3274,8 +3327,18 @@ impl TradeAssemblyService {
                 let response = mcp::tool_error(
                     name,
                     "agent_cannot_publish_strategy_version",
-                    "Agents may propose strategy edits, but publishing requires explicit user authority.",
-                    None,
+                    "Present the exact draft to the owner for review. Publication requires an explicit owner CLI acknowledgment and does not activate execution.",
+                    Some(json!({"nextAction": {
+                        "action": "owner_strategy_publication",
+                        "requiresOwnerAcknowledgement": true,
+                        "reuseCurrentInstallation": true,
+                        "commandArguments": [
+                            "strategy", "publish", arguments["strategy_id"],
+                            "--expected-draft-hash", arguments["expected_draft_hash"],
+                            "--idempotency-key", format!("owner-publication:{}", arguments["expected_draft_hash"].as_str().unwrap_or_default()),
+                            "--acknowledge-publication"
+                        ]
+                    }})),
                 );
                 return self.complete_mcp_command_or_error(name, &command_envelope, 403, response);
             }
@@ -3796,6 +3859,11 @@ impl TradeAssemblyService {
                     status,
                     response,
                 );
+            }
+        }
+        if name.starts_with("tradeassembly.journal.") {
+            if let Some(code) = service_error_code(&payload) {
+                return mcp::tool_error(name, &code, "Journal access failed.", None);
             }
         }
         let response = mcp::call_tool_with_payload(name, payload);
@@ -5885,20 +5953,30 @@ fn sample_position() -> Value {
     json!({"id": "position-local-btc", "strategy_id": "strat_local_btc_demo", "symbol": "BTC/USD", "status": "open", "qty": 0.0002})
 }
 
-fn journal_events() -> Vec<Value> {
-    vec![
-        json!({"event_type": "strategy.created", "eventType": "strategy.created", "payload": {"detail": "BTC fast exit demo created"}}),
-        json!({"event_type": "decision.snapshot", "eventType": "decision.snapshot", "payload": {"detail": "user-defined rule evaluated"}}),
-        json!({"event_type": "broker.order_submitted", "eventType": "broker.order_submitted", "payload": {"detail": "paper order submitted"}}),
-    ]
+pub(crate) fn journal_events(service: &TradeAssemblyService) -> Value {
+    match journal_view::events(service) {
+        Ok(events) => json!(events),
+        Err(response) => response.body,
+    }
 }
 
 fn evidence(event_type: &str) -> Value {
     json!({"event_type": event_type, "journaled": true, "runtime": "rust"})
 }
 
-fn workspace_evidence() -> Value {
-    json!({"journalEvents": 3, "runs": 1, "orders": 1, "backtests": 1, "latestRunId": "run-local", "latestOrderStatus": "filled", "latestBacktestStatus": "complete"})
+pub(crate) fn workspace_evidence(service: &TradeAssemblyService) -> Value {
+    match journal_view::events(service) {
+        Ok(events) => json!({
+            "journalEvents": events.len(),
+            "runs": Value::Null,
+            "orders": Value::Null,
+            "backtests": Value::Null,
+            "latestRunId": Value::Null,
+            "latestOrderStatus": Value::Null,
+            "latestBacktestStatus": Value::Null,
+        }),
+        Err(response) => response.body,
+    }
 }
 
 fn strategy_lifecycle() -> Value {
@@ -5909,11 +5987,11 @@ fn performance_summary() -> Value {
     json!({"total_orders": 1, "submitted_orders": 1, "filled_orders": 1, "submit_attempts": 1, "active_positions": 1, "realized_pnl": 0})
 }
 
-fn execution_body() -> Value {
+pub(crate) fn execution_body(service: &TradeAssemblyService) -> Value {
     json!({
         "activation": {"status": "idle"},
         "activationHistory": [],
-        "journal": {"rows": journal_events(), "totals": {}},
+        "journal": {"rows": journal_events(service), "totals": {}},
         "positions": {"items": [sample_position()], "summary": {"openPositions": 1}},
         "positionLifecycle": {"summary": {"status": "open"}, "timeline": []},
         "accountImpact": {"openPositions": 1, "grossExposure": 8.6, "netExposure": 8.6},

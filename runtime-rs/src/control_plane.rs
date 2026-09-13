@@ -1171,6 +1171,10 @@ fn graphql_operation_route(operation: &str) -> &str {
 }
 
 fn mcp_is_read(name: &str) -> bool {
+    // Emits owner-scoped JSON, without publishing or writing an artifact.
+    if name == "tradeassembly.journal.export" {
+        return true;
+    }
     // Polling OAuth can redeem the handoff and install credentials.
     if name.ends_with(".export") || name == "tradeassembly.plugin.oauth.status" {
         return false;

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
 pub mod credentials;
+pub mod journal;
 pub mod operations;
 pub mod schema;
 pub mod sqlite;
@@ -9,7 +10,6 @@ pub mod system;
 use crate::capability::LocalCapabilityResolver;
 use crate::finance_authority::{FinanceAuthorityPort, WardenSidecarAuthority};
 use crate::ports::bus::EventBusPort;
-use crate::ports::journal::{JournalEvent, JournalPort};
 use crate::ports::provider::{ProviderCapability, ProviderPort};
 use crate::ports::{
     FailureMode, PortDescriptor, PortKind, ServiceRuntime, SideEffectContext, VersionedPort,
@@ -57,13 +57,14 @@ pub fn runtime_from_config_with_authority(
         .clone()
         .ok_or_else(|| "local artifact root is required".to_string())?;
     schema::assert_runtime_compatible(Path::new(&db_path))?;
-    let journal = Arc::new(LocalJournal::default());
     let credentials: Arc<dyn crate::ports::CredentialPort> =
         Arc::new(credentials::LocalCredentialStore::new(&db_path));
     let operations = Arc::new(operations::LocalSqliteOperations::new(
         &db_path,
         config.telemetry_enabled,
     ));
+    let journal: Arc<dyn crate::ports::JournalPort> =
+        Arc::new(journal::LocalJournal::new(operations.clone()));
     let finance_authority = match authority {
         Some(authority) => authority,
         None => Arc::new(WardenSidecarAuthority::new(
@@ -144,6 +145,7 @@ pub fn runtime_from_config_with_authority(
         providers: Arc::new(LocalProviderCatalog),
         plugin_operations,
         journal,
+        journal_owner: None,
         legal_receipts: Arc::new(
             crate::adapters::legal_receipts::FileLegalReceiptVerifier::new(
                 &config.legal_receipt_root,
@@ -179,39 +181,6 @@ pub fn runtime_from_config_with_authority(
         exports: Arc::new(system::LocalExportStore::new(artifact_root)),
         scheduler_wake: Arc::new(crate::ports::SchedulerWake::default()),
     })
-}
-
-#[derive(Default)]
-pub struct LocalJournal {
-    events: Mutex<Vec<JournalEvent>>,
-}
-
-impl VersionedPort for LocalJournal {
-    fn descriptors(&self) -> Vec<PortDescriptor> {
-        let mut descriptor = PortDescriptor::new(PortKind::Evidence, "local.journal")
-            .for_profiles(&["local"])
-            .with_capabilities(&["evidence.append", "evidence.replay"]);
-        descriptor.failure_mode = FailureMode::LocalOnly;
-        vec![descriptor]
-    }
-}
-
-impl JournalPort for LocalJournal {
-    fn record(&self, event: JournalEvent) -> Result<String, String> {
-        let mut events = self
-            .events
-            .lock()
-            .map_err(|_| "journal lock poisoned".to_string())?;
-        events.push(event);
-        Ok(format!("journal-local-{:04}", events.len()))
-    }
-
-    fn events(&self) -> Vec<JournalEvent> {
-        self.events
-            .lock()
-            .map(|events| events.clone())
-            .unwrap_or_default()
-    }
 }
 
 #[derive(Default)]

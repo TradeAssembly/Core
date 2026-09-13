@@ -65,6 +65,10 @@ pub enum Command {
         #[command(subcommand)]
         command: StrategyCommand,
     },
+    Journal {
+        #[command(subcommand)]
+        command: JournalCommand,
+    },
     Providers {
         #[command(subcommand)]
         command: ProviderCommand,
@@ -380,6 +384,16 @@ pub enum StrategyCommand {
     Get {
         strategy_id: String,
     },
+    /// Publish the exact reviewed draft after an explicit owner acknowledgement.
+    Publish {
+        strategy_id: String,
+        #[arg(long)]
+        expected_draft_hash: String,
+        #[arg(long, default_value_t = false)]
+        acknowledge_publication: bool,
+        #[arg(long)]
+        idempotency_key: String,
+    },
     Create {
         #[arg(long, default_value = "blank")]
         mode: String,
@@ -387,6 +401,16 @@ pub enum StrategyCommand {
         name: Option<String>,
     },
     Validate,
+}
+
+#[derive(Subcommand)]
+pub enum JournalCommand {
+    /// List journal events visible to the authenticated owner.
+    List,
+    /// Export owner-scoped journal events as JSON on stdout.
+    Export,
+    /// Replay owner-scoped journal events and return deterministic counts.
+    Replay,
 }
 
 #[derive(Subcommand)]
@@ -1858,6 +1882,18 @@ fn execute_command_with_agent(
                     .handle_http("GET", &format!("/strategies/{strategy_id}"), json!({}))
                     .body
             }
+            StrategyCommand::Publish {
+                strategy_id,
+                expected_draft_hash,
+                acknowledge_publication,
+                idempotency_key,
+            } => execute_strategy_publication(
+                service,
+                strategy_id,
+                expected_draft_hash,
+                acknowledge_publication,
+                idempotency_key,
+            ),
             StrategyCommand::Create { mode, name } => {
                 service
                     .handle_http(
@@ -1870,6 +1906,23 @@ fn execute_command_with_agent(
             StrategyCommand::Validate => {
                 service
                     .handle_http("POST", "/strategy/contracts/validate", json!({}))
+                    .body
+            }
+        },
+        Command::Journal { command } => match command {
+            JournalCommand::List => {
+                service
+                    .handle_http_from_source("cli", "GET", "/journal/events", json!({}))
+                    .body
+            }
+            JournalCommand::Export => {
+                service
+                    .handle_http_from_source("cli", "GET", "/journal/export", json!({}))
+                    .body
+            }
+            JournalCommand::Replay => {
+                service
+                    .handle_http_from_source("cli", "POST", "/journal/replay-report", json!({}))
                     .body
             }
         },
@@ -2756,6 +2809,52 @@ fn execute_command_with_agent(
     }
 }
 
+fn execute_strategy_publication(
+    service: &TradeAssemblyService,
+    strategy_id: String,
+    expected_draft_hash: String,
+    acknowledge_publication: bool,
+    idempotency_key: String,
+) -> Value {
+    // This is an owner protocol acknowledgement, not a claim of physical
+    // human presence. Reject it before dispatch so a missing flag cannot
+    // mutate the draft/version store.
+    if !acknowledge_publication {
+        return json!({
+            "ok": false,
+            "body": {"strategyId": strategy_id, "published": false},
+            "error": {"code": "strategy_publication_acknowledgement_required"}
+        });
+    }
+    if expected_draft_hash.trim().is_empty() {
+        return json!({
+            "ok": false,
+            "body": {"strategyId": strategy_id, "published": false},
+            "error": {"code": "strategy_draft_hash_required"}
+        });
+    }
+    if idempotency_key.trim().is_empty() {
+        return json!({
+            "ok": false,
+            "body": {"strategyId": strategy_id, "published": false},
+            "error": {"code": "idempotency_key_required"}
+        });
+    }
+    service
+        .handle_http_from_source(
+            "cli",
+            "POST",
+            "/product/strategies/publish",
+            json!({
+                "strategyId": strategy_id,
+                "expectedDraftHash": expected_draft_hash,
+                "acknowledgePublication": true,
+                "idempotencyKey": idempotency_key,
+            }),
+        )
+        .body
+}
+
 fn parse_artifact_selector(value: &str) -> Result<String, String> {
     let Some((kind, id)) = value.split_once(':') else {
         return Err("artifact selector must be kind:id".to_string());
@@ -3323,6 +3422,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Auth { .. } => "auth",
         Command::Mcp { .. } => "mcp",
         Command::Strategy { .. } => "strategy",
+        Command::Journal { .. } => "journal",
         Command::Providers { .. } => "providers",
         Command::Credentials { .. } => "credentials",
         Command::Account { .. } => "account",

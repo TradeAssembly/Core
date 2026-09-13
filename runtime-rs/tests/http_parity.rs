@@ -12,6 +12,103 @@ use tradeassembly_runtime::{
 static NEXT_DB_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::test]
+async fn unauthenticated_rest_cannot_read_strategy_workspace() {
+    let base_url = spawn_api().await;
+    let response = reqwest::Client::new()
+        .get(format!("{base_url}/strategies"))
+        .header("Origin", "https://untrusted.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn unauthenticated_rest_cannot_create_strategy() {
+    let base_url = spawn_api().await;
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}/product/strategies/create"))
+        .header("Origin", "https://untrusted.example")
+        .json(&json!({"name": "Untrusted request test fixture", "mode": "blank"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn authenticated_rest_binds_owner_and_denials_preserve_state() {
+    let (base, owner) = spawn_authenticated_api().await;
+    let read = || owner.get(format!("{base}/strategies"));
+    let before: Value = read().send().await.unwrap().json().await.unwrap();
+    for request in [
+        reqwest::Client::new().post(format!("{base}/product/strategies/create")),
+        owner
+            .post(format!("{base}/product/strategies/create"))
+            .bearer_auth("forged"),
+    ] {
+        let response = request
+            .header("Origin", "https://untrusted.example")
+            .json(&json!({"id": "forbidden-strategy", "name": "Denied fixture"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 401);
+        assert!(response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none());
+    }
+    let after: Value = read().send().await.unwrap().json().await.unwrap();
+    assert_eq!(before, after);
+    let created = owner
+        .post(format!("{base}/product/strategies/create"))
+        .json(
+            &json!({"id": "private-http-fixture", "name": "Owned HTTP fixture",
+            "actor": {"kind": "user", "id": "spoofed-owner"}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    assert_eq!(
+        owner
+            .get(format!("{base}/strategies/private-http-fixture"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    let mut foreign = Vec::new();
+    for id in ["private-http-fixture", "does-not-exist"] {
+        let response = owner
+            .get(format!("{base}/strategies/{id}"))
+            .header(
+                "x-tradeassembly-session",
+                http_test_session("other").to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404);
+        foreign.push(response.json::<Value>().await.unwrap());
+    }
+    assert_eq!(foreign[0], foreign[1]);
+    for path in ["health", "ready"] {
+        assert_eq!(
+            reqwest::get(format!("{base}/{path}"))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            200
+        );
+    }
+}
+
+#[tokio::test]
 async fn loopback_and_claimed_local_owner_do_not_authorize_studio_graphql() {
     let base_url = spawn_api().await;
     let client = reqwest::Client::new();
@@ -43,8 +140,7 @@ async fn loopback_and_claimed_local_owner_do_not_authorize_studio_graphql() {
 
 #[tokio::test]
 async fn documented_http_routes_are_served_by_rust_axum_api() {
-    let base_url = spawn_api().await;
-    let client = reqwest::Client::new();
+    let (base_url, client) = spawn_authenticated_api().await;
 
     for route in documented_routes() {
         let (method, path) = concrete_route(route);
@@ -78,7 +174,7 @@ async fn documented_http_routes_are_served_by_rust_axum_api() {
                 "{route} must fail closed at the Studio transport boundary: {body:#}"
             );
             assert_eq!(
-                body["error"]["code"], "studio_transport_authentication_required",
+                body["error"]["code"], "studio_oidc_session_required",
                 "{route} must fail closed with the explicit Studio authentication error"
             );
             continue;
@@ -121,8 +217,8 @@ async fn http_errors_use_structured_redacted_envelopes() {
 
 #[tokio::test]
 async fn http_validation_errors_use_required_status_and_redacted_body() {
-    let base_url = spawn_api().await;
-    let response = reqwest::Client::new()
+    let (base_url, client) = spawn_authenticated_api().await;
+    let response = client
         .post(format!("{base_url}/strategy/contracts/validate"))
         .json(&json!({"api_secret": "should-not-leak"}))
         .send()
@@ -205,11 +301,61 @@ fn http_route_registry_matches_dynamic_paths_used_by_router() {
 }
 
 async fn spawn_api() -> String {
+    spawn_service(test_service("http-server")).await
+}
+
+async fn spawn_authenticated_api() -> (String, reqwest::Client) {
+    use tradeassembly_runtime::runtime_config::{RuntimeBuilder, RuntimeConfig};
+    const TOKEN: &str = "http-auth-fixture-transport-token-32-bytes";
+    const ISSUER: &str = "https://http-fixture.example";
+    let db = temp_db("authenticated-http");
+    let token_path = db.with_extension("token");
+    std::fs::write(&token_path, TOKEN).unwrap();
+    let mut config = RuntimeConfig::local(db.to_string_lossy());
+    config.oidc_issuer = ISSUER.to_string();
+    config.oidc_audience = "http-fixture".to_string();
+    config.oidc_client_id = "http-fixture".to_string();
+    config.studio_core_token_ref = Some(format!("file://{}", token_path.display()));
+    let (runtime, _) = RuntimeBuilder::new(config)
+        .with_finance_authority(std::sync::Arc::new(
+            tradeassembly_runtime::finance_authority::TestFinanceAuthority,
+        ))
+        .build()
+        .unwrap();
+    let service = TradeAssemblyService::from_runtime(db.to_string_lossy(), runtime);
+    let session = http_test_session("owner");
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+    headers.insert(
+        "x-tradeassembly-session",
+        session.to_string().parse().unwrap(),
+    );
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    (spawn_service(service).await, client)
+}
+
+fn http_test_session(subject: &str) -> Value {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let issuer = "https://http-fixture.example";
+    json!({
+        "actor": format!("oidc:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            Sha256::digest(format!("{issuer}\0{subject}").as_bytes()))),
+        "issuer": issuer, "subject": subject, "audience": ["http-fixture"],
+        "displayName": "Test owner", "email": "owner@example.test",
+        "expiresAtMs": 1_900_000_000_000_i64
+    })
+}
+
+async fn spawn_service(service: TradeAssemblyService) -> String {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind api listener");
     let address = listener.local_addr().expect("listener address");
-    let router = build_router(test_service("http-server"));
+    let router = build_router(service);
     tokio::spawn(async move {
         axum::serve(listener, router)
             .await

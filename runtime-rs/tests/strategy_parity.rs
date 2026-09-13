@@ -30,6 +30,11 @@ fn authenticated_mcp_cannot_publish_by_claiming_user_actor() {
             result["structuredContent"]["error"]["code"], "agent_cannot_publish_strategy_version",
             "MCP publication must reject before processing draft state"
         );
+        let action = &result["structuredContent"]["details"]["nextAction"];
+        assert_eq!(action["requiresOwnerAcknowledgement"], true);
+        assert_eq!(action["reuseCurrentInstallation"], true);
+        assert_eq!(action["commandArguments"][2], id);
+        assert_eq!(action["commandArguments"][4], hash);
     }
     let after = service.handle_http(
         "POST",

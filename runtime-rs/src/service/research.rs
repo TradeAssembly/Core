@@ -329,7 +329,7 @@ pub(crate) fn workspace(service: &TradeAssemblyService, strategy_id: &str) -> Va
         "comparisons": [],
         "promotionReadiness": {"ready": false, "movedTo": "execution_workspace"},
         "rollup": {},
-        "journal": journal_events(),
+        "journal": journal_events(service),
     })
 }
 
@@ -355,7 +355,7 @@ pub(crate) fn rollup(service: &TradeAssemblyService) -> Value {
         "repairQueue": [],
         "freshEvidence": [],
         "recentBacktests": recent_backtests,
-        "evidence": workspace_evidence(),
+        "evidence": workspace_evidence(service),
     })
 }
 

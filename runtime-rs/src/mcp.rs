@@ -376,6 +376,16 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
             "studioBaseUrl": string_arg(&arguments, "studio_base_url", DEFAULT_STUDIO_BASE_URL),
             "noAdviceNotice": NO_ADVICE_NOTICE
         }),
+        "tradeassembly.journal.list"
+        | "tradeassembly.journal.export"
+        | "tradeassembly.journal.replay" => {
+            return tool_error(
+                name,
+                "service_required",
+                "Use the authenticated MCP connection for journal access.",
+                None,
+            )
+        }
         _ => json!({"ok": true}),
     };
     call_tool_with_payload(name, payload)
@@ -937,6 +947,9 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.sightline.list_events", "Sightline Events", "List local room/session events bound to the pinned Sightline event contract.", object_schema([("db", db_property()), ("strategy_id", string_schema("Optional strategy ID.", Some("strat_local_btc_demo"))), ("limit", integer_schema("Maximum events.", Some(50)))], []), true),
         tool("tradeassembly.strategy.list", "List Strategies", "List local strategies.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.strategy.get", "Get Strategy", "Get a local strategy workspace.", object_schema([("strategy_id", string_schema("Strategy ID.", None)), ("db", db_property())], ["strategy_id"]), true),
+        tool("tradeassembly.journal.list", "List Journal Events", "List journal events visible to the authenticated owner. Legacy unowned records remain conservatively strategy-scoped.", object_schema([("db", db_property())], []), true),
+        tool("tradeassembly.journal.export", "Export Journal", "Export authenticated-owner journal events as canonical JSON for caller-directed transport; this tool does not write files.", object_schema([("db", db_property())], []), true),
+        tool("tradeassembly.journal.replay", "Replay Journal", "Replay authenticated-owner journal events and return deterministic stored-event counts without evaluating strategy logic.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.strategy.create", "Create Strategy", "Create a local strategy draft from a template or blank mode.", object_schema([("db", db_property()), ("mode", string_schema("Creation mode.", Some("blank"))), ("template_id", string_schema("Optional template ID.", None)), ("name", string_schema("Optional strategy name.", None))], []), false),
         tool("tradeassembly.strategy.save_draft", "Save Strategy Draft", "Save a user-defined strategy draft.", object_schema([("db", db_property()), ("strategy_id", string_schema("Optional existing strategy ID.", None)), ("name", string_schema("Strategy name.", Some("Local strategy"))), ("spec", object_like_schema("StrategySpec draft."))], []), false),
         tool("tradeassembly.strategy.draft.select_node", "Select Strategy Draft Node", "Select a redacted StrategySpec node for agent context.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("node_ref", string_schema("Strategy semantic node ref.", Some("strategy.root")))], ["strategy_id", "node_ref"]), true),
@@ -1175,7 +1188,7 @@ fn execution_run(arguments: &Value) -> Value {
     })
 }
 
-fn redact_sensitive_payload(payload: Value) -> Value {
+pub(crate) fn redact_sensitive_payload(payload: Value) -> Value {
     match payload {
         Value::Object(values) => Value::Object(
             values
@@ -2024,6 +2037,9 @@ mod tests {
         "tradeassembly.setup.status",
         "tradeassembly.strategy.list",
         "tradeassembly.strategy.get",
+        "tradeassembly.journal.list",
+        "tradeassembly.journal.export",
+        "tradeassembly.journal.replay",
         "tradeassembly.strategy.create",
         "tradeassembly.strategy.save_draft",
         "tradeassembly.strategy.draft.select_node",

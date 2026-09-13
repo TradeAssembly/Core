@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS runtime_journal (
     payload_json TEXT NOT NULL,
     recorded_at_ms BIGINT NOT NULL
 );
+ALTER TABLE runtime_journal ADD COLUMN IF NOT EXISTS owner_json TEXT;
 CREATE TABLE IF NOT EXISTS runtime_queue_messages (
     message_id TEXT PRIMARY KEY,
     queue_name TEXT NOT NULL,
@@ -272,6 +273,7 @@ pub fn runtime_from_config_with_authority(
         providers: Arc::new(SelfHostedProviderCatalog),
         plugin_operations,
         journal: state.clone(),
+        journal_owner: None,
         legal_receipts: Arc::new(
             crate::adapters::legal_receipts::FileLegalReceiptVerifier::new(
                 &config.legal_receipt_root,
@@ -1233,15 +1235,55 @@ impl StoragePort for SelfHostedPostgresState {
 
 impl JournalPort for SelfHostedPostgresState {
     fn record(&self, event: JournalEvent) -> Result<String, String> {
-        let journal_id = stable_id(
+        let mut canonical = serde_json::json!({
+            "event_type": event.event_type.clone(),
+            "authority": event.authority.clone(),
+            "idempotency_key": event.idempotency_key.as_str(),
+            "payload": event.payload.clone(),
+            "owner": event.owner.clone(),
+        });
+        if event.owner.is_none() {
+            canonical
+                .as_object_mut()
+                .expect("journal canonical envelope is an object")
+                .remove("owner");
+        }
+        let journal_id = format!("journal-{}", canonical_hash(&canonical));
+        let legacy_id = stable_id(
             "journal",
             &format!("{}:{}", event.event_type, event.idempotency_key.as_str()),
         );
+        let owner_json = event
+            .owner
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| error.to_string())?;
         self.with_client(|client| {
+            if event.owner.is_none() {
+                if let Some(row) = client
+                    .query_opt(
+                        "SELECT event_type, authority_json, idempotency_key, payload_json, owner_json FROM runtime_journal WHERE journal_id=$1",
+                        &[&legacy_id],
+                    )
+                    .map_err(redacted_pg_error)?
+                {
+                    let same = row.get::<_, String>(0) == event.event_type
+                        && row.get::<_, String>(1)
+                            == serde_json::to_string(&event.authority).map_err(|error| error.to_string())?
+                        && row.get::<_, String>(2) == event.idempotency_key.as_str()
+                        && row.get::<_, String>(3)
+                            == serde_json::to_string(&event.payload).map_err(|error| error.to_string())?
+                        && row.get::<_, Option<String>>(4).is_none();
+                    if same {
+                        return Ok(legacy_id.clone());
+                    }
+                }
+            }
             client
                 .execute(
-                    r#"INSERT INTO runtime_journal(journal_id, event_type, authority_json, idempotency_key, payload_json, recorded_at_ms)
-                       VALUES ($1,$2,$3,$4,$5,$6)
+                    r#"INSERT INTO runtime_journal(journal_id, event_type, authority_json, idempotency_key, payload_json, recorded_at_ms, owner_json)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7)
                        ON CONFLICT (journal_id) DO NOTHING"#,
                     &[
                         &journal_id,
@@ -1250,6 +1292,7 @@ impl JournalPort for SelfHostedPostgresState {
                         &event.idempotency_key.as_str(),
                         &serde_json::to_string(&event.payload).map_err(|error| error.to_string())?,
                         &epoch_ms(),
+                        &owner_json,
                     ],
                 )
                 .map_err(redacted_pg_error)?;
@@ -1257,11 +1300,11 @@ impl JournalPort for SelfHostedPostgresState {
         })
     }
 
-    fn events(&self) -> Vec<JournalEvent> {
+    fn try_events(&self) -> Result<Vec<JournalEvent>, String> {
         self.with_client(|client| {
             client
                 .query(
-                    "SELECT event_type, authority_json, idempotency_key, payload_json FROM runtime_journal ORDER BY recorded_at_ms, journal_id",
+                    "SELECT event_type, authority_json, idempotency_key, payload_json, owner_json FROM runtime_journal ORDER BY recorded_at_ms, journal_id",
                     &[],
                 )
                 .map_err(redacted_pg_error)?
@@ -1274,11 +1317,20 @@ impl JournalPort for SelfHostedPostgresState {
                         idempotency_key: IdempotencyKey::new(row.get::<_, String>(2))?,
                         payload: serde_json::from_str(&row.get::<_, String>(3))
                             .map_err(|error| error.to_string())?,
+                        owner: row
+                            .get::<_, Option<String>>(4)
+                            .map(|owner| serde_json::from_str(&owner))
+                            .transpose()
+                            .map_err(|error| error.to_string())?,
                     })
                 })
                 .collect()
         })
-        .unwrap_or_default()
+    }
+
+    fn events(&self) -> Vec<JournalEvent> {
+        self.try_events()
+            .unwrap_or_else(|_| panic!("journal read failed"))
     }
 }
 
@@ -2709,6 +2761,16 @@ fn nats_component(value: &str) -> String {
 
 fn stable_id(prefix: &str, seed: &str) -> String {
     format!("{prefix}-{:x}", Sha256::digest(seed.as_bytes()))
+}
+
+fn canonical_hash(value: &Value) -> String {
+    let mut digest = Sha256::new();
+    digest.update(serde_json_canonicalizer::to_vec(value).expect("JSON values are serializable"));
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn js_error(error: impl ToString) -> String {

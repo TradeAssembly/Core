@@ -77,3 +77,20 @@ The legacy `/product/strategies/research-runs/create` HTTP route and
 `RunStrategyResearch` GraphQL operation now alias this durable lifecycle. Their
 old synthetic `ResearchRun` completion response is intentionally not preserved.
 GraphQL accepts the explicit create payload in `request`.
+
+## Owner publication
+
+After reviewing a draft and recording its exact hash, the local owner may
+publish it with the standalone CLI:
+
+```text
+tradeassembly --config INSTALL/runtime.json strategy publish STRATEGY_ID \
+  --expected-draft-hash HASH --acknowledge-publication \
+  --idempotency-key UNIQUE_KEY
+```
+
+The acknowledgement flag is an owner protocol acknowledgement on the
+owner-controlled machine; it is not proof of physical human presence. The
+command uses the existing local owner authentication and publication service,
+rejects a missing acknowledgement or empty hash before mutation, and never
+activates execution. Agent MCP publication remains denied.

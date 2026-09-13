@@ -11,7 +11,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -22,12 +22,7 @@ pub fn build_router(service: TradeAssemblyService) -> Router {
     let state = HttpState { service };
     Router::new()
         .fallback(any(dispatch))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(CorsLayer::new())
         .with_state(state)
 }
 
@@ -55,6 +50,7 @@ async fn dispatch(
         .unwrap_or_else(|| "/".to_string());
     let route_path = path.split('?').next().unwrap_or("");
     let is_graphql = route_path == "/graphql";
+    let public_health = method == Method::GET && matches!(route_path, "/health" | "/ready");
     if !route_is_documented(method.as_str(), route_path) {
         return into_response(ServiceResponse::not_found(route_path));
     }
@@ -64,6 +60,12 @@ async fn dispatch(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::to_string);
+    let studio_session = request
+        .headers()
+        .get("x-tradeassembly-session")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 8192)
+        .and_then(|value| serde_json::from_str(value).ok());
     let bytes = match axum::body::to_bytes(request.into_body(), 1024 * 1024).await {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -87,8 +89,16 @@ async fn dispatch(
     let response = tokio::task::spawn_blocking(move || {
         if is_graphql {
             service.handle_studio_graphql(studio_bearer.as_deref(), body)
-        } else {
+        } else if public_health {
             service.handle_http(&method, &path, body)
+        } else {
+            service.handle_studio_http(
+                studio_bearer.as_deref(),
+                studio_session,
+                &method,
+                &path,
+                body,
+            )
         }
     })
     .await
@@ -170,6 +180,7 @@ const HTTP_ROUTE_REGISTRY: &[&str] = &[
     "GET /exit-watches",
     "GET /health",
     "GET /journal/events",
+    "GET /journal/export",
     "GET /marketdata/bars",
     "GET /marketdata/instrument-packs",
     "GET /marketdata/instruments/aliases",

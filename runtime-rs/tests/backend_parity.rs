@@ -115,16 +115,23 @@ fn studio_payload_contracts_match_rust_backend() {
     let research = service.handle_http(
         "POST",
         "/product/strategies/research-runs/create",
-        json!({"strategyId": created_id}),
+        json!({"strategyId": created_id, "idempotencyKey": "research-alias-validation"}),
     );
     let canonical = service.handle_http(
         "POST",
         "/product/strategies/backtests/run",
-        json!({"strategyId": created_id}),
+        json!({"strategyId": created_id, "idempotencyKey": "canonical-validation"}),
     );
     assert_eq!(research.status, 400);
     assert_eq!(research.status, canonical.status);
     assert_eq!(research.body, canonical.body);
+    let replay = service.handle_http(
+        "POST",
+        "/product/strategies/backtests/run",
+        json!({"strategyId": created_id, "idempotencyKey": "research-alias-validation"}),
+    );
+    assert_eq!(replay.status, 400);
+    assert_eq!(replay.body["error"]["code"], "idempotency_replay_failed");
     assert_eq!(
         service.handle_http("GET", "/backtests", json!({})).body["runs"],
         json!([])

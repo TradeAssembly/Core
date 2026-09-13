@@ -142,6 +142,58 @@ fn historical_dataset_errors_are_stable_across_surfaces() {
 }
 
 #[test]
+fn authenticated_dataset_ingestion_list_survives_reopen_and_filters_foreign_owner() {
+    let temp = TempDir::new().expect("temp dir");
+    let database = temp.path().join("tradeassembly.db");
+    let base = TradeAssemblyService::test_local(database.display().to_string());
+    let owner = base.for_authenticated_invocation(
+        "https://issuer-a.example",
+        "alice",
+        None,
+        Some("Alice".to_string()),
+    );
+    let created = owner.handle_http("POST", "/dataset-ingestions", request("owner-list"));
+    assert_eq!(created.status, 201, "{:#}", created.body);
+    let ingestion_id = created.body["ingestion"]["ingestionId"]
+        .as_str()
+        .expect("ingestion id")
+        .to_string();
+    let snapshot_id = created.body["snapshot"]["datasetId"]
+        .as_str()
+        .expect("snapshot id")
+        .to_string();
+
+    let reopened = TradeAssemblyService::test_local(database.display().to_string());
+    let reopened_owner = reopened.for_authenticated_invocation(
+        "https://issuer-a.example",
+        "alice",
+        None,
+        Some("Alice".to_string()),
+    );
+    let listed = reopened_owner.handle_http("GET", "/dataset-ingestions", json!({}));
+    let owner_record = listed.body["ingestions"]
+        .as_array()
+        .expect("ingestion list")
+        .iter()
+        .find(|record| record["ingestion"]["ingestionId"] == ingestion_id)
+        .expect("owner ingestion after reopen");
+    assert_eq!(owner_record["snapshot"]["datasetId"], snapshot_id);
+    assert_eq!(owner_record["snapshot"]["rowCount"], 3);
+    assert_eq!(owner_record["source"]["pluginInstanceRef"], "local-data");
+
+    let foreign = reopened.for_authenticated_invocation(
+        "https://issuer-b.example",
+        "bob",
+        None,
+        Some("Bob".to_string()),
+    );
+    let foreign_list = foreign.handle_http("GET", "/dataset-ingestions", json!({}));
+    assert!(!serde_json::to_string(&foreign_list.body)
+        .expect("serialize foreign list")
+        .contains(&ingestion_id));
+}
+
+#[test]
 fn dataset_ingestion_cli_executes_the_same_service_contract() {
     let temp = TempDir::new().expect("temp dir");
     let service = TradeAssemblyService::test_local(

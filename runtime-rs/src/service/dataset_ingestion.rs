@@ -91,16 +91,18 @@ pub(crate) fn get(service: &TradeAssemblyService, ingestion_id: &str) -> Value {
 }
 
 pub(crate) fn list(service: &TradeAssemblyService) -> Vec<Value> {
-    let values = service
+    service
         .runtime()
         .storage
         .list_json(INGESTIONS_NS)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(_, value)| serde_json::from_value::<DatasetIngestionRecord>(value).ok())
+        .filter(|record| {
+            service.object_is_visible("dataset_ingestion", &record.aggregate.ingestion_id)
+        })
         .map(|record| response(service, &record))
-        .collect::<Vec<_>>();
-    service.filter_visible_values("dataset_ingestion", values, &["ingestionId"])
+        .collect::<Vec<_>>()
 }
 
 pub(crate) fn verify(service: &TradeAssemblyService, ingestion_id: &str) -> Value {

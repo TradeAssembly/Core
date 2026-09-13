@@ -216,14 +216,27 @@ fn backtests_cli_uses_shared_routes_and_preserves_error_statuses() {
 
 #[test]
 fn backtests_cli_prints_shared_error_json_and_returns_nonzero() {
+    assert_backtest_request_error(&["backtests", "create"]);
+    assert_backtest_request_error(&["backtest"]);
+    let missing = tradeassembly()
+        .arg("backtest")
+        .output()
+        .expect("missing request");
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(missing.stdout.is_empty());
+    assert!(String::from_utf8(missing.stderr)
+        .unwrap()
+        .contains("--request-file"));
+}
+
+fn assert_backtest_request_error(command: &[&str]) {
     let mut invalid_request = NamedTempFile::new().expect("request file");
     invalid_request
         .write_all(b"not json")
         .expect("write malformed request");
     let output = tradeassembly()
+        .args(command)
         .args([
-            "backtests",
-            "create",
             "--request-file",
             invalid_request.path().to_str().expect("request path"),
         ])
@@ -646,6 +659,12 @@ fn representative_commands_emit_report_envelopes() {
 #[test]
 fn manifest_runtime_commands_emit_canonical_envelopes() {
     for command in cli_command_inventory() {
+        if command == "backtest" {
+            // Durable commands expose their actual HTTP-status/error contract,
+            // not the legacy report envelope or fabricated completion.
+            assert_backtest_request_error(&["backtest"]);
+            continue;
+        }
         if matches!(
             command,
             "agent install"

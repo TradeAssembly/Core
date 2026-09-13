@@ -226,6 +226,7 @@ const HTTP_ROUTE_REGISTRY: &[&str] = &[
     "GET /strategy/contracts/stages",
     "GET /strategy/contracts/substeps",
     "GET /workspace",
+    "GET /workspace/shell",
     "POST /backtests",
     "POST /backtests/{run_id}/cancel",
     "POST /backtests/{run_id}/retry",

@@ -353,6 +353,7 @@ fn command_payload_hash(command_name: &str, body: &Value) -> Result<String, Stri
 
 fn http_command_name(method: &str, path: &str) -> String {
     match (method, path) {
+        ("GET", "/workspace/shell") => "workspace.shell.get".to_string(),
         ("GET", "/workspace") => "workspace.get".to_string(),
         ("GET", "/strategies") => "strategy.list".to_string(),
         ("POST", "/strategies") | ("POST", "/product/strategies/create") => {

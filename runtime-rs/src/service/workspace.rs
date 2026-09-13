@@ -64,6 +64,43 @@ pub(crate) fn workspace(service: &TradeAssemblyService) -> Value {
     })
 }
 
+/// The navigation shell intentionally contains only identity and configuration
+/// metadata. Keep this separate from `workspace`: callers must not pay for, or
+/// receive, journal, research, backtest, order, execution, risk, or scheduler
+/// state when rendering navigation.
+pub(crate) fn workspace_shell(service: &TradeAssemblyService) -> Value {
+    // Built-in runtime tools are installation metadata, not privately owned
+    // plugin instances. Never let another owner's stored override replace them.
+    let mut plugins = providers::builtin_plugin_catalog(service);
+    for plugin in providers::plugin_catalog(service) {
+        if service.invocation_owner().is_none()
+            || service.object_is_visible("plugin_instance", &plugin.instance_ref)
+        {
+            plugins.retain(|entry| entry.instance_ref != plugin.instance_ref);
+            plugins.push(plugin);
+        }
+    }
+    plugins.sort_by(|left, right| left.instance_ref.cmp(&right.instance_ref));
+    let credential_status = plugins
+        .iter()
+        .map(|plugin| {
+            (
+                plugin.instance_ref.clone(),
+                serde_json::to_value(&plugin.credential_status).unwrap_or_else(|_| json!({})),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    json!({
+        "id": "local",
+        "name": "Local Workspace",
+        "mode": "local",
+        "strategies": service.strategies(),
+        "providers": plugins.iter().map(providers::plugin_value).collect::<Vec<_>>(),
+        "credentialStatus": credential_status,
+        "legalBoundary": LEGAL_BOUNDARY,
+    })
+}
+
 pub(crate) fn local_market_bars() -> Value {
     json!([
         {"ts": "2026-01-02T00:00:00Z", "open": 42965.0, "high": 43042.0, "low": 42927.0, "close": 43000.0, "volume": 10, "symbol": "BTC/USD"},
@@ -96,6 +133,80 @@ pub(crate) fn local_selector_runs(strategy_id: &str) -> Value {
         "replay_refs": {"snapshotRef": "snapshot://local/selector-demo"},
         "export_refs": {"csv": {"path": "tradeassembly://selector-runs/selector_run_demo/candidates.csv"}},
     }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_shell;
+    use crate::service::TradeAssemblyService;
+
+    struct ForbiddenJournal;
+    impl crate::ports::VersionedPort for ForbiddenJournal {
+        fn descriptors(&self) -> Vec<crate::ports::PortDescriptor> {
+            vec![]
+        }
+    }
+    impl crate::ports::journal::JournalPort for ForbiddenJournal {
+        fn record(&self, _: crate::ports::journal::JournalEvent) -> Result<String, String> {
+            panic!("navigation must not write journal")
+        }
+        fn try_events(&self) -> Result<Vec<crate::ports::journal::JournalEvent>, String> {
+            panic!("navigation must not read journal")
+        }
+        fn events(&self) -> Vec<crate::ports::journal::JournalEvent> {
+            panic!("navigation must not read journal")
+        }
+    }
+
+    #[test]
+    fn shell_never_accesses_journal_even_through_nested_projections() {
+        let mut service = TradeAssemblyService::test_local(":memory:");
+        std::sync::Arc::make_mut(&mut service.runtime).journal =
+            std::sync::Arc::new(ForbiddenJournal);
+        let shell = workspace_shell(&service);
+        assert!(shell["strategies"].is_array());
+        assert!(shell["providers"].is_array());
+    }
+
+    #[test]
+    fn shell_contains_only_navigation_contract_fields() {
+        let service = TradeAssemblyService::test_local(":memory:");
+        let shell = workspace_shell(&service);
+        let object = shell.as_object().expect("shell object");
+        let fields = object
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            fields,
+            [
+                "credentialStatus",
+                "id",
+                "legalBoundary",
+                "mode",
+                "name",
+                "providers",
+                "strategies",
+            ]
+            .into_iter()
+            .collect()
+        );
+        for forbidden in [
+            "journalEvents",
+            "journal_events",
+            "backtests",
+            "orders",
+            "execution",
+            "risk",
+            "scheduler",
+            "researchMetrics",
+            "performanceSummary",
+            "evidence",
+            "factsheet",
+        ] {
+            assert!(shell.get(forbidden).is_none(), "unexpected {forbidden}");
+        }
+    }
 }
 
 pub(crate) fn builder_state(service: &TradeAssemblyService, strategy_id: &str) -> Value {

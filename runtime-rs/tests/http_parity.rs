@@ -24,6 +24,62 @@ async fn unauthenticated_rest_cannot_read_strategy_workspace() {
 }
 
 #[tokio::test]
+async fn shell_http_requires_authority_and_isolates_owner_strategies() {
+    let (base, owner) = spawn_authenticated_api().await;
+    let route = format!("{base}/workspace/shell");
+    assert_eq!(reqwest::get(&route).await.unwrap().status().as_u16(), 401);
+    assert_eq!(
+        owner
+            .get(&route)
+            .bearer_auth("forged")
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    let created = owner
+        .post(format!("{base}/product/strategies/create"))
+        .json(&json!({"id":"private-shell-fixture", "name":"Owned navigation fixture"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let response = owner.get(&route).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let shell: Value = response.json().await.unwrap();
+    assert!(shell["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["instanceRef"] == "sim"));
+    assert!(shell["strategies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == "private-shell-fixture"));
+    assert!(shell.get("journalEvents").is_none());
+    let other: Value = owner
+        .get(&route)
+        .header(
+            "x-tradeassembly-session",
+            http_test_session("other").to_string(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!other["strategies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == "private-shell-fixture"));
+}
+
+#[tokio::test]
 async fn unauthenticated_rest_cannot_create_strategy() {
     let base_url = spawn_api().await;
     let response = reqwest::Client::new()

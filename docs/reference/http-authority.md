@@ -20,6 +20,11 @@ actor fields cannot select another owner. Missing/invalid transport credentials
 or session assertions return401 before domain dispatch. Owner object isolation,
 Warden policy, idempotency and durable effect controls still apply afterward.
 
+Authenticated GET `/workspace/shell` is the navigation metadata contract. It
+returns only `id`, `name`, `mode`, `strategies`, `providers`,
+`credentialStatus`, and `legalBoundary`; it does not load journal, research,
+backtest, order, execution, risk, or scheduler state.
+
 Legacy unauthenticated REST helpers are not an authorization mechanism. Consumers
 must use the authenticated transport or the local CLI/MCP path; do not add a
 shared owner fallback, bypass token or implicit hosted sign-in requirement to

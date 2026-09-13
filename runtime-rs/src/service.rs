@@ -1069,6 +1069,7 @@ impl TradeAssemblyService {
                 "legalBoundary": LEGAL_BOUNDARY,
             })),
             ("GET", "/ready") => ServiceResponse::ok(json!({"status": "ready"})),
+            ("GET", "/workspace/shell") => ServiceResponse::ok(self.workspace_shell()),
             ("GET", "/workspace") => ServiceResponse::ok(self.workspace()),
             ("POST", "/graphql") => ServiceResponse::ok(self.execute_graphql(body)),
             ("POST", "/demo/btc-exit") => ServiceResponse::ok(self.seed_btc_demo()),
@@ -3872,6 +3873,10 @@ impl TradeAssemblyService {
 
     fn workspace(&self) -> Value {
         workspace::workspace(self)
+    }
+
+    fn workspace_shell(&self) -> Value {
+        workspace::workspace_shell(self)
     }
 
     fn strategies(&self) -> Vec<Value> {

@@ -2,9 +2,9 @@ use chrono::{TimeZone, Utc};
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tradeassembly_runtime::agent_runner::{
     self, AgentDeployment, AgentRun, AgentRuntimePort, ACTIVE_RUNS_NS,
 };
@@ -63,6 +63,7 @@ struct PolicyCapturingAdapter {
 struct LongRunningAdapter {
     started: AtomicBool,
     calls: AtomicUsize,
+    completion: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl AgentRuntimePort for LongRunningAdapter {
@@ -73,7 +74,14 @@ impl AgentRuntimePort for LongRunningAdapter {
     ) -> Result<Option<String>, String> {
         self.started.store(true, Ordering::SeqCst);
         self.calls.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(90));
+        let (completed, wake) = &*self.completion;
+        let completed = completed.lock().unwrap();
+        let (completed, _) = wake
+            .wait_timeout_while(completed, Duration::from_secs(5), |done| !*done)
+            .unwrap();
+        if !*completed {
+            return Err("test_adapter_completion_timed_out".into());
+        }
         Ok(Some(format!("codex-session:{}", run.run_id)))
     }
 }
@@ -282,7 +290,9 @@ fn long_adapter_run_renews_the_lease_before_another_runner_can_acquire_it() {
     let adapter = Arc::new(LongRunningAdapter {
         started: AtomicBool::new(false),
         calls: AtomicUsize::new(0),
+        completion: Arc::new((Mutex::new(false), Condvar::new())),
     });
+    let completion = Arc::clone(&adapter.completion);
     let primary_service = service.clone();
     let primary_adapter = Arc::clone(&adapter);
     let primary = std::thread::spawn(move || {
@@ -293,7 +303,7 @@ fn long_adapter_run_renews_the_lease_before_another_runner_can_acquire_it() {
             primary_adapter.as_ref(),
             &agent_runner::LocalEntitlement,
             agent_runner::AgentRunnerTiming {
-                lease_ms: 50,
+                lease_ms: 5_000,
                 heartbeat_ms: 10,
             },
         )
@@ -305,22 +315,53 @@ fn long_adapter_run_renews_the_lease_before_another_runner_can_acquire_it() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(adapter.started.load(Ordering::SeqCst));
-    // This logical time is beyond the original 50ms lease. It remains held
-    // because the primary runner has refreshed it while Codex is still active.
-    std::thread::sleep(Duration::from_millis(25));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let active = loop {
+        let active = service
+            .runtime()
+            .storage
+            .get_json(ACTIVE_RUNS_NS, "deploy-a")
+            .unwrap()
+            .unwrap();
+        let original_expiry = active["leaseExpiresAtMs"].as_i64().unwrap();
+        if original_expiry > 1_000 {
+            break (active, original_expiry);
+        }
+        assert!(Instant::now() < deadline, "active lease was not persisted");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let (active, original_expiry) = active;
+    let renewed_expiry = loop {
+        let current = service
+            .runtime()
+            .storage
+            .get_json(ACTIVE_RUNS_NS, "deploy-a")
+            .unwrap()
+            .unwrap();
+        let expiry = current["leaseExpiresAtMs"].as_i64().unwrap();
+        if expiry > original_expiry + 1 {
+            break expiry;
+        }
+        assert!(Instant::now() < deadline, "active lease was not renewed");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(renewed_expiry > active["leaseExpiresAtMs"].as_i64().unwrap());
     let competing = agent_runner::supervise_once_with_timing_and_entitlement(
         &service.runtime(),
         "runner-b",
-        1_055,
+        original_expiry + 1,
         adapter.as_ref(),
         &agent_runner::LocalEntitlement,
         agent_runner::AgentRunnerTiming {
-            lease_ms: 50,
+            lease_ms: 5_000,
             heartbeat_ms: 10,
         },
     )
     .unwrap();
     assert_eq!(competing[0]["outcome"], "lease_held");
+    let (done, wake) = &*completion;
+    *done.lock().unwrap() = true;
+    wake.notify_all();
     let completed = primary.join().unwrap().unwrap();
     assert_eq!(completed[0]["outcome"], "completed");
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);

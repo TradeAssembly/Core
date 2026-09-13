@@ -16,6 +16,16 @@ fn authenticated_mcp_cannot_publish_by_claiming_user_actor() {
         json!({"strategyId": id}),
     );
     let hash = before.body["draft"]["draftHash"].as_str().unwrap();
+    let namespaces = [
+        "strategies",
+        "strategy_drafts",
+        "strategy_versions",
+        "strategy_draft_proposals",
+        "strategy_semantic_selections",
+    ];
+    let state_before =
+        namespaces.map(|namespace| service.runtime().storage.list_json(namespace).unwrap());
+    let journal_before = service.runtime().journal.try_events().unwrap();
     for kind in ["agent", "user"] {
         let result = service.call_mcp_tool(
             "tradeassembly.strategy.version.publish",
@@ -36,12 +46,37 @@ fn authenticated_mcp_cannot_publish_by_claiming_user_actor() {
         assert_eq!(action["commandArguments"][2], id);
         assert_eq!(action["commandArguments"][4], hash);
     }
+    // Exercise a real evaluation-epoch boundary rather than relying on two reads
+    // finishing inside the same second. This metadata is not persisted strategy state.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let after = service.handle_http(
         "POST",
         "/product/strategies/builder-state",
         json!({"strategyId": id}),
     );
-    assert_eq!(before.body, after.body);
+    let state_after =
+        namespaces.map(|namespace| service.runtime().storage.list_json(namespace).unwrap());
+    assert_eq!(
+        state_before, state_after,
+        "MCP denial changed persisted strategy state"
+    );
+    assert_eq!(
+        journal_before,
+        service.runtime().journal.try_events().unwrap()
+    );
+    let mut before_view = before.body.clone();
+    let mut after_view = after.body.clone();
+    for view in [&mut before_view, &mut after_view] {
+        let graph = view["capabilityGraphResolution"].as_object_mut().unwrap();
+        // graphFingerprint includes evaluationEpoch. Compare all actual graph
+        // inputs/results and all builder fields, excluding only those derived fields.
+        assert!(graph.remove("evaluationEpoch").unwrap().is_string());
+        assert!(graph.remove("graphFingerprint").unwrap().is_string());
+    }
+    assert!(
+        before_view == after_view,
+        "MCP denial changed builder state beyond read-time graph metadata"
+    );
     let published = service.handle_http(
         "POST",
         "/product/strategies/publish",

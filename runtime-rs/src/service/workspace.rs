@@ -135,80 +135,6 @@ pub(crate) fn local_selector_runs(strategy_id: &str) -> Value {
     }])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::workspace_shell;
-    use crate::service::TradeAssemblyService;
-
-    struct ForbiddenJournal;
-    impl crate::ports::VersionedPort for ForbiddenJournal {
-        fn descriptors(&self) -> Vec<crate::ports::PortDescriptor> {
-            vec![]
-        }
-    }
-    impl crate::ports::journal::JournalPort for ForbiddenJournal {
-        fn record(&self, _: crate::ports::journal::JournalEvent) -> Result<String, String> {
-            panic!("navigation must not write journal")
-        }
-        fn try_events(&self) -> Result<Vec<crate::ports::journal::JournalEvent>, String> {
-            panic!("navigation must not read journal")
-        }
-        fn events(&self) -> Vec<crate::ports::journal::JournalEvent> {
-            panic!("navigation must not read journal")
-        }
-    }
-
-    #[test]
-    fn shell_never_accesses_journal_even_through_nested_projections() {
-        let mut service = TradeAssemblyService::test_local(":memory:");
-        std::sync::Arc::make_mut(&mut service.runtime).journal =
-            std::sync::Arc::new(ForbiddenJournal);
-        let shell = workspace_shell(&service);
-        assert!(shell["strategies"].is_array());
-        assert!(shell["providers"].is_array());
-    }
-
-    #[test]
-    fn shell_contains_only_navigation_contract_fields() {
-        let service = TradeAssemblyService::test_local(":memory:");
-        let shell = workspace_shell(&service);
-        let object = shell.as_object().expect("shell object");
-        let fields = object
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            fields,
-            [
-                "credentialStatus",
-                "id",
-                "legalBoundary",
-                "mode",
-                "name",
-                "providers",
-                "strategies",
-            ]
-            .into_iter()
-            .collect()
-        );
-        for forbidden in [
-            "journalEvents",
-            "journal_events",
-            "backtests",
-            "orders",
-            "execution",
-            "risk",
-            "scheduler",
-            "researchMetrics",
-            "performanceSummary",
-            "evidence",
-            "factsheet",
-        ] {
-            assert!(shell.get(forbidden).is_none(), "unexpected {forbidden}");
-        }
-    }
-}
-
 pub(crate) fn builder_state(service: &TradeAssemblyService, strategy_id: &str) -> Value {
     let latest_version = super::strategy::latest_version(service, strategy_id);
     let draft = super::strategy::draft_value(service, strategy_id);
@@ -333,4 +259,78 @@ fn capability_resolutions(
         resolution
     })
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_shell;
+    use crate::service::TradeAssemblyService;
+
+    struct ForbiddenJournal;
+    impl crate::ports::VersionedPort for ForbiddenJournal {
+        fn descriptors(&self) -> Vec<crate::ports::PortDescriptor> {
+            vec![]
+        }
+    }
+    impl crate::ports::journal::JournalPort for ForbiddenJournal {
+        fn record(&self, _: crate::ports::journal::JournalEvent) -> Result<String, String> {
+            panic!("navigation must not write journal")
+        }
+        fn try_events(&self) -> Result<Vec<crate::ports::journal::JournalEvent>, String> {
+            panic!("navigation must not read journal")
+        }
+        fn events(&self) -> Vec<crate::ports::journal::JournalEvent> {
+            panic!("navigation must not read journal")
+        }
+    }
+
+    #[test]
+    fn shell_never_accesses_journal_even_through_nested_projections() {
+        let mut service = TradeAssemblyService::test_local(":memory:");
+        std::sync::Arc::make_mut(&mut service.runtime).journal =
+            std::sync::Arc::new(ForbiddenJournal);
+        let shell = workspace_shell(&service);
+        assert!(shell["strategies"].is_array());
+        assert!(shell["providers"].is_array());
+    }
+
+    #[test]
+    fn shell_contains_only_navigation_contract_fields() {
+        let service = TradeAssemblyService::test_local(":memory:");
+        let shell = workspace_shell(&service);
+        let object = shell.as_object().expect("shell object");
+        let fields = object
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            fields,
+            [
+                "credentialStatus",
+                "id",
+                "legalBoundary",
+                "mode",
+                "name",
+                "providers",
+                "strategies",
+            ]
+            .into_iter()
+            .collect()
+        );
+        for forbidden in [
+            "journalEvents",
+            "journal_events",
+            "backtests",
+            "orders",
+            "execution",
+            "risk",
+            "scheduler",
+            "researchMetrics",
+            "performanceSummary",
+            "evidence",
+            "factsheet",
+        ] {
+            assert!(shell.get(forbidden).is_none(), "unexpected {forbidden}");
+        }
+    }
 }

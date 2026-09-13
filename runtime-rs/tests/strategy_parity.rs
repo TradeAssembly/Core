@@ -2,6 +2,51 @@ use serde_json::{json, Value};
 use tradeassembly_runtime::service::TradeAssemblyService;
 
 #[test]
+fn authenticated_mcp_cannot_publish_by_claiming_user_actor() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("authority.db");
+    let service = TradeAssemblyService::test_local(database.to_string_lossy())
+        .for_authenticated_invocation("local-owner", "user.local", None, None);
+    // The authenticated fixture claims its built-in strategy through the
+    // normal local-owner initialization path, without database mutation.
+    let id = "strat_local_btc_demo";
+    let before = service.handle_http(
+        "POST",
+        "/product/strategies/builder-state",
+        json!({"strategyId": id}),
+    );
+    let hash = before.body["draft"]["draftHash"].as_str().unwrap();
+    for kind in ["agent", "user"] {
+        let result = service.call_mcp_tool(
+            "tradeassembly.strategy.version.publish",
+            json!({
+                "strategy_id": id,
+                "commandId": format!("mcp-publish-denied-{kind}"),
+                "expected_draft_hash": hash,
+                "actor": {"kind": kind, "id": "caller-controlled"}
+            }),
+        );
+        assert_eq!(
+            result["structuredContent"]["error"]["code"], "agent_cannot_publish_strategy_version",
+            "MCP publication must reject before processing draft state"
+        );
+    }
+    let after = service.handle_http(
+        "POST",
+        "/product/strategies/builder-state",
+        json!({"strategyId": id}),
+    );
+    assert_eq!(before.body, after.body);
+    let published = service.handle_http(
+        "POST",
+        "/product/strategies/publish",
+        json!({"strategyId": id, "expectedDraftHash": hash}),
+    );
+    assert_eq!(published.body["body"]["published"], true);
+    assert_eq!(published.body["body"]["activation"]["started"], false);
+}
+
+#[test]
 fn strategy_workspace_versions_and_builder_state_round_trip_through_storage() {
     let db = format!(
         ".tradeassembly/test-strategy-parity-{}.db",
@@ -295,7 +340,7 @@ fn strategy_workspace_versions_and_builder_state_round_trip_through_storage() {
     assert_eq!(stale_mcp_publish["structuredContent"]["ok"], false);
     assert_eq!(
         stale_mcp_publish["structuredContent"]["error"]["code"],
-        "strategy_draft_changed"
+        "agent_cannot_publish_strategy_version"
     );
     let current_draft_hash = changed_draft.body["body"]["draft"]["draftHash"]
         .as_str()

@@ -3268,22 +3268,16 @@ impl TradeAssemblyService {
                 self.review_strategy_patch(args)
             }
             "tradeassembly.strategy.version.publish" => {
-                if arguments["actor"]["kind"].as_str() == Some("agent") {
-                    let response = mcp::tool_error(
-                        name,
-                        "agent_cannot_publish_strategy_version",
-                        "Agents may propose strategy edits, but publishing requires explicit user authority.",
-                        None,
-                    );
-                    return self.complete_mcp_command_or_error(
-                        name,
-                        &command_envelope,
-                        403,
-                        response,
-                    );
-                } else {
-                    self.publish_strategy(arguments)
-                }
+                // Authentication identifies the owner, not a human approval.
+                // Neither caller-supplied actor fields nor the authenticated
+                // principal may turn an MCP invocation into user publication.
+                let response = mcp::tool_error(
+                    name,
+                    "agent_cannot_publish_strategy_version",
+                    "Agents may propose strategy edits, but publishing requires explicit user authority.",
+                    None,
+                );
+                return self.complete_mcp_command_or_error(name, &command_envelope, 403, response);
             }
             "tradeassembly.strategy.validate" => self.validate_builder_draft(arguments),
             "tradeassembly.plugin.list" => {

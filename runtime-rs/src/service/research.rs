@@ -183,49 +183,6 @@ pub(crate) fn create_job(service: &TradeAssemblyService, body: Value) -> Value {
     job
 }
 
-pub(crate) fn create_research_run(service: &TradeAssemblyService, body: Value) -> Value {
-    let strategy_id = strategy_id_from(&body);
-    if service.require_object("strategy", &strategy_id).is_err() {
-        return unavailable();
-    }
-    let id = next_id(service, JOBS_NS, "research_run", &strategy_id);
-    let artifact = json!({
-        "id": format!("artifact_{id}_notebook"),
-        "kind": "research_note",
-        "strategyId": strategy_id,
-        "contentHash": format!("sha256:{}", slug(&id)),
-    });
-    let job = json!({
-        "id": id,
-        "kind": "ResearchRun",
-        "status": "completed",
-        "strategy_id": strategy_id,
-        "strategyId": strategy_id,
-        "engine": body.get("engine").cloned().unwrap_or_else(|| json!("research-local")),
-        "artifacts": [artifact],
-        "warnings": [super::LEGAL_BOUNDARY],
-    });
-    if service
-        .bind_inherited_object("research_job", &id, "strategy", &strategy_id)
-        .is_err()
-    {
-        return unavailable();
-    }
-    persist(
-        service,
-        JOBS_NS,
-        job["id"].as_str().unwrap_or("research_run_local"),
-        job.clone(),
-        "research.run.completed",
-        &body,
-    );
-    json!({
-        "job": job,
-        "symbol": body.get("symbol").cloned().unwrap_or_else(|| json!("symbol_unset")),
-        "artifacts": job["artifacts"].clone(),
-    })
-}
-
 pub(crate) fn job_status(service: &TradeAssemblyService, body: Value) -> Value {
     let requested = body
         .get("jobId")

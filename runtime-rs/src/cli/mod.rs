@@ -85,10 +85,8 @@ pub enum Command {
         #[command(subcommand)]
         command: TelemetryCommand,
     },
-    Backtest {
-        #[arg(long)]
-        strategy_id: Option<String>,
-    },
+    /// Queue a durable backtest from a complete request JSON file.
+    Backtest(BacktestCreateArgs),
     Backtests {
         #[command(subcommand)]
         command: BacktestsCommand,
@@ -1156,6 +1154,20 @@ pub async fn run_with_service(
             );
             i32::from(failed)
         }
+        Command::Backtest(args) => {
+            let authenticated =
+                match require_authenticated_service(service, &identity_manager).await {
+                    Ok(service) => service,
+                    Err(code) => return print_authentication_error(&code),
+                };
+            let response =
+                execute_backtests_command(&authenticated, BacktestsCommand::Create(args));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response.body).expect("service response JSON")
+            );
+            i32::from(response.status >= 400)
+        }
         Command::Backtests { command } => {
             let authenticated =
                 match require_authenticated_service(service, &identity_manager).await {
@@ -1942,14 +1954,8 @@ fn execute_command_with_agent(
                 auth::local_telemetry_replay(&args.profile, &args.studio_base_url)
             }
         },
-        Command::Backtest { strategy_id } => {
-            service
-                .handle_http(
-                    "POST",
-                    "/product/strategies/research-runs/create",
-                    json!({"strategyId": strategy_id}),
-                )
-                .body
+        Command::Backtest(args) => {
+            execute_backtests_command(service, BacktestsCommand::Create(args)).body
         }
         Command::Backtests { command } => execute_backtests_command(service, command).body,
         Command::Robustness { command } => execute_robustness_command(service, command).body,
@@ -3322,7 +3328,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Account { .. } => "account",
         Command::Install { .. } => "install",
         Command::Telemetry { .. } => "telemetry",
-        Command::Backtest { .. } => "backtest",
+        Command::Backtest(..) => "backtest",
         Command::Backtests { .. } => "backtests",
         Command::Robustness { .. } => "robustness",
         Command::Derivatives { .. } => "derivatives",

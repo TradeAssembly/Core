@@ -442,7 +442,7 @@ fn http_command_name(method: &str, path: &str) -> String {
         }
         ("POST", "/orders/reconcile") => "orders.reconcile".to_string(),
         ("POST", "/orders/broker-recovery") => "orders.broker_recovery".to_string(),
-        ("POST", "/product/strategies/research-runs/create") => "research.run.create".to_string(),
+        ("POST", "/product/strategies/research-runs/create") => "backtest.run.execute".to_string(),
         ("POST", "/robustness-runs") | ("POST", "/robustness-runs:process") => {
             "research.robustness.run".to_string()
         }
@@ -987,7 +987,7 @@ fn graphql_command_name(operation: &str) -> String {
         "ResearchComparisons" | "ResearchComparison" | "ResearchComparisonExport" => {
             "research.comparison.read".to_string()
         }
-        "RunStrategyResearch" => "research.run.create".to_string(),
+        "RunStrategyResearch" => "backtest.run.execute".to_string(),
         "CreateDatasetIngestion" => "research.dataset.create".to_string(),
         "DatasetIngestionList" => "dataset.ingestion.list".to_string(),
         "DatasetIngestionGet" | "DatasetIngestionStatus" => "dataset.ingestion.get".to_string(),
@@ -1943,6 +1943,23 @@ mod tests {
     }
 
     #[test]
+    fn research_http_alias_uses_durable_backtest_authority() {
+        let body = json!({"idempotencyKey": "explicit-research-request"});
+        let canonical = http_envelope("cli", "POST", "/backtests", &body).unwrap();
+        let alias = http_envelope(
+            "cli",
+            "POST",
+            "/product/strategies/research-runs/create",
+            &body,
+        )
+        .unwrap();
+        assert_eq!(alias.command_name, canonical.command_name);
+        assert_eq!(alias.command_name, "backtest.run.execute");
+        assert_eq!(alias.side_effect_class, canonical.side_effect_class);
+        assert_ne!(alias.side_effect_class, "read");
+    }
+
+    #[test]
     fn graphql_aliases_keep_canonical_command_but_distinct_auto_idempotency() {
         let variables = json!({
             "strategyId": "strat_local_btc_demo",
@@ -1963,7 +1980,7 @@ mod tests {
         .expect("strategy research envelope");
 
         assert_eq!(backtest.command_name, "backtest.run.execute");
-        assert_eq!(research.command_name, "research.run.create");
+        assert_eq!(research.command_name, "backtest.run.execute");
         assert_ne!(backtest.command_id, research.command_id);
         assert_eq!(backtest.payload_preview["_graphqlOperation"], "RunBacktest");
         assert_eq!(
@@ -1988,7 +2005,7 @@ mod tests {
         }))
         .expect("null strategy research envelope");
         assert_eq!(null_backtest.command_name, "backtest.run.execute");
-        assert_eq!(null_research.command_name, "research.run.create");
+        assert_eq!(null_research.command_name, "backtest.run.execute");
         assert_ne!(null_backtest.command_id, null_research.command_id);
         assert_eq!(
             null_backtest.payload_preview["_graphqlOperation"],

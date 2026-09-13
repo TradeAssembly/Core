@@ -1378,8 +1378,11 @@ impl TradeAssemblyService {
                 backtest_lifecycle::create(self, body)
             }
             ("POST", "/product/strategies/backtests/run") => backtest_lifecycle::create(self, body),
+            // Historical Studio clients use this route; it is an exact alias
+            // for the durable backtest lifecycle and therefore preserves its
+            // status, validation, idempotency, and queued response.
             ("POST", "/product/strategies/research-runs/create") => {
-                ServiceResponse::ok(api_result(research::create_research_run(self, body)))
+                backtest_lifecycle::create(self, body)
             }
             ("POST", "/dataset-ingestions") => {
                 dataset_ingestion_response(dataset_ingestion::create(self, body), 201)
@@ -2421,7 +2424,7 @@ impl TradeAssemblyService {
                 self.dispatch_http(
                     "POST",
                     "/product/strategies/research-runs/create",
-                    variables,
+                    nested_graphql_request(&variables),
                 )
                 .body
             }

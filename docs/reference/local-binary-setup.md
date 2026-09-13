@@ -62,3 +62,18 @@ customer npm/Node installation is not required. `sandboxConfigured` reports that
 configuration, not broker connectivity or strategy readiness. Plugin installation
 is the separate command above. Policy/agent supervision and the end-to-end
 broker/agent journey remain required F2 work; setup alone is not complete onboarding.
+
+## Durable backtest requests
+
+`tradeassembly --config INSTALL/runtime.json backtest --request-file REQUEST.json`
+is the same create operation as `backtests create --request-file REQUEST.json`.
+The request supplies the user's immutable strategy version, dataset snapshot,
+configuration and idempotency key. Missing inputs fail; the command does not
+choose a strategy or fabricate a completed research result. Creation queues the
+run. Use `backtests get RUN_ID`, `backtests process`, `backtests replay RUN_ID`
+and `backtests export RUN_ID` for its actual lifecycle and evidence.
+
+The legacy `/product/strategies/research-runs/create` HTTP route and
+`RunStrategyResearch` GraphQL operation now alias this durable lifecycle. Their
+old synthetic `ResearchRun` completion response is intentionally not preserved.
+GraphQL accepts the explicit create payload in `request`.

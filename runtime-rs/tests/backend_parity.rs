@@ -117,16 +117,18 @@ fn studio_payload_contracts_match_rust_backend() {
         "/product/strategies/research-runs/create",
         json!({"strategyId": created_id}),
     );
-    assert_eq!(research.body["body"]["job"]["status"], "completed");
-    assert_eq!(research.body["body"]["job"]["kind"], "ResearchRun");
-    assert!(research.body["body"]["job"]["id"]
-        .as_str()
-        .expect("research job id")
-        .starts_with("research_run_"));
-    assert!(!research.body["body"]["artifacts"]
-        .as_array()
-        .expect("research artifacts")
-        .is_empty());
+    let canonical = service.handle_http(
+        "POST",
+        "/product/strategies/backtests/run",
+        json!({"strategyId": created_id}),
+    );
+    assert_eq!(research.status, 400);
+    assert_eq!(research.status, canonical.status);
+    assert_eq!(research.body, canonical.body);
+    assert_eq!(
+        service.handle_http("GET", "/backtests", json!({})).body["runs"],
+        json!([])
+    );
 
     let reset = service.handle_http("POST", "/demo/reset", json!({}));
     assert_eq!(reset.body["resetApplied"], true);

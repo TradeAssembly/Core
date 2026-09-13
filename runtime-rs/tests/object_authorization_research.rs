@@ -46,6 +46,13 @@ fn create_strategy(service: &TradeAssemblyService, id: &str) {
     );
     assert_eq!(response.status, 201, "{:?}", response.body);
     assert_eq!(response.body["ok"], true, "{:?}", response.body);
+    let draft_hash = response.body["body"]["draft"]["draftHash"].clone();
+    let published = service.handle_http(
+        "POST",
+        "/product/strategies/publish",
+        json!({"strategyId": id, "expectedDraftHash": draft_hash}),
+    );
+    assert_eq!(published.status, 200, "{:?}", published.body);
 }
 
 fn body(response: Value) -> Value {
@@ -132,14 +139,16 @@ fn cross_principal_research_roots_are_private_and_opaque() {
         .expect("universe id")
         .to_string();
 
+    // Research-job authorization is exercised through the explicit research
+    // job fixture route; the legacy front door is now a durable backtest alias.
     let run = alice.handle_http(
         "POST",
-        "/product/strategies/research-runs/create",
-        json!({"strategyId": strategy_id, "symbol": "BTC/USD"}),
+        "/research/jobs",
+        json!({"strategyId": strategy_id, "datasetId": dataset_id, "symbol": "BTC/USD"}),
     );
     assert_eq!(run.status, 200, "{:?}", run.body);
     let run = body(run.body);
-    let job_id = run["job"]["id"].as_str().expect("job id").to_string();
+    let job_id = run["id"].as_str().expect("job id").to_string();
 
     let owner_jobs = alice.handle_http("GET", "/research/jobs", json!({}));
     assert!(owner_jobs

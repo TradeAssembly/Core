@@ -297,6 +297,26 @@ fn create_is_fsm_driven_and_idempotency_is_request_equivalent() {
 }
 
 #[test]
+fn legacy_research_front_door_is_an_exact_durable_backtest_alias() {
+    let (_alias_file, alias_path) = service_path();
+    let (_canonical_file, canonical_path) = service_path();
+    let alias_service = TradeAssemblyService::test_local(&alias_path);
+    let canonical_service = TradeAssemblyService::test_local(&canonical_path);
+    let alias = alias_service.handle_http(
+        "POST",
+        "/product/strategies/research-runs/create",
+        prepare(&alias_service, "alias-1"),
+    );
+    let canonical =
+        canonical_service.handle_http("POST", "/backtests", prepare(&canonical_service, "alias-1"));
+    assert_eq!(alias.status, canonical.status);
+    for key in ["runId", "manifestHash", "status", "sequence"] {
+        assert_eq!(alias.body[key], canonical.body[key], "alias field {key}");
+    }
+    assert_eq!(alias.body["status"], "queued");
+}
+
+#[test]
 fn restart_redelivery_failure_retry_and_real_result_completion() {
     let (_file, path) = service_path();
     let service = TradeAssemblyService::test_local(&path);

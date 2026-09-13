@@ -149,6 +149,37 @@ fn real_journal_reopens_and_isolates_equal_subjects_from_different_issuers() {
 }
 
 #[test]
+fn workspace_journal_aliases_share_authenticated_owner_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("runtime.db").to_string_lossy().into_owned();
+    let base = TradeAssemblyService::test_local(&db);
+    let alice = owner(&base, "https://alice.example");
+    let created = alice.handle_http(
+        "POST",
+        "/product/strategies/create",
+        json!({"id":"workspace-journal-owned", "name":"Workspace journal fixture"}),
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+
+    let workspace = alice.handle_http("GET", "/workspace", json!({}));
+    assert_eq!(workspace.status, 200, "{}", workspace.body);
+    let events = alice.handle_http("GET", "/journal/events", json!({}));
+    assert_eq!(events.status, 200, "{}", events.body);
+    assert_eq!(workspace.body["journalEvents"], events.body);
+    assert_eq!(workspace.body["journal_events"], events.body);
+    assert_eq!(
+        workspace.body["journalEvents"],
+        workspace.body["journal_events"]
+    );
+    assert!(events
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["payload"]["id"] == "workspace-journal-owned"));
+}
+
+#[test]
 fn corrupted_durable_journal_is_not_an_empty_success() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("runtime.db").to_string_lossy().into_owned();

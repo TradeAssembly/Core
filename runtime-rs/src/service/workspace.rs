@@ -31,6 +31,7 @@ pub(crate) fn workspace(service: &TradeAssemblyService) -> Value {
             )
         })
         .collect::<serde_json::Map<_, _>>();
+    let journal_events = journal_events(service);
     json!({
         "workspace": {"id": "local", "name": "Local Workspace", "mode": "local"},
         "id": "local",
@@ -38,8 +39,8 @@ pub(crate) fn workspace(service: &TradeAssemblyService) -> Value {
         "mode": "local",
         "strategies": service.strategies(),
         "providers": service.providers(),
-        "journalEvents": journal_events(service),
-        "journal_events": journal_events(service),
+        "journalEvents": journal_events.clone(),
+        "journal_events": journal_events,
         "researchMetrics": {"datasetRows": 6, "returnPct": 0.24, "maxDrawdownPct": 0.12, "replayable": true},
         "marketBars": local_market_bars(),
         "credentialStatus": credential_status,

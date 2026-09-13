@@ -4321,13 +4321,10 @@ name = "tradeassembly-xtask"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "getrandom 0.3.4",
  "glob",
  "globset",
  "libc",
  "regex",
- "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",

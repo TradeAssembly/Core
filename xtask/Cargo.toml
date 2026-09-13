@@ -7,14 +7,11 @@ license-file = "../LICENSE"
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-getrandom = "0.3"
 glob = "0.3"
 globset = "0.4"
 libc = "0.2"
 tradeassembly-runtime = { path = "../runtime-rs" }
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

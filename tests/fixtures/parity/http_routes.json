@@ -65,6 +65,7 @@
   "GET /strategy/contracts/stages",
   "GET /strategy/contracts/substeps",
   "GET /workspace",
+  "GET /workspace/shell",
   "POST /backtests",
   "POST /backtests/{backtest_id}/export",
   "POST /backtests/{run_id}/cancel",

@@ -1543,6 +1543,16 @@ mod tests {
         let mut changed = instance.clone();
         changed["credentialRevision"] = json!(2);
         assert!(!record_matches_instance(&changed, &record));
+        for (field, value) in [
+            ("updatedAtMs", json!(3)),
+            ("activePackageSha256", json!("different-package")),
+            ("configuration", json!({"mode":"live"})),
+            ("health", json!({"account":{"id":"other", "mode":"paper"}})),
+        ] {
+            let mut changed = instance.clone();
+            changed[field] = value;
+            assert!(!record_matches_instance(&changed, &record), "{field}");
+        }
     }
 
     fn receipt_stub(instance: &Value) -> Value {

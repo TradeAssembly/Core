@@ -927,7 +927,8 @@ pub(crate) fn refresh_health(
         "account": account,
         "binding": binding,
     });
-    record["updatedAtMs"] = json!(checked_at);
+    // Observations have their own revision. Changing the lifecycle revision here
+    // would invalidate otherwise-current receipts on every health read.
     save_instance(service, instance_ref, record)
 }
 

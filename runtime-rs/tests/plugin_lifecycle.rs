@@ -88,6 +88,7 @@ fn two_plugin_instances_persist_configuration_credentials_and_health_independent
     assert_no_secret(&first, &[first_secret, second_secret]);
     assert_no_secret(&second, &[first_secret, second_secret]);
 
+    let before_health = request(&service, "GET", "/plugins/instances/alpaca-one", json!({}));
     let health = request(
         &service,
         "POST",
@@ -96,6 +97,26 @@ fn two_plugin_instances_persist_configuration_credentials_and_health_independent
     );
     assert_eq!(health["instance"]["health"]["state"], "host_unavailable");
     assert_eq!(health["instance"]["health"]["connectivityChecked"], false);
+    assert_eq!(
+        health["instance"]["updatedAtMs"],
+        before_health["updatedAtMs"]
+    );
+    let refreshed = request(
+        &service,
+        "POST",
+        "/plugins/instances/alpaca-one/health:refresh",
+        json!({}),
+    );
+    assert_eq!(
+        refreshed["instance"]["updatedAtMs"],
+        before_health["updatedAtMs"]
+    );
+    assert_eq!(
+        refreshed["instance"]["health"]["revision"].as_u64(),
+        health["instance"]["health"]["revision"]
+            .as_u64()
+            .map(|v| v + 1)
+    );
 
     drop(service);
     let restarted = TradeAssemblyService::test_local(database.to_string_lossy().to_string());
@@ -111,6 +132,8 @@ fn two_plugin_instances_persist_configuration_credentials_and_health_independent
         "/plugins/instances/alpaca-two",
         json!({}),
     );
+    assert_eq!(first_after["updatedAtMs"], before_health["updatedAtMs"]);
+    assert_eq!(first_after["health"], refreshed["instance"]["health"]);
     assert_eq!(
         first_after["configuration"]["base_url"],
         "https://paper-api.alpaca.markets"

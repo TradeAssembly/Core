@@ -68,6 +68,10 @@ broker/agent journey remain required F2 work; setup alone is not complete onboar
 Account-free local setup does not require WorkOS sign-in. When using an optional
 hosted connection, the distributor supplies the registered product client and
 issuer; a Hub browser cookie is not a local product session.
+When Hub access is organization-scoped, set `oidcOrganizationId` (or
+`TRADEASSEMBLY_AUTH_ORGANIZATION_ID`) to the selected WorkOS organization. Core
+passes it to AuthKit for both initial authorization and refresh; without an
+organization context, WorkOS does not issue role or permission claims.
 Use the issuer advertised by the registered client's provider discovery document;
 do not construct it by appending an application client ID. A WorkOS application
 can advertise an environment-level issuer while retaining its own client binding.

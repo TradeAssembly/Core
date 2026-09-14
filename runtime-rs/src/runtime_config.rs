@@ -53,6 +53,7 @@ pub struct RuntimeConfigLayer {
     pub oidc_issuer: Option<String>,
     pub oidc_audience: Option<String>,
     pub oidc_client_id: Option<String>,
+    pub oidc_organization_id: Option<String>,
     pub oidc_client_secret_ref: Option<String>,
     pub oidc_redirect_uri: Option<String>,
     pub oidc_scopes: Option<String>,
@@ -109,6 +110,7 @@ impl RuntimeConfigLayer {
             oidc_issuer: value("TRADEASSEMBLY_AUTH_ISSUER"),
             oidc_audience: value("TRADEASSEMBLY_AUTH_AUDIENCE"),
             oidc_client_id: value("TRADEASSEMBLY_AUTH_CLIENT_ID"),
+            oidc_organization_id: value("TRADEASSEMBLY_AUTH_ORGANIZATION_ID"),
             oidc_client_secret_ref: value("TRADEASSEMBLY_AUTH_CLIENT_SECRET_REF"),
             oidc_redirect_uri: value("TRADEASSEMBLY_AUTH_CLI_REDIRECT_URI"),
             oidc_scopes: value("TRADEASSEMBLY_AUTH_SCOPES"),
@@ -159,6 +161,7 @@ impl RuntimeConfigLayer {
         replace!(oidc_issuer);
         replace!(oidc_audience);
         replace!(oidc_client_id);
+        replace!(oidc_organization_id);
         replace!(oidc_client_secret_ref);
         replace!(oidc_redirect_uri);
         replace!(oidc_scopes);
@@ -195,6 +198,7 @@ pub struct RuntimeConfig {
     pub oidc_issuer: String,
     pub oidc_audience: String,
     pub oidc_client_id: String,
+    pub oidc_organization_id: Option<String>,
     pub oidc_client_secret_ref: Option<String>,
     pub oidc_redirect_uri: String,
     pub oidc_scopes: Vec<String>,
@@ -240,6 +244,7 @@ impl RuntimeConfig {
             oidc_issuer: String::new(),
             oidc_audience: String::new(),
             oidc_client_id: String::new(),
+            oidc_organization_id: None,
             oidc_client_secret_ref: None,
             oidc_redirect_uri: "http://127.0.0.1:8976/callback".to_string(),
             oidc_scopes: vec![
@@ -313,6 +318,7 @@ impl RuntimeConfig {
                 oidc_issuer: String::new(),
                 oidc_audience: String::new(),
                 oidc_client_id: String::new(),
+                oidc_organization_id: None,
                 oidc_client_secret_ref: None,
                 oidc_redirect_uri: String::new(),
                 oidc_scopes: vec![
@@ -362,6 +368,9 @@ impl RuntimeConfig {
             oidc_issuer: merged.oidc_issuer.unwrap_or(defaults.oidc_issuer),
             oidc_audience: merged.oidc_audience.unwrap_or(defaults.oidc_audience),
             oidc_client_id: merged.oidc_client_id.unwrap_or(defaults.oidc_client_id),
+            oidc_organization_id: merged
+                .oidc_organization_id
+                .or(defaults.oidc_organization_id),
             oidc_client_secret_ref: merged.oidc_client_secret_ref,
             oidc_redirect_uri: merged
                 .oidc_redirect_uri
@@ -459,6 +468,17 @@ impl RuntimeConfig {
         }
         if self.oidc_profile == "workos" && self.oidc_client_secret_ref.is_some() {
             return Err("installed WorkOS clients must not use a client secret".to_string());
+        }
+        if let Some(organization_id) = &self.oidc_organization_id {
+            if self.oidc_profile != "workos"
+                || !organization_id.starts_with("org_")
+                || organization_id.len() > 128
+                || organization_id
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+            {
+                return Err("WorkOS organization id is invalid".to_string());
+            }
         }
         if !unconfigured_workos && !local_owner {
             if !self.oidc_issuer.starts_with("http://") && !self.oidc_issuer.starts_with("https://")
@@ -592,6 +612,7 @@ impl RuntimeConfig {
             "oidcIssuer": self.oidc_issuer,
             "oidcAudience": self.oidc_audience,
             "oidcClientId": self.oidc_client_id,
+            "oidcOrganizationIdConfigured": self.oidc_organization_id.is_some(),
             "oidcClientSecretRefConfigured": self.oidc_client_secret_ref.is_some(),
             "oidcCliRedirectUri": self.oidc_redirect_uri,
             "oidcScopes": self.oidc_scopes,
@@ -944,7 +965,11 @@ mod tests {
         let mut config = RuntimeConfig::local(":memory:");
         config.oidc_issuer = "https://identity.example/user_management/client_test".to_string();
         config.oidc_client_id = "client_test".to_string();
+        config.oidc_organization_id = Some("org_test".to_string());
         assert!(config.validate().is_ok());
+        config.oidc_organization_id = Some("bad organization".to_string());
+        assert!(config.validate().is_err());
+        config.oidc_organization_id = Some("org_test".to_string());
         config.oidc_client_secret_ref = Some("env://SECRET".to_string());
         assert!(config.validate().is_err());
         config.oidc_client_secret_ref = None;

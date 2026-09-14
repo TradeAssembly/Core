@@ -242,27 +242,37 @@ impl WorkosAuthManager {
             .append_pair("state", state)
             .append_pair("code_challenge", challenge)
             .append_pair("code_challenge_method", "S256");
+        if let Some(organization_id) = &self.config.oidc_organization_id {
+            url.query_pairs_mut()
+                .append_pair("organization_id", organization_id);
+        }
         Ok(url.to_string())
     }
 
     async fn exchange_code(&self, code: &str, verifier: &str) -> Result<TokenResponse, String> {
         let redirect = &self.config.oidc_redirect_uri;
-        let form = [
+        let mut form = vec![
             ("client_id", self.config.oidc_client_id.as_str()),
             ("grant_type", "authorization_code"),
             ("code", code),
             ("code_verifier", verifier),
             ("redirect_uri", redirect),
         ];
+        if let Some(organization_id) = &self.config.oidc_organization_id {
+            form.push(("organization_id", organization_id));
+        }
         self.post_token(&form).await
     }
 
     async fn refresh(&self, refresh: &str) -> Result<TokenResponse, String> {
-        let form = [
+        let mut form = vec![
             ("client_id", self.config.oidc_client_id.as_str()),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh),
         ];
+        if let Some(organization_id) = &self.config.oidc_organization_id {
+            form.push(("organization_id", organization_id));
+        }
         self.post_token(&form).await
     }
 
@@ -340,9 +350,10 @@ impl WorkosAuthManager {
         let session_path = std::path::absolute(&self.config.oidc_session_path)
             .unwrap_or_else(|_| std::path::PathBuf::from(&self.config.oidc_session_path));
         let account_material = format!(
-            "{}\0{}\0{}",
+            "{}\0{}\0{}\0{}",
             self.config.oidc_issuer,
             self.config.oidc_client_id,
+            self.config.oidc_organization_id.as_deref().unwrap_or(""),
             session_path.display()
         );
         URL_SAFE_NO_PAD.encode(Sha256::digest(account_material.as_bytes()))
@@ -691,7 +702,8 @@ mod tests {
 
     #[test]
     fn authorize_url_is_authkit_pkce_and_exact_api_endpoint() {
-        let (config, _, _) = setup();
+        let (mut config, _, _) = setup();
+        config.oidc_organization_id = Some("org_test".into());
         let manager = WorkosAuthManager::new(config);
         let redirect = Url::parse("http://127.0.0.1:4321/auth/callback").unwrap();
         let url = Url::parse(
@@ -711,6 +723,10 @@ mod tests {
             Some("S256")
         );
         assert_eq!(query.get("state").map(String::as_str), Some("state"));
+        assert_eq!(
+            query.get("organization_id").map(String::as_str),
+            Some("org_test")
+        );
     }
 
     #[test]

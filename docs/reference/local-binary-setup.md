@@ -63,6 +63,29 @@ configuration, not broker connectivity or strategy readiness. Plugin installatio
 is the separate command above. Policy/agent supervision and the end-to-end
 broker/agent journey remain required F2 work; setup alone is not complete onboarding.
 
+## Optional hosted sign-in diagnostics
+
+Account-free local setup does not require WorkOS sign-in. When using an optional
+hosted connection, the distributor supplies the registered product client and
+issuer; a Hub browser cookie is not a local product session.
+Use the issuer advertised by the registered client's provider discovery document;
+do not construct it by appending an application client ID. A WorkOS application
+can advertise an environment-level issuer while retaining its own client binding.
+
+The CLI reports fixed error codes, never token contents:
+
+- `workos_token_issuer_mismatch` or `workos_token_client_mismatch`: check the
+  distributor's issuer/client pairing and registered application environment.
+- `workos_token_expired` or `workos_token_not_yet_valid`: check the system clock
+  and perform a fresh sign-in; do not reuse an authorization code.
+- `workos_token_header_invalid`, `workos_token_signing_key_unavailable`,
+  `workos_token_signing_key_invalid`, `workos_token_signature_invalid`, or
+  `workos_token_claims_invalid`: report the code to the operator for diagnosis.
+  Do not disable validation or copy credentials/tokens into a support request.
+
+These errors do not prove their underlying cause without further verification.
+They do not authorize changing broker credentials or activating a strategy.
+
 ## Durable backtest requests
 
 `tradeassembly --config INSTALL/runtime.json backtest --request-file REQUEST.json`

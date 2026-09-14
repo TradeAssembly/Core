@@ -362,6 +362,15 @@ fn allowlisted_error(error: &str) -> String {
         | "workos_state_invalid"
         | "workos_token_exchange_failed"
         | "workos_token_invalid"
+        | "workos_token_header_invalid"
+        | "workos_token_signing_key_unavailable"
+        | "workos_token_signing_key_invalid"
+        | "workos_token_issuer_mismatch"
+        | "workos_token_client_mismatch"
+        | "workos_token_claims_invalid"
+        | "workos_token_expired"
+        | "workos_token_not_yet_valid"
+        | "workos_token_signature_invalid"
         | "workos_jwks_unavailable"
         | "workos_identity_binding_invalid"
         | "workos_session_busy"
@@ -372,6 +381,27 @@ fn allowlisted_error(error: &str) -> String {
         | "hub_response_invalid"
         | "hub_unavailable" => error.to_string(),
         _ => "oidc_authorization_failed".to_string(),
+    }
+}
+
+#[test]
+fn token_diagnostics_are_allowlisted_without_accepting_arbitrary_details() {
+    for code in [
+        "workos_token_header_invalid",
+        "workos_token_signing_key_unavailable",
+        "workos_token_signing_key_invalid",
+        "workos_token_issuer_mismatch",
+        "workos_token_client_mismatch",
+        "workos_token_claims_invalid",
+        "workos_token_expired",
+        "workos_token_not_yet_valid",
+        "workos_token_signature_invalid",
+    ] {
+        assert_eq!(allowlisted_error(code), code);
+        assert_eq!(
+            allowlisted_error(&format!("{code}: secret-sentinel")),
+            "oidc_authorization_failed"
+        );
     }
 }
 

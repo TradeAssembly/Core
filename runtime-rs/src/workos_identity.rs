@@ -363,9 +363,9 @@ impl WorkosAuthManager {
 }
 
 async fn verify_access_token(config: &RuntimeConfig, token: &str) -> Result<AccessClaims, String> {
-    let header = decode_header(token).map_err(|_| "workos_token_invalid".to_string())?;
+    let header = decode_header(token).map_err(|_| "workos_token_header_invalid".to_string())?;
     if header.alg != Algorithm::RS256 {
-        return Err("workos_token_invalid".to_string());
+        return Err("workos_token_header_invalid".to_string());
     }
     let encoded_client: String =
         url::form_urlencoded::byte_serialize(config.oidc_client_id.as_bytes()).collect();
@@ -407,9 +407,9 @@ fn verify_access_token_with_jwks(
     token: &str,
     keys: &Jwks,
 ) -> Result<AccessClaims, String> {
-    let header = decode_header(token).map_err(|_| "workos_token_invalid".to_string())?;
+    let header = decode_header(token).map_err(|_| "workos_token_header_invalid".to_string())?;
     if header.alg != Algorithm::RS256 || header.kid.as_deref().is_none_or(str::is_empty) {
-        return Err("workos_token_invalid".to_string());
+        return Err("workos_token_header_invalid".to_string());
     }
     let key = keys
         .keys
@@ -419,7 +419,7 @@ fn verify_access_token_with_jwks(
                 && key.kid == header.kid
                 && key.alg.as_deref().unwrap_or("RS256") == "RS256"
         })
-        .ok_or_else(|| "workos_token_invalid".to_string())?;
+        .ok_or_else(|| "workos_token_signing_key_unavailable".to_string())?;
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_exp = true;
     validation.validate_nbf = true;
@@ -428,19 +428,35 @@ fn verify_access_token_with_jwks(
     let claims = decode::<AccessClaims>(
         token,
         &DecodingKey::from_rsa_components(&key.n, &key.e)
-            .map_err(|_| "workos_token_invalid".to_string())?,
+            .map_err(|_| "workos_token_signing_key_invalid".to_string())?,
         &validation,
     )
-    .map_err(|_| "workos_token_invalid".to_string())?
+    .map_err(|error| token_validation_error(error.kind()).to_string())?
     .claims;
-    if claims.iss != config.oidc_issuer
-        || claims.client_id != config.oidc_client_id
-        || claims.sub.trim().is_empty()
-        || claims.exp > (i64::MAX / 1000) as usize
-    {
-        return Err("workos_token_invalid".to_string());
+    if claims.iss != config.oidc_issuer {
+        return Err("workos_token_issuer_mismatch".to_string());
+    }
+    if claims.client_id != config.oidc_client_id {
+        return Err("workos_token_client_mismatch".to_string());
+    }
+    if claims.sub.trim().is_empty() || claims.exp > (i64::MAX / 1000) as usize {
+        return Err("workos_token_claims_invalid".to_string());
     }
     Ok(claims)
+}
+
+// Only constant categories leave this boundary. Never format JWT errors: serde
+// errors may contain attacker-controlled claim contents or other token material.
+fn token_validation_error(error: &jsonwebtoken::errors::ErrorKind) -> &'static str {
+    use jsonwebtoken::errors::ErrorKind;
+    match error {
+        ErrorKind::InvalidIssuer => "workos_token_issuer_mismatch",
+        ErrorKind::ExpiredSignature => "workos_token_expired",
+        ErrorKind::ImmatureSignature => "workos_token_not_yet_valid",
+        ErrorKind::InvalidSignature => "workos_token_signature_invalid",
+        ErrorKind::Json(_) | ErrorKind::MissingRequiredClaim(_) => "workos_token_claims_invalid",
+        _ => "workos_token_invalid",
+    }
 }
 
 async fn bounded_body(mut response: reqwest::Response, reason: &str) -> Result<Vec<u8>, String> {
@@ -662,6 +678,97 @@ mod tests {
             Some("S256")
         );
         assert_eq!(query.get("state").map(String::as_str), Some("state"));
+    }
+
+    #[test]
+    fn validation_diagnostics_distinguish_failures_without_claim_contents() {
+        let (config, key, jwks) = setup();
+        let now = (now_ms() / 1000) as usize;
+        for (issuer, client, subject, exp, nbf, expected) in [
+            (
+                "https://wrong.example",
+                "client_test",
+                "user_1",
+                now + 300,
+                None,
+                "workos_token_issuer_mismatch",
+            ),
+            (
+                "https://identity.example",
+                "other",
+                "user_1",
+                now + 300,
+                None,
+                "workos_token_client_mismatch",
+            ),
+            (
+                "https://identity.example",
+                "client_test",
+                " ",
+                now + 300,
+                None,
+                "workos_token_claims_invalid",
+            ),
+            (
+                "https://identity.example",
+                "client_test",
+                "user_1",
+                now - 120,
+                None,
+                "workos_token_expired",
+            ),
+            (
+                "https://identity.example",
+                "client_test",
+                "user_1",
+                now + 300,
+                Some(now + 300),
+                "workos_token_not_yet_valid",
+            ),
+        ] {
+            let signed = token(
+                &key,
+                TestClaims {
+                    iss: issuer,
+                    client_id: client,
+                    sub: subject,
+                    exp,
+                    nbf,
+                },
+            );
+            assert_eq!(
+                verify_access_token_with_jwks(&config, &signed, &jwks).unwrap_err(),
+                expected
+            );
+        }
+        assert_eq!(
+            verify_access_token_with_jwks(&config, "not-a-token", &jwks).unwrap_err(),
+            "workos_token_header_invalid"
+        );
+        let signed = token(
+            &key,
+            TestClaims {
+                iss: &config.oidc_issuer,
+                client_id: &config.oidc_client_id,
+                sub: "user_1",
+                exp: now + 300,
+                nbf: None,
+            },
+        );
+        assert_eq!(
+            verify_access_token_with_jwks(&config, &signed, &Jwks { keys: vec![] }).unwrap_err(),
+            "workos_token_signing_key_unavailable"
+        );
+        let injected =
+            jsonwebtoken::errors::ErrorKind::MissingRequiredClaim("secret-sentinel".into());
+        assert_eq!(
+            token_validation_error(&injected),
+            "workos_token_claims_invalid"
+        );
+        assert_eq!(
+            token_validation_error(&jsonwebtoken::errors::ErrorKind::InvalidSignature),
+            "workos_token_signature_invalid"
+        );
     }
 
     #[test]

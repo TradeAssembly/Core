@@ -13,6 +13,14 @@ pub struct HubIdentity {
     pub tenant_id: String,
 }
 
+#[derive(Deserialize)]
+struct HubErrorBody {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
 pub fn validate_base_url(value: &str) -> Result<(), String> {
     let url = Url::parse(value).map_err(|_| "hub_configuration_invalid")?;
     if url.scheme() != "https"
@@ -60,8 +68,30 @@ async fn request_projection(
         .await
         .map_err(|_| "hub_unavailable")?;
     if !response.status().is_success() {
-        return Err(match response.status().as_u16() {
-            401 | 403 => "hub_identity_denied",
+        let status = response.status().as_u16();
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| "hub_unavailable")? {
+            if body.len() + chunk.len() > 8192 {
+                return Err("hub_unavailable".to_string());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let error = serde_json::from_slice::<HubErrorBody>(&body).ok();
+        return Err(match (
+            status,
+            error.as_ref().and_then(|body| body.error.as_deref()),
+            error.as_ref().and_then(|body| body.message.as_deref()),
+        ) {
+            (403, _, Some("Verified caller lacks required authority")) => {
+                "hub_identity_permission_denied"
+            }
+            (403, _, Some("Verified caller is not a registered product client")) => {
+                "hub_identity_client_unregistered"
+            }
+            (401, Some("unauthorized"), _) => "hub_identity_unauthorized",
+            (403, Some("forbidden"), _) => "hub_identity_forbidden",
+            (401, _, _) => "hub_identity_unauthorized",
+            (403, _, _) => "hub_identity_forbidden",
             _ => "hub_unavailable",
         }
         .to_string());
@@ -146,7 +176,22 @@ mod tests {
             (
                 "403 Forbidden",
                 "sensitive provider error",
-                "hub_identity_denied",
+                "hub_identity_forbidden",
+            ),
+            (
+                "401 Unauthorized",
+                r#"{"error":"unauthorized"}"#,
+                "hub_identity_unauthorized",
+            ),
+            (
+                "403 Forbidden",
+                r#"{"error":"forbidden"}"#,
+                "hub_identity_forbidden",
+            ),
+            (
+                "403 Forbidden",
+                r#"{"error":"forbidden","message":"Verified caller is not a registered product client"}"#,
+                "hub_identity_client_unregistered",
             ),
             ("200 OK", "sensitive provider error", "hub_response_invalid"),
             ("302 Found", "redirect", "hub_unavailable"),

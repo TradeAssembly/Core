@@ -27,6 +27,12 @@ struct AccessClaims {
     email: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default, alias = "org_id")]
+    organization_id: Option<String>,
+    #[serde(default)]
+    permissions: Vec<String>,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -310,6 +316,7 @@ impl WorkosAuthManager {
         expected_tenant: Option<&str>,
     ) -> Result<CliIdentity, String> {
         let claims = verify_access_token(&self.config, &token.access_token).await?;
+        validate_hub_claims(&claims, &self.config)?;
         if expected_subject.is_some_and(|subject| subject != claims.sub) {
             return Err("workos_identity_binding_invalid".to_string());
         }
@@ -404,6 +411,30 @@ impl WorkosAuthManager {
             .validate()
             .map_err(|_| "workos_configuration_invalid".to_string())
     }
+}
+
+fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<(), String> {
+    if config
+        .oidc_organization_id
+        .as_deref()
+        .is_some_and(|expected| claims.organization_id.as_deref() != Some(expected))
+    {
+        return Err("workos_organization_binding_invalid".to_string());
+    }
+    let permission_present = claims
+        .permissions
+        .iter()
+        .any(|permission| permission == "hub:identity:read")
+        || claims
+            .scope
+            .as_deref()
+            .unwrap_or_default()
+            .split_ascii_whitespace()
+            .any(|permission| permission == "hub:identity:read");
+    if !permission_present {
+        return Err("workos_hub_identity_permission_missing".to_string());
+    }
+    Ok(())
 }
 
 async fn verify_access_token(config: &RuntimeConfig, token: &str) -> Result<AccessClaims, String> {
@@ -726,6 +757,52 @@ mod tests {
         assert_eq!(
             query.get("organization_id").map(String::as_str),
             Some("org_test")
+        );
+    }
+
+    #[test]
+    fn hub_claims_require_the_configured_organization_and_permission() {
+        let (mut config, _, _) = setup();
+        config.oidc_organization_id = Some("org_expected".into());
+        let claims = |organization_id: Option<&str>, permissions: &[&str], scope: Option<&str>| {
+            AccessClaims {
+                iss: config.oidc_issuer.clone(),
+                sub: "user_1".into(),
+                client_id: config.oidc_client_id.clone(),
+                exp: usize::MAX / 2000,
+                email: None,
+                name: None,
+                organization_id: organization_id.map(str::to_string),
+                permissions: permissions
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                scope: scope.map(str::to_string),
+            }
+        };
+
+        assert!(validate_hub_claims(
+            &claims(Some("org_expected"), &["hub:identity:read"], None),
+            &config
+        )
+        .is_ok());
+        assert!(validate_hub_claims(
+            &claims(Some("org_expected"), &[], Some("openid hub:identity:read")),
+            &config
+        )
+        .is_ok());
+        assert_eq!(
+            validate_hub_claims(
+                &claims(Some("org_other"), &["hub:identity:read"], None),
+                &config
+            )
+            .unwrap_err(),
+            "workos_organization_binding_invalid"
+        );
+        assert_eq!(
+            validate_hub_claims(&claims(Some("org_expected"), &[], Some("openid")), &config)
+                .unwrap_err(),
+            "workos_hub_identity_permission_missing"
         );
     }
 

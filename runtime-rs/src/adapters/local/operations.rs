@@ -355,6 +355,50 @@ impl DurableQueuePort for LocalSqliteOperations {
         Ok(deliveries)
     }
 
+    fn claim_partition(
+        &self,
+        queue: &str,
+        partition: &str,
+        owner: &str,
+        now_ms: i64,
+        visibility_timeout_ms: i64,
+    ) -> Result<Vec<QueueDelivery>, String> {
+        if queue.trim().is_empty()
+            || partition.trim().is_empty()
+            || owner.trim().is_empty()
+            || visibility_timeout_ms <= 0
+        {
+            return Err("invalid durable queue claim".to_string());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let id = transaction
+            .query_row(
+                r#"SELECT message_id FROM runtime_queue
+               WHERE queue_name=?1 AND partition_key=?2 AND retention_until_ms > ?3
+                 AND attempt < max_attempts
+                 AND ((state='pending' AND available_at_ms <= ?3)
+                      OR (state='leased' AND lease_until_ms <= ?3))
+               ORDER BY priority DESC, available_at_ms, message_id LIMIT 1"#,
+                params![queue, partition, now_ms],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let mut deliveries = Vec::new();
+        if let Some(id) = id {
+            transaction.execute(
+                "UPDATE runtime_queue SET state='leased', lease_owner=?2, lease_until_ms=?3, attempt=attempt+1, fencing_token=fencing_token+1 WHERE message_id=?1",
+                params![id, owner, now_ms + visibility_timeout_ms],
+            ).map_err(sqlite_error)?;
+            deliveries.push(read_queue_delivery(&transaction, &id)?);
+        }
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(deliveries)
+    }
+
     fn acknowledge(&self, message_id: &str, fencing_token: i64) -> Result<(), String> {
         let connection = self.connection()?;
         let changed = connection

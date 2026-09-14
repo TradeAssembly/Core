@@ -207,6 +207,7 @@ fn backtests_cli_uses_shared_routes_and_preserves_error_statuses() {
     let process = execute_backtests_command(
         &service,
         BacktestsCommand::Process {
+            run_id: None,
             worker: "cli-test-worker".to_string(),
         },
     );

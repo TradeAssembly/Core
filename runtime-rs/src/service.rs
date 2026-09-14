@@ -1455,11 +1455,14 @@ impl TradeAssemblyService {
                 )
             }
             ("GET", "/backtests") => backtest_lifecycle::list(self),
-            ("POST", "/backtests:process") => backtest_lifecycle::process(
+            ("POST", "/backtests:process") => backtest_lifecycle::process_request(
                 self,
                 body.get("worker")
                     .and_then(Value::as_str)
                     .unwrap_or("local-backtest-worker"),
+                body.get("runId")
+                    .or_else(|| body.get("run_id"))
+                    .and_then(Value::as_str),
             ),
             ("GET", path)
                 if path.starts_with("/backtests/")
@@ -2496,19 +2499,14 @@ impl TradeAssemblyService {
             }
             "ProcessBacktest" => {
                 let run_id = variables["runId"].as_str().unwrap_or_default().to_string();
-                if let Err(response) = self.require_object("backtest_run", &run_id) {
-                    response.body
-                } else {
-                    let mut worker_service = self.clone();
-                    worker_service.invocation_principal = None;
-                    let processed =
-                        worker_service.dispatch_http("POST", "/backtests:process", variables);
-                    if processed.body["runId"].as_str() == Some(run_id.as_str()) {
-                        processed.body
-                    } else {
-                        backtest_lifecycle::get(self, &run_id).body
-                    }
-                }
+                backtest_lifecycle::process_run(
+                    self,
+                    variables["worker"]
+                        .as_str()
+                        .unwrap_or("local-backtest-worker"),
+                    &run_id,
+                )
+                .body
             }
             "CreateRobustnessRun" => {
                 self.dispatch_http(
@@ -3123,6 +3121,24 @@ impl TradeAssemblyService {
                 return response.body;
             }
         }
+        // Export remains a protected action, but an implicit retry must observe
+        // a newly completed run instead of replaying a cached pre-completion error.
+        // Explicit caller idempotency keys keep their existing replay semantics.
+        let mut arguments = arguments;
+        if name == "tradeassembly.backtest.export"
+            && arguments.get("idempotency_key").is_none()
+            && arguments.get("idempotencyKey").is_none()
+        {
+            let run_id = arguments["backtest_id"].as_str().unwrap_or_default();
+            if let Ok(Some(run)) = self.runtime.backtests.get_run(run_id) {
+                let kind = arguments["export_kind"].as_str().unwrap_or("reportJson");
+                let binding = json!([run.run_id, run.sequence, run.result_hash, kind]);
+                if let Ok(bytes) = serde_json_canonicalizer::to_vec(&binding) {
+                    arguments["idempotency_key"] =
+                        json!(format!("backtest-export:{:x}", Sha256::digest(bytes)));
+                }
+            }
+        }
         let command_envelope = match control_plane::mcp_envelope(name, &arguments)
             .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
         {
@@ -3445,11 +3461,12 @@ impl TradeAssemblyService {
                 backtest_lifecycle::retry(self, &run_id, arguments).body
             }
             "tradeassembly.backtest.process" => {
-                backtest_lifecycle::process(
+                backtest_lifecycle::process_request(
                     self,
                     arguments["worker"]
                         .as_str()
                         .unwrap_or("local-backtest-worker"),
+                    arguments["run_id"].as_str(),
                 )
                 .body
             }

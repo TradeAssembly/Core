@@ -527,6 +527,8 @@ pub enum BacktestsCommand {
     Process {
         #[arg(long, default_value = "local-backtest-worker")]
         worker: String,
+        #[arg(long)]
+        run_id: Option<String>,
     },
     Replay {
         run_id: String,
@@ -2906,12 +2908,13 @@ pub fn execute_backtests_command(
         BacktestsCommand::Retry(args) => backtest_run_request(service, "retry", args, |run_id| {
             format!("/backtests/{run_id}/retry")
         }),
-        BacktestsCommand::Process { worker } => service.handle_http_from_source(
+        BacktestsCommand::Process { worker, run_id } => service.handle_http_from_source(
             "cli",
             "POST",
             "/backtests:process",
             json!({
                 "worker": worker,
+                "runId": run_id,
                 "idempotencyKey": format!(
                     "cli-backtest-process-{}-{}",
                     std::process::id(),

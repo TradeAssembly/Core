@@ -12,7 +12,9 @@ use crate::backtest_contracts::{
     BACKTEST_MANIFEST_SCHEMA, BACKTEST_RUN_SCHEMA,
 };
 use crate::domain::{BacktestRunCommand, BacktestRunFsm, BacktestRunState, LifecycleFsm};
-use crate::ports::{AuthorityContext, IdempotencyKey, QueueRequest, SideEffectContext};
+use crate::ports::{
+    AuthorityContext, IdempotencyKey, QueueDelivery, QueueRequest, SideEffectContext,
+};
 use crate::strategy_kernel::CompiledStrategy;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -35,21 +37,72 @@ pub fn process(service: &TradeAssemblyService, worker: &str) -> ServiceResponse 
         return ServiceResponse::object_unavailable();
     }
     process_with(service, worker, &|manifest, _| {
-        let version = exact_strategy_version(service, manifest)
-            .ok_or_else(|| "backtest_strategy_version_required".to_string())?;
-        let snapshot = service
-            .runtime()
-            .dataset_snapshots
-            .get(&manifest.content.configuration.dataset.dataset_id)?
-            .ok_or_else(|| "backtest_dataset_unavailable".to_string())?;
-        crate::backtest_engine::execute(
-            manifest,
-            &version,
-            &snapshot,
-            service.runtime().clock.now_ms(),
-        )
-        .map(Some)
+        execute_manifest(service, manifest)
     })
+}
+
+/// Owner-facing processing never clears authority or claims another run.
+pub fn process_request(
+    service: &TradeAssemblyService,
+    worker: &str,
+    run_id: Option<&str>,
+) -> ServiceResponse {
+    match run_id {
+        Some(run_id) => process_run(service, worker, run_id),
+        None => process(service, worker),
+    }
+}
+
+pub fn process_run(service: &TradeAssemblyService, worker: &str, run_id: &str) -> ServiceResponse {
+    if run_id.trim().is_empty() {
+        return ServiceResponse::bad_request("backtest_run_id_required");
+    }
+    if let Err(response) = service.require_object("backtest_run", run_id) {
+        return response;
+    }
+    let runtime = service.runtime();
+    let deliveries =
+        match runtime
+            .queue
+            .claim_partition(QUEUE, run_id, worker, runtime.clock.now_ms(), LEASE_MS)
+        {
+            Ok(deliveries) => deliveries,
+            Err(code) if code == "queue_partition_claim_unsupported" => {
+                return ServiceResponse::conflict("queue_partition_claim_unsupported");
+            }
+            Err(_) => return ServiceResponse::conflict("backtest_scoped_claim_failed"),
+        };
+    let Some(delivery) = deliveries.into_iter().next() else {
+        return get(service, run_id);
+    };
+    if delivery.partition_key.as_deref() != Some(run_id)
+        || delivery.payload["runId"].as_str() != Some(run_id)
+    {
+        return ServiceResponse::conflict("backtest_queue_binding_invalid");
+    }
+    process_delivery(service, worker, delivery, &|manifest, _| {
+        execute_manifest(service, manifest)
+    })
+}
+
+fn execute_manifest(
+    service: &TradeAssemblyService,
+    manifest: &BacktestRunManifest,
+) -> Result<Option<BacktestResult>, String> {
+    let version = exact_strategy_version(service, manifest)
+        .ok_or_else(|| "backtest_strategy_version_required".to_string())?;
+    let snapshot = service
+        .runtime()
+        .dataset_snapshots
+        .get(&manifest.content.configuration.dataset.dataset_id)?
+        .ok_or_else(|| "backtest_dataset_unavailable".to_string())?;
+    crate::backtest_engine::execute(
+        manifest,
+        &version,
+        &snapshot,
+        service.runtime().clock.now_ms(),
+    )
+    .map(Some)
 }
 
 pub fn replay(service: &TradeAssemblyService, run_id: &str) -> ServiceResponse {
@@ -731,6 +784,17 @@ pub fn process_with(
             body: json!({"status":"idle", "noAdvice": LEGAL_BOUNDARY}),
         };
     };
+    process_delivery(service, worker, delivery, executor)
+}
+
+fn process_delivery(
+    service: &TradeAssemblyService,
+    worker: &str,
+    delivery: QueueDelivery,
+    executor: &BacktestExecutor<'_>,
+) -> ServiceResponse {
+    let runtime = service.runtime();
+    let now = runtime.clock.now_ms();
     let Some((run_id, manifest_hash, attempt_id)) = payload(&delivery.payload) else {
         let _ = runtime
             .queue

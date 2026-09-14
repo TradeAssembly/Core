@@ -42,6 +42,18 @@ pub trait DurableQueuePort: VersionedPort {
         limit: usize,
     ) -> Result<Vec<QueueDelivery>, String>;
     fn acknowledge(&self, message_id: &str, fencing_token: i64) -> Result<(), String>;
+    /// Atomically claim only one delivery in the authorized partition. Never
+    /// emulate this by claiming globally and filtering after mutation.
+    fn claim_partition(
+        &self,
+        _queue: &str,
+        _partition: &str,
+        _owner: &str,
+        _now_ms: i64,
+        _visibility_timeout_ms: i64,
+    ) -> Result<Vec<QueueDelivery>, String> {
+        Err("queue_partition_claim_unsupported".to_string())
+    }
     fn retry(
         &self,
         message_id: &str,

@@ -128,6 +128,27 @@ The legacy `/product/strategies/research-runs/create` HTTP route and
 old synthetic `ResearchRun` completion response is intentionally not preserved.
 GraphQL accepts the explicit create payload in `request`.
 
+## Processing an authenticated backtest
+
+Pass the exact returned run ID to `tradeassembly.backtest.process` as `run_id`,
+with an idempotency key. The CLI equivalent is
+`tradeassembly --config INSTALL/runtime.json backtests process --run-id RUN_ID`.
+This processes only that owner's run through the same durable lease and fenced
+completion path as the internal worker. Repeated calls do not rerun completed
+work. Calls without a run ID cannot access the global worker queue while
+authenticated. No broker orders are submitted by the deterministic backtest.
+
+SQLite supports atomic partition-scoped claiming. Adapters that have not
+implemented it return `queue_partition_claim_unsupported`; there is no fallback
+to claiming other runs or clearing authentication. Internal unscoped worker
+operation remains separate. GraphQL `ProcessBacktest` follows the same exact-run
+authorization and scoped claim rules.
+
+Backtest report export retains its protected canonical action. Its implicit
+idempotency key includes the durable run revision, so exporting before completion
+does not cache a missing-result error forever. Explicit caller keys retain exact
+request replay semantics.
+
 ## Owner publication
 
 After reviewing a draft and recording its exact hash, the local owner may

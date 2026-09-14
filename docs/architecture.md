@@ -16,6 +16,15 @@ presentation checks. Product owns hosted Relay, enrollment, billing, deployment
 and integrated release evidence. Core does not depend on Product source or
 require hosted enrollment for local execution.
 
+The optional `tradeassembly-reach-node` is an outbound-only HTTPS client for
+Relay's versioned Reach contract. It binds tenant, workspace, paired node,
+actor, command digest, deployment binding digest, authority and expiry before
+calling the existing local MCP lifecycle. Local Warden policy remains final.
+Remote activation starts an existing local agent deployment without a scheduler
+tick; remote stop only changes its desired state and never claims cancellation
+or liquidation. Interrupted delivery and acknowledgements replay through the
+same local idempotency boundary.
+
 See docs/rust-rewrite-harness.md for owning gates and docs/test-ownership.md for
 the extraction test split. Neither the source archive smoke nor an isolated build
 proves provider integration, Relay deployment, or the full customer journey.

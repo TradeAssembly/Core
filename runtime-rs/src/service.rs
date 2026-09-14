@@ -41,6 +41,7 @@ mod plugin_lifecycle;
 mod plugin_oauth;
 mod positions;
 mod providers;
+pub mod reach;
 mod replay;
 mod research;
 mod research_notebook;

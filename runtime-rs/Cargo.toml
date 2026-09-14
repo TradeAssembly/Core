@@ -19,6 +19,10 @@ name = "tradeassembly-connected-runner"
 path = "src/bin/tradeassembly_connected_runner.rs"
 
 [[bin]]
+name = "tradeassembly-reach-node"
+path = "src/bin/tradeassembly_reach_node.rs"
+
+[[bin]]
 name = "tradeassembly-sandbox"
 path = "src/bin/tradeassembly_sandbox.rs"
 

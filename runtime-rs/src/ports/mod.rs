@@ -21,6 +21,7 @@ pub mod plugin_operation;
 pub mod plugin_package;
 pub mod plugin_sandbox;
 pub mod provider;
+pub mod reach;
 pub mod robustness;
 pub mod storage;
 pub mod system;
@@ -84,6 +85,11 @@ pub use plugin_operation::{PluginOperationPort, PluginOperationRequest, PluginOp
 pub use plugin_package::{InstalledPluginPackage, PluginPackageInstallRequest, PluginPackagePort};
 pub use plugin_sandbox::{PluginProcessSandboxPort, PluginSandboxRequest, SandboxedPluginProcess};
 pub use provider::{ProviderCapability, ProviderPort};
+pub use reach::{
+    ReachCommand, ReachFinishRequest, ReachNodeRequest, ReachNodeScope, ReachOperation, ReachPoll,
+    ReachReceipt, ReachRecord, ReachState, ReachTransitionRequest, ReachTransportPort,
+    REACH_COMMAND_SCHEMA, REACH_NODE_REQUEST_SCHEMA, REACH_RECEIPT_SCHEMA,
+};
 pub use robustness::{RobustnessImmutableWrite, RobustnessRunRepository};
 pub use storage::{
     ComparePutOutcome, ImmutablePutOutcome, StorageExpectation, StoragePort, StorageWrite,

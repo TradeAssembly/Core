@@ -3,6 +3,7 @@
 use crate::ports::{
     ClaimRunnerCommandRequest, CompleteRunnerCommandRequest, ConnectedRunnerError,
     InstallationSignerPort, PortDescriptor, PortKind, ProductRunnerTransportPort,
+    ReachFinishRequest, ReachNodeRequest, ReachRecord, ReachTransitionRequest, ReachTransportPort,
     RunnerEntropyPort, RunnerHandoffReceipt, RunnerLease, VersionedPort,
     INSTALLATION_AUTHENTICATION_DOMAIN, MAX_RUNNER_RESPONSE_BYTES,
 };
@@ -130,6 +131,110 @@ impl ProductRunnerTransportPort for HttpProductRunnerTransport {
             ],
             request,
         )
+    }
+}
+
+pub struct HttpReachTransport {
+    base_url: Url,
+    client: Client,
+}
+
+impl HttpReachTransport {
+    pub fn new(base_url: &str) -> Result<Self, ConnectedRunnerError> {
+        let mut base_url =
+            Url::parse(base_url).map_err(|_| ConnectedRunnerError::invalid_contract())?;
+        if base_url.username() != ""
+            || base_url.password().is_some()
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+            || !matches!(base_url.path(), "" | "/")
+        {
+            return Err(ConnectedRunnerError::invalid_contract());
+        }
+        let secure = base_url.scheme() == "https";
+        let loopback_http = base_url.scheme() == "http" && is_loopback(&base_url);
+        if !secure && !loopback_http {
+            return Err(ConnectedRunnerError::invalid_contract());
+        }
+        base_url.set_path("/");
+        let client = Client::builder()
+            .redirect(Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .map_err(|_| ConnectedRunnerError::transport_unavailable())?;
+        Ok(Self { base_url, client })
+    }
+
+    fn post<Request: Serialize, ResponseBody: DeserializeOwned>(
+        &self,
+        path_segments: &[&str],
+        request: &Request,
+    ) -> Result<ResponseBody, ConnectedRunnerError> {
+        let mut url = self.base_url.clone();
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| ConnectedRunnerError::invalid_contract())?;
+            segments.clear();
+            for segment in path_segments {
+                segments.push(segment);
+            }
+        }
+        let response = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .json(request)
+            .send()
+            .map_err(|_| ConnectedRunnerError::transport_unavailable())?;
+        parse_response(response)
+    }
+}
+
+impl fmt::Debug for HttpReachTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpReachTransport")
+            .field("origin", &self.base_url.origin().ascii_serialization())
+            .finish()
+    }
+}
+
+impl VersionedPort for HttpReachTransport {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        vec![
+            PortDescriptor::new(PortKind::CoreRunnerBridge, "relay-reach-http")
+                .for_profiles(&["local", "self_hosted"])
+                .with_capabilities(&["outbound_reach_transport"]),
+        ]
+    }
+}
+
+impl ReachTransportPort for HttpReachTransport {
+    fn claim(
+        &self,
+        request: &ReachNodeRequest,
+    ) -> Result<Option<ReachRecord>, ConnectedRunnerError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ClaimResponse {
+            command: Option<ReachRecord>,
+        }
+        Ok(self
+            .post::<_, ClaimResponse>(&["v1", "reach", "node", "claim"], request)?
+            .command)
+    }
+
+    fn accept(
+        &self,
+        request: &ReachTransitionRequest,
+    ) -> Result<ReachRecord, ConnectedRunnerError> {
+        self.post(&["v1", "reach", "node", "accept"], request)
+    }
+
+    fn finish(&self, request: &ReachFinishRequest) -> Result<ReachRecord, ConnectedRunnerError> {
+        self.post(&["v1", "reach", "node", "finish"], request)
     }
 }
 

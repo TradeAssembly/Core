@@ -15,6 +15,7 @@ pub mod backtest_accounting;
 pub mod backtest_contracts;
 pub mod backtest_engine;
 pub mod backtest_report;
+mod bitwarden_session;
 mod broker_order_intent;
 pub mod broker_submission;
 pub mod builder_contract;

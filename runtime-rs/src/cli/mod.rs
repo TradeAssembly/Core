@@ -366,6 +366,8 @@ pub enum AuthCommand {
     Login,
     Status,
     Logout,
+    /// Copy the current WorkOS session to Bitwarden, verify it, and retain Keychain.
+    MigrateToBitwarden,
 }
 
 #[derive(Subcommand)]
@@ -1147,6 +1149,17 @@ pub async fn run_with_service(
         }
         Command::Auth { command } => {
             let response = match command {
+                AuthCommand::MigrateToBitwarden => {
+                    match crate::workos_identity::WorkosAuthManager::new(config.clone())
+                        .migrate_to_bitwarden()
+                        .await
+                    {
+                        Ok(()) => {
+                            json!({"ok":true,"copied":true,"verified":true,"legacyEntryPreserved":true,"nextConfiguration":{"oidcSessionStore":"bitwarden"}})
+                        }
+                        Err(error) => json!({"ok":false,"error":{"code":error}}),
+                    }
+                }
                 AuthCommand::Login => match identity_manager.login().await {
                     Ok(identity) => identity.redacted_status(),
                     Err(error) => json!({"authenticated": false, "error": {"code": error}}),

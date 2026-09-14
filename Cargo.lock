@@ -4284,6 +4284,7 @@ dependencies = [
  "jsonschema",
  "jsonwebtoken",
  "keyring",
+ "libc",
  "openidconnect",
  "postgres",
  "rand 0.8.7",

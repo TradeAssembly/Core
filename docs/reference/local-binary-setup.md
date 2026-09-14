@@ -86,6 +86,33 @@ The CLI reports fixed error codes, never token contents:
 These errors do not prove their underlying cause without further verification.
 They do not authorize changing broker credentials or activating a strategy.
 
+## Optional Bitwarden custody for hosted sign-in
+
+WorkOS sessions can use the customer's Bitwarden vault instead of the desktop
+keyring. This does not change broker permissions or require a Hub account for
+local-only Core. Install the official `bw` CLI and provide its unlocked
+`BW_SESSION` through your agent/service environment. Never put it in prompts,
+command arguments, logs, or runtime.json. `TRADEASSEMBLY_BITWARDEN_CLI` can select
+the installed CLI's absolute path. Unlocking the browser extension alone does
+not unlock the CLI.
+
+For an existing keyring session, run `tradeassembly --config CONFIG auth
+migrate-to-bitwarden`. This validates the existing identity, copies the session
+into a namespaced secure note, verifies read-back and preserves the legacy entry.
+An existing different Bitwarden session is a conflict, not permission to
+overwrite it. Only after success set `oidcSessionStore` to `bitwarden` in CONFIG
+(or `TRADEASSEMBLY_AUTH_SESSION_STORE=bitwarden`) and verify `auth status` in a
+new process. Keep the same issuer, client and session path: they identify the
+vault entry. For a new session, select Bitwarden first and sign in normally.
+
+No automatic fallback to keyring occurs when Bitwarden is locked, unavailable
+or returns ambiguous matches. CLI operations time out after 30 seconds, and
+provider responses never appear in errors. The session's rotating refresh
+credentials are saved and verified in the selected store. Logout soft-deletes
+only that session's Bitwarden item. The retained legacy keyring entry is recovery
+material and is not automatically deleted; explicitly retire it after verifying
+the migration. Other macOS/application credentials are outside this command.
+
 ## Durable backtest requests
 
 `tradeassembly --config INSTALL/runtime.json backtest --request-file REQUEST.json`

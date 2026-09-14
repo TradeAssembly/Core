@@ -116,9 +116,10 @@ impl WorkosAuthManager {
     pub async fn current_identity(&self) -> Result<CliIdentity, String> {
         self.validate_configuration()?;
         let _lock = self.session_lock()?;
-        let session = self
-            .load_session()
-            .map_err(|_| "oidc_session_invalid".to_string())?;
+        let session = self.load_session().map_err(|error| match error.as_str() {
+            "bitwarden_session_required" | "bitwarden_session_store_unavailable" => error,
+            _ => "oidc_session_invalid".to_string(),
+        })?;
         if session.client_id != self.config.oidc_client_id
             || session.issuer != configured_issuer(&self.config)
             || session.identity.issuer != session.issuer
@@ -192,6 +193,9 @@ impl WorkosAuthManager {
     }
 
     fn delete_session(&self) -> Result<(), String> {
+        if self.config.oidc_session_store == "bitwarden" {
+            return self.bitwarden_store().delete();
+        }
         let entry = self.keyring_entry()?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -320,16 +324,19 @@ impl WorkosAuthManager {
             refresh_token,
             identity: identity.clone(),
         };
-        self.keyring_entry()?
-            .set_password(
-                &serde_json::to_string(&session)
-                    .map_err(|_| "oidc_session_store_unavailable".to_string())?,
-            )
+        let raw = serde_json::to_string(&session)
             .map_err(|_| "oidc_session_store_unavailable".to_string())?;
+        if self.config.oidc_session_store == "bitwarden" {
+            self.bitwarden_store().save(&raw)?;
+        } else {
+            self.keyring_entry()?
+                .set_password(&raw)
+                .map_err(|_| "oidc_session_store_unavailable".to_string())?;
+        }
         Ok(identity)
     }
 
-    fn keyring_entry(&self) -> Result<keyring::Entry, String> {
+    fn session_account(&self) -> String {
         let session_path = std::path::absolute(&self.config.oidc_session_path)
             .unwrap_or_else(|_| std::path::PathBuf::from(&self.config.oidc_session_path));
         let account_material = format!(
@@ -338,16 +345,42 @@ impl WorkosAuthManager {
             self.config.oidc_client_id,
             session_path.display()
         );
-        let account = URL_SAFE_NO_PAD.encode(Sha256::digest(account_material.as_bytes()));
-        keyring::Entry::new("tradeassembly-workos", &account)
-            .map_err(|_| "oidc_session_store_unavailable".to_string())
+        URL_SAFE_NO_PAD.encode(Sha256::digest(account_material.as_bytes()))
     }
 
-    fn load_session(&self) -> Result<WorkosSession, String> {
+    fn bitwarden_store(&self) -> crate::bitwarden_session::Store {
+        crate::bitwarden_session::Store::new(&self.session_account())
+    }
+
+    /// Explicit copy-and-verify migration. The legacy entry is never deleted.
+    pub async fn migrate_to_bitwarden(&self) -> Result<(), String> {
+        if self.config.oidc_profile != "workos" || self.config.oidc_session_store != "keyring" {
+            return Err("workos_migration_source_invalid".into());
+        }
+        self.current_identity().await?;
+        let _lock = self.session_lock()?;
         let raw = self
             .keyring_entry()?
             .get_password()
             .map_err(|_| "oidc_session_required".to_string())?;
+        let _: WorkosSession =
+            serde_json::from_str(&raw).map_err(|_| "oidc_session_invalid".to_string())?;
+        self.bitwarden_store().migrate(&raw)
+    }
+
+    fn keyring_entry(&self) -> Result<keyring::Entry, String> {
+        keyring::Entry::new("tradeassembly-workos", &self.session_account())
+            .map_err(|_| "oidc_session_store_unavailable".to_string())
+    }
+
+    fn load_session(&self) -> Result<WorkosSession, String> {
+        let raw = if self.config.oidc_session_store == "bitwarden" {
+            self.bitwarden_store().load()?
+        } else {
+            self.keyring_entry()?
+                .get_password()
+                .map_err(|_| "oidc_session_required".to_string())?
+        };
         serde_json::from_str(&raw).map_err(|_| "oidc_session_invalid".to_string())
     }
 

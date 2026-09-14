@@ -57,6 +57,7 @@ pub struct RuntimeConfigLayer {
     pub oidc_redirect_uri: Option<String>,
     pub oidc_scopes: Option<String>,
     pub oidc_session_path: Option<String>,
+    pub oidc_session_store: Option<String>,
     pub oidc_session_key_path: Option<String>,
     pub oidc_callback_timeout_seconds: Option<u64>,
     pub studio_core_token_ref: Option<String>,
@@ -112,6 +113,7 @@ impl RuntimeConfigLayer {
             oidc_redirect_uri: value("TRADEASSEMBLY_AUTH_CLI_REDIRECT_URI"),
             oidc_scopes: value("TRADEASSEMBLY_AUTH_SCOPES"),
             oidc_session_path: value("TRADEASSEMBLY_AUTH_CLI_SESSION_PATH"),
+            oidc_session_store: value("TRADEASSEMBLY_AUTH_SESSION_STORE"),
             oidc_session_key_path: value("TRADEASSEMBLY_AUTH_CLI_SESSION_KEY_PATH"),
             oidc_callback_timeout_seconds: value("TRADEASSEMBLY_AUTH_CLI_CALLBACK_TIMEOUT_SECONDS")
                 .map(|raw| {
@@ -161,6 +163,7 @@ impl RuntimeConfigLayer {
         replace!(oidc_redirect_uri);
         replace!(oidc_scopes);
         replace!(oidc_session_path);
+        replace!(oidc_session_store);
         replace!(oidc_session_key_path);
         replace!(oidc_callback_timeout_seconds);
         replace!(studio_core_token_ref);
@@ -196,6 +199,7 @@ pub struct RuntimeConfig {
     pub oidc_redirect_uri: String,
     pub oidc_scopes: Vec<String>,
     pub oidc_session_path: String,
+    pub oidc_session_store: String,
     pub oidc_session_key_path: String,
     pub oidc_callback_timeout_seconds: u64,
     pub studio_core_token_ref: Option<String>,
@@ -245,6 +249,7 @@ impl RuntimeConfig {
                 "offline_access".to_string(),
             ],
             oidc_session_path: ".tradeassembly/auth/cli-session.bin".to_string(),
+            oidc_session_store: "keyring".to_string(),
             oidc_session_key_path: ".tradeassembly/auth/cli-session.key".to_string(),
             oidc_callback_timeout_seconds: 600,
             studio_core_token_ref: None,
@@ -317,6 +322,7 @@ impl RuntimeConfig {
                     "offline_access".to_string(),
                 ],
                 oidc_session_path: ".tradeassembly/auth/cli-session.bin".to_string(),
+                oidc_session_store: "keyring".to_string(),
                 oidc_session_key_path: ".tradeassembly/auth/cli-session.key".to_string(),
                 oidc_callback_timeout_seconds: 600,
                 studio_core_token_ref: None,
@@ -370,6 +376,9 @@ impl RuntimeConfig {
             oidc_session_key_path: merged
                 .oidc_session_key_path
                 .unwrap_or(defaults.oidc_session_key_path),
+            oidc_session_store: merged
+                .oidc_session_store
+                .unwrap_or(defaults.oidc_session_store),
             oidc_callback_timeout_seconds: merged
                 .oidc_callback_timeout_seconds
                 .unwrap_or(defaults.oidc_callback_timeout_seconds),
@@ -408,6 +417,9 @@ impl RuntimeConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.oidc_session_store.as_str(), "keyring" | "bitwarden") {
+            return Err("unsupported OIDC session store".into());
+        }
         if self.plugin_sandbox_command.trim().is_empty() {
             return Err("plugin sandbox command is required".to_string());
         }
@@ -584,6 +596,7 @@ impl RuntimeConfig {
             "oidcCliRedirectUri": self.oidc_redirect_uri,
             "oidcScopes": self.oidc_scopes,
             "oidcCliSessionPath": self.oidc_session_path,
+            "oidcSessionStore": self.oidc_session_store,
             "oidcCliCallbackTimeoutSeconds": self.oidc_callback_timeout_seconds,
             "studioCoreTokenRefConfigured": self.studio_core_token_ref.is_some(),
             "legalReceiptRoot": self.legal_receipt_root,
@@ -881,6 +894,23 @@ fn validate_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_store_selection_is_explicit_and_rejects_unknown_backends() {
+        let mut config = RuntimeConfig::local(":memory:");
+        assert_eq!(config.oidc_session_store, "keyring");
+        config.oidc_session_store = "bitwarden".into();
+        assert!(config.validate().is_ok());
+        assert_eq!(
+            config.redacted_configuration()["oidcSessionStore"],
+            "bitwarden"
+        );
+        config.oidc_session_store = "bitwardne".into();
+        assert!(config.validate().is_err());
+        let layer: RuntimeConfigLayer =
+            serde_json::from_value(serde_json::json!({"oidcSessionStore":"bitwarden"})).unwrap();
+        assert_eq!(layer.oidc_session_store.as_deref(), Some("bitwarden"));
+    }
 
     #[test]
     fn local_customer_defaults_do_not_select_development_identity() {

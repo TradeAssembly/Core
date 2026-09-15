@@ -46,6 +46,11 @@ fn assemble(args: &[String], root: &Path) -> Result<PathBuf, String> {
         &options["--alpaca-package"],
         string(&alpaca, "packageSha256")?,
     )?;
+    verify_alpaca_package(
+        &options["--alpaca-package"],
+        string(&alpaca, "target")?,
+        root,
+    )?;
     let destination = stage.path();
     fs::create_dir(destination.join("bin")).map_err(|_| "bundle_directory_failed")?;
     for (flag, name) in [
@@ -53,7 +58,7 @@ fn assemble(args: &[String], root: &Path) -> Result<PathBuf, String> {
         ("--warden", "warden"),
         ("--sandbox-launcher", "tradeassembly-sandbox"),
     ] {
-        verify_arm64(&options[flag])?;
+        verify_release_arm64(&options[flag], root)?;
         fs::copy(&options[flag], destination.join("bin").join(name))
             .map_err(|_| "bundle_binary_copy_failed")?;
     }
@@ -179,6 +184,54 @@ fn verify_arm64(path: &Path) -> Result<(), String> {
         return Err("bundle_binary_not_macos_arm64".into());
     }
     Ok(())
+}
+
+fn verify_release_arm64(path: &Path, root: &Path) -> Result<(), String> {
+    verify_arm64(path)?;
+    verify_no_private_build_paths(&fs::read(path).map_err(|_| "bundle_binary_invalid")?, root)
+}
+
+fn verify_no_private_build_paths(bytes: &[u8], root: &Path) -> Result<(), String> {
+    let canonical = root
+        .canonicalize()
+        .map_err(|_| "bundle_source_root_invalid")?;
+    let root_bytes = canonical.as_os_str().as_encoded_bytes();
+    let private_prefix = canonical.components().take(3).collect::<PathBuf>();
+    let private_bytes = private_prefix.as_os_str().as_encoded_bytes();
+    if [root_bytes, private_bytes]
+        .into_iter()
+        .filter(|needle| needle.len() > 1)
+        .any(|needle| bytes.windows(needle.len()).any(|window| window == needle))
+    {
+        return Err("bundle_binary_contains_private_build_path".into());
+    }
+    Ok(())
+}
+
+fn verify_alpaca_package(archive: &Path, target: &str, root: &Path) -> Result<(), String> {
+    let file = fs::File::open(archive).map_err(|_| "bundle_plugin_unavailable")?;
+    let mut archive = tar::Archive::new(GzDecoder::new(file));
+    let expected = format!("bin/{target}/tradeassembly-plugin-alpaca");
+    let mut found = false;
+    for entry in archive.entries().map_err(|_| "bundle_plugin_invalid")? {
+        let mut entry = entry.map_err(|_| "bundle_plugin_invalid")?;
+        let path = entry.path().map_err(|_| "bundle_plugin_invalid")?;
+        if path != Path::new(&expected) {
+            continue;
+        }
+        if found || !entry.header().entry_type().is_file() || entry.size() > 64 * 1024 * 1024 {
+            return Err("bundle_plugin_binary_invalid".into());
+        }
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|_| "bundle_plugin_binary_invalid")?;
+        verify_no_private_build_paths(&bytes, root)?;
+        found = true;
+    }
+    found
+        .then_some(())
+        .ok_or_else(|| "bundle_plugin_binary_missing".into())
 }
 
 fn unpack_node(archive: &Path, output: &Path, version: &str) -> Result<(), String> {
@@ -391,5 +444,23 @@ mod tests {
         assert!(verify_arm64(&file).is_err());
         assert!(verify_digest(&file, &"0".repeat(64)).is_err());
         verify_digest(&file, &digest(&file).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn release_binary_rejects_source_and_builder_private_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let source = root.as_os_str().as_encoded_bytes();
+        assert_eq!(
+            verify_no_private_build_paths(source, &root).unwrap_err(),
+            "bundle_binary_contains_private_build_path"
+        );
+        let builder = root.components().take(3).collect::<PathBuf>();
+        assert_eq!(
+            verify_no_private_build_paths(builder.as_os_str().as_encoded_bytes(), &root)
+                .unwrap_err(),
+            "bundle_binary_contains_private_build_path"
+        );
+        verify_no_private_build_paths(b"/build/tradeassembly/runtime-rs", &root).unwrap();
     }
 }

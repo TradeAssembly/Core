@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -222,13 +222,15 @@ pub fn resolve_sandbox_command(configured: &str) -> PathBuf {
     if configured != "srt" {
         return PathBuf::from(configured);
     }
-    let source_tree =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../packaging/sandbox/node_modules/.bin/srt");
-    if source_tree.is_file() {
-        source_tree
-    } else {
-        PathBuf::from(configured)
+    #[cfg(debug_assertions)]
+    {
+        let source_tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../packaging/sandbox/node_modules/.bin/srt");
+        if source_tree.is_file() {
+            return source_tree;
+        }
     }
+    PathBuf::from(configured)
 }
 
 #[cfg(test)]

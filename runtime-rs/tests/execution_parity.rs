@@ -696,18 +696,17 @@ fn live_activation_fails_closed_across_http_graphql_and_mcp() {
     assert!(blocked
         .iter()
         .any(|reason| reason.as_str() == Some("downstream_pep_coverage_c5")));
-    assert!(blocked
-        .iter()
-        .any(|reason| reason.as_str() == Some("cloud_external_object_store")));
-    assert!(blocked
-        .iter()
-        .any(|reason| reason.as_str() == Some("cloud_external_credential_backend")));
+    assert!(!blocked.iter().any(|reason| reason
+        .as_str()
+        .is_some_and(|value| value.starts_with("cloud_"))));
+    assert_eq!(
+        saved.body["body"]["readiness"]["livePreflight"]["cloudProfile"]["status"],
+        "not_applicable"
+    );
     let preflight_blocked = saved.body["body"]["readiness"]["livePreflight"]["blockedReasons"]
         .as_array()
         .expect("live preflight blocked reasons");
-    assert!(preflight_blocked
-        .iter()
-        .any(|reason| reason.as_str() == Some("cloud_external_object_store")));
+    assert_eq!(preflight_blocked, blocked);
     let acknowledgements = saved.body["body"]["readiness"]["acknowledgements"]
         .as_array()
         .expect("acknowledgements");

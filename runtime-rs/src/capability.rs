@@ -813,6 +813,7 @@ pub fn local_full_entitlements() -> Vec<EntitlementGrant> {
         "feature.plugin.install",
         "plugin.capability_matrix",
         "account.health",
+        "account.portfolio_state.read@1",
         "indicator.calculate",
     ]
     .into_iter()
@@ -1624,6 +1625,18 @@ mod tests {
         let denied = entitlement_decision(&requirement, &grants, None);
         assert_eq!(denied.decision, "deny");
         assert_eq!(denied.grant_id.as_deref(), Some("explicit-local-deny"));
+    }
+
+    #[test]
+    fn local_full_entitles_read_only_portfolio_observations() {
+        let requirement = CapabilityRequirement {
+            capability: "account.portfolio_state.read@1".into(),
+            mode: "paper".into(),
+            ..Default::default()
+        };
+        let decision = entitlement_decision(&requirement, &local_full_entitlements(), None);
+        assert_eq!(decision.decision, "allow");
+        assert_eq!(decision.source, "local_default");
     }
 
     #[test]

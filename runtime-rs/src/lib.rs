@@ -61,6 +61,7 @@ pub mod platform_compute;
 pub mod platform_events;
 pub mod platform_storage;
 pub(crate) mod plugin_catalog;
+pub mod portfolio_reservations;
 pub mod portfolio_risk;
 pub mod ports;
 pub mod report_envelope;

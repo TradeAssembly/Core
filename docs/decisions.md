@@ -1,5 +1,15 @@
 # Extraction decisions
 
+- `portfolio_reservations` is the initial accounting kernel, not an authorization
+  tool or activated broker feature. It uses an owner/account-scoped atomic storage
+  expectation to reserve observed gross exposure plus all unreconciled holds,
+  counts unique instrument slots and uses integer micros. Duplicate request IDs
+  must match the exact intent. Pending holds prevent policy rebinding, expiry does
+  not reclaim them, and there is deliberately no release operation yet. Callers
+  must verify account snapshot provenance and authority before invoking it.
+  Broker integration, trusted snapshot acquisition and terminal reconciliation
+  remain required before advertising portfolio controls. Conservative double
+  counting of observed pending orders is intentional until reconciliation exists.
 - External-agent configurations may explicitly supply `allowedSymbols` (MCP
   `allowed_symbols`): 1–256 unique exact broker symbols, no aliases or implicit
   primary symbol. The universe participates in generated configuration identity

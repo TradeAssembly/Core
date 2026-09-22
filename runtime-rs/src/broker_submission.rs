@@ -122,6 +122,7 @@ pub fn build_order_intent(
 ) -> Result<(Value, String), String> {
     validate_prepared_binding(state, prepared)?;
     let order = crate::broker_order_intent::CanonicalBrokerOrder::from_input(&request.input)?;
+    validate_order_symbol(&state.config, &order.symbol)?;
     let provenance = match &state.provenance {
         BrokerExecutionProvenance::Agent {
             run_id,
@@ -413,6 +414,18 @@ pub fn load_current_state(
         actor,
         now_ms,
     })
+}
+
+fn validate_order_symbol(config: &Value, symbol: &str) -> Result<(), String> {
+    let configured = config["symbol"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "execution_symbol_missing".to_string())?;
+    // Do not normalize or infer broker instrument aliases at the authority boundary.
+    if configured != symbol {
+        return Err("order_symbol_outside_execution_config".into());
+    }
+    Ok(())
 }
 
 fn exact(request: &PluginOperationRequest, run: &Value) -> Result<(), String> {

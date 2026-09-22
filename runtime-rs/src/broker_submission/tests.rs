@@ -54,6 +54,24 @@ impl AgentRuntimePort for ContextCapturingAdapter {
 }
 
 #[test]
+fn order_symbol_requires_exact_nonempty_execution_binding() {
+    for config in [json!({}), json!({"symbol":""}), json!({"symbol":"  "})] {
+        assert_eq!(
+            super::validate_order_symbol(&config, "SPY"),
+            Err("execution_symbol_missing".into())
+        );
+    }
+    let config = json!({"symbol":"BTC/USD"});
+    assert!(super::validate_order_symbol(&config, "BTC/USD").is_ok());
+    for symbol in ["SPY", "BTCUSD", "btc/usd", "BTC/USD "] {
+        assert_eq!(
+            super::validate_order_symbol(&config, symbol),
+            Err("order_symbol_outside_execution_config".into())
+        );
+    }
+}
+
+#[test]
 fn controls_fail_closed_for_pause_stop_and_emergency_actions() {
     for controls in [
         json!({"pauseEntries": "paused"}),

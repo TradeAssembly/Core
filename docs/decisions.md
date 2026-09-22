@@ -1,5 +1,12 @@
 # Extraction decisions
 
+- Broker admission requires an exact, nonempty execution-config symbol match,
+  rechecked with the current binding before dispatch. No implicit aliases or
+  default instrument expand authority. This closes a missing constraint in the
+  existing single-instrument path; it does not implement portfolio authorization.
+  Multi-instrument activation and aggregate exposure/position reservations remain
+  release gaps for the owner's ten-symbol strategy. Do not substitute a narrowed
+  strategy or per-order limits and claim its full paper promotion is verified.
 - Live cloud prerequisites apply to non-local or unidentified runtime profiles,
   not an explicitly resolved local runtime manifest. Callers cannot select this
   exemption through activation request fields. Local durability and all authority,

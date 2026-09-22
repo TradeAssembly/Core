@@ -263,6 +263,23 @@ fn run_external_activation(lose_response: bool) {
     );
     order.evidence_refs = quote.evidence_refs;
     super::load_current_state(&deps, &order, &context("external-order")).unwrap();
+    let other_quote = operations
+        .invoke(
+            &request(
+                "execution.risk.quote",
+                "marketdata.quote.read",
+                "market_data_research",
+                json!({"symbol":"SPY"}),
+            ),
+            &context("external-other-quote"),
+        )
+        .unwrap();
+    let mut outside_universe = order.clone();
+    outside_universe.input["symbol"] = json!("SPY");
+    outside_universe.evidence_refs = other_quote.evidence_refs;
+    let denied = operations.invoke(&outside_universe, &context("external-outside-universe"));
+    assert!(denied.is_err(), "out-of-config instrument was admitted");
+    assert_eq!(sandbox.launches.load(Ordering::SeqCst), 2);
     if lose_response {
         std::fs::write(
             package
@@ -277,7 +294,7 @@ fn run_external_activation(lose_response: bool) {
         assert!(operations
             .invoke(&order, &context("external-order"))
             .is_err());
-        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 2);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
         session.close().unwrap();
         let revoked=service.handle_http("POST","/product/live-mandates/revoke",json!({"mandateId":issued.body["mandate"]["mandateId"],"idempotencyKey":"external-revoke"}));
         assert_eq!(revoked.status, 200);
@@ -292,7 +309,7 @@ fn run_external_activation(lose_response: bool) {
         assert_eq!(recovered.body["receipt"]["payload"]["submissionCount"], 1);
         let repeated = service.handle_http("POST", "/orders/broker-recovery", body);
         assert_eq!(repeated.status, 200);
-        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 4);
     } else {
         let first = operations
             .invoke(&order, &context("external-order"))
@@ -301,7 +318,7 @@ fn run_external_activation(lose_response: bool) {
             .invoke(&order, &context("external-order"))
             .unwrap();
         assert_eq!(first, second);
-        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 2);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
     }
     let sink = rusqlite::Connection::open_with_flags(
         package.install_root.join(".f2-controlled-broker.sqlite"),

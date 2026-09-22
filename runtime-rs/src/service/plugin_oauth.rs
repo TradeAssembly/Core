@@ -8,7 +8,7 @@
 use super::{plugin_lifecycle, ServiceResponse, TradeAssemblyService};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
-use reqwest::blocking::Client;
+use reqwest::{blocking::Client, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -647,9 +647,7 @@ fn post_json(
         .json(&body)
         .send()
         .map_err(|_| "plugin_oauth_relay_unavailable")?;
-    if !response.status().is_success() {
-        return Err("plugin_oauth_relay_rejected");
-    }
+    let status = response.status();
     let mut bytes = Vec::new();
     response
         .take((MAX_BODY_BYTES + 1) as u64)
@@ -658,7 +656,35 @@ fn post_json(
     if bytes.len() > MAX_BODY_BYTES {
         return Err("plugin_oauth_relay_response_too_large");
     }
+    if !status.is_success() {
+        return Err(relay_failure_code(status, &bytes));
+    }
     serde_json::from_slice(&bytes).map_err(|_| "plugin_oauth_relay_response_invalid")
+}
+
+// The relay is the authority for whether its OAuth service is provisioned.
+// Preserve only this stable, non-sensitive condition so the browser flow can
+// offer a retry instead of telling a user to supply broker credentials. All
+// other non-success responses remain an opaque rejection.
+fn relay_failure_code(status: StatusCode, body: &[u8]) -> &'static str {
+    if matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+    ) || serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("oauth_relay_unavailable")
+    {
+        "plugin_oauth_relay_unavailable"
+    } else {
+        "plugin_oauth_relay_rejected"
+    }
 }
 
 fn validate_status(
@@ -908,6 +934,25 @@ mod tests {
         assert_eq!(
             validate_authorization_url(&config, "http://evil.test/callback"),
             Err("plugin_oauth_authorization_url_not_allowed")
+        );
+    }
+
+    #[test]
+    fn preserves_only_the_relay_unavailable_error_condition() {
+        assert_eq!(
+            relay_failure_code(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                br#"{"error":"oauth_relay_unavailable"}"#,
+            ),
+            "plugin_oauth_relay_unavailable"
+        );
+        assert_eq!(
+            relay_failure_code(StatusCode::SERVICE_UNAVAILABLE, br#"not json"#),
+            "plugin_oauth_relay_unavailable"
+        );
+        assert_eq!(
+            relay_failure_code(StatusCode::UNAUTHORIZED, br#"{"error":"token"}"#),
+            "plugin_oauth_relay_rejected"
         );
     }
 

@@ -58,9 +58,20 @@ impl Default for AgentRunnerTiming {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExecutor {
+    #[default]
+    Supervised,
+    ExternalClient,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDeployment {
+    /// Who owns the agent process, independently of strategy evaluation mode.
+    #[serde(default)]
+    pub executor: AgentExecutor,
     pub deployment_id: String,
     pub system_project_id: String,
     pub agent_definition_version_id: String,
@@ -628,7 +639,11 @@ pub fn put_deployment_with_context(
     deployment: &AgentDeployment,
     side_effect_context: &SideEffectContext,
 ) -> Result<(), String> {
-    let schedule = deployment_schedule(deployment)?;
+    let schedule = if deployment.executor == AgentExecutor::Supervised {
+        Some(deployment_schedule(deployment)?)
+    } else {
+        None
+    };
     if deployment.deployment_id.trim().is_empty()
         || deployment.system_project_id.trim().is_empty()
         || deployment.agent_definition_version_id.trim().is_empty()
@@ -639,9 +654,10 @@ pub fn put_deployment_with_context(
             .iter()
             .any(|tool| !valid_agent_tool_id(tool))
         || !matches!(deployment.mode.as_str(), "paper" | "live")
-        || deployment.workspace.trim().is_empty()
-        || !Path::new(&deployment.workspace).is_dir()
-        || deployment.prompt.trim().is_empty()
+        || (deployment.executor == AgentExecutor::Supervised
+            && (deployment.workspace.trim().is_empty()
+                || !Path::new(&deployment.workspace).is_dir()
+                || deployment.prompt.trim().is_empty()))
         || secret_shaped(&deployment.prompt)
         || !matches!(
             deployment.desired_state.as_str(),
@@ -694,11 +710,14 @@ pub fn put_deployment_with_context(
         }),
         side_effect_context,
     )?;
-    if runtime
-        .storage
-        .get_json(SCHEDULES_NS, &deployment.deployment_id)?
-        .is_none()
-    {
+    if let Some(schedule) = schedule {
+        if runtime
+            .storage
+            .get_json(SCHEDULES_NS, &deployment.deployment_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
         runtime.storage.put_json(
             SCHEDULES_NS,
             &deployment.deployment_id,
@@ -715,15 +734,17 @@ pub fn deployment_binding_digest(deployment: &AgentDeployment) -> String {
     let mut tool_ids = deployment.studio_tool_allowlist.clone();
     tool_ids.sort();
     tool_ids.dedup();
-    short_hash(
-        &json!({
-            "systemProjectId": deployment.system_project_id,
-            "agentDefinitionVersionId": deployment.agent_definition_version_id,
-            "executionConfigVersionId": deployment.execution_config_version_id,
-            "studioToolAllowlist": tool_ids,
-        })
-        .to_string(),
-    )
+    let mut binding = json!({
+        "systemProjectId": deployment.system_project_id,
+        "agentDefinitionVersionId": deployment.agent_definition_version_id,
+        "executionConfigVersionId": deployment.execution_config_version_id,
+        "studioToolAllowlist": tool_ids,
+    });
+    // Preserve legacy supervised digests. External ownership is a new binding.
+    if deployment.executor == AgentExecutor::ExternalClient {
+        binding["executor"] = json!("external_client");
+    }
+    short_hash(&binding.to_string())
 }
 
 fn valid_agent_tool_id(tool: &str) -> bool {
@@ -1586,7 +1607,7 @@ pub fn supervise_once_with_timing_and_entitlement(
     let mut receipts = Vec::new();
     for deployment in deployments(runtime)?
         .into_iter()
-        .filter(|d| d.desired_state == "active")
+        .filter(|d| d.desired_state == "active" && d.executor == AgentExecutor::Supervised)
     {
         match supervise_deployment(
             runtime,
@@ -2422,6 +2443,7 @@ mod tests {
 
     fn deployment() -> AgentDeployment {
         AgentDeployment {
+            executor: AgentExecutor::default(),
             deployment_id: "schedule-state-test".to_string(),
             system_project_id: "system-test".to_string(),
             agent_definition_version_id: "agent-v1".to_string(),

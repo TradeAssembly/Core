@@ -600,6 +600,7 @@ fn run_scenario(scenario: Scenario) {
     assert_eq!(saved.status, 200, "{saved:#?}");
     let config_id = saved.body["body"]["item"]["configId"].as_str().unwrap();
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "fixture-agent".into(),
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),

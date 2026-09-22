@@ -11,6 +11,17 @@ scheduler tick. Idempotency, durable intent, fencing and observation-only recove
 are mandatory at the broker boundary. No actual broker execution is permitted
 during qualification. A saved Live configuration is not activation or authority.
 
+Execution configuration `orchestrator` distinguishes deterministic evaluation
+from `external_agent` evaluation. Deployment `executor` separately identifies who
+owns the agent process: `supervised` (the legacy default) or `external_client`.
+The local supervisor never schedules or launches external-client deployments.
+They need no model prompt or workspace; creation is not session attachment or
+trading authorization. Executor ownership is part of the immutable deployment
+binding, while existing supervised binding digests remain compatible. Every
+scoped MCP invocation checks the actual current lease and fence, not just the
+cached active-run expiry. The external-client attach/reconnect transport remains
+under implementation; this distinction alone does not make external trading ready.
+
 Studio consumes a qualified pinned Core revision; it owns its frontend and
 presentation checks. Product owns hosted Relay, enrollment, billing, deployment
 and integrated release evidence. Core does not depend on Product source or

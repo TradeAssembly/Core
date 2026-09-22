@@ -92,6 +92,7 @@ fn loads_agent_state_only_from_named_verified_provenance() {
     assert_eq!(saved.status, 200, "{saved:#?}");
     let config_id = saved.body["body"]["item"]["configId"].as_str().unwrap();
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "loader-agent".into(),
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),

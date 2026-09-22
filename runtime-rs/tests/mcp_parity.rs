@@ -643,6 +643,7 @@ fn mcp_exposes_attribution_journal_review_report_replay_and_export() {
 fn mcp_external_broker_receipts_are_redacted_idempotent_and_reconciliation_safe() {
     let service = test_service("external-broker-receipts");
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "deployment-1".to_string(),
         system_project_id: "system-1".to_string(),
         agent_definition_version_id: "agent-v1".to_string(),

@@ -161,6 +161,7 @@ fn exercise_real_codex(interrupt: bool) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let deployment = tradeassembly_runtime::agent_runner::AgentDeployment {
+        executor: Default::default(),
         deployment_id: "nontrading-inspection".into(), system_project_id: "smoke".into(),
         agent_definition_version_id: "smoke-agent-v1".into(), execution_config_version_id: "smoke-config-v1".into(),
         studio_tool_allowlist: vec!["studio.deployment.inspect".into()], desired_state: "active".into(),

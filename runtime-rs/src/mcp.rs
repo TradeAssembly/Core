@@ -1408,8 +1408,9 @@ fn agent_run_recover_schema() -> Value {
 }
 
 fn agent_deployment_schema() -> Value {
-    object_schema(
+    let mut schema = object_schema(
         [
+            ("executor", enum_string_schema("Agent process owner; defaults to supervised. external_client is never launched by the local supervisor.", &["supervised", "external_client"])),
             (
                 "deploymentId",
                 string_schema("Durable deployment ID.", None),
@@ -1482,10 +1483,13 @@ fn agent_deployment_schema() -> Value {
             "studioToolAllowlist",
             "desiredState",
             "mode",
-            "prompt",
-            "workspace",
         ],
-    )
+    );
+    schema["allOf"] = json!([{
+        "if": {"properties": {"executor": {"const": "external_client"}}, "required": ["executor"]},
+        "else": {"required": ["prompt", "workspace"]}
+    }]);
+    schema
 }
 
 fn agent_authority_schema() -> Value {

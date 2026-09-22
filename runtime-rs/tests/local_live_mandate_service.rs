@@ -190,6 +190,7 @@ fn owner_issue_flow_uses_production_config_route() {
     let denied = base.handle_http("POST", "/product/live-mandates/issue", spoof);
     assert_eq!(denied.status, 403, "{denied:#?}");
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "mandate-runner".into(),
         system_project_id: "controlled-system".into(),
         agent_definition_version_id: "controlled-agent-v1".into(),

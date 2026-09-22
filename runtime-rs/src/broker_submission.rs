@@ -30,6 +30,7 @@ pub(crate) use recovery::{prepare_plan as prepare_recovery_plan, RecoveryObserve
 mod prices;
 mod risk;
 pub use admission::LocalBrokerSubmissionBoundary;
+pub(crate) use risk::validate_order_limits;
 
 const ACTIVATIONS_NS: &str = "execution_activations";
 const RUNS_NS: &str = "execution_runs";

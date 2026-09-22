@@ -3451,7 +3451,7 @@ fn readiness_for_config_with_authority(
         ),
         check(
             "risk_limits",
-            "Positive finite risk limits set",
+            "Positive finite risk limits set; Live controls must be supported by the broker boundary",
             risk_limits_ready,
             true,
             "risk.limits",
@@ -3524,8 +3524,15 @@ fn readiness_for_config_with_authority(
         }
     }
     let live_preflight = if live {
-        let mut preflight =
-            live_preflight_report(config, &capability_resolution, &checks, &blocked);
+        let mut preflight = live_preflight_report(
+            config,
+            &capability_resolution,
+            &checks,
+            &blocked,
+            service
+                .runtime_manifest()
+                .is_some_and(|manifest| manifest.profile == "local"),
+        );
         if let Some(cloud_blocked) = preflight["cloudProfile"]["blockedReasons"].as_array() {
             for reason in cloud_blocked.iter().filter_map(Value::as_str) {
                 let prefixed = format!("cloud_{reason}");
@@ -3564,6 +3571,9 @@ fn readiness_for_config_with_authority(
             Err(failure) => json!({"status": "blocked", "reason": failure.code()}),
         }),
         "localOnlyDurabilityWarning": "Legal and audit evidence is stored locally unless exported.",
+        "riskLimitsError": if live {
+            crate::broker_submission::validate_order_limits(&config["riskLimits"]).err()
+        } else { None },
     });
     if let Some(live_preflight) = live_preflight {
         readiness["livePreflight"] = live_preflight;
@@ -3623,6 +3633,9 @@ fn valid_execution_risk_limits(config: &Value) -> bool {
     let Some(limits) = limits.filter(|value| value.is_object()) else {
         return false;
     };
+    if config["mode"] == "live" {
+        return crate::broker_submission::validate_order_limits(limits).is_ok();
+    }
     ["max_notional", "max_order_quantity"].iter().all(|field| {
         limits[*field]
             .as_f64()
@@ -3838,6 +3851,7 @@ fn live_preflight_report(
     capability_resolution: &Value,
     checks: &[Value],
     blocked: &[String],
+    local_profile: bool,
 ) -> Value {
     json!({
         "schemaVersion": "tradeassembly.live_activation_preflight.v1",
@@ -3880,7 +3894,9 @@ fn live_preflight_report(
         "capabilityResolution": capability_resolution,
         "checks": checks,
         "blockedReasons": blocked,
-        "cloudProfile": live_cloud_preflight_report(&DEFAULT_FOSS_DEPLOYMENT),
+        "cloudProfile": if local_profile {
+            json!({"status":"not_applicable","profile":"local","blockedReasons":[],"notes":["Local execution requires durable local evidence; it does not claim serverless availability."]})
+        } else { live_cloud_preflight_report(&DEFAULT_FOSS_DEPLOYMENT) },
         "noAdvice": LEGAL_BOUNDARY,
     })
 }
@@ -6569,6 +6585,33 @@ mod tests {
             assert!(checks
                 .iter()
                 .any(|check| check["id"] == id && check["status"] == "blocked"));
+        }
+    }
+
+    #[test]
+    fn local_preflight_does_not_require_cloud_services_but_other_profiles_do() {
+        let local = live_preflight_report(&json!({}), &json!({}), &[], &[], true);
+        assert_eq!(local["cloudProfile"]["status"], "not_applicable");
+        assert!(local["cloudProfile"]["blockedReasons"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let other = live_preflight_report(&json!({}), &json!({}), &[], &[], false);
+        assert!(!other["cloudProfile"]["blockedReasons"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn live_readiness_rejects_risk_controls_the_broker_cannot_enforce() {
+        let mut config =
+            json!({"mode":"live","riskLimits":{"max_notional":10,"max_order_quantity":2}});
+        assert!(valid_execution_risk_limits(&config));
+        for key in ["max_daily_loss", "max_concurrent_positions", "stop_loss"] {
+            config["riskLimits"][key] = json!(1);
+            assert!(!valid_execution_risk_limits(&config));
+            config["riskLimits"].as_object_mut().unwrap().remove(key);
         }
     }
 

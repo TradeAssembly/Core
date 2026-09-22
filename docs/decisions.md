@@ -1,5 +1,12 @@
 # Extraction decisions
 
+- Live cloud prerequisites apply to non-local or unidentified runtime profiles,
+  not an explicitly resolved local runtime manifest. Callers cannot select this
+  exemption through activation request fields. Local durability and all authority,
+  legal, account and risk checks still apply. Live readiness rejects controls the
+  broker boundary cannot enforce rather than silently ignoring them; current
+  supported pre-trade limits are order quantity and order notional. Daily-loss and
+  position controls are not claimed by this path.
 - Local Live activation does not require hosted evidence or a Relay entitlement.
   Its legacy `hosted_evidence_policy` readiness ID now reports durable local
   evidence availability (kept for client compatibility). Evidence adapters default

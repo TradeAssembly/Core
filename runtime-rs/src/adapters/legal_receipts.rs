@@ -587,7 +587,7 @@ struct PublishedDocumentPayload<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use chrono::{Duration, TimeZone};
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -596,10 +596,10 @@ mod tests {
     const KEY_ID: &str = "hub-test-key";
     const RECEIPT_REF: &str = "receipt_test_123";
 
-    struct Fixture {
+    pub(crate) struct Fixture {
         _root: TempDir,
         receipt_path: PathBuf,
-        verifier: FileLegalReceiptVerifier,
+        pub(crate) verifier: FileLegalReceiptVerifier,
         expectation: LegalReceiptExpectation,
         signer: SigningKey,
         export: LegalReceiptExport,
@@ -607,6 +607,33 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_at(
+            Utc.with_ymd_and_hms(2026, 8, 3, 18, 0, 0)
+                .single()
+                .expect("time"),
+        )
+    }
+
+    pub(crate) fn bound_fixture(expectation: LegalReceiptExpectation, now_ms: i64) -> Fixture {
+        let mut fixture = fixture_at(Utc.timestamp_millis_opt(now_ms).single().unwrap());
+        let ack = &mut fixture.export.receipt.acknowledgement;
+        ack.escrow_receipt_id = expectation.receipt_ref.clone();
+        ack.identity_issuer = expectation.identity_issuer.clone();
+        ack.identity_subject = expectation.identity_subject.clone();
+        ack.resource_ref = Some(expectation.resource_ref.clone());
+        ack.resource_version_refs = expectation.resource_version_refs.clone();
+        ack.environment = expectation.environment.clone();
+        fixture.receipt_path = fixture
+            .verifier
+            .receipt_root
+            .join(format!("{}.json", expectation.receipt_ref));
+        fixture.expectation = expectation;
+        resign_receipt(&fixture.signer, &mut fixture.export.receipt);
+        write_export(&fixture.signer, &mut fixture.export, &fixture.receipt_path);
+        fixture
+    }
+
+    fn fixture_at(now: DateTime<Utc>) -> Fixture {
         let root = tempfile::tempdir().expect("tempdir");
         let receipt_root = root.path().join("receipts");
         fs::create_dir_all(&receipt_root).expect("receipt root");
@@ -640,10 +667,6 @@ mod tests {
             .expect("policy json"),
         )
         .expect("write policy");
-        let now = Utc
-            .with_ymd_and_hms(2026, 8, 3, 18, 0, 0)
-            .single()
-            .expect("time");
         let body = "TradeAssembly live trading disclosure".to_string();
         let metadata = LegalDocumentVersion {
             key: LegalDocumentKey {

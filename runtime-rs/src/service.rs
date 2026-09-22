@@ -541,6 +541,12 @@ impl TradeAssemblyService {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_runtime(mut self, runtime: ServiceRuntime) -> Self {
+        self.runtime = Arc::new(runtime);
+        self
+    }
+
     pub fn for_authenticated_invocation(
         &self,
         provider: impl Into<String>,

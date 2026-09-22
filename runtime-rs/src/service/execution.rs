@@ -3291,7 +3291,7 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
     );
     let entitlement_ready = required_selections_are_entitled(&capability_resolution);
     let account_bindings_ready = required_account_bindings_present(&capability_resolution);
-    let identity_ready = service
+    let oidc_identity_ready = service
         .runtime()
         .identity
         .descriptors()
@@ -3302,6 +3302,31 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
                 .iter()
                 .any(|capability| capability == "oidc.session.resolve")
         });
+    let local_owner_ready =
+        service
+            .responsible_human_identity()
+            .is_some_and(|(issuer, subject)| {
+                issuer == "local-owner"
+                    && service
+                        .runtime()
+                        .clock
+                        .trusted_now_ms()
+                        .ok()
+                        .is_some_and(|now| {
+                            service
+                                .runtime()
+                                .identity
+                                .resolve(subject, now)
+                                .ok()
+                                .is_some_and(|claims| {
+                                    claims.issuer == issuer
+                                        && claims.subject == subject
+                                        && claims.assurance.as_deref() == Some("local-process")
+                                        && claims.expires_at_ms > now
+                                })
+                        })
+            });
+    let identity_ready = oidc_identity_ready || local_owner_ready;
     let freshness_ready = config["dataFreshnessPolicy"]["maxAgeMs"]
         .as_u64()
         .is_some_and(|max_age_ms| max_age_ms > 0);
@@ -3436,10 +3461,14 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         ),
         check(
             "local_identity",
-            "OIDC identity adapter configured",
+            "OIDC adapter configured or authenticated installation owner verified",
             identity_ready,
             true,
-            "identity.oidc",
+            if local_owner_ready {
+                "identity.local_owner"
+            } else {
+                "identity.oidc"
+            },
         ),
     ];
     if live {

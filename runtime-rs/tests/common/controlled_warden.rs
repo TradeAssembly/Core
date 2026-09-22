@@ -9,7 +9,7 @@ use tradeassembly_runtime::finance_authority::{
 
 pub struct ControlledWarden {
     child: Child,
-    port: u16,
+    pub port: u16,
     pub authority: WardenSidecarAuthority,
 }
 

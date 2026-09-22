@@ -10,6 +10,25 @@
   Broker integration, trusted snapshot acquisition and terminal reconciliation
   remain required before advertising portfolio controls. Conservative double
   counting of observed pending orders is intentional until reconciliation exists.
+- Portfolio admission, when wired, consumes a durably stored
+  `account.portfolio_state.read@1` receipt through the same request, prepared-binding,
+  package, credential-generation, capability-graph, and account binding checks used
+  for quote receipts. The receipt must be fresh, complete, non-reconciling and bound
+  to the active run's owner and account; caller-supplied snapshots are never accepted.
+  Its non-atomic provider observation is permitted only within the fixed freshness
+  bound and is combined atomically with local holds. Every position and open order
+  must have a parseable gross notional; an unknown open-order notional, incomplete
+  page, stale receipt, changed binding, or storage conflict denies admission. The
+  proposed order is grossed even if it may reduce an existing position. The capacity
+  hold uses the current mandate's execution-config digest as its authority digest and
+  the order idempotency key as its request ID. The hold is taken before C5 and is
+  re-read idempotently after C5; it does not itself authorize broker dispatch.
+- This decision does not yet enable aggregate portfolio controls. That integration
+  requires an explicit configuration schema and capability-graph requirement for the
+  portfolio-state operation, receipt generation by the agent, deterministic receipt
+  verification before C5, and terminal-reconciliation release semantics. Until those
+  pieces have passing controlled-sink proof, the current live boundary continues to
+  enforce only its declared per-order controls and must reject unsupported controls.
 - External-agent configurations may explicitly supply `allowedSymbols` (MCP
   `allowed_symbols`): 1–256 unique exact broker symbols, no aliases or implicit
   primary symbol. The universe participates in generated configuration identity

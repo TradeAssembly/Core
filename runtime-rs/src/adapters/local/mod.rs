@@ -122,7 +122,10 @@ pub fn runtime_from_config_with_authority(
     // Preserve inspection/research when installation-owner state is unavailable.
     // Live readiness/dispatch remain closed without the enforcing boundary;
     // never invent an owner or substitute a caller-provided identity.
-    if let Ok(owner) = crate::local_owner_identity::LocalOwnerIdentity::for_database(&db_path) {
+    let broker_owner = (config.oidc_profile == "local_owner")
+        .then(|| crate::local_owner_identity::LocalOwnerIdentity::for_database(&db_path))
+        .and_then(Result::ok);
+    if let Some(owner) = broker_owner {
         plugin_operations = plugin_operations.with_broker_boundary(Arc::new(
             crate::broker_submission::LocalBrokerSubmissionBoundary::new(
                 crate::broker_submission::BrokerSubmissionDependencies {

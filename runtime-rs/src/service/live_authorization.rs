@@ -353,6 +353,36 @@ fn agent_delegate(
     )
 }
 
+pub(super) fn verify_external_delegate(
+    service: &TradeAssemblyService,
+    deployment_id: &str,
+    config: &Value,
+    activation: &Value,
+) -> Result<(), ServiceResponse> {
+    let mandate_id = activation["localLiveAuthority"]["mandateId"]
+        .as_str()
+        .ok_or_else(|| ServiceResponse::forbidden("local_live_mandate_required"))?;
+    // Check the authenticated owner and current complete config binding first.
+    let checked = status(service, json!({"mandateId":mandate_id}));
+    if checked.status != 200 {
+        return Err(checked);
+    }
+    let current_binding = binding(service, config)?;
+    let delegate = agent_delegate(service, deployment_id, &current_binding)?;
+    let mandate = check_local_live_mandate(
+        service.runtime().storage.as_ref(),
+        mandate_id,
+        &current_binding,
+        &delegate,
+        trusted_now(service)?,
+    )
+    .map_err(mandate_error)?;
+    if activation["localLiveAuthority"]["mandateDigest"] != mandate.digest {
+        return Err(ServiceResponse::forbidden("live_mandate_stale_binding"));
+    }
+    Ok(())
+}
+
 fn agent_actor(
     service: &TradeAssemblyService,
     context: &VerifiedAgentMcpExecutionContext,

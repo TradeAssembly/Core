@@ -26,6 +26,7 @@ mod credentials;
 mod dataset_ingestion;
 mod derivatives;
 mod execution;
+mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
 mod journal_view;

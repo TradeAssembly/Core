@@ -35,6 +35,7 @@ fn activate_with_orchestrator(
             "orchestrator": orchestrator,
             "mode": "paper",
             "providerRef": "sim",
+            "accountRef": "controlled-paper-account",
             "riskLimits": {
                 "max_notional": 25,
                 "max_order_quantity": 0.0003,
@@ -66,6 +67,88 @@ fn activate_with_orchestrator(
     );
     assert_eq!(activated.status, 200, "{:#}", activated.body);
     activated.body["body"].clone()
+}
+
+#[test]
+fn authenticated_external_session_attaches_to_real_activation_and_rejects_other_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("attach.db");
+    let base = TradeAssemblyService::test_local(db.to_string_lossy());
+    assert!(base
+        .attach_external_agent_session("missing", "missing", "anonymous")
+        .is_err());
+    let owner = base.for_authenticated_invocation("test", "owner", None, None);
+    let activated = activate_with_orchestrator(&owner, "external-owner", "external_agent");
+    assert_eq!(activated["status"], "active");
+    let activation_id = activated["activationId"].as_str().unwrap();
+    let created = owner.call_mcp_tool("studio.deployment.create",json!({
+        "deployment":{
+            "executor":"external_client","deploymentId":"owner-external",
+            "systemProjectId":"system-owner","agentDefinitionVersionId":"agent-v1",
+            "executionConfigVersionId":activated["run"]["configId"],
+            "studioToolAllowlist":["tradeassembly.health"],"desiredState":"active","mode":"paper"
+        },
+        "idempotency_key":"owner-deployment","authority_context":{"actor":"ignored","surface":"mcp","accountMode":"paper"}
+    }));
+    assert_eq!(created["isError"], false);
+    let other = base.for_authenticated_invocation("test", "other", None, None);
+    assert!(other
+        .attach_external_agent_session("owner-external", activation_id, "other-attach")
+        .is_err());
+    assert_eq!(namespace_count(&owner, "agent_runs"), 0);
+    let mut session = owner
+        .attach_external_agent_session("owner-external", activation_id, "owner-attach")
+        .unwrap_or_else(|error| {
+            let config = owner
+                .runtime()
+                .storage
+                .get_json(
+                    "execution_configs",
+                    activated["run"]["configId"].as_str().unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            let record = owner
+                .runtime()
+                .storage
+                .get_json("execution_activations", activation_id)
+                .unwrap()
+                .unwrap();
+            let diff: Vec<_> = [
+                "strategyVersionId",
+                "strategySpecHash",
+                "capabilityGraphRevisionId",
+                "accountRef",
+                "riskLimits",
+            ]
+            .into_iter()
+            .filter(|field| record[*field].is_null() || record[*field] != config[*field])
+            .map(|field| (field, config[field].clone(), record[field].clone()))
+            .collect();
+            panic!(
+                "attach failed: {}; binding differences: {diff:?}",
+                error.body
+            )
+        });
+    let scoped =
+        owner.with_verified_agent_mcp_execution_context(session.verified_context().unwrap());
+    assert_eq!(
+        scoped.call_mcp_tool("tradeassembly.health", json!({}))["isError"],
+        false
+    );
+    assert!(scoped
+        .attach_external_agent_session("owner-external", activation_id, "nested")
+        .is_err());
+    assert!(owner
+        .attach_external_agent_session("owner-external", activation_id, "duplicate-session")
+        .is_err());
+    session.close().unwrap();
+    assert_eq!(
+        scoped.call_mcp_tool("tradeassembly.health", json!({}))["isError"],
+        true
+    );
+    assert_eq!(namespace_count(&owner, "scheduler_state"), 0);
+    assert_eq!(namespace_count(&owner, "execution_ticks"), 0);
 }
 
 #[test]

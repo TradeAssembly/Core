@@ -34,6 +34,12 @@ impl ExternalAgentSession {
             &deployment.execution_config_version_id,
         )?;
         let activation = required(&runtime, "execution_activations", activation_id)?;
+        if config["accountRef"]
+            .as_str()
+            .is_none_or(|account| account.trim().is_empty())
+        {
+            return Err("external_agent_account_required".into());
+        }
         if deployment.executor != AgentExecutor::ExternalClient
             || deployment.desired_state != "active"
             || config["orchestrator"] != "external_agent"

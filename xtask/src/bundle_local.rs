@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -81,6 +83,21 @@ fn assemble(args: &[String], root: &Path) -> Result<PathBuf, String> {
         fs::copy(&options[flag], destination.join("bin").join(name))
             .map_err(|_| "bundle_binary_copy_failed")?;
     }
+    let bitwarden_helper = root.join("scripts/bitwarden-session-exec");
+    if !bitwarden_helper.is_file() {
+        return Err("bitwarden_helper_missing".into());
+    }
+    fs::copy(
+        &bitwarden_helper,
+        destination.join("bin/tradeassembly-bitwarden"),
+    )
+    .map_err(|_| "bitwarden_helper_copy_failed")?;
+    #[cfg(unix)]
+    fs::set_permissions(
+        destination.join("bin/tradeassembly-bitwarden"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .map_err(|_| "bitwarden_helper_permission_failed")?;
     unpack_node(
         &options["--node-archive"],
         &destination.join("runtime/node"),

@@ -225,7 +225,6 @@ impl LocalPluginPackageStore {
             let plugin_ref = descriptor_contract.plugin.id.clone();
             let version = descriptor_contract.plugin.version.clone();
             let manifest_path = descriptor_contract.manifest.path.clone();
-            let manifest_sha256 = descriptor_contract.manifest.sha256.clone();
             let host_contract = descriptor_contract
                 .compatibility
                 .host_contract
@@ -247,7 +246,7 @@ impl LocalPluginPackageStore {
             ensure_within(&staging, &manifest_file)?;
             let manifest_bytes = fs::read(&manifest_file)
                 .map_err(|_| "plugin_package_manifest_missing".to_string())?;
-            if sha256(&manifest_bytes) != manifest_sha256 {
+            if sha256(&manifest_bytes) != descriptor_contract.manifest.sha256 {
                 return Err("plugin_package_manifest_digest_mismatch".to_string());
             }
             let manifest: Value = serde_yaml::from_slice(&manifest_bytes)

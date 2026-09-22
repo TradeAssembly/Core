@@ -1,4 +1,4 @@
-//! Browser companion for the local MCP. No Studio process or source checkout.
+//! Browser companion for the local MCP. No Studio process or source files required.
 //! The loopback capability is process-local; durable records contain no tokens.
 
 use super::{authenticated_service, register_verified_identity};

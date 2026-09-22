@@ -8,6 +8,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use tradeassembly_runtime::adapters::plugin_packages::LocalPluginPackageStore;
+use tradeassembly_runtime::ports::{PluginPackageInstallRequest, PluginPackagePort};
 
 const HELP: &str = "cargo xtask bundle-local --core PATH --warden PATH --sandbox-launcher PATH --alpaca-package PATH --node-archive PATH --output NEW_DIRECTORY [--connection-profile PATH]\nCreates an unsigned macOS arm64 candidate. Uses npm ci on the build host only. Never publishes or signs. Connection profiles contain public deployment configuration only.";
 
@@ -46,6 +48,23 @@ fn assemble(args: &[String], root: &Path) -> Result<PathBuf, String> {
         &options["--alpaca-package"],
         string(&alpaca, "packageSha256")?,
     )?;
+    // Exercise the production installer before shipping pins. Its manifest hash
+    // is canonical JSON, not the raw YAML digest in the package descriptor.
+    let qualification = tempfile::tempdir().map_err(|_| "bundle_plugin_stage_failed")?;
+    let installed = LocalPluginPackageStore::new(qualification.path())?.install(
+        &PluginPackageInstallRequest {
+            source_type: "file".into(),
+            locator: options["--alpaca-package"].to_string_lossy().into_owned(),
+            package_sha256: string(&alpaca, "packageSha256")?.into(),
+            manifest_sha256: string(&alpaca, "manifestSha256")?.into(),
+            offline: true,
+        },
+    )?;
+    if installed.plugin_ref != "tradeassembly.alpaca"
+        || installed.version != string(&alpaca, "version")?
+    {
+        return Err("bundle_plugin_identity_mismatch".into());
+    }
     verify_alpaca_package(
         &options["--alpaca-package"],
         string(&alpaca, "target")?,

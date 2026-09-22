@@ -121,6 +121,16 @@ impl VersionedPort for LocalPluginOperations {
 }
 
 impl PluginOperationPort for LocalPluginOperations {
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        if self.external.is_none() {
+            return Err("external_broker_host_unavailable".into());
+        }
+        self.broker_boundary
+            .as_ref()
+            .ok_or_else(|| "broker_submission_boundary_unavailable".to_string())?
+            .verify_available()
+    }
+
     fn recover_ambiguous_broker_order(
         &self,
         plan: &crate::broker_submission::BrokerOrderRecoveryPlan,

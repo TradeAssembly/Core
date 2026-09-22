@@ -76,6 +76,10 @@ impl LocalBrokerSubmissionBoundary {
 }
 
 impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
+    fn verify_available(&self) -> Result<(), String> {
+        self.authority.verify_broker_boundary()
+    }
+
     fn admit(
         &self,
         request: &PluginOperationRequest,

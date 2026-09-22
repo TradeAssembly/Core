@@ -21,6 +21,11 @@ pub const TRADEASSEMBLY_PEP_MANIFEST: &str =
     include_str!("../config/warden/tradeassembly-core-peps.json");
 
 pub trait FinanceAuthorityPort: Send + Sync {
+    /// Availability only; callers must not treat this as an order permit.
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        Err("broker_submission_authority_unavailable".into())
+    }
+
     /// Separate from control-plane authorization. Implementations that do not
     /// support a broker-boundary PEP must never inherit a control-plane allow.
     fn prepare_broker_submission(
@@ -892,6 +897,10 @@ impl WardenSidecarAuthority {
 }
 
 impl FinanceAuthorityPort for WardenSidecarAuthority {
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        self.preflight()
+    }
+
     fn prepare_broker_submission(
         &self,
         storage: &dyn StoragePort,

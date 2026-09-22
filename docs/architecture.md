@@ -27,6 +27,15 @@ existing exact owner-issued delegated mandate. Tool discovery narrows after
 attachment. This implementation is not yet qualified as a full customer trading
 journey through Warden and the controlled broker; release evidence remains required.
 
+The production local adapter installs `LocalBrokerSubmissionBoundary` with the
+same storage, credentials, registry, leases, clock and finance authority used by
+the runtime. Without valid installation-owner state it leaves that path unavailable
+while preserving inspection/research. Broker-path availability is a fail-closed
+port check, not an order permit: the external host and enforcing boundary must be
+wired, and Warden must be reachable at the required version. Custom adapters default
+to unavailable. Every order still requires current bindings, risk evidence and its
+own C5 authorization. Live approval and evidence-policy readiness are independent.
+
 Studio consumes a qualified pinned Core revision; it owns its frontend and
 presentation checks. Product owns hosted Relay, enrollment, billing, deployment
 and integrated release evidence. Core does not depend on Product source or

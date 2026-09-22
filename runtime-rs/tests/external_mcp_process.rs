@@ -72,14 +72,14 @@ fn real_stdio_attaches_to_real_warden_activation_and_quarantines_on_eof() {
     let binary = std::env::var_os("F2_TEST_RUNTIME_BINARY").expect("explicit runtime binary");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
-    let _warden = controlled_warden::ControlledWarden::start(&root);
+    let mut warden = controlled_warden::ControlledWarden::start(&root);
     let db = root.join("runtime.db");
     let layer = RuntimeConfigLayer {
         profile: Some("local".into()),
         database_path: Some(db.display().to_string()),
         artifact_root: Some(root.join("artifacts").display().to_string()),
         oidc_profile: Some("local_owner".into()),
-        warden_sidecar_url: Some(format!("http://127.0.0.1:{}", _warden.port)),
+        warden_sidecar_url: Some(format!("http://127.0.0.1:{}", warden.port)),
         warden_token_ref: Some(format!(
             "file://{}",
             root.join("warden/warden.token").display()
@@ -246,5 +246,19 @@ fn real_stdio_attaches_to_real_warden_activation_and_quarantines_on_eof() {
             .unwrap()
             .is_empty(),
         "real Warden receipts required"
+    );
+    service
+        .runtime()
+        .plugin_operations
+        .verify_broker_boundary()
+        .unwrap();
+    warden.stop();
+    assert!(
+        service
+            .runtime()
+            .plugin_operations
+            .verify_broker_boundary()
+            .is_err(),
+        "unavailable Warden must fail boundary readiness"
     );
 }

@@ -3477,6 +3477,11 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
             capability_ready,
             legal_receipt_ready,
             live_credential_posture(service, &capability_resolution),
+            service
+                .runtime()
+                .plugin_operations
+                .verify_broker_boundary()
+                .is_ok(),
         ));
     }
     let mut blocked = checks
@@ -3694,6 +3699,7 @@ fn live_activation_checks(
     capability_ready: bool,
     legal_receipt_ready: bool,
     credential_posture_ready: bool,
+    broker_boundary_available: bool,
 ) -> Vec<Value> {
     let kill_switch_ready = config["killSwitch"]["emergencyStop"]
         .as_bool()
@@ -3757,8 +3763,8 @@ fn live_activation_checks(
         ),
         check(
             "downstream_pep_coverage_c5",
-            "C5 downstream broker authority coverage",
-            false,
+            "Enforcing C5 broker dispatch path available; order authorization still required",
+            broker_boundary_available,
             true,
             "broker.pep_coverage.c5",
         ),
@@ -3772,7 +3778,7 @@ fn live_activation_checks(
         check(
             "downstream_live_order_adapter",
             "Live broker adapter requires downstream authority",
-            false,
+            broker_boundary_available,
             true,
             "broker.downstream_authority",
         ),
@@ -6525,11 +6531,30 @@ mod tests {
     }
 
     #[test]
+    fn available_broker_boundary_does_not_grant_live_approval_or_evidence_policy() {
+        let checks = live_activation_checks(&json!({}), true, true, true, true);
+        for id in [
+            "downstream_pep_coverage_c5",
+            "downstream_live_order_adapter",
+        ] {
+            assert!(checks
+                .iter()
+                .any(|check| check["id"] == id && check["status"] == "pass"));
+        }
+        for id in ["confirm_before_send", "hosted_evidence_policy"] {
+            assert!(checks
+                .iter()
+                .any(|check| check["id"] == id && check["status"] == "blocked"));
+        }
+    }
+
+    #[test]
     fn verified_legal_receipt_clears_only_legal_live_gates() {
         let checks = live_activation_checks(
             &json!({"killSwitch": {"emergencyStop": true}}),
             true,
             true,
+            false,
             false,
         );
         for legal_check in ["legal_acknowledgement", "legal_document_version"] {
@@ -6596,7 +6621,7 @@ mod tests {
         }
         wrong["accountRef"] = json!("account://broker/two");
         assert!(!live_account_observation_matches(&record, &wrong, 1000));
-        let checks = live_activation_checks(&json!({}), true, false, true);
+        let checks = live_activation_checks(&json!({}), true, false, true, false);
         assert!(checks
             .iter()
             .any(|check| check["id"] == "live_credential_posture" && check["status"] == "pass"));

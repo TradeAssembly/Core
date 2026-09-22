@@ -36,6 +36,8 @@ const MAX_COALESCED_TICKS: u64 = 1_024;
 const MAX_CRON_MISSED_SCAN_MINUTES: usize = 7 * 24 * 60;
 pub const MCP_CAPABILITY_ENV: &str = "TRADEASSEMBLY_AGENT_MCP_CAPABILITY";
 
+pub mod external_session;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentRunnerTiming {
     pub lease_ms: i64,
@@ -1669,6 +1671,9 @@ pub fn recover_pending_run_with_context(
     };
     let mut transition_started = false;
     let result = (|| {
+        if deployment.executor == AgentExecutor::ExternalClient {
+            external_session::quarantine_abandoned(runtime, deployment_id, side_effect_context)?;
+        }
         let receipt = match runtime
             .storage
             .get_json(RECOVERY_RECEIPTS_NS, &receipt_key)?
@@ -1767,13 +1772,15 @@ pub fn recover_pending_run_with_context(
             json!({"state": "reconciled", "resolvedRunId": run_id, "resolvedAtMs": recovery_at_ms}),
             side_effect_context,
         )?;
-        let next_schedule = schedule_after_operator_recovery(&deployment, recovery_at_ms)?;
-        persist_schedule_state_with_context(
-            runtime,
-            &deployment,
-            &next_schedule,
-            side_effect_context,
-        )?;
+        if deployment.executor == AgentExecutor::Supervised {
+            let next_schedule = schedule_after_operator_recovery(&deployment, recovery_at_ms)?;
+            persist_schedule_state_with_context(
+                runtime,
+                &deployment,
+                &next_schedule,
+                side_effect_context,
+            )?;
+        }
         append_evidence_with_context(
             runtime,
             &deployment,
@@ -2441,7 +2448,7 @@ mod tests {
     use super::*;
     use crate::service::TradeAssemblyService;
 
-    fn deployment() -> AgentDeployment {
+    pub(super) fn deployment() -> AgentDeployment {
         AgentDeployment {
             executor: AgentExecutor::default(),
             deployment_id: "schedule-state-test".to_string(),

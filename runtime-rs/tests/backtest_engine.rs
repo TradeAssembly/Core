@@ -367,6 +367,33 @@ fn portfolio_case() -> (DatasetSnapshot, Value, BacktestRunManifest) {
         {"id":"maximum_loss","kind":"profit_loss","scope":"full_position"}
     ]);
     spec["stages"]["order_strategy"]["policy"]["allowed_order_types"] = json!(["market"]);
+    // Model a newly authored strategy that declares every pipeline dependency,
+    // rather than inheriting the smaller expression-only fixture requirements.
+    let requirements = spec["capability_requirements"]["required"]
+        .as_array_mut()
+        .unwrap();
+    for ((capability, _), stage) in tradeassembly_runtime::capability::PORTFOLIO_RESEARCH_OPERATIONS
+        .iter()
+        .zip([
+            "universe",
+            "evaluate",
+            "intent",
+            "sizing",
+            "risk",
+            "exit_policy",
+            "price_policy",
+        ])
+    {
+        requirements.push(json!({
+            "requirement_id": format!("portfolio_{}", capability.split('.').next().unwrap()),
+            "capability": capability,
+            "purpose": "strategy_backtest_research",
+            "required_for": ["backtest"],
+            "stage_refs": [stage],
+            "constraints": {},
+            "fallback_policy": "none"
+        }));
+    }
     let validation = tradeassembly_runtime::spec::validate_strategy_spec_report(&spec);
     assert!(validation.valid, "{:?}", validation.diagnostics);
     let version = version(spec);

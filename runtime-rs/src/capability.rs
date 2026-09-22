@@ -777,6 +777,18 @@ fn constraints_from_traits(traits: &PluginOperationTraits) -> CapabilityRequirem
     }
 }
 
+/// Operations implemented by the portfolio research evaluator. These declarations
+/// do not authorize execution; the provider catalog restricts them to research.
+pub const PORTFOLIO_RESEARCH_OPERATIONS: &[(&str, &str)] = &[
+    ("universe.static.select@1", "universe.static.select_v1"),
+    ("signal.rule.evaluate@1", "signal.rule.evaluate_v1"),
+    ("intent.trade.build@1", "intent.trade.build_v1"),
+    ("sizing.relative.apply@1", "sizing.relative.apply_v1"),
+    ("risk.strategy.guard@1", "risk.strategy.guard_v1"),
+    ("exit.policy.evaluate@1", "exit.policy.evaluate_v1"),
+    ("price.snapshot.select@1", "price.snapshot.select_v1"),
+];
+
 pub fn local_full_entitlements() -> Vec<EntitlementGrant> {
     [
         "marketdata.quote",
@@ -804,6 +816,11 @@ pub fn local_full_entitlements() -> Vec<EntitlementGrant> {
         "indicator.calculate",
     ]
     .into_iter()
+    .chain(
+        PORTFOLIO_RESEARCH_OPERATIONS
+            .iter()
+            .map(|(capability, _)| *capability),
+    )
     .map(|capability| EntitlementGrant {
         grant_id: format!("grant:local_full:{capability}"),
         profile: LOCAL_FULL_PROFILE.to_string(),

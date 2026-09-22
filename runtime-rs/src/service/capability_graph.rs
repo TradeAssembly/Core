@@ -540,7 +540,10 @@ fn intrinsic_binding(capability: &str) -> Option<CapabilityBinding> {
         "order.option_combo.submit@1" => "order.option_combo.submit_v1",
         "indicator.bars.normalize@1" => "indicator.bars.normalize_v1",
         "indicator.stateful.calculate@1" => "indicator.stateful.calculate_v1",
-        _ => return None,
+        other => crate::capability::PORTFOLIO_RESEARCH_OPERATIONS
+            .iter()
+            .find(|(capability, _)| *capability == other)
+            .map(|(_, operation)| *operation)?,
     };
     Some(CapabilityBinding {
         plugin_instance_ref: Some("core-runtime".to_string()),

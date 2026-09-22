@@ -15,6 +15,35 @@ use tradeassembly_runtime::service::TradeAssemblyService;
 
 const EPOCH: &str = "2026-07-22T12:00:00Z";
 
+#[test]
+fn portfolio_research_capabilities_resolve_without_enabling_live_execution() {
+    let (_directory, _db, service) = test_service("portfolio-catalog");
+    for (capability, operation) in tradeassembly_runtime::capability::PORTFOLIO_RESEARCH_OPERATIONS
+    {
+        for mode in ["backtest", "live"] {
+            let response = service.call_mcp_tool(
+                "tradeassembly.plugin.capability_graph_resolve",
+                json!({
+                    "mode": mode, "evaluation_epoch": EPOCH,
+                    "requirements": [{"requirementId":"pipeline", "capability":capability}],
+                    "bindings": {"pipeline": {
+                        "pluginInstanceRef":"core-runtime", "operationId":operation
+                    }}
+                }),
+            );
+            let body = &response["structuredContent"];
+            assert_eq!(
+                body["ok"],
+                mode == "backtest",
+                "{capability} {mode}: {body:#}"
+            );
+            if mode == "live" {
+                assert!(body.to_string().contains("mode_incompatible"), "{body:#}");
+            }
+        }
+    }
+}
+
 fn fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../examples/strategy-spec/v3/valid/static-equity.json")

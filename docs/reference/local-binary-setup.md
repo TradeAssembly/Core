@@ -180,6 +180,23 @@ request replay semantics.
 
 ## Owner publication
 
+Research tool discovery includes the full nested input contracts: use
+`backtest.run.inputSchema.properties.request.properties.configuration` for
+capital, risk, execution, costs, dataset provenance and instrument metadata.
+Ingestion discovery specifies each normalization/quality policy field and enum.
+These schemas are generated from the same Rust types used to accept requests.
+An empty backtest `capabilityGraph` revision/fingerprint requests resolution of
+a new backtest graph; the dataset binding retains its original ingestion graph.
+Capability evaluation mode is separate from broker-account authority.
+
+Dataset MCP create/list/status/get return metadata without observations by
+default. For rows, call `tradeassembly.dataset_ingestion.get` with
+`observation_offset` and `observation_limit` (0–1000). Follow `observationPage`
+pagination. The retained snapshot hash identifies the complete immutable stored
+dataset, not the returned page. Backtesting reads that stored dataset directly;
+agents need not download its rows. An idempotent backtest create may replay its
+original queued acknowledgment; use `backtest.get` for current durable state.
+
 Agents can discover the embedded contract with `tradeassembly.strategy.schema`.
 `tradeassembly.strategy.create` in blank mode creates an incomplete draft without
 instruments, provider selection, or trading rules. Encode only owner-supplied

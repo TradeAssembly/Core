@@ -1131,17 +1131,15 @@ fn authority_value(body: &Value) -> Value {
         .and_then(|value| value.get("surface"))
         .and_then(Value::as_str)
         .unwrap_or("service");
-    let account_mode = string_field(body, &["mode", "accountMode", "account_mode"])
-        .or_else(|| {
-            context
-                .and_then(|value| {
-                    value
-                        .get("accountMode")
-                        .or_else(|| value.get("account_mode"))
-                })
-                .and_then(Value::as_str)
-                .map(str::to_string)
+    let account_mode = context
+        .and_then(|value| {
+            value
+                .get("accountMode")
+                .or_else(|| value.get("account_mode"))
         })
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| string_field(body, &["accountMode", "account_mode", "mode"]))
         .unwrap_or_else(|| "paper".to_string());
     json!({
         "actor": actor,
@@ -1153,8 +1151,10 @@ fn authority_value(body: &Value) -> Value {
 fn side_effect_context(body: &Value, idempotency_key: &str) -> SideEffectContext {
     let mut authority = AuthorityContext::local_cli();
     authority.surface = "capability_graph".to_string();
-    authority.account_mode = string_field(body, &["mode", "accountMode", "account_mode"])
-        .unwrap_or_else(|| "paper".to_string());
+    authority.account_mode = authority_value(body)["accountMode"]
+        .as_str()
+        .unwrap_or("paper")
+        .to_string();
     SideEffectContext::new(
         authority,
         IdempotencyKey::new(idempotency_key)

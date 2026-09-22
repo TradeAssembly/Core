@@ -52,14 +52,14 @@ impl DatasetIngestionState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DatasetTimeSlice {
     pub start: String,
     pub end: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QualityDisposition {
     Reject,
@@ -67,7 +67,7 @@ pub enum QualityDisposition {
     Allow,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DatasetQualityPolicy {
     pub missing_intervals: QualityDisposition,
@@ -79,7 +79,7 @@ pub struct DatasetQualityPolicy {
     pub missing_derivative_fields: QualityDisposition,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DatasetNormalizationPolicy {
     pub timestamp_unit: String,

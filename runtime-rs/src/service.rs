@@ -3101,6 +3101,21 @@ impl TradeAssemblyService {
             }
         }
         let arguments = self.enrich_mcp_arguments(name, arguments);
+        // Capability queries select an evaluation mode, not broker authority.
+        // Keep that selector separate from the trusted account mode below.
+        let capability_query_mode = matches!(
+            name,
+            "tradeassembly.plugin.capability_graph_resolve"
+                | "tradeassembly.plugin.capability_revision_save"
+                | "tradeassembly.plugin.capability_resolve"
+        )
+        .then(|| {
+            arguments
+                .get("mode")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten();
         let trusted_runner_mode = self
             .agent_mcp_execution_context
             .as_ref()
@@ -3124,7 +3139,7 @@ impl TradeAssemblyService {
                     trusted_runner_mode.as_deref(),
                 )
             });
-        let arguments = if let Some(context) = &self.agent_mcp_execution_context {
+        let mut arguments = if let Some(context) = &self.agent_mcp_execution_context {
             match crate::agent_runner::bind_mcp_execution_context(
                 self.runtime.as_ref(),
                 context,
@@ -3144,6 +3159,9 @@ impl TradeAssemblyService {
         } else {
             arguments
         };
+        if let Some(mode) = capability_query_mode {
+            arguments["mode"] = json!(mode);
+        }
         if broker_onboarding_call {
             if let Some(code) = broker_onboarding::validate_mcp_arguments(name, &arguments) {
                 return mcp::tool_error(name, code, "Broker setup requires explicit account mode and authority. Enter credentials only in the browser connection screen.", None);
@@ -3566,24 +3584,50 @@ impl TradeAssemblyService {
                 let run_id = arguments["run_id"].as_str().unwrap_or_default().to_string();
                 robustness::retry(self, &run_id, arguments).body
             }
-            "tradeassembly.dataset_ingestion.create" => {
+            "tradeassembly.dataset_ingestion.create" => dataset_ingestion::mcp_page(
                 self.dispatch_http("POST", "/dataset-ingestions", arguments)
-                    .body
-            }
-            "tradeassembly.dataset_ingestion.list" => {
+                    .body,
+                0,
+                0,
+            ),
+            "tradeassembly.dataset_ingestion.list" => dataset_ingestion::mcp_page(
                 self.dispatch_http("GET", "/dataset-ingestions", arguments)
-                    .body
-            }
+                    .body,
+                0,
+                0,
+            ),
             "tradeassembly.dataset_ingestion.get" | "tradeassembly.dataset_ingestion.status" => {
-                self.dispatch_http(
-                    "GET",
-                    &format!(
-                        "/dataset-ingestions/{}",
-                        arguments["ingestion_id"].as_str().unwrap_or_default()
-                    ),
-                    arguments,
-                )
-                .body
+                let offset = arguments
+                    .get("observation_offset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let limit = arguments
+                    .get("observation_limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if limit > 1000
+                    || usize::try_from(offset).is_err()
+                    || ["observation_offset", "observation_limit"]
+                        .iter()
+                        .any(|key| {
+                            arguments
+                                .get(key)
+                                .is_some_and(|value| value.as_u64().is_none())
+                        })
+                {
+                    return mcp::tool_error(name, "dataset_observation_page_invalid", "Observation offset must be a nonnegative integer and limit must be between zero and 1000.", None);
+                }
+                let response = self
+                    .dispatch_http(
+                        "GET",
+                        &format!(
+                            "/dataset-ingestions/{}",
+                            arguments["ingestion_id"].as_str().unwrap_or_default()
+                        ),
+                        arguments,
+                    )
+                    .body;
+                dataset_ingestion::mcp_page(response, offset as usize, limit as usize)
             }
             "tradeassembly.dataset_ingestion.cancel" => {
                 self.dispatch_http(

@@ -964,8 +964,8 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.strategy.validate", "Validate StrategySpec", "Validate inline spec JSON without saving it, or validate an owned saved draft by strategy_id. Returns structured diagnostics. Does not read files, publish, or activate.", object_schema([("spec", object_like_schema("StrategySpec JSON to validate without persistence.")), ("strategy_id", string_schema("Owned saved draft to validate when spec is omitted.", None)), ("db", db_property())], []), true),
         tool("tradeassembly.plugin.list", "List Plugins", "List installed local plugins, operation contracts, entitlement posture, and capability resolver summaries.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.plugin.capability_resolve", "Resolve Plugin Capability", "Resolve which plugin operations can satisfy a strategy capability requirement under the active entitlement profile.", object_schema([("db", db_property()), ("capability", string_schema("Capability id required by the strategy.", None)), ("mode", string_schema("Execution mode, such as paper or live.", Some("paper"))), ("instrument_type", string_schema("Instrument type, such as equity, option, crypto, or future.", Some("equity"))), ("operation", string_schema("Optional operation id or strategy action.", None)), ("strategy_id", string_schema("Optional strategy id.", None)), ("plugin_ref", string_schema("Optional preferred plugin ref.", None)), ("account_ref", string_schema("Optional account ref.", None)), ("purpose", string_schema("Optional purpose code for APF receipts.", None))], ["capability"]), true),
-        tool("tradeassembly.plugin.capability_graph_resolve", "Resolve Capability Graph", "Resolve a complete strategy capability graph through the shared deterministic resolver.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", array_schema()), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings."))], []), true),
-        tool("tradeassembly.plugin.capability_revision_save", "Save Capability Graph Revision", "Persist immutable capability bindings and their resolved graph snapshot.", object_schema([("db", db_property()), ("config_id", string_schema("Execution config ID.", None)), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", array_schema()), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings.")), ("idempotency_key", string_schema("Idempotency key.", None))], []), false),
+        tool("tradeassembly.plugin.capability_graph_resolve", "Resolve Capability Graph", "Resolve a complete strategy capability graph through the shared deterministic resolver.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", json!({"type":"array","items":{"type":"object","additionalProperties":true},"description":"Optional explicit capability requirement objects; omit to derive the published strategy requirements."})), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings."))], []), true),
+        tool("tradeassembly.plugin.capability_revision_save", "Save Capability Graph Revision", "Persist immutable capability bindings and their resolved graph snapshot.", object_schema([("db", db_property()), ("config_id", string_schema("Execution config ID.", None)), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", json!({"type":"array","items":{"type":"object","additionalProperties":true},"description":"Optional explicit capability requirement objects; omit to derive the published strategy requirements."})), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings.")), ("idempotency_key", string_schema("Idempotency key.", None))], []), false),
         tool("tradeassembly.plugin.capability_revision_get", "Get Capability Graph Revision", "Read an immutable capability graph revision.", object_schema([("db", db_property()), ("revision_id", string_schema("Capability revision ID.", None))], ["revision_id"]), true),
         tool("tradeassembly.plugin.capability_revision_check", "Check Capability Graph Revision", "Re-evaluate current plugin facts and report whether a saved graph revision remains current.", object_schema([("db", db_property()), ("revision_id", string_schema("Capability revision ID.", None)), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None))], ["revision_id"]), true),
         tool("tradeassembly.plugin.capability_matrix", "Plugin Capability Matrix", "Inspect installed plugin capability metadata by plugin ref or compatibility provider ref.", object_schema([("ref", string_schema("Plugin or provider ref.", None)), ("db", db_property())], ["ref"]), true),
@@ -979,7 +979,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool_with_metadata("tradeassembly.plugin.oauth.disconnect", "Disconnect Plugin OAuth", "Revoke local credentials and invalidate pending OAuth handoffs for an owned plugin instance.", object_schema([("instanceRef", string_schema("Owned plugin instance ref.", None)), ("idempotencyKey", string_schema("Stable key for retrying this disconnect request.", None))], ["instanceRef", "idempotencyKey"]), false, true, true),
         tool("tradeassembly.plugin.status", "Plugin Status", "Summarize plugin command availability.", object_schema([("registry_path", string_schema("Optional plugin registry path.", None))], []), true),
         tool("tradeassembly.indicator.status", "Indicator Status", "Summarize indicator surface availability.", object_schema([("db", db_property())], []), true),
-        tool("tradeassembly.backtest.run", "Run Backtest", "Create a durable deterministic BacktestRun for one immutable StrategyVersion and dataset snapshot.", object_schema([("db", db_property()), ("request", object_like_schema("Complete typed backtest create request.")), ("strategy_id", string_schema("Strategy ID for compatibility configuration.", None)), ("strategy_version_id", string_schema("Immutable StrategyVersion ID.", None)), ("dataset_id", string_schema("Immutable dataset snapshot ID.", None)), ("purpose", string_schema("Controlled purpose.", Some("strategy_backtest_research"))), ("client", string_schema("Client context.", Some("self"))), ("idempotency_key", string_schema("Request-equivalence idempotency key.", None))], ["idempotency_key"]), false),
+        tool("tradeassembly.backtest.run", "Run Backtest", "Create a durable deterministic BacktestRun for one immutable StrategyVersion and dataset snapshot.", object_schema([("db", db_property()), ("request", backtest_request_schema()), ("strategy_id", string_schema("Strategy ID for compatibility configuration.", None)), ("strategy_version_id", string_schema("Immutable StrategyVersion ID.", None)), ("dataset_id", string_schema("Immutable dataset snapshot ID.", None)), ("purpose", string_schema("Controlled purpose.", Some("strategy_backtest_research"))), ("client", string_schema("Client context.", Some("self"))), ("idempotency_key", string_schema("Request-equivalence idempotency key.", None))], ["idempotency_key"]), false),
         tool("tradeassembly.backtest.get", "Get Backtest", "Read one durable BacktestRun and its current attempt.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
         tool("tradeassembly.backtest.report", "Get Backtest Report", "Project one integrity-verified completed BacktestRun into its deterministic report.", object_schema([("backtest_id", string_schema("Backtest ID.", None)), ("db", db_property())], ["backtest_id"]), true),
         tool("tradeassembly.backtest.export", "Export Backtest Report", "Export one verified deterministic backtest report as manifest JSON, report JSON, trades CSV, orders and fills CSV, positions and ledger CSV, or equity CSV.", object_schema([("backtest_id", string_schema("Backtest ID.", None)), ("export_kind", string_schema("Export kind.", Some("reportJson"))), ("db", db_property())], ["backtest_id"]), false),
@@ -990,7 +990,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.backtest.replay", "Replay Backtest", "Recompute a persisted backtest from pinned inputs and fail closed on mismatch.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
         tool("tradeassembly.dataset_ingestion.create", "Create Dataset Ingestion", "Resolve an exact historical-data plugin operation, acquire typed observations, validate quality, and persist an immutable content-addressed dataset snapshot.", dataset_ingestion_create_schema(), false),
         tool("tradeassembly.dataset_ingestion.list", "List Dataset Ingestions", "List historical dataset ingestion lifecycle records.", object_schema([("db", db_property())], []), true),
-        tool("tradeassembly.dataset_ingestion.get", "Get Dataset Ingestion", "Get one dataset ingestion and its integrity-checked immutable snapshot.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("db", db_property())], ["ingestion_id"]), true),
+        tool("tradeassembly.dataset_ingestion.get", "Get Dataset Ingestion", "Get an integrity-checked dataset summary; request a bounded observation page explicitly.", dataset_ingestion_get_schema(), true),
         tool("tradeassembly.dataset_ingestion.status", "Dataset Ingestion Status", "Read the current state of one dataset ingestion.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("db", db_property())], ["ingestion_id"]), true),
         tool("tradeassembly.dataset_ingestion.cancel", "Cancel Dataset Ingestion", "Cancel a nonterminal dataset ingestion using the initiating authority context.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("idempotency_key", string_schema("Cancellation idempotency key.", None)), ("authority_context", object_like_schema("Initiating authority context.")), ("db", db_property())], ["ingestion_id", "idempotency_key", "authority_context"]), false),
         tool("tradeassembly.dataset_ingestion.verify", "Verify Dataset Ingestion", "Re-read one immutable dataset snapshot and fail closed on any integrity mismatch.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("db", db_property())], ["ingestion_id"]), true),
@@ -1511,6 +1511,67 @@ fn agent_authority_schema() -> Value {
     )
 }
 
+/// Keep nested JSON Schema references rooted in the containing tool input.
+fn embedded_schema<T: schemars::JsonSchema>(pointer: &str) -> Value {
+    fn rebase(value: &mut Value, pointer: &str) {
+        match value {
+            Value::Object(object) => {
+                if let Some(Value::String(reference)) = object.get_mut("$ref") {
+                    if let Some(suffix) = reference.strip_prefix('#') {
+                        *reference = format!("#{pointer}{suffix}");
+                    }
+                }
+                for child in object.values_mut() {
+                    rebase(child, pointer);
+                }
+            }
+            Value::Array(values) => values.iter_mut().for_each(|value| rebase(value, pointer)),
+            _ => {}
+        }
+    }
+    let mut schema = serde_json::to_value(schemars::schema_for!(T)).expect("serializable schema");
+    schema
+        .as_object_mut()
+        .expect("object schema")
+        .remove("$schema");
+    rebase(&mut schema, pointer);
+    schema
+}
+
+fn backtest_request_schema() -> Value {
+    json!({
+        "type":"object",
+        "description":"Explicit backtest assumptions and immutable bindings. Capital, costs and risk are caller choices, not recommendations. Leave configuration.capabilityGraph identifiers empty to resolve a new backtest graph; dataset provenance retains the ingestion graph. Poll backtest.get after an idempotent create acknowledgment.",
+        "properties": {
+            "configuration": embedded_schema::<crate::backtest_contracts::BacktestConfiguration>("/properties/request/properties/configuration"),
+            "purpose": {"type":"string"},
+            "client": {"type":"string"},
+            "idempotencyKey": {"type":"string"},
+            "evaluationEpoch": {"type":"string"},
+            "evidenceRefs": {"type":"array", "items":{"type":"string"}}
+        },
+        "additionalProperties":true
+    })
+}
+
+fn dataset_ingestion_get_schema() -> Value {
+    object_schema(
+        [
+            ("ingestion_id", string_schema("Dataset ingestion ID.", None)),
+            (
+                "observation_offset",
+                json!({"type":"integer","minimum":0,"default":0}),
+            ),
+            (
+                "observation_limit",
+                json!({"type":"integer","minimum":0,"maximum":1000,"default":0,"description":"Zero returns metadata only; up to 1000 observations per explicit page."}),
+            ),
+            ("db", db_property()),
+        ],
+        ["ingestion_id"],
+    )
+}
+
 fn dataset_ingestion_create_schema() -> Value {
     object_schema(
         [
@@ -1536,19 +1597,23 @@ fn dataset_ingestion_create_schema() -> Value {
             ),
             (
                 "time_slice",
-                object_like_schema("Bounded start and end timestamps."),
+                embedded_schema::<crate::historical_data::DatasetTimeSlice>(
+                    "/properties/time_slice",
+                ),
             ),
             ("calendar", string_schema("Trading calendar ID.", None)),
             ("timezone", string_schema("Dataset timezone.", Some("UTC"))),
             (
                 "normalization_policy",
-                object_like_schema(
-                    "Explicit timestamp, duplicate, and price normalization policy.",
+                embedded_schema::<crate::historical_data::DatasetNormalizationPolicy>(
+                    "/properties/normalization_policy",
                 ),
             ),
             (
                 "quality_policy",
-                object_like_schema("Explicit missing, stale, outlier, and invalid-row policy."),
+                embedded_schema::<crate::historical_data::DatasetQualityPolicy>(
+                    "/properties/quality_policy",
+                ),
             ),
             (
                 "max_rows",

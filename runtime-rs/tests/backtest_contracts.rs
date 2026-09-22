@@ -19,6 +19,35 @@ fn context() -> SideEffectContext {
     )
 }
 
+#[test]
+fn mcp_backtest_schema_validates_nested_contract_without_source_inspection() {
+    let tools = tradeassembly_runtime::mcp::tool_definitions();
+    let schema = &tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "tradeassembly.backtest.run")
+        .unwrap()["inputSchema"];
+    let validator =
+        jsonschema::validator_for(schema).expect("all nested schema references resolve");
+    let mut request =
+        json!({"idempotency_key":"schema-test", "request":{"configuration":configuration()}});
+    assert!(validator.is_valid(&request));
+    request["request"]["configuration"]["instruments"][0]["metadata"] =
+        json!({"testAssumption":true});
+    assert!(
+        !validator.is_valid(&request),
+        "metadata values must be strings"
+    );
+    request["request"]["configuration"]["instruments"][0]["metadata"] =
+        json!({"testAssumption":"true"});
+    request["request"]["configuration"]["execution"]["fillTiming"] = json!("invented");
+    assert!(
+        !validator.is_valid(&request),
+        "fill timing must match the typed enum"
+    );
+}
+
 fn configuration() -> BacktestConfiguration {
     BacktestConfiguration {
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),

@@ -1344,6 +1344,38 @@ fn record_evidence(
         .map_err(|_| "dataset_ingestion_evidence_failed".to_string())
 }
 
+/// MCP carries metadata by default. Explicit pages are a projection only: the
+/// full immutable snapshot is integrity-checked before this function is called.
+pub(crate) fn mcp_page(mut response: Value, offset: usize, limit: usize) -> Value {
+    if let Some(records) = response.get_mut("ingestions").and_then(Value::as_array_mut) {
+        for record in records {
+            *record = mcp_page(record.take(), 0, 0);
+        }
+    }
+    if let Some(content) = response
+        .pointer_mut("/snapshot/content")
+        .and_then(Value::as_object_mut)
+    {
+        if let Some(Value::Array(observations)) = content.remove("observations") {
+            let total = observations.len();
+            let rows: Vec<_> = observations.into_iter().skip(offset).take(limit).collect();
+            let returned = rows.len();
+            if limit > 0 {
+                content.insert("observations".into(), json!(rows));
+            }
+            response["observationPage"] = json!({
+                "offset": offset, "limit": limit, "returned": returned, "total": total,
+                "nextOffset": if limit > 0 && offset.saturating_add(returned) < total {
+                    Some(offset + returned)
+                } else { None },
+                "completeSnapshot": false,
+                "guidance":"Snapshot hash identifies the complete stored dataset, not this metadata/page projection. Use dataset_ingestion.get with observation_offset and observation_limit for rows."
+            });
+        }
+    }
+    response
+}
+
 fn response(service: &TradeAssemblyService, record: &DatasetIngestionRecord) -> Value {
     let snapshot = match record.aggregate.snapshot_id.as_deref() {
         Some(id) => match service.runtime().dataset_snapshots.get(id) {

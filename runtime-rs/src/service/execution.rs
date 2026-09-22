@@ -1183,11 +1183,22 @@ pub(crate) fn activation_readiness(service: &TradeAssemblyService, body: Value) 
         Ok(config) => config,
         Err(response) => return object_unavailable(response),
     };
-    let mut readiness = readiness_for_config(service, &config);
-    if config["mode"] == "live"
+    let authority = if config["mode"] == "live"
         && (body.get("localLiveMandateId").is_some() || body.get("local_live_mandate_id").is_some())
     {
-        match super::live_authorization::activation_authority(service, &config, &body) {
+        Some(super::live_authorization::activation_authority(
+            service, &config, &body,
+        ))
+    } else {
+        None
+    };
+    let mut readiness = readiness_for_config_with_authority(
+        service,
+        &config,
+        authority.as_ref().is_some_and(Result::is_ok),
+    );
+    if let Some(authority) = authority {
+        match authority {
             Ok(authority) => readiness["localLiveAuthority"] = authority,
             Err(response) => {
                 readiness["ready"] = json!(false);
@@ -1259,7 +1270,8 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     } else {
         Value::Null
     };
-    let readiness = readiness_for_config(service, &config);
+    let readiness =
+        readiness_for_config_with_authority(service, &config, !live_authority.is_null());
     if !readiness["ready"].as_bool().unwrap_or(false) {
         return activation_blocked_response(readiness);
     }
@@ -1686,7 +1698,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     if service
         .runtime()
         .evidence
-        .append(EvidenceRecord {
+        .append_verified(EvidenceRecord {
             evidence_id,
             evidence_type: "execution.activation.commit_authorized".to_string(),
             aggregate_id: activation_id.clone(),
@@ -3213,6 +3225,14 @@ fn sorted_execution_runs(service: &TradeAssemblyService, strategy_id: Option<&st
 }
 
 fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value {
+    readiness_for_config_with_authority(service, config, false)
+}
+
+fn readiness_for_config_with_authority(
+    service: &TradeAssemblyService,
+    config: &Value,
+    mandate_verified: bool,
+) -> Value {
     let mode = config["mode"]
         .as_str()
         .unwrap_or("paper")
@@ -3482,6 +3502,8 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
                 .plugin_operations
                 .verify_broker_boundary()
                 .is_ok(),
+            mandate_verified,
+            service.runtime().evidence.verify_durable().is_ok(),
         ));
     }
     let mut blocked = checks
@@ -3700,6 +3722,8 @@ fn live_activation_checks(
     legal_receipt_ready: bool,
     credential_posture_ready: bool,
     broker_boundary_available: bool,
+    mandate_verified: bool,
+    durable_evidence_ready: bool,
 ) -> Vec<Value> {
     let kill_switch_ready = config["killSwitch"]["emergencyStop"]
         .as_bool()
@@ -3721,10 +3745,10 @@ fn live_activation_checks(
         ),
         check(
             "hosted_evidence_policy",
-            "Hosted or external evidence receipt policy",
-            false,
+            "Durable local evidence available; activation receipt required at commit",
+            durable_evidence_ready,
             true,
-            "evidence.hosted_or_external",
+            "evidence.durable_activation_receipt",
         ),
         check(
             "live_credential_posture",
@@ -3770,10 +3794,10 @@ fn live_activation_checks(
         ),
         check(
             "confirm_before_send",
-            "Human confirm-before-send approval",
-            false,
+            "Current owner-issued execution mandate verified for this configuration",
+            mandate_verified,
             true,
-            "approval.confirm_before_send",
+            "approval.local_live_mandate",
         ),
         check(
             "downstream_live_order_adapter",
@@ -6532,7 +6556,7 @@ mod tests {
 
     #[test]
     fn available_broker_boundary_does_not_grant_live_approval_or_evidence_policy() {
-        let checks = live_activation_checks(&json!({}), true, true, true, true);
+        let checks = live_activation_checks(&json!({}), true, true, true, true, false, false);
         for id in [
             "downstream_pep_coverage_c5",
             "downstream_live_order_adapter",
@@ -6554,6 +6578,8 @@ mod tests {
             &json!({"killSwitch": {"emergencyStop": true}}),
             true,
             true,
+            false,
+            false,
             false,
             false,
         );
@@ -6621,7 +6647,7 @@ mod tests {
         }
         wrong["accountRef"] = json!("account://broker/two");
         assert!(!live_account_observation_matches(&record, &wrong, 1000));
-        let checks = live_activation_checks(&json!({}), true, false, true, false);
+        let checks = live_activation_checks(&json!({}), true, false, true, false, false, false);
         assert!(checks
             .iter()
             .any(|check| check["id"] == "live_credential_posture" && check["status"] == "pass"));

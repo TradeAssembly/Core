@@ -110,6 +110,27 @@ fn owner_issue_flow_uses_production_config_route() {
     assert_eq!(captured["actor"]["subject"], owner.subject);
     assert_eq!(captured["actor"]["issuer"], owner.issuer);
     assert_eq!(captured["actor"]["actorKind"], "user");
+    let check_status = |body: &Value, id: &str| {
+        body["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == id)
+            .unwrap()["status"]
+            .clone()
+    };
+    let ready_body = &bound_readiness["structuredContent"]["body"];
+    assert_eq!(check_status(ready_body, "confirm_before_send"), "pass");
+    assert_eq!(check_status(ready_body, "hosted_evidence_policy"), "pass");
+    assert_eq!(ready_body["ready"], false);
+    let forged = service.call_mcp_tool(
+        "tradeassembly.execution.readiness",
+        json!({"config_id":config_id,"localLiveAuthority":captured}),
+    );
+    assert_eq!(
+        check_status(&forged["structuredContent"]["body"], "confirm_before_send"),
+        "blocked"
+    );
     let missing_readiness = service.call_mcp_tool(
         "tradeassembly.execution.readiness",
         json!({
@@ -121,6 +142,7 @@ fn owner_issue_flow_uses_production_config_route() {
     assert_eq!(missing["ready"], false);
     assert_eq!(missing["localLiveMandateError"]["code"], "route_not_found");
     assert!(missing["localLiveAuthority"].is_null());
+    assert_eq!(check_status(missing, "confirm_before_send"), "blocked");
     let retry = service.handle_http("POST", "/product/live-mandates/issue", request.clone());
     assert_eq!(retry.body["mandate"], *mandate, "{retry:#?}");
     let mut changed = request.clone();
@@ -172,6 +194,17 @@ fn owner_issue_flow_uses_production_config_route() {
     assert_eq!(
         stale.body["error"]["code"], "live_mandate_stale_binding",
         "{stale:#?}"
+    );
+    let stale_readiness = service.call_mcp_tool(
+        "tradeassembly.execution.readiness",
+        json!({"config_id":config_id,"local_live_mandate_id":id}),
+    );
+    assert_eq!(
+        check_status(
+            &stale_readiness["structuredContent"]["body"],
+            "confirm_before_send"
+        ),
+        "blocked"
     );
     service
         .runtime()
@@ -444,6 +477,17 @@ fn owner_issue_flow_uses_production_config_route() {
         json!({"mandateId":id,"idempotencyKey":"revoke-1"}),
     );
     assert_eq!(revoked.status, 200, "{revoked:#?}");
+    let revoked_readiness = service.call_mcp_tool(
+        "tradeassembly.execution.readiness",
+        json!({"config_id":config_id,"local_live_mandate_id":id}),
+    );
+    assert_eq!(
+        check_status(
+            &revoked_readiness["structuredContent"]["body"],
+            "confirm_before_send"
+        ),
+        "blocked"
+    );
     let after_revoke = service.handle_http(
         "POST",
         "/product/strategy-execution-activations/mandate-evaluation-fixture/ticks/evaluate",

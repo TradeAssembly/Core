@@ -1,5 +1,15 @@
 # Extraction decisions
 
+- Local Live activation does not require hosted evidence or a Relay entitlement.
+  Its legacy `hosted_evidence_policy` readiness ID now reports durable local
+  evidence availability (kept for client compatibility). Evidence adapters default
+  to unavailable; SQLite verifies a file-backed database, WAL and FULL-or-stronger
+  synchronization. Availability is advisory, not authorization or a write guarantee:
+  activation must append and read back the exact receipt before its atomic domain
+  commit. Missing, conflicting or unreadable evidence prevents activation. This
+  does not claim remote archival, disaster recovery or qualified Postgres support.
+  Owner-mandate approval, legal/account checks and per-order Warden enforcement
+  remain separate gates; no shipping Live policy is changed.
 - Use the owner-approved Apache-2.0 Core grant; preserve OptionLab LLC legal
   attribution and third-party rights. Validate actual LICENSE/NOTICE, not a
   readiness flag alone. Exact binary distribution notices remain a separate gate.

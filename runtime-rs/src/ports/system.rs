@@ -81,8 +81,29 @@ pub struct EvidenceRecord {
 }
 
 pub trait EvidencePort: VersionedPort {
+    /// Availability only; each activation must still persist and verify its receipt.
+    fn verify_durable(&self) -> Result<(), String> {
+        Err("durable_evidence_unavailable".into())
+    }
+
     fn append(&self, record: EvidenceRecord) -> Result<(), String>;
     fn list(&self, aggregate_id: &str) -> Result<Vec<EvidenceRecord>, String>;
+
+    /// Verify the persisted receipt, including when an adapter deduplicates a write.
+    /// An append acknowledgement alone is not proof of the requested content.
+    fn append_verified(&self, record: EvidenceRecord) -> Result<(), String> {
+        self.append(record.clone())?;
+        let records = self.list(&record.aggregate_id)?;
+        let mut matching = records.iter().filter(|stored| {
+            stored.evidence_id == record.evidence_id
+                || stored.idempotency_key == record.idempotency_key
+        });
+        if matching.next() == Some(&record) && matching.next().is_none() {
+            Ok(())
+        } else {
+            Err("evidence_receipt_mismatch".to_string())
+        }
+    }
 }
 
 pub trait PluginRegistryPort: VersionedPort {

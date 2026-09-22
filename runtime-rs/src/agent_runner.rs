@@ -857,6 +857,11 @@ pub fn bind_mcp_execution_context(
     if current != *execution_context {
         return Err("agent_mcp_execution_context_invalid".to_string());
     }
+    execution_context.current_lease(
+        runtime.storage.as_ref(),
+        runtime.clock.as_ref(),
+        runtime.leases.as_ref(),
+    )?;
     if !execution_context
         .studio_tool_allowlist
         .iter()
@@ -923,7 +928,13 @@ pub(crate) fn revalidate_mcp_execution_context(
     runtime: &ServiceRuntime,
     context: &VerifiedAgentMcpExecutionContext,
 ) -> Result<(), String> {
-    context.revalidate(runtime.storage.as_ref(), runtime.clock.as_ref())
+    context
+        .current_lease(
+            runtime.storage.as_ref(),
+            runtime.clock.as_ref(),
+            runtime.leases.as_ref(),
+        )
+        .map(|_| ())
 }
 
 fn bind_scoped_identifier(
@@ -2748,6 +2759,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(replacement.fencing_token > supervisor_lease.fencing_token);
+        assert_eq!(
+            bind_mcp_execution_context(
+                &service.runtime(),
+                &resolved,
+                "tradeassembly.health",
+                json!({}),
+            )
+            .unwrap_err(),
+            "agent_run_lease_invalid"
+        );
+        assert_eq!(
+            revalidate_mcp_execution_context(&service.runtime(), &resolved).unwrap_err(),
+            "agent_run_lease_invalid"
+        );
+        assert_eq!(
+            authenticated.call_mcp_tool("tradeassembly.health", json!({}))["isError"],
+            true,
+            "an unexpired cached active pointer must not authorize a fenced-out MCP session"
+        );
         assert!(carried
             .revalidate(
                 service.runtime().storage.as_ref(),

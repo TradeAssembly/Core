@@ -1658,6 +1658,8 @@ mod tests {
                 low: close - 1.0,
                 close,
                 volume: 100.0,
+                vwap: None,
+                session: None,
             }),
         }
     }

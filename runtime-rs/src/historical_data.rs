@@ -103,6 +103,23 @@ pub struct BarObservation {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+    /// Provider-reported volume-weighted price for this bar; never inferred from OHLC.
+    /// Omission preserves the serialized identity of existing snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vwap: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<BarSession>,
+}
+
+/// Provider calendar evidence for the bar's trading date, including pre/post-market bars.
+/// Session membership is evaluated separately; evidence is part of dataset identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BarSession {
+    pub calendar: String,
+    pub start: String,
+    pub end: String,
+    pub source_ref: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +369,18 @@ fn validate_observation(
 ) -> Result<(), String> {
     match (&content.data_kind, &observation.data) {
         (HistoricalDataKind::Bars, HistoricalObservationData::Bar(bar)) => {
+            if let Some(session) = &bar.session {
+                let start = chrono::DateTime::parse_from_rfc3339(&session.start)
+                    .map_err(|_| "dataset_snapshot_session_invalid".to_string())?;
+                let end = chrono::DateTime::parse_from_rfc3339(&session.end)
+                    .map_err(|_| "dataset_snapshot_session_invalid".to_string())?;
+                if session.calendar != content.calendar
+                    || session.source_ref.trim().is_empty()
+                    || start >= end
+                {
+                    return Err("dataset_snapshot_session_invalid".to_string());
+                }
+            }
             if !content.instruments.contains(&observation.instrument_id)
                 || ![bar.open, bar.high, bar.low, bar.close, bar.volume]
                     .iter()
@@ -361,6 +390,9 @@ fn validate_observation(
                 || bar.low < 0.0
                 || bar.close < 0.0
                 || bar.volume < 0.0
+                || bar.vwap.is_some_and(|value| {
+                    !value.is_finite() || value <= 0.0 || value < bar.low || value > bar.high
+                })
                 || bar.high < bar.open.max(bar.close)
                 || bar.low > bar.open.min(bar.close)
                 || bar.low > bar.high
@@ -479,6 +511,8 @@ mod tests {
                         low: 99.5,
                         close: 100.0,
                         volume: 10.0,
+                        vwap: None,
+                        session: None,
                     }),
                 },
                 HistoricalObservation {
@@ -490,10 +524,74 @@ mod tests {
                         low: 99.5,
                         close: 101.0,
                         volume: 12.0,
+                        vwap: None,
+                        session: None,
                     }),
                 },
             ],
         }
+    }
+
+    #[test]
+    fn optional_provider_vwap_preserves_legacy_wire_shape_and_binds_snapshot_identity() {
+        let legacy = serde_json::json!({
+            "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0, "volume": 10.0
+        });
+        let bar: BarObservation = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(bar.vwap, None);
+        assert_eq!(serde_json::to_value(bar).unwrap(), legacy);
+
+        let original = DatasetSnapshot::build(content(), 1).unwrap();
+        let mut with_vwap = content();
+        let HistoricalObservationData::Bar(bar) = &mut with_vwap.observations[0].data else {
+            panic!("expected bar");
+        };
+        bar.vwap = Some(100.25);
+        let enriched = DatasetSnapshot::build(with_vwap, 1).unwrap();
+        assert_ne!(original.content_hash, enriched.content_hash);
+        let decoded: DatasetSnapshot =
+            serde_json::from_value(serde_json::to_value(&enriched).unwrap()).unwrap();
+        decoded.verify().unwrap();
+        assert_eq!(decoded, enriched);
+    }
+
+    #[test]
+    fn invalid_provider_vwap_is_rejected_not_replaced_by_close() {
+        for value in [f64::NAN, f64::INFINITY, 0.0, -1.0, 99.0, 101.0] {
+            let mut candidate = content();
+            let HistoricalObservationData::Bar(bar) = &mut candidate.observations[0].data else {
+                panic!("expected bar");
+            };
+            bar.vwap = Some(value);
+            assert!(DatasetSnapshot::build(candidate, 1).is_err());
+        }
+    }
+
+    #[test]
+    fn calendar_evidence_is_hash_bound_and_invalid_intervals_are_rejected() {
+        let original = DatasetSnapshot::build(content(), 1).unwrap();
+        let mut enriched = content();
+        let calendar = enriched.calendar.clone();
+        let HistoricalObservationData::Bar(bar) = &mut enriched.observations[0].data else {
+            panic!("bar");
+        };
+        bar.session = Some(BarSession {
+            calendar,
+            start: "2026-01-02T00:00:00Z".into(),
+            end: "2026-01-03T00:00:00Z".into(),
+            source_ref: "test-calendar:2026-01-02".into(),
+        });
+        let snapshot = DatasetSnapshot::build(enriched.clone(), 1).unwrap();
+        assert_ne!(original.content_hash, snapshot.content_hash);
+        snapshot.verify().unwrap();
+        let HistoricalObservationData::Bar(bar) = &mut enriched.observations[0].data else {
+            panic!("bar");
+        };
+        bar.session.as_mut().unwrap().end = "2026-01-01T00:00:00Z".into();
+        assert_eq!(
+            DatasetSnapshot::build(enriched, 1).unwrap_err(),
+            "dataset_snapshot_session_invalid"
+        );
     }
 
     #[test]
@@ -548,6 +646,8 @@ mod tests {
                 low: 9.0,
                 close: 10.5,
                 volume: 5.0,
+                vwap: None,
+                session: None,
             }),
         });
         let snapshot = DatasetSnapshot::build(grouped, 1).expect("snapshot");

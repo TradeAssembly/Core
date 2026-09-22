@@ -110,6 +110,75 @@ pub(crate) fn setup() -> i32 {
     run_checks(SETUP_CHECKS, run_command)
 }
 
+/// Local acceptance only. Provider OAuth and paid Relay proof remain release gates.
+pub(crate) fn onboarding_verify() -> i32 {
+    run_checks(
+        &[
+            Check {
+                program: "cargo",
+                args: &[
+                    "test",
+                    "-p",
+                    "tradeassembly-runtime",
+                    "--lib",
+                    "control_plane::tests::oauth_",
+                ],
+            },
+            Check {
+                program: "cargo",
+                args: &[
+                    "test",
+                    "-p",
+                    "tradeassembly-runtime",
+                    "--lib",
+                    "service::plugin_oauth",
+                ],
+            },
+            Check {
+                program: "cargo",
+                args: &[
+                    "test",
+                    "-p",
+                    "tradeassembly-runtime",
+                    "--lib",
+                    "connection_profile",
+                ],
+            },
+            Check {
+                program: "cargo",
+                args: &[
+                    "test",
+                    "-p",
+                    "tradeassembly-runtime",
+                    "--lib",
+                    "browser_onboarding",
+                ],
+            },
+            Check {
+                program: "cargo",
+                args: &[
+                    "test",
+                    "-p",
+                    "tradeassembly-runtime",
+                    "--lib",
+                    "identity_bootstrap",
+                ],
+            },
+            Check {
+                program: "cargo",
+                args: &[
+                    "test",
+                    "-p",
+                    "tradeassembly-runtime",
+                    "--test",
+                    "browser_onboarding_stdio",
+                ],
+            },
+        ],
+        run_command,
+    )
+}
+
 fn run_checks<F>(checks: &[Check], mut runner: F) -> i32
 where
     F: FnMut(&Check) -> Result<i32, i32>,

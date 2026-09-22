@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const HELP: &str = "cargo xtask bundle-local --core PATH --warden PATH --sandbox-launcher PATH --alpaca-package PATH --node-archive PATH --output NEW_DIRECTORY\nCreates an unsigned macOS arm64 candidate. Uses npm ci on the build host only. Never publishes or signs.";
+const HELP: &str = "cargo xtask bundle-local --core PATH --warden PATH --sandbox-launcher PATH --alpaca-package PATH --node-archive PATH --output NEW_DIRECTORY [--connection-profile PATH]\nCreates an unsigned macOS arm64 candidate. Uses npm ci on the build host only. Never publishes or signs. Connection profiles contain public deployment configuration only.";
 
 pub(crate) fn run(args: &[String], root: &Path) -> i32 {
     if args.iter().any(|arg| arg == "--help") {
@@ -94,6 +94,14 @@ fn assemble(args: &[String], root: &Path) -> Result<PathBuf, String> {
     )
     .map_err(|_| "bundle_plugin_copy_failed")?;
     copy_core_notices(root, destination)?;
+    if let Some(path) = options.get("--connection-profile") {
+        let profile = tradeassembly_runtime::connection_profile::ConnectionProfile::read(path)?;
+        fs::write(
+            destination.join("bin/connection-profile.json"),
+            serde_json::to_vec_pretty(&profile).map_err(|_| "connection_profile_invalid")?,
+        )
+        .map_err(|_| "connection_profile_copy_failed")?;
+    }
     fs::copy(
         root.join("docs/reference/local-binary-setup.md"),
         destination.join("SETUP.md"),
@@ -128,12 +136,14 @@ fn options(args: &[String]) -> Result<BTreeMap<String, PathBuf>, String> {
         "--node-archive",
         "--output",
     ];
-    if args.len() != names.len() * 2 {
+    if args.len() != names.len() * 2 && args.len() != (names.len() + 1) * 2 {
         return Err(HELP.into());
     }
     let mut result = BTreeMap::new();
     for pair in args.as_chunks::<2>().0 {
-        if !names.contains(&pair[0].as_str()) || result.contains_key(&pair[0]) {
+        if (!names.contains(&pair[0].as_str()) && pair[0] != "--connection-profile")
+            || result.contains_key(&pair[0])
+        {
             return Err("bundle_option_invalid".into());
         }
         let path = PathBuf::from(&pair[1]);
@@ -141,6 +151,9 @@ fn options(args: &[String]) -> Result<BTreeMap<String, PathBuf>, String> {
             return Err("bundle_paths_must_be_absolute".into());
         }
         result.insert(pair[0].clone(), path);
+    }
+    if !names.iter().all(|name| result.contains_key(*name)) {
+        return Err(HELP.into());
     }
     Ok(result)
 }

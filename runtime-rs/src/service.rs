@@ -253,6 +253,8 @@ pub struct TradeAssemblyService {
     runtime_manifest: Option<ResolvedRuntimeManifest>,
     invocation_principal: Option<auth::SessionPrincipal>,
     oauth_config: Option<RuntimeConfig>,
+    connection_profile: Option<crate::connection_profile::ConnectionProfile>,
+    hosted_oauth_actor: Option<String>,
     invocation_actor_kind: &'static str,
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
 }
@@ -273,6 +275,35 @@ impl Default for TradeAssemblyService {
 }
 
 impl TradeAssemblyService {
+    pub(crate) fn cancel_broker_connection_attempt(
+        &self,
+        instance: &str,
+        connection: &str,
+    ) -> Result<(), String> {
+        plugin_oauth::cancel_attempt(self, instance, connection)
+    }
+    pub(crate) fn broker_connection_descriptor(&self, instance: &str) -> Result<Value, String> {
+        let record = plugin_lifecycle::require_instance(self, instance)
+            .map_err(|_| "onboarding_instance_unavailable")?;
+        let manifest = plugin_lifecycle::get_manifest(
+            self,
+            record["pluginRef"]
+                .as_str()
+                .ok_or("onboarding_plugin_unavailable")?,
+        );
+        Ok(manifest.body["manifest"]["configuration"]["oauth"].clone())
+    }
+    pub(crate) fn with_hosted_connection(
+        mut self,
+        config: RuntimeConfig,
+        actor: String,
+        profile: Option<crate::connection_profile::ConnectionProfile>,
+    ) -> Self {
+        self.oauth_config = Some(config);
+        self.hosted_oauth_actor = Some(actor);
+        self.connection_profile = profile;
+        self
+    }
     pub fn new(db: impl Into<String>) -> Self {
         Self::local(db)
     }
@@ -307,6 +338,8 @@ impl TradeAssemblyService {
             db,
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -441,6 +474,8 @@ impl TradeAssemblyService {
             db,
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -472,6 +507,8 @@ impl TradeAssemblyService {
             runtime: Arc::new(runtime),
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -495,6 +532,8 @@ impl TradeAssemblyService {
             runtime: Arc::new(runtime),
             runtime_manifest: None,
             oauth_config: None,
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -3005,6 +3044,9 @@ impl TradeAssemblyService {
         if matches!(
             name,
             "tradeassembly.account.login"
+                | "tradeassembly.onboarding.start"
+                | "tradeassembly.onboarding.status"
+                | "tradeassembly.onboarding.cancel"
                 | "tradeassembly.account.login.status"
                 | "tradeassembly.account.status"
                 | "tradeassembly.setup.inspect"
@@ -3323,6 +3365,12 @@ impl TradeAssemblyService {
                 self.handle_http_from_source("mcp", "POST", "/journal/replay-report", arguments)
                     .body
             }
+            "tradeassembly.strategy.schema" => json!({
+                "ok": true,
+                "schema": spec::strategy_spec_schema(),
+                "evaluators": [crate::strategy_kernel::portfolio_program::discovery()],
+                "guidance": "Encode only owner-supplied strategy rules. Blank drafts are incomplete. Validate before requesting owner publication; publication does not activate execution."
+            }),
             "tradeassembly.strategy.create" => self.create_strategy(arguments),
             "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
                 self.save_builder_draft(arguments)
@@ -3360,7 +3408,20 @@ impl TradeAssemblyService {
                 );
                 return self.complete_mcp_command_or_error(name, &command_envelope, 403, response);
             }
-            "tradeassembly.strategy.validate" => self.validate_builder_draft(arguments),
+            "tradeassembly.strategy.validate" => {
+                if let Some(payload) = arguments.get("spec") {
+                    let report = spec::validate_strategy_spec_report(payload);
+                    json!({"ok": true, "valid": report.valid, "compilation": crate::strategy_kernel::portfolio_program::compilation_report(payload, report.valid), "report": report})
+                } else if arguments
+                    .get("strategy_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                {
+                    self.validate_builder_draft(arguments)
+                } else {
+                    return mcp::tool_error(name, "strategy_validation_input_required", "Supply spec JSON directly or strategy_id for an owned saved draft. File paths are not loaded by this tool.", None);
+                }
+            }
             "tradeassembly.plugin.list" => {
                 json!({"ok": true, "workspacePrimitive": "plugins", "plugins": self.plugins_providers()["plugins"].clone()})
             }

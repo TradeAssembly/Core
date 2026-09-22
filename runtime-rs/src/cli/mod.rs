@@ -16,6 +16,7 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod browser_onboarding;
 pub mod output;
 
 #[derive(Parser)]
@@ -1674,6 +1675,8 @@ fn serve_mcp_stdio(
     bootstrap: &crate::identity_bootstrap::IdentityBootstrap,
     studio_base_url: &str,
 ) {
+    let onboarding = service
+        .map(|service| browser_onboarding::BrowserOnboarding::new(service, identity_manager));
     let inherited_capability = std::env::var(crate::agent_runner::MCP_CAPABILITY_ENV).ok();
     let runner_execution_context = match service {
         Some(service) => crate::agent_runner::resolve_mcp_execution_context(
@@ -1743,12 +1746,31 @@ fn serve_mcp_stdio(
                     )
                 } else {
                     let identity = current_mcp_identity(service, identity_manager);
-                    if name == "tradeassembly.account.login"
+                    if name.starts_with("tradeassembly.onboarding.")
+                        || name == "tradeassembly.broker.connect"
+                    {
+                        match onboarding.as_ref() {
+                            Some(onboarding) => crate::mcp::call_tool_with_payload(
+                                name,
+                                tokio::task::block_in_place(|| onboarding.call(name, args)),
+                            ),
+                            None => crate::mcp::tool_error(
+                                name,
+                                "runtime_unavailable",
+                                "Repair the installation before starting browser setup.",
+                                None,
+                            ),
+                        }
+                    } else if name == "tradeassembly.account.login"
                         || name == "tradeassembly.account.login.status"
                     {
                         let result = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async {
-                                if name == "tradeassembly.account.login" {
+                                if let Some(onboarding) = onboarding.as_ref() {
+                                    onboarding
+                                        .login(name == "tradeassembly.account.login")
+                                        .await
+                                } else if name == "tradeassembly.account.login" {
                                     bootstrap.start().await
                                 } else {
                                     bootstrap.status().await

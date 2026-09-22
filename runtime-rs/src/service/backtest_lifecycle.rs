@@ -15,7 +15,7 @@ use crate::domain::{BacktestRunCommand, BacktestRunFsm, BacktestRunState, Lifecy
 use crate::ports::{
     AuthorityContext, IdempotencyKey, QueueDelivery, QueueRequest, SideEffectContext,
 };
-use crate::strategy_kernel::CompiledStrategy;
+use crate::strategy_kernel::portfolio_program::ResearchProgram;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -185,7 +185,7 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     if strategy_version
         .get("spec")
         .ok_or(())
-        .and_then(|spec| CompiledStrategy::compile_json(spec).map_err(|_| ()))
+        .and_then(|spec| ResearchProgram::compile_json(spec).map_err(|_| ()))
         .is_err()
     {
         return ServiceResponse::bad_request("backtest_strategy_semantics_unsupported");
@@ -327,7 +327,7 @@ pub fn create_from_manifest(
     if strategy_version
         .get("spec")
         .ok_or(())
-        .and_then(|spec| CompiledStrategy::compile_json(spec).map_err(|_| ()))
+        .and_then(|spec| ResearchProgram::compile_json(spec).map_err(|_| ()))
         .is_err()
     {
         return ServiceResponse::bad_request("backtest_strategy_semantics_unsupported");

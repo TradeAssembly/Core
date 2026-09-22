@@ -61,20 +61,24 @@ pub(crate) fn create_strategy(service: &TradeAssemblyService, body: Value) -> Va
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| next_strategy_id(service, name));
-    let spec = body
-        .get("spec")
-        .cloned()
-        .unwrap_or_else(|| spec::strategy_template_spec_payload(template_id(&body)));
+    let blank = body.get("spec").is_none() && template_id(&body) == "blank";
+    let spec = body.get("spec").cloned().unwrap_or_else(|| {
+        if blank {
+            json!({"spec_version": "3.0", "strategy_id": id, "name": name})
+        } else {
+            spec::strategy_template_spec_payload(template_id(&body))
+        }
+    });
     let strategy = strategy_record(
         &id,
         name,
         body.get("symbol")
             .and_then(Value::as_str)
-            .unwrap_or("BTC/USD"),
+            .unwrap_or(if blank { "" } else { "BTC/USD" }),
         body.get("providerRef")
             .or_else(|| body.get("provider_ref"))
             .and_then(Value::as_str)
-            .unwrap_or("sim"),
+            .unwrap_or(if blank { "" } else { "sim" }),
         "draft",
         0,
         spec,
@@ -96,7 +100,7 @@ pub(crate) fn create_strategy(service: &TradeAssemblyService, body: Value) -> Va
         == Some("import");
     let persistence_violations = draft_persistence_violations(&draft);
     if !persistence_violations.is_empty()
-        || (!import_mode && !validation["ok"].as_bool().unwrap_or(false))
+        || (!import_mode && !blank && !validation["ok"].as_bool().unwrap_or(false))
     {
         return json!({
             "ok": false,
@@ -220,6 +224,7 @@ pub(crate) fn validate_builder_draft(service: &TradeAssemblyService, body: Value
     api_result(json!({
         "draft": draft,
         "validation": validate_draft_report(&draft),
+        "compilation": crate::strategy_kernel::portfolio_program::compilation_report(&draft["spec"], spec::validate_strategy_spec_report(&draft["spec"]).valid),
     }))
 }
 
@@ -1029,7 +1034,9 @@ fn strategy_record(
         object.insert("strategy_id".to_string(), json!(id));
         object.insert("name".to_string(), json!(name));
     }
-    let asset_class = if symbol.contains('/') {
+    let asset_class = if symbol.is_empty() {
+        ""
+    } else if symbol.contains('/') {
         "crypto"
     } else {
         "equity"

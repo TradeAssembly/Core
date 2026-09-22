@@ -14,6 +14,7 @@ fn main() {
     let status = match args.first().map(String::as_str).unwrap_or("help") {
         "verify" if rest.is_empty() => core_verify::verify(),
         "setup" if rest.is_empty() => core_verify::setup(),
+        "onboarding-verify" if rest.is_empty() => core_verify::onboarding_verify(),
         "architecture-core" if rest.is_empty() => architecture_check::run_core_architecture(root),
         "architecture-check" => architecture_check::run_architecture_check_command(rest, root),
         "contract" => architecture_check::run_contract_check_command(rest, root),
@@ -23,7 +24,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local");
+            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local");
             0
         }
         _ => {

@@ -2,6 +2,100 @@ use serde_json::{json, Value};
 use tradeassembly_runtime::service::TradeAssemblyService;
 
 #[test]
+fn mcp_inline_validation_checks_supplied_payload_without_persistence() {
+    let directory = tempfile::tempdir().unwrap();
+    let service =
+        TradeAssemblyService::test_local(directory.path().join("validate.db").to_string_lossy());
+    let invalid = service.call_mcp_tool(
+        "tradeassembly.strategy.validate",
+        json!({"spec": {"name": "Incomplete owner input"}}),
+    );
+    assert_eq!(invalid["structuredContent"]["valid"], false, "{invalid}");
+    assert!(!invalid["structuredContent"]["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let missing = service.call_mcp_tool("tradeassembly.strategy.validate", json!({}));
+    assert_eq!(
+        missing["structuredContent"]["error"]["code"],
+        "strategy_validation_input_required"
+    );
+    let valid = service.call_mcp_tool(
+        "tradeassembly.strategy.validate",
+        json!({"spec": tradeassembly_runtime::spec::btc_exit_demo_spec_payload()}),
+    );
+    assert_eq!(valid["structuredContent"]["valid"], true, "{valid}");
+    for namespace in ["strategies", "strategy_drafts", "strategy_versions"] {
+        assert!(service
+            .runtime()
+            .storage
+            .list_json(namespace)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn mcp_authoring_schema_matches_the_embedded_contract() {
+    let directory = tempfile::tempdir().unwrap();
+    let service =
+        TradeAssemblyService::test_local(directory.path().join("schema.db").to_string_lossy());
+    let result = service.call_mcp_tool("tradeassembly.strategy.schema", json!({}));
+    assert_eq!(result["structuredContent"]["ok"], true, "{result}");
+    assert_eq!(
+        result["structuredContent"]["schema"],
+        tradeassembly_runtime::spec::strategy_spec_schema()
+    );
+    assert!(service
+        .runtime()
+        .storage
+        .list_json("strategies")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn blank_mcp_draft_contains_no_invented_strategy_and_is_not_ready() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("blank.db");
+    let service = TradeAssemblyService::test_local(database.to_string_lossy());
+    let result = service.call_mcp_tool(
+        "tradeassembly.strategy.create",
+        json!({"mode": "blank", "name": "Owner draft"}),
+    );
+    let result = &result["structuredContent"];
+    assert_eq!(result["ok"], true, "{result}");
+    let body = &result["body"];
+    let strategy = &body["strategy"];
+    assert_eq!(strategy["symbol"], "");
+    assert_eq!(strategy["assetClass"], "");
+    assert_eq!(strategy["providerRef"], "");
+    assert!(strategy["currentVersionId"].is_null());
+    assert_eq!(strategy["spec"].as_object().unwrap().len(), 3);
+    for readiness in ["researchReady", "paperReady", "liveReady"] {
+        assert_eq!(body["validation"]["readiness"][readiness], false);
+    }
+    let saved_validation = service.call_mcp_tool(
+        "tradeassembly.strategy.validate",
+        json!({"strategy_id":strategy["id"]}),
+    );
+    assert_eq!(
+        saved_validation["structuredContent"]["body"]["compilation"]["backtest"]["supported"],
+        false,
+        "{saved_validation}"
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("strategy_drafts")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn authenticated_mcp_cannot_publish_by_claiming_user_actor() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("authority.db");

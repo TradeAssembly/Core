@@ -24,6 +24,7 @@ pub mod capability;
 pub mod cli;
 pub mod cli_identity;
 pub mod conformance;
+pub mod connection_profile;
 pub mod control_plane;
 pub mod demos;
 pub mod derivatives_analysis;

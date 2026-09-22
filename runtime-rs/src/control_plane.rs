@@ -109,6 +109,22 @@ pub fn graphql_envelope(request: &Value) -> Result<ControlPlaneCommandEnvelope, 
 }
 
 pub fn mcp_envelope(name: &str, arguments: &Value) -> Result<ControlPlaneCommandEnvelope, String> {
+    // Each implicit OAuth poll must observe the provider again. It remains a
+    // protected credential command because a ready handoff installs credentials.
+    // The OAuth attempt lock/receipt makes that installation duplicate-safe;
+    // explicit caller keys still replay the exact invocation they identify.
+    let mut poll_arguments;
+    let arguments = if name == "tradeassembly.plugin.oauth.status"
+        && arguments.get("idempotency_key").is_none()
+        && arguments.get("idempotencyKey").is_none()
+    {
+        poll_arguments = arguments.clone();
+        poll_arguments["idempotency_key"] =
+            json!(format!("oauth-poll:{:032x}", rand::random::<u128>()));
+        &poll_arguments
+    } else {
+        arguments
+    };
     let command_name = mcp_command_name(name);
     let route_path = mcp_route_path(name, &command_name);
     let side_effect_class = if mcp_is_read(name) {
@@ -1214,6 +1230,7 @@ fn mcp_is_read(name: &str) -> bool {
         || name.ends_with(".report")
         || name.ends_with(".replay")
         || name == "tradeassembly.health"
+        || name == "tradeassembly.strategy.schema"
         || name == "tradeassembly.setup.status"
         || name == "tradeassembly.studio.link"
 }
@@ -1681,6 +1698,44 @@ mod tests {
     use crate::finance_authority::TestFinanceAuthority;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn oauth_status_poll_does_not_replay_pending_response() {
+        let directory = tempdir().unwrap();
+        let storage = LocalSqliteStorage::new(directory.path().join("poll.db").to_string_lossy());
+        let args = json!({"instanceRef":"alpaca-paper","connectionId":"connection"});
+        let first = mcp_envelope("tradeassembly.plugin.oauth.status", &args).unwrap();
+        assert_eq!(first.command_name, "credential.store");
+        assert_ne!(first.side_effect_class, "read");
+        prepare_command(&storage, &TestFinanceAuthority, first.clone()).unwrap();
+        complete_command_with_body(
+            &storage,
+            &TestFinanceAuthority,
+            &first,
+            200,
+            Some(json!({"status":"pending"})),
+        )
+        .unwrap();
+        let next = mcp_envelope("tradeassembly.plugin.oauth.status", &args).unwrap();
+        assert_eq!(first.authority, next.authority);
+        let next = prepare_command(&storage, &TestFinanceAuthority, next).unwrap();
+        assert!(
+            !next.duplicate,
+            "a fresh poll must reach the relay instead of replaying pending"
+        );
+        for key in ["idempotency_key", "idempotencyKey"] {
+            let mut explicit = args.clone();
+            explicit[key] = json!("explicit-poll");
+            assert_eq!(
+                mcp_envelope("tradeassembly.plugin.oauth.status", &explicit)
+                    .unwrap()
+                    .command_id,
+                mcp_envelope("tradeassembly.plugin.oauth.status", &explicit)
+                    .unwrap()
+                    .command_id
+            );
+        }
+    }
 
     fn plugin_package_body(locator: &str, offline: bool) -> Value {
         json!({

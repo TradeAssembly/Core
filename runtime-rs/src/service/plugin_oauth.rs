@@ -86,7 +86,8 @@ fn start_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespons
     let Some(config) = service.oauth_config.clone() else {
         return ServiceResponse::bad_request("plugin_oauth_not_configured");
     };
-    let token = match actor_token(&config, &actor) {
+    let hosted_actor = service.hosted_oauth_actor.as_deref().unwrap_or(&actor);
+    let token = match actor_token(&config, hosted_actor) {
         Ok(token) => token,
         Err(code) => return ServiceResponse::unauthorized(code),
     };
@@ -96,6 +97,29 @@ fn start_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespons
         Ok(attempts) => attempts,
         Err(_) => return ServiceResponse::internal_error("oauth attempt lookup failed"),
     };
+    let request_key = if body.get("idempotency_key").is_some() {
+        match bounded(&body, "idempotency_key", 256) {
+            Ok(key) => Some(key),
+            Err(code) => return ServiceResponse::bad_request(code),
+        }
+    } else {
+        None
+    };
+    let request_digest = digest(&json!({"environment":environment,"scopes":scopes,
+        "hostedActor":hosted_actor,"mode":mode,"configuration":record["configuration"],
+        "manifestDigest":manifest.body["manifestDigest"],"relayBaseUrl":relay.relay_base_url}));
+    if let Some(key) = request_key.as_ref() {
+        if let Some((_, attempt)) = older.iter().find(|(_, attempt)| {
+            attempt["actor"] == actor
+                && attempt["instanceRef"] == instance_ref
+                && attempt["requestKey"] == *key
+        }) {
+            return match replay_start(attempt, &request_digest, service.runtime().clock.now_ms()) {
+                Ok(receipt) => ServiceResponse::ok(receipt),
+                Err(code) => ServiceResponse::conflict(code),
+            };
+        }
+    }
     for (key, mut attempt) in older
         .into_iter()
         .filter(|(_, value)| value["instanceRef"] == instance_ref && value["actor"] == actor)
@@ -125,7 +149,7 @@ fn start_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespons
         plugin_lifecycle::get_manifest(service, record["pluginRef"].as_str().unwrap_or_default())
             .body["manifestDigest"]
             .clone();
-    let attempt = json!({"instanceRef":instance_ref,"environment":handoff.environment,"mode":handoff.mode,"scopes":handoff.scopes,"handoffRef":handoff_ref,"actor":actor,"manifestDigest":manifest_digest,"configurationDigest":digest(&record["configuration"]),"credentialField":credential_field,"relayBaseUrl":relay.relay_base_url,"createdAtMs":service.runtime().clock.now_ms()});
+    let attempt = json!({"instanceRef":instance_ref,"environment":handoff.environment,"mode":handoff.mode,"scopes":handoff.scopes,"handoffRef":handoff_ref,"actor":actor,"hostedActor":hosted_actor,"manifestDigest":manifest_digest,"configurationDigest":digest(&record["configuration"]),"credentialField":credential_field,"relayBaseUrl":relay.relay_base_url,"createdAtMs":service.runtime().clock.now_ms(),"requestKey":request_key,"requestDigest":request_digest});
     if persist_attempt(service, &attempt_key, attempt.clone()).is_err() {
         let _ = service.runtime().credentials.revoke(&handoff_ref);
         return ServiceResponse::internal_error("oauth handoff state failed");
@@ -136,6 +160,7 @@ fn start_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespons
                 let mut attempt = attempt;
                 attempt["connectionId"] = json!(connection_id);
                 attempt["expiresAtMs"] = value["expiresAtMs"].clone();
+                attempt["startReceipt"] = value.clone();
                 if persist_attempt(service, &attempt_key, attempt).is_err() {
                     let _ = service.runtime().credentials.revoke(&handoff_ref);
                     return ServiceResponse::internal_error("oauth handoff state failed");
@@ -148,6 +173,28 @@ fn start_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespons
             ServiceResponse::bad_gateway(code)
         }
     }
+}
+
+fn replay_start(
+    attempt: &Value,
+    expected_digest: &str,
+    now_ms: i64,
+) -> Result<Value, &'static str> {
+    if attempt["requestDigest"] != expected_digest {
+        return Err("plugin_oauth_idempotency_conflict");
+    }
+    if attempt["invalidated"] == true {
+        return Err("plugin_oauth_attempt_ended");
+    }
+    if !attempt["startReceipt"].is_object() {
+        // A process/network failure may have happened after the remote write.
+        // Never manufacture a second authorization for this request key.
+        return Err("plugin_oauth_start_outcome_unknown");
+    }
+    if attempt["expiresAtMs"].as_i64().unwrap_or(0) <= now_ms {
+        return Err("plugin_oauth_attempt_ended");
+    }
+    Ok(attempt["startReceipt"].clone())
 }
 
 pub(crate) fn status(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
@@ -191,6 +238,10 @@ fn status_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespon
     };
     if attempt["configurationDigest"] != digest(&record["configuration"]) {
         return ServiceResponse::conflict("plugin_oauth_configuration_changed");
+    }
+    let hosted_actor = service.hosted_oauth_actor.as_deref().unwrap_or(&actor);
+    if attempt["hostedActor"].as_str().unwrap_or(&actor) != hosted_actor {
+        return ServiceResponse::conflict("plugin_oauth_identity_changed");
     }
     let current_manifest =
         plugin_lifecycle::get_manifest(service, record["pluginRef"].as_str().unwrap_or_default())
@@ -248,7 +299,7 @@ fn status_blocking(service: &TradeAssemblyService, body: Value) -> ServiceRespon
     let Some(config) = service.oauth_config.clone() else {
         return ServiceResponse::bad_request("plugin_oauth_not_configured");
     };
-    let token = match actor_token(&config, &actor) {
+    let token = match actor_token(&config, hosted_actor) {
         Ok(token) => token,
         Err(code) => return ServiceResponse::unauthorized(code),
     };
@@ -367,6 +418,38 @@ pub(crate) fn disconnect(service: &TradeAssemblyService, body: Value) -> Service
     ServiceResponse::ok(
         json!({"ok":true,"instanceRef":instance_ref,"remoteRevocation":"not_requested"}),
     )
+}
+
+/// Cancel only this handoff. Existing provider credentials are preserved.
+pub(crate) fn cancel_attempt(
+    service: &TradeAssemblyService,
+    instance: &str,
+    connection: &str,
+) -> Result<(), String> {
+    let _lock = oauth_lock(service).map_err(str::to_owned)?;
+    plugin_lifecycle::require_instance(service, instance)
+        .map_err(|_| "plugin_oauth_instance_unavailable")?;
+    let (issuer, subject) = service
+        .responsible_human_identity()
+        .ok_or("plugin_oauth_actor_required")?;
+    let actor = invocation_actor(issuer, subject);
+    for (key, mut attempt) in service
+        .runtime()
+        .storage
+        .list_json("plugin_oauth_attempts")?
+    {
+        if attempt["actor"] == actor
+            && attempt["instanceRef"] == instance
+            && attempt["connectionId"] == connection
+        {
+            attempt["invalidated"] = json!(true);
+            persist_attempt(service, &key, attempt.clone())?;
+            if let Some(reference) = attempt["handoffRef"].as_str() {
+                service.runtime().credentials.revoke(reference)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Start a relay handoff after the service has performed actor and instance
@@ -662,7 +745,16 @@ fn manifest_relay(
         .filter(|value| !value.is_empty())
         .ok_or("plugin_oauth_relay_invalid")?
         .to_string();
-    let config = relay_config();
+    let config = match service.connection_profile.as_ref() {
+        Some(profile) if profile.environment == environment => RelayConfig {
+            timeout_ms: 10_000,
+            relay_origins: profile.relay_origins.iter().cloned().collect(),
+            authorization_origins: profile.authorization_origins.iter().cloned().collect(),
+            ..RelayConfig::default()
+        },
+        Some(_) => return Err("plugin_oauth_environment_invalid"),
+        None => relay_config(),
+    };
     Ok(RelayConfig {
         relay_base_url,
         ..config
@@ -764,6 +856,34 @@ fn scopes_allowed(descriptor: &Value, requested: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_start_replay_rejects_changed_ended_and_ambiguous_requests() {
+        let mut attempt = json!({"requestDigest":"bound-request","expiresAtMs":200,
+            "startReceipt":{"connectionId":"connection","authorizationUrl":"https://broker.example/authorize"}});
+        assert_eq!(
+            replay_start(&attempt, "bound-request", 100).unwrap(),
+            attempt["startReceipt"]
+        );
+        assert_eq!(
+            replay_start(&attempt, "changed-account-or-scopes", 100),
+            Err("plugin_oauth_idempotency_conflict")
+        );
+        assert_eq!(
+            replay_start(&attempt, "bound-request", 200),
+            Err("plugin_oauth_attempt_ended")
+        );
+        attempt["startReceipt"] = Value::Null;
+        assert_eq!(
+            replay_start(&attempt, "bound-request", 100),
+            Err("plugin_oauth_start_outcome_unknown")
+        );
+        attempt["invalidated"] = json!(true);
+        assert_eq!(
+            replay_start(&attempt, "bound-request", 100),
+            Err("plugin_oauth_attempt_ended")
+        );
+    }
 
     #[test]
     fn validates_scopes_mode_and_rejects_duplicates() {

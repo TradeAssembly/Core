@@ -29,16 +29,16 @@
   verification before C5, and terminal-reconciliation release semantics. Until those
   pieces have passing controlled-sink proof, the current live boundary continues to
   enforce only its declared per-order controls and must reject unsupported controls.
-- As verified on 2026-09-22, `connect.tradeassembly.ai` responds to the Core OAuth
-  start route with `oauth_relay_unavailable`. Hub is product-neutral and has no
-  broker OAuth implementation; Studio Cloud also has no such service. A Core
-  connection profile must not designate that Hub origin as an Alpaca relay until a
-  separately deployed, product-scoped Relay implements the versioned connection
-  contract. The relay may authenticate the user with Hub identity and return a
-  short-lived authorization result to the local credential store, but Hub must not
-  become a provider-credential proxy and the flow must never ask a user to paste
-  broker API keys into an agent chat. Until that Relay exists and the packaged
-  browser journey passes against it, browser OAuth is an explicit F2 release gap.
+- The historical 2026-09-22 `oauth_relay_unavailable` observation is superseded
+  by a live recheck: both `connect.tradeassembly.ai` and
+  `staging.tradeassembly.ai` now forward a malformed start request to the
+  versioned Relay, which returns its bounded Axum validation response. Hub remains
+  product-neutral and must not become a provider-credential proxy. The
+  product-scoped Relay authenticates with Hub identity and returns a short-lived
+  authorization result to the local credential store; the flow must never ask a
+  user to paste broker API keys into an agent chat. The authenticated packaged
+  browser journey, account verification, restart, and local credential readback
+  still require current bound evidence before F2 browser OAuth is complete.
 - External-agent configurations may explicitly supply `allowedSymbols` (MCP
   `allowed_symbols`): 1–256 unique exact broker symbols, no aliases or implicit
   primary symbol. The universe participates in generated configuration identity

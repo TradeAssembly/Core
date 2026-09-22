@@ -83,6 +83,17 @@ pub fn tool_names() -> Vec<&'static str> {
 pub fn call_tool(name: &str, arguments: Value) -> Value {
     if matches!(
         name,
+        "tradeassembly.agent.session.attach" | "tradeassembly.agent.session.detach"
+    ) {
+        return tool_error(
+            name,
+            "external_agent_connection_required",
+            "This action requires a persistent MCP stdio connection.",
+            None,
+        );
+    }
+    if matches!(
+        name,
         "tradeassembly.account.login"
             | "tradeassembly.account.login.status"
             | "tradeassembly.account.status"
@@ -401,6 +412,14 @@ pub fn call_service_tool(
     arguments: Value,
 ) -> Value {
     let response = match name {
+        "tradeassembly.agent.session.attach" | "tradeassembly.agent.session.detach" => {
+            return tool_error(
+                name,
+                "external_agent_connection_required",
+                "This action requires a persistent MCP stdio connection.",
+                None,
+            );
+        }
         "tradeassembly.robustness.report" => {
             if !has_only_keys(&arguments, &["run_id", "studio_base_url", "db"]) {
                 return tool_error(
@@ -912,6 +931,8 @@ fn requested_protocol_version(params: &Value) -> &'static str {
 
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
+        tool_with_metadata("tradeassembly.agent.session.attach", "Attach External Agent", "Bind this MCP connection to an active external-client deployment and activation. Requires authenticated ownership and existing delegated authority; no token is returned. The client owns its agent loop.", object_schema([("deployment_id", string_schema("Existing external-client deployment ID.", None)), ("activation_id", string_schema("Existing active execution activation ID.", None)), ("idempotency_key", string_schema("Connection attachment retry key.", None))], ["deployment_id", "activation_id", "idempotency_key"]), false, false, true),
+        tool_with_metadata("tradeassembly.agent.session.detach", "Detach External Agent", "Release only this MCP connection's agent lease. This does not cancel orders; reconcile outstanding outcomes before reconnecting.", object_schema([], []), false, false, true),
         tool("tradeassembly.onboarding.start", "Connect TradeAssembly", "Start resumable browser setup. Open browserUrl, then poll onboarding.status. Never accepts credentials. Does not activate trading.", object_schema([("mode", enum_string_schema("Owner-selected broker account mode.", &["paper", "live"])), ("environment", enum_string_schema("Deployment environment; defaults to the packaged connection profile.", &["staging", "production"])), ("relay", json!({"type":"boolean","description":"Also verify the selected Relay subscription.","default":false})), ("idempotency_key", string_schema("Stable setup request identifier.", None)), ("instanceRef", string_schema("Optional existing broker instance.", None))], ["mode", "idempotency_key"]), false),
         tool("tradeassembly.onboarding.status", "Connection Progress", "Inspect and reconcile browser setup. Readiness requires verified service results.", object_schema([("onboardingId", string_schema("Reference returned by onboarding.start.", None))], ["onboardingId"]), false),
         tool("tradeassembly.onboarding.cancel", "Cancel Connection Setup", "Cancel this setup attempt without disconnecting an existing account.", object_schema([("onboardingId", string_schema("Reference returned by onboarding.start.", None))], ["onboardingId"]), false),

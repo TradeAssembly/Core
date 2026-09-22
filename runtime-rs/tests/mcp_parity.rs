@@ -10,6 +10,24 @@ use tradeassembly_runtime::ports::{AuthorityContext, IdempotencyKey, SideEffectC
 use tradeassembly_runtime::service::TradeAssemblyService;
 
 #[test]
+fn external_agent_attachment_requires_authenticated_persistent_transport() {
+    let args =
+        json!({"deployment_id":"unknown","activation_id":"unknown","idempotency_key":"attach"});
+    assert_eq!(
+        mcp::call_tool("tradeassembly.agent.session.attach", args.clone())["isError"],
+        true
+    );
+    let responses = run_mcp_stdio(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tradeassembly.agent.session.attach","arguments":args}}),
+    ]);
+    assert_eq!(responses[0]["result"]["isError"], true);
+    assert_eq!(
+        responses[0]["result"]["structuredContent"]["error"]["code"],
+        "external_attach_identity_required"
+    );
+}
+
+#[test]
 fn tradeassembly_mcp_stdio_lists_tools_but_denies_protected_calls_without_oidc() {
     let requests = [
         json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": MCP_PROTOCOL_VERSION}}),
@@ -34,7 +52,7 @@ fn tradeassembly_mcp_stdio_lists_tools_but_denies_protected_calls_without_oidc()
     );
     assert_eq!(
         responses[0]["result"]["capabilities"]["tools"]["listChanged"],
-        false
+        true
     );
     let tool_names = responses[1]["result"]["tools"]
         .as_array()

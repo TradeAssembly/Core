@@ -149,6 +149,61 @@ fn authenticated_external_session_attaches_to_real_activation_and_rejects_other_
     );
     assert_eq!(namespace_count(&owner, "scheduler_state"), 0);
     assert_eq!(namespace_count(&owner, "execution_ticks"), 0);
+
+    tradeassembly_runtime::agent_runner::recover_pending_run(
+        &owner.runtime(),
+        "owner-external",
+        owner.runtime().clock.trusted_now_ms().unwrap(),
+    )
+    .unwrap();
+    let connection =
+        tradeassembly_runtime::cli::external_mcp::ExternalMcpConnection::new().unwrap();
+    let args = json!({"deployment_id":"owner-external","activation_id":activation_id,"idempotency_key":"connection-attach"});
+    let attached = connection.attach(&owner, &args).unwrap();
+    assert_eq!(connection.attach(&owner, &args).unwrap(), attached);
+    assert!(connection.attach(&other, &args).is_err());
+    let connection_context = connection.execution_context().unwrap().unwrap();
+    let original_lease = connection_context
+        .current_lease(
+            owner.runtime().storage.as_ref(),
+            owner.runtime().clock.as_ref(),
+            owner.runtime().leases.as_ref(),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(
+            tradeassembly_runtime::agent_runner::DEFAULT_HEARTBEAT_MS + 5_000,
+        );
+    loop {
+        let lease = owner
+            .runtime()
+            .leases
+            .current(&original_lease.resource)
+            .unwrap()
+            .unwrap();
+        if lease.expires_at_ms > original_lease.expires_at_ms {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idle connection did not renew its production lease"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        owner
+            .with_verified_agent_mcp_execution_context(connection_context.clone())
+            .call_mcp_tool("tradeassembly.health", json!({}))["isError"],
+        false
+    );
+    drop(connection); // Same guard is dropped on stdio EOF.
+    assert!(connection_context
+        .current_lease(
+            owner.runtime().storage.as_ref(),
+            owner.runtime().clock.as_ref(),
+            owner.runtime().leases.as_ref()
+        )
+        .is_err());
 }
 
 #[test]

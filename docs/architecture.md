@@ -19,8 +19,13 @@ They need no model prompt or workspace; creation is not session attachment or
 trading authorization. Executor ownership is part of the immutable deployment
 binding, while existing supervised binding digests remain compatible. Every
 scoped MCP invocation checks the actual current lease and fence, not just the
-cached active-run expiry. The external-client attach/reconnect transport remains
-under implementation; this distinction alone does not make external trading ready.
+cached active-run expiry. The stdio transport owns external sessions through
+`tradeassembly.agent.session.attach` and `.detach`: capabilities stay in server
+memory, leases renew while idle, and EOF quarantines unresolved session outcomes.
+Attachment requires authenticated config/activation ownership and, for Live, an
+existing exact owner-issued delegated mandate. Tool discovery narrows after
+attachment. This implementation is not yet qualified as a full customer trading
+journey through Warden and the controlled broker; release evidence remains required.
 
 Studio consumes a qualified pinned Core revision; it owns its frontend and
 presentation checks. Product owns hosted Relay, enrollment, billing, deployment

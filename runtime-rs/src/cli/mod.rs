@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod browser_onboarding;
+pub mod external_mcp;
 pub mod output;
 
 #[derive(Parser)]
@@ -1678,7 +1679,7 @@ fn serve_mcp_stdio(
     let onboarding = service
         .map(|service| browser_onboarding::BrowserOnboarding::new(service, identity_manager));
     let inherited_capability = std::env::var(crate::agent_runner::MCP_CAPABILITY_ENV).ok();
-    let runner_execution_context = match service {
+    let inherited_execution_context = match service {
         Some(service) => crate::agent_runner::resolve_mcp_execution_context(
             service.runtime().as_ref(),
             inherited_capability.as_deref(),
@@ -1688,7 +1689,16 @@ fn serve_mcp_stdio(
         }
         None => Ok(None),
     };
+    let external_connection = external_mcp::ExternalMcpConnection::new();
     for line in io::stdin().lock().lines().map_while(Result::ok) {
+        let runner_execution_context = if inherited_capability.is_some() {
+            inherited_execution_context.clone()
+        } else {
+            match &external_connection {
+                Ok(connection) => connection.execution_context(),
+                Err(_) => Ok(None), // Keep setup usable; attachment itself fails closed.
+            }
+        };
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             println!(
                 "{}",
@@ -1700,14 +1710,18 @@ fn serve_mcp_stdio(
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let response = match method {
             "initialize" => {
-                json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": crate::mcp::MCP_PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": false}}, "serverInfo": {"name": "tradeassembly", "version": "0.1.0"}}})
+                json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": crate::mcp::MCP_PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": true}}, "serverInfo": {"name": "tradeassembly", "version": "0.1.0"}}})
             }
             "notifications/initialized" => continue,
             "tools/list" => match &runner_execution_context {
                 Ok(Some(context)) => json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": {"tools": crate::mcp::tool_definitions_for_agent_execution_context(context.allowed_tools())}
+                    "result": {"tools": if inherited_capability.is_none() {
+                        let mut allowed = context.allowed_tools().to_vec();
+                        allowed.extend([external_mcp::ATTACH.to_string(), external_mcp::DETACH.to_string()]);
+                        crate::mcp::tool_definitions_for_agent_execution_context(&allowed)
+                    } else { crate::mcp::tool_definitions_for_agent_execution_context(context.allowed_tools()) }}
                 }),
                 Ok(None) => {
                     json!({"jsonrpc": "2.0", "id": id, "result": {"tools": crate::mcp::tool_definitions()}})
@@ -1725,7 +1739,34 @@ fn serve_mcp_stdio(
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                let result = if runner_execution_context.is_err() {
+                let result = if matches!(name, external_mcp::ATTACH | external_mcp::DETACH) {
+                    let action = if inherited_capability.is_some() {
+                        Err("external_attach_operator_required".to_string())
+                    } else if let Ok(connection) = &external_connection {
+                        if name == external_mcp::DETACH {
+                            connection.detach()
+                        } else {
+                            match service
+                                .zip(current_mcp_identity(service, identity_manager).as_ref())
+                            {
+                                Some((service, identity)) => connection
+                                    .attach(&authenticated_service(service, identity), &args),
+                                None => Err("external_attach_identity_required".to_string()),
+                            }
+                        }
+                    } else {
+                        Err("external_agent_heartbeat_unavailable".to_string())
+                    };
+                    match action {
+                        Ok(payload) => crate::mcp::call_tool_with_payload(name, payload),
+                        Err(code) => crate::mcp::tool_error(
+                            name,
+                            &code,
+                            "External agent session action failed closed.",
+                            None,
+                        ),
+                    }
+                } else if runner_execution_context.is_err() {
                     crate::mcp::tool_error(
                         name,
                         "agent_mcp_execution_context_invalid",
@@ -1878,6 +1919,18 @@ fn serve_mcp_stdio(
             }
         };
         println!("{}", response);
+        if method == "tools/call"
+            && matches!(
+                message.pointer("/params/name").and_then(Value::as_str),
+                Some(external_mcp::ATTACH | external_mcp::DETACH)
+            )
+            && response.pointer("/result/isError") == Some(&Value::Bool(false))
+        {
+            println!(
+                "{}",
+                json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"})
+            );
+        }
     }
 }
 

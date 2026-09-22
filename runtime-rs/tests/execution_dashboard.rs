@@ -207,6 +207,43 @@ fn authenticated_external_session_attaches_to_real_activation_and_rejects_other_
 }
 
 #[test]
+fn external_instrument_universe_is_saved_without_inventing_a_primary_symbol() {
+    let directory = tempfile::tempdir().unwrap();
+    let service =
+        TradeAssemblyService::test_local(directory.path().join("universe.db").to_string_lossy());
+    let body = json!({"strategyId":"strat_local_btc_demo", "orchestrator":"external_agent", "mode":"paper", "allowed_symbols":["SPY","QQQ"]});
+    let saved = service.handle_http(
+        "POST",
+        "/product/strategy-execution-configs/save",
+        body.clone(),
+    );
+    assert_eq!(saved.status, 200);
+    let config = &saved.body["body"]["item"];
+    assert_eq!(config["allowedSymbols"], json!(["SPY", "QQQ"]));
+    assert_eq!(config["symbol"], "");
+    let mut different = body.clone();
+    different["allowed_symbols"] = json!(["SPY", "IWM"]);
+    let other = service.handle_http(
+        "POST",
+        "/product/strategy-execution-configs/save",
+        different,
+    );
+    assert_ne!(config["configId"], other.body["body"]["item"]["configId"]);
+    let before = namespace_count(&service, "execution_configs");
+    for invalid in [
+        json!({"orchestrator":"deterministic","allowed_symbols":["SPY","QQQ"]}),
+        json!({"orchestrator":"external_agent","allowed_symbols":[]}),
+        json!({"orchestrator":"external_agent","allowed_symbols":["SPY"],"allowedSymbols":["QQQ"]}),
+        json!({"orchestrator":"external_agent","allowed_symbols":["SPY"],"symbol":"IWM"}),
+    ] {
+        let result =
+            service.handle_http("POST", "/product/strategy-execution-configs/save", invalid);
+        assert!(result.body.to_string().contains("execution_"));
+        assert_eq!(namespace_count(&service, "execution_configs"), before);
+    }
+}
+
+#[test]
 fn external_agent_activation_is_durable_without_scheduler_state_or_ticks() {
     let directory = tempfile::tempdir().unwrap();
     let db = directory.path().join("external-agent.db");

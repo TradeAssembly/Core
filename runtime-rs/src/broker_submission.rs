@@ -417,6 +417,19 @@ pub fn load_current_state(
 }
 
 fn validate_order_symbol(config: &Value, symbol: &str) -> Result<(), String> {
+    if config.get("allowedSymbols").is_some() {
+        validate_execution_universe(config)?;
+        return if config["allowedSymbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some(symbol))
+        {
+            Ok(())
+        } else {
+            Err("order_symbol_outside_execution_config".into())
+        };
+    }
     let configured = config["symbol"]
         .as_str()
         .filter(|value| !value.trim().is_empty())
@@ -424,6 +437,35 @@ fn validate_order_symbol(config: &Value, symbol: &str) -> Result<(), String> {
     // Do not normalize or infer broker instrument aliases at the authority boundary.
     if configured != symbol {
         return Err("order_symbol_outside_execution_config".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_execution_universe(config: &Value) -> Result<(), String> {
+    let Some(value) = config.get("allowedSymbols") else {
+        return Ok(());
+    };
+    if config["orchestrator"] != "external_agent" {
+        return Err("execution_universe_requires_external_agent".into());
+    }
+    let symbols = value
+        .as_array()
+        .filter(|items| !items.is_empty() && items.len() <= 256)
+        .ok_or_else(|| "execution_universe_invalid".to_string())?;
+    let mut unique = std::collections::BTreeSet::new();
+    for item in symbols {
+        let symbol = item
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 32 && s.trim() == *s)
+            .ok_or_else(|| "execution_universe_invalid".to_string())?;
+        if !unique.insert(symbol) {
+            return Err("execution_universe_duplicate".into());
+        }
+    }
+    if let Some(symbol) = config["symbol"].as_str().filter(|s| !s.is_empty()) {
+        if !unique.contains(symbol) {
+            return Err("execution_symbol_outside_universe".into());
+        }
     }
     Ok(())
 }

@@ -1,10 +1,16 @@
 # Extraction decisions
 
-- Broker admission requires an exact, nonempty execution-config symbol match,
+- External-agent configurations may explicitly supply `allowedSymbols` (MCP
+  `allowed_symbols`): 1–256 unique exact broker symbols, no aliases or implicit
+  primary symbol. The universe participates in generated configuration identity
+  and the full configuration digest used by mandates. Malformed lists and lists
+  for deterministic evaluators fail closed. Broker admission checks membership
+  on each current-state recheck. This does not authorize aggregate risk controls.
+- Without an explicit universe, broker admission requires an exact, nonempty execution-config symbol match,
   rechecked with the current binding before dispatch. No implicit aliases or
   default instrument expand authority. This closes a missing constraint in the
   existing single-instrument path; it does not implement portfolio authorization.
-  Multi-instrument activation and aggregate exposure/position reservations remain
+  Full owner-strategy activation and aggregate exposure/position reservations remain
   release gaps for the owner's ten-symbol strategy. Do not substitute a narrowed
   strategy or per-order limits and claim its full paper promotion is verified.
 - Live cloud prerequisites apply to non-local or unidentified runtime profiles,

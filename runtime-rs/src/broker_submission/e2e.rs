@@ -81,6 +81,7 @@ fn run_external_activation(lose_response: bool) {
         "/product/strategy-execution-configs/save",
         json!({
             "strategyId":"strat_local_btc_demo","orchestrator":"external_agent","mode":"live",
+            "allowedSymbols":["BTC/USD","ETH/USD"],
             "providerRef":"mandate-live","accountRef":"account://mandate-live/controlled",
             "dataProviderRef":"mandate-live","dataAccountRef":"account://mandate-live/controlled",
             "legalReceiptRef":"receipt_external_test",

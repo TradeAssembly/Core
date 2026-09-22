@@ -54,6 +54,33 @@ impl AgentRuntimePort for ContextCapturingAdapter {
 }
 
 #[test]
+fn explicit_external_universe_binds_each_instrument_without_expanding_legacy_scope() {
+    let config =
+        json!({"orchestrator":"external_agent", "symbol":"", "allowedSymbols":["SPY","QQQ"]});
+    for symbol in ["SPY", "QQQ"] {
+        assert!(super::validate_order_symbol(&config, symbol).is_ok());
+    }
+    assert!(super::validate_order_symbol(&config, "IWM").is_err());
+    for symbols in [
+        json!([]),
+        json!(["SPY", "SPY"]),
+        json!([" SPY"]),
+        json!([null]),
+        json!("SPY"),
+    ] {
+        let mut invalid = config.clone();
+        invalid["allowedSymbols"] = symbols;
+        assert!(super::validate_order_symbol(&invalid, "SPY").is_err());
+    }
+    let mut invalid = config.clone();
+    invalid["orchestrator"] = json!("deterministic");
+    assert!(super::validate_order_symbol(&invalid, "SPY").is_err());
+    invalid = config;
+    invalid["symbol"] = json!("IWM");
+    assert!(super::validate_order_symbol(&invalid, "SPY").is_err());
+}
+
+#[test]
 fn order_symbol_requires_exact_nonempty_execution_binding() {
     for config in [json!({}), json!({"symbol":""}), json!({"symbol":"  "})] {
         assert_eq!(

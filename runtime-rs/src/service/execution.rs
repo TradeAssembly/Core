@@ -950,6 +950,19 @@ pub(crate) fn save_config(service: &TradeAssemblyService, body: Value) -> Value 
     {
         return json!({"status":"blocked","error":{"code":"execution_orchestrator_invalid"}});
     }
+    let mut universe_request = body.clone();
+    if let Some(symbols) = body.get("allowed_symbols") {
+        if body
+            .get("allowedSymbols")
+            .is_some_and(|other| other != symbols)
+        {
+            return json!({"status":"blocked","error":{"code":"execution_universe_alias_conflict"}});
+        }
+        universe_request["allowedSymbols"] = symbols.clone();
+    }
+    if let Err(code) = crate::broker_submission::validate_execution_universe(&universe_request) {
+        return json!({"status":"blocked","error":{"code":code}});
+    }
     let requested_strategy_id = string_field(&body, &["strategyId", "strategy_id"])
         .unwrap_or_else(|| "strat_local_btc_demo".to_string());
     if let Err(response) = service.require_object("strategy", &requested_strategy_id) {
@@ -1036,13 +1049,22 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
                 .then(|| account_ref.clone())
                 .flatten()
         });
+    let allowed_symbols = body
+        .get("allowedSymbols")
+        .or_else(|| body.get("allowed_symbols"));
     let symbol = string_field(body, &["symbol"])
         .or_else(|| {
             body.pointer("/params/symbol")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| strategy["symbol"].as_str().unwrap_or("BTC/USD").to_string());
+        .unwrap_or_else(|| {
+            if allowed_symbols.is_some() {
+                String::new()
+            } else {
+                strategy["symbol"].as_str().unwrap_or("BTC/USD").to_string()
+            }
+        });
     let timeframe = string_field(body, &["timeframe"])
         .or_else(|| {
             body.pointer("/params/timeframe")
@@ -1079,11 +1101,14 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         });
     let legal_receipt_ref = string_field(body, &["legalReceiptRef", "legal_receipt_ref"]);
     let responsible_human = service.responsible_human_identity();
+    let universe_suffix = allowed_symbols
+        .map(|symbols| format!(":{symbols}"))
+        .unwrap_or_default();
     let config_id = string_field(body, &["configId", "config_id"]).unwrap_or_else(|| {
         format!(
             "cfg_{}",
             short_hash(&format!(
-                "{strategy_id}:{version_id}:{provider_ref}:{data_provider_ref}:{mode}:{account_ref:?}:{data_account_ref:?}:{symbol}:{timeframe}:{calendar_ref:?}:{scheduler_interval_seconds}:{legal_receipt_ref:?}:{responsible_human:?}:{orchestrator}"
+                "{strategy_id}:{version_id}:{provider_ref}:{data_provider_ref}:{mode}:{account_ref:?}:{data_account_ref:?}:{symbol}:{timeframe}:{calendar_ref:?}:{scheduler_interval_seconds}:{legal_receipt_ref:?}:{responsible_human:?}:{orchestrator}{universe_suffix}"
             ))
         )
     });
@@ -1152,6 +1177,9 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         "status": "configured",
         "noAdvice": LEGAL_BOUNDARY,
     });
+    if let Some(symbols) = allowed_symbols {
+        config["allowedSymbols"] = symbols.clone();
+    }
     let revision = if persist_revision {
         capability_graph::save_execution_revision(service, body, &config)
     } else {
@@ -3356,6 +3384,13 @@ fn readiness_for_config_with_authority(
     let legal_receipt_ready = legal_receipt.as_ref().is_some_and(|result| result.is_ok());
     let mut checks = vec![
         check(
+            "execution_universe_valid",
+            "Explicit instrument universe is valid for its orchestration owner",
+            crate::broker_submission::validate_execution_universe(config).is_ok(),
+            true,
+            "execution.allowedSymbols",
+        ),
+        check(
             "execution_orchestrator_supported",
             "Recognized orchestration owner",
             matches!(
@@ -3404,9 +3439,11 @@ fn readiness_for_config_with_authority(
         check(
             "symbol_tradable",
             "Instrument identity present",
-            config["symbol"]
+            if config.get("allowedSymbols").is_some() {
+                crate::broker_submission::validate_execution_universe(config).is_ok()
+            } else { config["symbol"]
                 .as_str()
-                .is_some_and(|value| !value.trim().is_empty()),
+                .is_some_and(|value| !value.trim().is_empty()) },
             true,
             "instrument.resolve",
         ),

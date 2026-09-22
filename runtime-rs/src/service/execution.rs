@@ -77,6 +77,12 @@ pub(crate) fn evaluate_tick_response(
             json!({"activationId": activation_id, "failClosed": true}),
         );
     };
+    if external_agent(&run) || external_agent(&activation) {
+        return ServiceResponse::conflict_with_details(
+            "external_agent_evaluation_required",
+            json!({"activationId":activation_id,"failClosed":true}),
+        );
+    }
     if activation["state"].as_str() != Some("active")
         || activation["mode"] != run["mode"]
         || (run["mode"] == "live" && activation["localLiveAuthority"] != run["localLiveAuthority"])
@@ -938,6 +944,12 @@ fn quantity_value(quantity_micros: i64) -> f64 {
 }
 
 pub(crate) fn save_config(service: &TradeAssemblyService, body: Value) -> Value {
+    if body
+        .get("orchestrator")
+        .is_some_and(|value| !matches!(value.as_str(), Some("deterministic" | "external_agent")))
+    {
+        return json!({"status":"blocked","error":{"code":"execution_orchestrator_invalid"}});
+    }
     let requested_strategy_id = string_field(&body, &["strategyId", "strategy_id"])
         .unwrap_or_else(|| "strat_local_btc_demo".to_string());
     if let Err(response) = service.require_object("strategy", &requested_strategy_id) {
@@ -1014,6 +1026,7 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
             .to_string()
     });
     let mode = execution_mode_from(body);
+    let orchestrator = body["orchestrator"].as_str().unwrap_or("deterministic");
     let account_ref = string_field(body, &["accountRef", "account_ref"]);
     let data_provider_ref = string_field(body, &["dataProviderRef", "data_provider_ref"])
         .unwrap_or_else(|| provider_ref.clone());
@@ -1070,13 +1083,14 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         format!(
             "cfg_{}",
             short_hash(&format!(
-                "{strategy_id}:{version_id}:{provider_ref}:{data_provider_ref}:{mode}:{account_ref:?}:{data_account_ref:?}:{symbol}:{timeframe}:{calendar_ref:?}:{scheduler_interval_seconds}:{legal_receipt_ref:?}:{responsible_human:?}"
+                "{strategy_id}:{version_id}:{provider_ref}:{data_provider_ref}:{mode}:{account_ref:?}:{data_account_ref:?}:{symbol}:{timeframe}:{calendar_ref:?}:{scheduler_interval_seconds}:{legal_receipt_ref:?}:{responsible_human:?}:{orchestrator}"
             ))
         )
     });
     let mut config = json!({
         "schemaVersion": "tradeassembly.execution_config.v1",
         "kind": "StrategyExecutionConfig",
+        "orchestrator": orchestrator,
         "id": config_id,
         "configId": config_id,
         "strategyId": strategy_id,
@@ -1102,7 +1116,7 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         },
         "warmup": {
             "requiredBars": 0,
-            "source": "compiled_strategy_kernel",
+            "source": if orchestrator == "external_agent" { "external_agent" } else { "compiled_strategy_kernel" },
         },
         "riskLimits": risk_limits,
         "risk_limits": risk_limits,
@@ -1355,7 +1369,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "timeframe": config["timeframe"],
         "calendarRef": config["calendarRef"],
         "cursor": 0,
-        "state": "active",
+        "state": if external_agent(&config) { "externally_managed" } else { "active" },
     });
     let reconciliation = json!({
         "schemaVersion": "tradeassembly.execution_reconciliation.v1",
@@ -1371,6 +1385,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     let activation_record = json!({
         "schemaVersion": "tradeassembly.activation_record.v1",
         "kind": "ActivationRecord",
+        "orchestrator": orchestrator_kind(&config),
         "localLiveAuthority": live_authority,
         "activationId": activation_id,
         "correlationId": correlation_id,
@@ -1451,6 +1466,8 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "warnings": [LEGAL_BOUNDARY, "Local-only execution evidence remains on this device unless exported."],
     });
     run["localLiveAuthority"] = live_authority;
+    run["orchestrator"] = json!(orchestrator_kind(&config));
+    run["immutableInput"]["orchestrator"] = json!(orchestrator_kind(&config));
     run["correlationId"] = json!(correlation_id);
     run["health"]["correlationId"] = json!(correlation_id);
     run["calendarRef"] = config["calendarRef"].clone();
@@ -1458,6 +1475,10 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     run["dataFreshnessPolicy"] = config["dataFreshnessPolicy"].clone();
     run["checkpointHash"] = checkpoint["checkpointHash"].clone();
     run["watchRefs"] = json!([watch_id]);
+    if external_agent(&config) {
+        run["health"]["status"] = json!("awaiting_external_agent");
+        run["replayRefs"][0]["deterministic"] = json!(false);
+    }
     let interval_seconds = config["schedulerIntervalSeconds"]
         .as_u64()
         .unwrap_or(60)
@@ -1588,7 +1609,6 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         ),
         write(RUNS_NS, &run_id, run.clone(), "run"),
         write(HEALTH_NS, &activation_id, run["health"].clone(), "health"),
-        write(STATE_NS, "current", scheduler.clone(), "scheduler"),
         write(
             TRUSTED_CLOCK_NS,
             ACTIVATION_CLOCK_KEY,
@@ -1596,6 +1616,9 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
             "clock",
         ),
     ];
+    if !external_agent(&config) {
+        writes.push(write(STATE_NS, "current", scheduler.clone(), "scheduler"));
+    }
     let mut expectations = vec![StorageExpectation::new(
         TRUSTED_CLOCK_NS,
         ACTIVATION_CLOCK_KEY,
@@ -1713,6 +1736,11 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
             return activation_dependency_failure("activation_commit_conflict");
         }
         Err(_) => return activation_dependency_failure("activation_storage_unavailable"),
+    }
+    if external_agent(&config) {
+        let mut response = activation_response(service, run, false);
+        response["scheduler"] = json!({"running":false,"state":"external_agent","publicationStatus":"not_applicable","continuousExecution":false});
+        return response;
     }
     let schedule_published =
         schedule_execution_tick(service, &activation_id, next_cycle, now_ms).is_ok();
@@ -2066,6 +2094,7 @@ pub(crate) fn control(service: &TradeAssemblyService, body: Value) -> Value {
     if matches!(action.as_str(), "stop" | "emergency_stop") {
         stop_scheduler_for_activation(service, &activation_id);
     } else if action == "resume_entries"
+        && !external_agent(&run)
         && matches!(
             prior_run_state.as_str(),
             Some("stopped" | "emergency_stopped")
@@ -3240,9 +3269,13 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
     let strategy_hash_matches = strategy_version
         .as_ref()
         .is_some_and(|version| hash_strategy_spec(&version["spec"]) == config["strategySpecHash"]);
-    let strategy_executable = strategy_version
-        .as_ref()
-        .is_some_and(|version| CompiledStrategy::compile_json(&version["spec"]).is_ok());
+    let strategy_executable = strategy_version.as_ref().is_some_and(|version| {
+        if external_agent(config) {
+            crate::spec::validate_strategy_spec_report(&version["spec"]).valid
+        } else {
+            CompiledStrategy::compile_json(&version["spec"]).is_ok()
+        }
+    });
     let market_data_ready = selected_capability(&capability_resolution, "market_data.bars.read@1");
     let calendar_ready = selected_capability(&capability_resolution, "calendar.session.resolve@1")
         && config["calendarRef"]
@@ -3278,6 +3311,16 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
     let legal_receipt_ready = legal_receipt.as_ref().is_some_and(|result| result.is_ok());
     let mut checks = vec![
         check(
+            "execution_orchestrator_supported",
+            "Recognized orchestration owner",
+            matches!(
+                orchestrator_kind(config),
+                "deterministic" | "external_agent"
+            ),
+            true,
+            "execution.orchestrator",
+        ),
+        check(
             "execution_mode_supported",
             "Recognized execution mode",
             matches!(mode.as_str(), "paper" | "shadow" | "live"),
@@ -3293,10 +3336,18 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         ),
         check(
             "strategy_spec_executable",
-            "StrategySpec compiles through the shared execution kernel",
+            if external_agent(config) {
+                "Owner-published StrategySpec is structurally valid; external agent owns evaluation"
+            } else {
+                "StrategySpec compiles through the shared execution kernel"
+            },
             strategy_executable,
             true,
-            "strategy.compiler",
+            if external_agent(config) {
+                "strategy.schema"
+            } else {
+                "strategy.compiler"
+            },
         ),
         check(
             "capability_graph_revision",
@@ -3344,7 +3395,11 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         ),
         check(
             "warmup_available",
-            "Compiled strategy warmup requirements resolved",
+            if external_agent(config) {
+                "External agent owns signal warmup; Core does not attest agent evaluation"
+            } else {
+                "Compiled strategy warmup requirements resolved"
+            },
             warmup_ready,
             true,
             "runtime.warmup",
@@ -4233,6 +4288,9 @@ fn activation_response(service: &TradeAssemblyService, run: Value, duplicate: bo
 }
 
 fn activation_matches_config(run: &Value, config: &Value) -> bool {
+    if orchestrator_kind(run) != orchestrator_kind(config) {
+        return false;
+    }
     [
         "configId",
         "strategyId",
@@ -4244,6 +4302,14 @@ fn activation_matches_config(run: &Value, config: &Value) -> bool {
     ]
     .into_iter()
     .all(|field| run[field] == config[field])
+}
+
+fn orchestrator_kind(value: &Value) -> &str {
+    value["orchestrator"].as_str().unwrap_or("deterministic")
+}
+
+fn external_agent(value: &Value) -> bool {
+    orchestrator_kind(value) == "external_agent"
 }
 
 fn active_runs(service: &TradeAssemblyService) -> Vec<Value> {
@@ -4293,6 +4359,12 @@ fn start_local_scheduler_worker(
     worker_id: String,
     interval_seconds: u64,
 ) {
+    if get(&service, RUNS_NS, &run_id_for_activation(&activation_id))
+        .as_ref()
+        .is_some_and(external_agent)
+    {
+        return;
+    }
     let worker_key = format!(
         "{}:{activation_id}",
         service.runtime().storage.adapter_name()
@@ -4396,6 +4468,12 @@ fn schedule_execution_tick(
     cycle: u64,
     due_at_ms: i64,
 ) -> Result<(), String> {
+    if get(service, RUNS_NS, &run_id_for_activation(activation_id))
+        .as_ref()
+        .is_some_and(external_agent)
+    {
+        return Err("external_agent_scheduler_not_applicable".to_string());
+    }
     let schedule_key = execution_schedule_key(activation_id, cycle);
     service.runtime().scheduler.schedule(ScheduledWork {
         schedule_key: schedule_key.clone(),

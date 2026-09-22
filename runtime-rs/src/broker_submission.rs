@@ -207,6 +207,9 @@ pub fn load_current_state(
         return Err("execution_not_active".into());
     }
     if activation["activationId"] != activation_id
+        || activation["orchestrator"] != run["orchestrator"]
+        || config["orchestrator"].as_str().unwrap_or("deterministic")
+            != run["orchestrator"].as_str().unwrap_or("deterministic")
         || activation["mode"] != run["mode"]
         || activation["localLiveAuthority"] != run["localLiveAuthority"]
         || activation["capabilityGraphRevisionId"] != run["capabilityGraphRevisionId"]

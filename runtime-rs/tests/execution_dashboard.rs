@@ -19,11 +19,20 @@ fn context(key: &str) -> SideEffectContext {
 }
 
 fn activate(service: &TradeAssemblyService, suffix: &str) -> Value {
+    activate_with_orchestrator(service, suffix, "deterministic")
+}
+
+fn activate_with_orchestrator(
+    service: &TradeAssemblyService,
+    suffix: &str,
+    orchestrator: &str,
+) -> Value {
     let saved = service.handle_http(
         "POST",
         "/product/strategy-execution-configs/save",
         json!({
             "strategyId": "strat_local_btc_demo",
+            "orchestrator": orchestrator,
             "mode": "paper",
             "providerRef": "sim",
             "riskLimits": {
@@ -57,6 +66,144 @@ fn activate(service: &TradeAssemblyService, suffix: &str) -> Value {
     );
     assert_eq!(activated.status, 200, "{:#}", activated.body);
     activated.body["body"].clone()
+}
+
+#[test]
+fn external_agent_activation_is_durable_without_scheduler_state_or_ticks() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = directory.path().join("external-agent.db");
+    let service = TradeAssemblyService::test_local(db.to_string_lossy());
+    let activated = activate_with_orchestrator(&service, "external", "external_agent");
+    assert_eq!(activated["status"], "active", "{activated:#}");
+    assert_eq!(activated["run"]["orchestrator"], "external_agent");
+    assert_eq!(activated["scheduler"]["running"], false);
+    assert_eq!(
+        activated["run"]["health"]["status"],
+        "awaiting_external_agent"
+    );
+    assert_eq!(namespace_count(&service, "scheduler_state"), 0);
+    assert_eq!(namespace_count(&service, "execution_ticks"), 0);
+    let activation_id = activated["activationId"].as_str().unwrap();
+    let tick = service.handle_http_from_source(
+        "scheduler",
+        "POST",
+        &format!("/product/strategy-execution-activations/{activation_id}/ticks/evaluate"),
+        json!({"tickId":"must-not-run", "sequence":1,"idempotencyKey":"external-no-tick"}),
+    );
+    assert!(
+        tick.body
+            .to_string()
+            .contains("external_agent_evaluation_required"),
+        "{}",
+        tick.body
+    );
+    let denied = service.handle_http(
+        "POST",
+        "/scheduler/start",
+        json!({"activationId":activation_id}),
+    );
+    assert!(
+        denied
+            .body
+            .to_string()
+            .contains("external_agent_scheduler_not_applicable"),
+        "{}",
+        denied.body
+    );
+    assert_eq!(namespace_count(&service, "scheduler_state"), 0);
+    drop(service);
+    let reopened = TradeAssemblyService::test_local(db.to_string_lossy());
+    let duplicate = reopened.handle_http("POST", "/product/strategy-execution-activations/activate", json!({
+        "configId":activated["run"]["configId"], "activationId":activation_id,
+        "idempotencyKey":"external-retry", "acknowledgementIds":["user_logic","user_risk","no_advice"]
+    }));
+    assert_eq!(
+        duplicate.body["body"]["duplicate"], true,
+        "{}",
+        duplicate.body
+    );
+    assert_eq!(namespace_count(&reopened, "execution_runs"), 1);
+    assert_eq!(namespace_count(&reopened, "scheduler_state"), 0);
+    assert_eq!(namespace_count(&reopened, "execution_ticks"), 0);
+    for action in ["stop", "resume_entries"] {
+        let controlled = reopened.handle_http("POST", "/product/strategy-execution-activations/control", json!({"activationId":activation_id,"action":action,"idempotencyKey":format!("external-{action}")}));
+        assert_eq!(
+            controlled.body["body"]["outcome"]["status"], "completed",
+            "{}",
+            controlled.body
+        );
+    }
+    let count: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM runtime_schedules", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "activation, manual start and resume must never enqueue ticks"
+    );
+}
+
+#[test]
+fn external_agent_uses_published_structure_without_claiming_deterministic_compilation() {
+    let directory = tempfile::tempdir().unwrap();
+    let base =
+        TradeAssemblyService::test_local(directory.path().join("owner.db").to_string_lossy());
+    let owner = base.for_authenticated_invocation("test", "owner", None, None);
+    let spec: Value = serde_json::from_str(include_str!(
+        "../../examples/strategy-spec/v3/valid/static-equity.json"
+    ))
+    .unwrap();
+    assert!(tradeassembly_runtime::spec::validate_strategy_spec_report(&spec).valid);
+    assert!(tradeassembly_runtime::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
+    let created = owner.handle_http(
+        "POST",
+        "/product/strategies/create",
+        json!({"name":"External owner evaluator", "spec":spec}),
+    );
+    let strategy_id = created.body["body"]["strategy"]["id"].clone();
+    let published = owner.handle_http("POST", "/product/strategies/publish", json!({"strategyId":strategy_id,"expectedDraftHash":created.body["body"]["draft"]["draftHash"]}));
+    assert_eq!(
+        published.body["body"]["published"], true,
+        "{}",
+        published.body
+    );
+    let save = |orchestrator: &str, risk: Value| {
+        owner.call_mcp_tool("tradeassembly.execution.config.save", json!({"strategy_id":strategy_id,"version_id":published.body["body"]["version"]["id"],"orchestrator":orchestrator,"provider_ref":"sim","symbol":"SPY","mode":"paper","risk_limits":risk}))["structuredContent"]["body"]["configId"].clone()
+    };
+    let risk = json!({"max_notional":100,"max_order_quantity":1});
+    let external = save("external_agent", risk.clone());
+    let deterministic = save("deterministic", risk);
+    assert_ne!(external, deterministic);
+    let readiness = |config: Value| {
+        owner.call_mcp_tool(
+            "tradeassembly.execution.readiness",
+            json!({"config_id":config}),
+        )["structuredContent"]["body"]
+            .clone()
+    };
+    let ready = readiness(external.clone());
+    assert_eq!(
+        ready["ready"], true,
+        "blockers: {}",
+        ready["blockedReasons"]
+    );
+    assert_eq!(readiness(deterministic)["ready"], false);
+    let activated = owner.call_mcp_tool("tradeassembly.execution.activate", json!({"config_id":external,"idempotency_key":"owner-external-activation","acknowledgement_ids":["user_logic","user_risk","no_advice"]}));
+    assert_eq!(
+        activated["structuredContent"]["body"]["status"], "active",
+        "{activated:#}"
+    );
+    let invalid_risk = save(
+        "external_agent",
+        json!({"max_notional":0,"max_order_quantity":1}),
+    );
+    assert_eq!(
+        readiness(invalid_risk)["ready"],
+        false,
+        "External evaluation must not bypass deterministic risk limits"
+    );
 }
 
 fn put(service: &TradeAssemblyService, namespace: &str, key: &str, value: Value) {

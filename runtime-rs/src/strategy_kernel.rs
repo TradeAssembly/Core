@@ -11,6 +11,13 @@ use crate::spec::{OrderType, StrategySpec};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub mod portfolio_capacity;
+pub mod portfolio_program;
+pub mod portfolio_vwap;
+pub mod session_metrics;
+pub mod timeline;
+pub mod vwap_rules;
+
 pub type PriceMicros = i64;
 pub type MoneyMicros = i64;
 pub type Quantity = i64;
@@ -80,6 +87,8 @@ pub struct OrderIntent {
     pub symbol: String,
     pub side: OrderSide,
     pub quantity: Quantity,
+    /// A notional order resolves its quantity at execution, not at signal time.
+    pub notional_micros: Option<MoneyMicros>,
     pub timing: ExecutionTiming,
 }
 
@@ -160,6 +169,17 @@ impl CompiledStrategy {
     }
 
     pub fn compile(spec: &StrategySpec) -> Result<Self, KernelError> {
+        if spec
+            .stages
+            .evaluate
+            .substeps
+            .iter()
+            .any(|step| step.config.contains_key(portfolio_program::CONFIG_KEY))
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "portfolio strategy requires timestamped portfolio evaluator",
+            ));
+        }
         let stages = &spec.stages;
         let expected = [
             (&stages.inputs.substeps, "market_data.bars.read@1"),
@@ -231,6 +251,7 @@ pub fn evaluate_observation(
             symbol: observation.symbol.clone(),
             side: OrderSide::Sell,
             quantity: current_position,
+            notional_micros: None,
             timing,
         });
     }
@@ -240,6 +261,7 @@ pub fn evaluate_observation(
             symbol: observation.symbol.clone(),
             side: OrderSide::Buy,
             quantity: strategy.quantity,
+            notional_micros: None,
             timing,
         });
     }
@@ -467,7 +489,10 @@ fn apply_bps_up(price: PriceMicros, bps: i64) -> Result<PriceMicros, KernelError
                 .ok_or(KernelError::ArithmeticOverflow)?,
         )
         .ok_or(KernelError::ArithmeticOverflow)?;
-    Ok((numerator + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR)
+    numerator
+        .checked_add(BPS_DENOMINATOR - 1)
+        .map(|rounded| rounded / BPS_DENOMINATOR)
+        .ok_or(KernelError::ArithmeticOverflow)
 }
 
 fn apply_bps_down(price: PriceMicros, bps: i64) -> Result<PriceMicros, KernelError> {

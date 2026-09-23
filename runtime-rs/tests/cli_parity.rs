@@ -1702,6 +1702,8 @@ fn robustness_bar(timestamp: &str, open: f64, close: f64) -> HistoricalObservati
             low: open.min(close),
             close,
             volume: 100.0,
+            vwap: None,
+            session: None,
         }),
     }
 }

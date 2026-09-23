@@ -3,7 +3,7 @@
   "plugins": [
     {
       "pluginRef": "tradeassembly.alpaca",
-      "version": "0.1.0",
+      "version": "0.1.16",
       "selectedByDefault": true,
       "optional": true,
       "repository": "https://github.com/TradeAssemblyHQ/tradeassembly-plugin-alpaca",
@@ -11,10 +11,10 @@
       "targets": [
         {
           "target": "aarch64-apple-darwin",
-          "packageFile": "dist/tradeassembly-plugin-alpaca-0.1.0.tar.gz",
-          "packageUrl": "https://github.com/TradeAssemblyHQ/tradeassembly-plugin-alpaca/releases/download/v0.1.0/tradeassembly-plugin-alpaca-0.1.0.tar.gz",
-          "packageSha256": "cd0a972b1ca6204ffcf630563adfba54f0d212d0722370c450c8d8226f0f0d55",
-          "manifestSha256": "a8f219f46a25475bc9fc2db3f572d1761fccc68d4b32df798d3f4521a1656436"
+          "packageFile": "dist/tradeassembly-plugin-alpaca-0.1.16.tar.gz",
+          "packageUrl": "https://github.com/TradeAssemblyHQ/tradeassembly-plugin-alpaca/releases/download/v0.1.16/tradeassembly-plugin-alpaca-0.1.16.tar.gz",
+          "packageSha256": "e6ec6273bf39044f193b347dd5de800e4260bdda24424806d7eabeca99211b28",
+          "manifestSha256": "50d5a74c69efffb8d2667319885f1c9f76c1006a4d9da2f20a817fdf19805760"
         }
       ]
     },

@@ -98,6 +98,7 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
     };
 
     let database = state.join("runtime.db");
+    let auth = state.join("auth");
     let warden_database = state.join("warden.sqlite");
     let key = state.join("signing.seed");
     let token = state.join("warden.token");
@@ -131,6 +132,21 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
         database_path: Some(absolute(&database)?.display().to_string()),
         artifact_root: Some(absolute(&state.join("artifacts"))?.display().to_string()),
         oidc_profile: Some("local_owner".into()),
+        // Keep the optional hosted-session binding installation-scoped. The
+        // packaged connection profile derives a Bitwarden item name from this
+        // path; a relative default would make the same installation appear as
+        // a different user session when an MCP host changes its working
+        // directory.
+        oidc_session_path: Some(
+            absolute(&auth.join("cli-session.bin"))?
+                .display()
+                .to_string(),
+        ),
+        oidc_session_key_path: Some(
+            absolute(&auth.join("cli-session.key"))?
+                .display()
+                .to_string(),
+        ),
         legal_receipt_root: Some(
             absolute(&state.join("legal/receipts"))?
                 .display()
@@ -324,10 +340,11 @@ fn verify_version(binary: &Path) -> Result<(), String> {
 }
 
 fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
+    let path = system_state_path(path);
     if !path.is_absolute() {
         return Err("local_install_state_must_be_absolute".into());
     }
-    reject_symlinks(path)?;
+    reject_symlinks(&path)?;
     if !path.exists() {
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
@@ -337,10 +354,10 @@ fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
             builder.mode(0o700);
         }
         builder
-            .create(path)
+            .create(&path)
             .map_err(|_| "local_install_state_unavailable")?;
     }
-    let state = validate_state_root(path)?;
+    let state = validate_state_root(&path)?;
     for entry in fs::read_dir(&state).map_err(|_| "local_install_state_unavailable")? {
         let entry = entry.map_err(|_| "local_install_state_unavailable")?;
         let name = entry.file_name();
@@ -359,10 +376,11 @@ fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_state_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.is_absolute() || symlink_metadata(path)?.file_type().is_symlink() {
+    let path = system_state_path(path);
+    if !path.is_absolute() || symlink_metadata(&path)?.file_type().is_symlink() {
         return Err("local_install_state_invalid".into());
     }
-    let meta = symlink_metadata(path)?;
+    let meta = symlink_metadata(&path)?;
     if !meta.is_dir() {
         return Err("local_install_state_invalid".into());
     }
@@ -373,8 +391,21 @@ fn validate_state_root(path: &Path) -> Result<PathBuf, String> {
             return Err("local_install_state_insecure".into());
         }
     }
-    reject_symlinks(path)?;
-    Ok(path.to_path_buf())
+    reject_symlinks(&path)?;
+    Ok(path)
+}
+
+// macOS exposes /tmp as the OS-owned /private/tmp symlink. Normalize only
+// that fixed platform alias before applying the no-user-controlled-symlink
+// rule. All other path components are still checked with lstat below.
+fn system_state_path(path: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(suffix) = path.strip_prefix("/tmp") {
+            return Path::new("/private/tmp").join(suffix);
+        }
+    }
+    path.to_path_buf()
 }
 
 fn recognized(name: &str) -> bool {
@@ -665,6 +696,19 @@ mod tests {
         fs::write(state.join("unrelated"), b"preserve").unwrap();
         assert!(prepare_state_root(&state).is_err());
         assert_eq!(fs::read(state.join("unrelated")).unwrap(), b"preserve");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_install_normalizes_only_the_system_tmp_alias() {
+        assert_eq!(
+            system_state_path(Path::new("/tmp/tradeassembly-test")),
+            Path::new("/private/tmp/tradeassembly-test")
+        );
+        assert_eq!(
+            system_state_path(Path::new("/Users/example/test")),
+            Path::new("/Users/example/test")
+        );
     }
 
     #[cfg(unix)]

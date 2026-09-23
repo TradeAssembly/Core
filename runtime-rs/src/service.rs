@@ -26,6 +26,7 @@ mod credentials;
 mod dataset_ingestion;
 mod derivatives;
 mod execution;
+mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
 mod journal_view;
@@ -253,6 +254,8 @@ pub struct TradeAssemblyService {
     runtime_manifest: Option<ResolvedRuntimeManifest>,
     invocation_principal: Option<auth::SessionPrincipal>,
     oauth_config: Option<RuntimeConfig>,
+    connection_profile: Option<crate::connection_profile::ConnectionProfile>,
+    hosted_oauth_actor: Option<String>,
     invocation_actor_kind: &'static str,
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
 }
@@ -273,6 +276,35 @@ impl Default for TradeAssemblyService {
 }
 
 impl TradeAssemblyService {
+    pub(crate) fn cancel_broker_connection_attempt(
+        &self,
+        instance: &str,
+        connection: &str,
+    ) -> Result<(), String> {
+        plugin_oauth::cancel_attempt(self, instance, connection)
+    }
+    pub(crate) fn broker_connection_descriptor(&self, instance: &str) -> Result<Value, String> {
+        let record = plugin_lifecycle::require_instance(self, instance)
+            .map_err(|_| "onboarding_instance_unavailable")?;
+        let manifest = plugin_lifecycle::get_manifest(
+            self,
+            record["pluginRef"]
+                .as_str()
+                .ok_or("onboarding_plugin_unavailable")?,
+        );
+        Ok(manifest.body["manifest"]["configuration"]["oauth"].clone())
+    }
+    pub(crate) fn with_hosted_connection(
+        mut self,
+        config: RuntimeConfig,
+        actor: String,
+        profile: Option<crate::connection_profile::ConnectionProfile>,
+    ) -> Self {
+        self.oauth_config = Some(config);
+        self.hosted_oauth_actor = Some(actor);
+        self.connection_profile = profile;
+        self
+    }
     pub fn new(db: impl Into<String>) -> Self {
         Self::local(db)
     }
@@ -307,6 +339,8 @@ impl TradeAssemblyService {
             db,
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -441,6 +475,8 @@ impl TradeAssemblyService {
             db,
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -472,6 +508,8 @@ impl TradeAssemblyService {
             runtime: Arc::new(runtime),
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
@@ -495,10 +533,18 @@ impl TradeAssemblyService {
             runtime: Arc::new(runtime),
             runtime_manifest: None,
             oauth_config: None,
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_runtime(mut self, runtime: ServiceRuntime) -> Self {
+        self.runtime = Arc::new(runtime);
+        self
     }
 
     pub fn for_authenticated_invocation(
@@ -3005,6 +3051,9 @@ impl TradeAssemblyService {
         if matches!(
             name,
             "tradeassembly.account.login"
+                | "tradeassembly.onboarding.start"
+                | "tradeassembly.onboarding.status"
+                | "tradeassembly.onboarding.cancel"
                 | "tradeassembly.account.login.status"
                 | "tradeassembly.account.status"
                 | "tradeassembly.setup.inspect"
@@ -3059,6 +3108,21 @@ impl TradeAssemblyService {
             }
         }
         let arguments = self.enrich_mcp_arguments(name, arguments);
+        // Capability queries select an evaluation mode, not broker authority.
+        // Keep that selector separate from the trusted account mode below.
+        let capability_query_mode = matches!(
+            name,
+            "tradeassembly.plugin.capability_graph_resolve"
+                | "tradeassembly.plugin.capability_revision_save"
+                | "tradeassembly.plugin.capability_resolve"
+        )
+        .then(|| {
+            arguments
+                .get("mode")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten();
         let trusted_runner_mode = self
             .agent_mcp_execution_context
             .as_ref()
@@ -3082,7 +3146,7 @@ impl TradeAssemblyService {
                     trusted_runner_mode.as_deref(),
                 )
             });
-        let arguments = if let Some(context) = &self.agent_mcp_execution_context {
+        let mut arguments = if let Some(context) = &self.agent_mcp_execution_context {
             match crate::agent_runner::bind_mcp_execution_context(
                 self.runtime.as_ref(),
                 context,
@@ -3102,6 +3166,9 @@ impl TradeAssemblyService {
         } else {
             arguments
         };
+        if let Some(mode) = capability_query_mode {
+            arguments["mode"] = json!(mode);
+        }
         if broker_onboarding_call {
             if let Some(code) = broker_onboarding::validate_mcp_arguments(name, &arguments) {
                 return mcp::tool_error(name, code, "Broker setup requires explicit account mode and authority. Enter credentials only in the browser connection screen.", None);
@@ -3323,6 +3390,12 @@ impl TradeAssemblyService {
                 self.handle_http_from_source("mcp", "POST", "/journal/replay-report", arguments)
                     .body
             }
+            "tradeassembly.strategy.schema" => json!({
+                "ok": true,
+                "schema": spec::strategy_spec_schema(),
+                "evaluators": [crate::strategy_kernel::portfolio_program::discovery()],
+                "guidance": "Encode only owner-supplied strategy rules. Blank drafts are incomplete. Validate before requesting owner publication; publication does not activate execution."
+            }),
             "tradeassembly.strategy.create" => self.create_strategy(arguments),
             "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
                 self.save_builder_draft(arguments)
@@ -3360,7 +3433,20 @@ impl TradeAssemblyService {
                 );
                 return self.complete_mcp_command_or_error(name, &command_envelope, 403, response);
             }
-            "tradeassembly.strategy.validate" => self.validate_builder_draft(arguments),
+            "tradeassembly.strategy.validate" => {
+                if let Some(payload) = arguments.get("spec") {
+                    let report = spec::validate_strategy_spec_report(payload);
+                    json!({"ok": true, "valid": report.valid, "compilation": crate::strategy_kernel::portfolio_program::compilation_report(payload, report.valid), "report": report})
+                } else if arguments
+                    .get("strategy_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                {
+                    self.validate_builder_draft(arguments)
+                } else {
+                    return mcp::tool_error(name, "strategy_validation_input_required", "Supply spec JSON directly or strategy_id for an owned saved draft. File paths are not loaded by this tool.", None);
+                }
+            }
             "tradeassembly.plugin.list" => {
                 json!({"ok": true, "workspacePrimitive": "plugins", "plugins": self.plugins_providers()["plugins"].clone()})
             }
@@ -3505,24 +3591,50 @@ impl TradeAssemblyService {
                 let run_id = arguments["run_id"].as_str().unwrap_or_default().to_string();
                 robustness::retry(self, &run_id, arguments).body
             }
-            "tradeassembly.dataset_ingestion.create" => {
+            "tradeassembly.dataset_ingestion.create" => dataset_ingestion::mcp_page(
                 self.dispatch_http("POST", "/dataset-ingestions", arguments)
-                    .body
-            }
-            "tradeassembly.dataset_ingestion.list" => {
+                    .body,
+                0,
+                0,
+            ),
+            "tradeassembly.dataset_ingestion.list" => dataset_ingestion::mcp_page(
                 self.dispatch_http("GET", "/dataset-ingestions", arguments)
-                    .body
-            }
+                    .body,
+                0,
+                0,
+            ),
             "tradeassembly.dataset_ingestion.get" | "tradeassembly.dataset_ingestion.status" => {
-                self.dispatch_http(
-                    "GET",
-                    &format!(
-                        "/dataset-ingestions/{}",
-                        arguments["ingestion_id"].as_str().unwrap_or_default()
-                    ),
-                    arguments,
-                )
-                .body
+                let offset = arguments
+                    .get("observation_offset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let limit = arguments
+                    .get("observation_limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if limit > 1000
+                    || usize::try_from(offset).is_err()
+                    || ["observation_offset", "observation_limit"]
+                        .iter()
+                        .any(|key| {
+                            arguments
+                                .get(key)
+                                .is_some_and(|value| value.as_u64().is_none())
+                        })
+                {
+                    return mcp::tool_error(name, "dataset_observation_page_invalid", "Observation offset must be a nonnegative integer and limit must be between zero and 1000.", None);
+                }
+                let response = self
+                    .dispatch_http(
+                        "GET",
+                        &format!(
+                            "/dataset-ingestions/{}",
+                            arguments["ingestion_id"].as_str().unwrap_or_default()
+                        ),
+                        arguments,
+                    )
+                    .body;
+                dataset_ingestion::mcp_page(response, offset as usize, limit as usize)
             }
             "tradeassembly.dataset_ingestion.cancel" => {
                 self.dispatch_http(

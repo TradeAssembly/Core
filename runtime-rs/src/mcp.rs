@@ -83,6 +83,17 @@ pub fn tool_names() -> Vec<&'static str> {
 pub fn call_tool(name: &str, arguments: Value) -> Value {
     if matches!(
         name,
+        "tradeassembly.agent.session.attach" | "tradeassembly.agent.session.detach"
+    ) {
+        return tool_error(
+            name,
+            "external_agent_connection_required",
+            "This action requires a persistent MCP stdio connection.",
+            None,
+        );
+    }
+    if matches!(
+        name,
         "tradeassembly.account.login"
             | "tradeassembly.account.login.status"
             | "tradeassembly.account.status"
@@ -91,6 +102,7 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
             | "tradeassembly.plugin.oauth.status"
             | "tradeassembly.plugin.oauth.disconnect"
     ) || name.starts_with("tradeassembly.broker.")
+        || name.starts_with("tradeassembly.onboarding.")
     {
         return tool_error(
             name,
@@ -400,6 +412,14 @@ pub fn call_service_tool(
     arguments: Value,
 ) -> Value {
     let response = match name {
+        "tradeassembly.agent.session.attach" | "tradeassembly.agent.session.detach" => {
+            return tool_error(
+                name,
+                "external_agent_connection_required",
+                "This action requires a persistent MCP stdio connection.",
+                None,
+            );
+        }
         "tradeassembly.robustness.report" => {
             if !has_only_keys(&arguments, &["run_id", "studio_base_url", "db"]) {
                 return tool_error(
@@ -911,6 +931,11 @@ fn requested_protocol_version(params: &Value) -> &'static str {
 
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
+        tool_with_metadata("tradeassembly.agent.session.attach", "Attach External Agent", "Bind this MCP connection to an active external-client deployment and activation. Requires authenticated ownership and existing delegated authority; no token is returned. The client owns its agent loop.", object_schema([("deployment_id", string_schema("Existing external-client deployment ID.", None)), ("activation_id", string_schema("Existing active execution activation ID.", None)), ("idempotency_key", string_schema("Connection attachment retry key.", None))], ["deployment_id", "activation_id", "idempotency_key"]), false, false, true),
+        tool_with_metadata("tradeassembly.agent.session.detach", "Detach External Agent", "Release only this MCP connection's agent lease. This does not cancel orders; reconcile outstanding outcomes before reconnecting.", object_schema([], []), false, false, true),
+        tool("tradeassembly.onboarding.start", "Connect TradeAssembly", "Start resumable browser setup. Open browserUrl, then poll onboarding.status. Never accepts credentials. Does not activate trading.", object_schema([("mode", enum_string_schema("Owner-selected broker account mode.", &["paper", "live"])), ("environment", enum_string_schema("Deployment environment; defaults to the packaged connection profile.", &["staging", "production"])), ("relay", json!({"type":"boolean","description":"Also verify the selected Relay subscription.","default":false})), ("idempotency_key", string_schema("Stable setup request identifier.", None)), ("instanceRef", string_schema("Optional existing broker instance.", None))], ["mode", "idempotency_key"]), false),
+        tool("tradeassembly.onboarding.status", "Connection Progress", "Inspect and reconcile browser setup. Readiness requires verified service results.", object_schema([("onboardingId", string_schema("Reference returned by onboarding.start.", None))], ["onboardingId"]), false),
+        tool("tradeassembly.onboarding.cancel", "Cancel Connection Setup", "Cancel this setup attempt without disconnecting an existing account.", object_schema([("onboardingId", string_schema("Reference returned by onboarding.start.", None))], ["onboardingId"]), false),
         tool("tradeassembly.health", "TradeAssembly MCP Health", "Check local TradeAssembly MCP health and safety posture.", object_schema([("db", db_property()), ("studio_base_url", studio_property())], []), true),
         tool("tradeassembly.auth.status", "OIDC Session Status", "Inspect the redacted OIDC session status for this MCP process.", json!({"type": "object", "properties": {}, "additionalProperties": false}), true),
         tool("tradeassembly.setup.status", "TradeAssembly Setup Status", "Summarize local setup, MCP transport, Studio URL, and credential posture. Use surface=agent for agent-only acceptance; omitted surface retains Studio checks.", object_schema([("db", db_property()), ("studio_base_url", studio_property()), ("surface", enum_string_schema("Requested setup surface; defaults to studio.", &["agent", "studio"]))], []), true),
@@ -950,17 +975,18 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.journal.list", "List Journal Events", "List journal events visible to the authenticated owner. Legacy unowned records remain conservatively strategy-scoped.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.journal.export", "Export Journal", "Export authenticated-owner journal events as canonical JSON for caller-directed transport; this tool does not write files.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.journal.replay", "Replay Journal", "Replay authenticated-owner journal events and return deterministic stored-event counts without evaluating strategy logic.", object_schema([("db", db_property())], []), true),
-        tool("tradeassembly.strategy.create", "Create Strategy", "Create a local strategy draft from a template or blank mode.", object_schema([("db", db_property()), ("mode", string_schema("Creation mode.", Some("blank"))), ("template_id", string_schema("Optional template ID.", None)), ("name", string_schema("Optional strategy name.", None))], []), false),
+        tool("tradeassembly.strategy.schema", "Strategy Authoring Schema", "Read the embedded canonical StrategySpec JSON Schema before authoring owner-supplied rules. No source files are required. Publication requires owner acknowledgment and never activates execution.", object_schema([], []), true),
+        tool("tradeassembly.strategy.create", "Create Strategy", "Create a local strategy draft from a template or blank mode. Blank drafts contain no trading rules and are not research-ready. Use tradeassembly.strategy.schema to author the owner's rules.", object_schema([("db", db_property()), ("mode", string_schema("Creation mode.", Some("blank"))), ("template_id", string_schema("Optional template ID.", None)), ("name", string_schema("Optional strategy name.", None))], []), false),
         tool("tradeassembly.strategy.save_draft", "Save Strategy Draft", "Save a user-defined strategy draft.", object_schema([("db", db_property()), ("strategy_id", string_schema("Optional existing strategy ID.", None)), ("name", string_schema("Strategy name.", Some("Local strategy"))), ("spec", object_like_schema("StrategySpec draft."))], []), false),
         tool("tradeassembly.strategy.draft.select_node", "Select Strategy Draft Node", "Select a redacted StrategySpec node for agent context.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("node_ref", string_schema("Strategy semantic node ref.", Some("strategy.root")))], ["strategy_id", "node_ref"]), true),
         tool("tradeassembly.strategy.draft.propose_patch", "Propose Strategy Draft Patch", "Create a reviewable StrategyDraftChangeSet proposal. Agents may propose but not apply.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("expected_draft_hash", string_schema("Expected draft hash.", None)), ("selection_ref", string_schema("Optional semantic selection ref.", None)), ("summary", string_schema("Proposal summary.", Some("Agent proposed strategy edit"))), ("purpose", string_schema("Controlled purpose.", Some("strategy_authoring"))), ("patch", object_like_schema("StrategySpec patch object.")), ("evidence_refs", array_schema())], ["strategy_id", "patch"]), false),
         tool("tradeassembly.strategy.draft.review_patch", "Review Strategy Draft Patch", "Review a strategy patch proposal. MCP agent calls cannot apply accepted patches.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("proposal_id", string_schema("Proposal ID.", None)), ("decision", string_schema("Review decision.", Some("reject")))], ["strategy_id", "proposal_id", "decision"]), false),
         tool("tradeassembly.strategy.version.publish", "Publish Strategy Version", "Publish the expected strategy draft as an immutable StrategyVersion. Requires explicit user authority; agent calls are denied.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("expected_draft_hash", string_schema("Exact hash of the draft being published.", None)), ("actor", object_like_schema("User authority context."))], ["strategy_id", "expected_draft_hash", "actor"]), false),
-        tool("tradeassembly.strategy.validate", "Validate StrategySpec", "Validate a StrategySpec JSON file.", object_schema([("spec_file", string_schema("Path to StrategySpec JSON file.", None)), ("db", db_property())], ["spec_file"]), true),
+        tool("tradeassembly.strategy.validate", "Validate StrategySpec", "Validate inline spec JSON without saving it, or validate an owned saved draft by strategy_id. Returns structured diagnostics. Does not read files, publish, or activate.", object_schema([("spec", object_like_schema("StrategySpec JSON to validate without persistence.")), ("strategy_id", string_schema("Owned saved draft to validate when spec is omitted.", None)), ("db", db_property())], []), true),
         tool("tradeassembly.plugin.list", "List Plugins", "List installed local plugins, operation contracts, entitlement posture, and capability resolver summaries.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.plugin.capability_resolve", "Resolve Plugin Capability", "Resolve which plugin operations can satisfy a strategy capability requirement under the active entitlement profile.", object_schema([("db", db_property()), ("capability", string_schema("Capability id required by the strategy.", None)), ("mode", string_schema("Execution mode, such as paper or live.", Some("paper"))), ("instrument_type", string_schema("Instrument type, such as equity, option, crypto, or future.", Some("equity"))), ("operation", string_schema("Optional operation id or strategy action.", None)), ("strategy_id", string_schema("Optional strategy id.", None)), ("plugin_ref", string_schema("Optional preferred plugin ref.", None)), ("account_ref", string_schema("Optional account ref.", None)), ("purpose", string_schema("Optional purpose code for APF receipts.", None))], ["capability"]), true),
-        tool("tradeassembly.plugin.capability_graph_resolve", "Resolve Capability Graph", "Resolve a complete strategy capability graph through the shared deterministic resolver.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", array_schema()), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings."))], []), true),
-        tool("tradeassembly.plugin.capability_revision_save", "Save Capability Graph Revision", "Persist immutable capability bindings and their resolved graph snapshot.", object_schema([("db", db_property()), ("config_id", string_schema("Execution config ID.", None)), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", array_schema()), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings.")), ("idempotency_key", string_schema("Idempotency key.", None))], []), false),
+        tool("tradeassembly.plugin.capability_graph_resolve", "Resolve Capability Graph", "Resolve a complete strategy capability graph through the shared deterministic resolver.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", json!({"type":"array","items":{"type":"object","additionalProperties":true},"description":"Optional explicit capability requirement objects; omit to derive the published strategy requirements."})), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings."))], []), true),
+        tool("tradeassembly.plugin.capability_revision_save", "Save Capability Graph Revision", "Persist immutable capability bindings and their resolved graph snapshot.", object_schema([("db", db_property()), ("config_id", string_schema("Execution config ID.", None)), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("strategy_version_id", string_schema("Published StrategyVersion ID.", None)), ("mode", string_schema("Readiness mode.", Some("paper"))), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None)), ("requirements", json!({"type":"array","items":{"type":"object","additionalProperties":true},"description":"Optional explicit capability requirement objects; omit to derive the published strategy requirements."})), ("bindings", object_like_schema("Explicit requirement bindings.")), ("configured_fallbacks", object_like_schema("Ordered configured fallback bindings.")), ("idempotency_key", string_schema("Idempotency key.", None))], []), false),
         tool("tradeassembly.plugin.capability_revision_get", "Get Capability Graph Revision", "Read an immutable capability graph revision.", object_schema([("db", db_property()), ("revision_id", string_schema("Capability revision ID.", None))], ["revision_id"]), true),
         tool("tradeassembly.plugin.capability_revision_check", "Check Capability Graph Revision", "Re-evaluate current plugin facts and report whether a saved graph revision remains current.", object_schema([("db", db_property()), ("revision_id", string_schema("Capability revision ID.", None)), ("evaluation_epoch", string_schema("RFC3339 evaluation epoch.", None))], ["revision_id"]), true),
         tool("tradeassembly.plugin.capability_matrix", "Plugin Capability Matrix", "Inspect installed plugin capability metadata by plugin ref or compatibility provider ref.", object_schema([("ref", string_schema("Plugin or provider ref.", None)), ("db", db_property())], ["ref"]), true),
@@ -974,7 +1000,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool_with_metadata("tradeassembly.plugin.oauth.disconnect", "Disconnect Plugin OAuth", "Revoke local credentials and invalidate pending OAuth handoffs for an owned plugin instance.", object_schema([("instanceRef", string_schema("Owned plugin instance ref.", None)), ("idempotencyKey", string_schema("Stable key for retrying this disconnect request.", None))], ["instanceRef", "idempotencyKey"]), false, true, true),
         tool("tradeassembly.plugin.status", "Plugin Status", "Summarize plugin command availability.", object_schema([("registry_path", string_schema("Optional plugin registry path.", None))], []), true),
         tool("tradeassembly.indicator.status", "Indicator Status", "Summarize indicator surface availability.", object_schema([("db", db_property())], []), true),
-        tool("tradeassembly.backtest.run", "Run Backtest", "Create a durable deterministic BacktestRun for one immutable StrategyVersion and dataset snapshot.", object_schema([("db", db_property()), ("request", object_like_schema("Complete typed backtest create request.")), ("strategy_id", string_schema("Strategy ID for compatibility configuration.", None)), ("strategy_version_id", string_schema("Immutable StrategyVersion ID.", None)), ("dataset_id", string_schema("Immutable dataset snapshot ID.", None)), ("purpose", string_schema("Controlled purpose.", Some("strategy_backtest_research"))), ("client", string_schema("Client context.", Some("self"))), ("idempotency_key", string_schema("Request-equivalence idempotency key.", None))], ["idempotency_key"]), false),
+        tool("tradeassembly.backtest.run", "Run Backtest", "Create a durable deterministic BacktestRun for one immutable StrategyVersion and dataset snapshot.", object_schema([("db", db_property()), ("request", backtest_request_schema()), ("strategy_id", string_schema("Strategy ID for compatibility configuration.", None)), ("strategy_version_id", string_schema("Immutable StrategyVersion ID.", None)), ("dataset_id", string_schema("Immutable dataset snapshot ID.", None)), ("purpose", string_schema("Controlled purpose.", Some("strategy_backtest_research"))), ("client", string_schema("Client context.", Some("self"))), ("idempotency_key", string_schema("Request-equivalence idempotency key.", None))], ["idempotency_key"]), false),
         tool("tradeassembly.backtest.get", "Get Backtest", "Read one durable BacktestRun and its current attempt.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
         tool("tradeassembly.backtest.report", "Get Backtest Report", "Project one integrity-verified completed BacktestRun into its deterministic report.", object_schema([("backtest_id", string_schema("Backtest ID.", None)), ("db", db_property())], ["backtest_id"]), true),
         tool("tradeassembly.backtest.export", "Export Backtest Report", "Export one verified deterministic backtest report as manifest JSON, report JSON, trades CSV, orders and fills CSV, positions and ledger CSV, or equity CSV.", object_schema([("backtest_id", string_schema("Backtest ID.", None)), ("export_kind", string_schema("Export kind.", Some("reportJson"))), ("db", db_property())], ["backtest_id"]), false),
@@ -985,7 +1011,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.backtest.replay", "Replay Backtest", "Recompute a persisted backtest from pinned inputs and fail closed on mismatch.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
         tool("tradeassembly.dataset_ingestion.create", "Create Dataset Ingestion", "Resolve an exact historical-data plugin operation, acquire typed observations, validate quality, and persist an immutable content-addressed dataset snapshot.", dataset_ingestion_create_schema(), false),
         tool("tradeassembly.dataset_ingestion.list", "List Dataset Ingestions", "List historical dataset ingestion lifecycle records.", object_schema([("db", db_property())], []), true),
-        tool("tradeassembly.dataset_ingestion.get", "Get Dataset Ingestion", "Get one dataset ingestion and its integrity-checked immutable snapshot.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("db", db_property())], ["ingestion_id"]), true),
+        tool("tradeassembly.dataset_ingestion.get", "Get Dataset Ingestion", "Get an integrity-checked dataset summary; request a bounded observation page explicitly.", dataset_ingestion_get_schema(), true),
         tool("tradeassembly.dataset_ingestion.status", "Dataset Ingestion Status", "Read the current state of one dataset ingestion.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("db", db_property())], ["ingestion_id"]), true),
         tool("tradeassembly.dataset_ingestion.cancel", "Cancel Dataset Ingestion", "Cancel a nonterminal dataset ingestion using the initiating authority context.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("idempotency_key", string_schema("Cancellation idempotency key.", None)), ("authority_context", object_like_schema("Initiating authority context.")), ("db", db_property())], ["ingestion_id", "idempotency_key", "authority_context"]), false),
         tool("tradeassembly.dataset_ingestion.verify", "Verify Dataset Ingestion", "Re-read one immutable dataset snapshot and fail closed on any integrity mismatch.", object_schema([("ingestion_id", string_schema("Dataset ingestion ID.", None)), ("db", db_property())], ["ingestion_id"]), true),
@@ -1037,7 +1063,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.research_notebook.inspect", "Inspect Research Notebook", "Inspect a local research notebook with warnings, artifact refs, assumptions, exports, replay refs, and Studio links.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("notebook_id", string_schema("Notebook ID.", None)), ("studio_base_url", studio_property())], []), true),
         tool("tradeassembly.research_notebook.export", "Export Research Notebook", "Return research notebook JSON, Markdown, and HTML export refs.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("notebook_id", string_schema("Notebook ID.", None)), ("studio_base_url", studio_property())], []), false),
         tool("tradeassembly.research_notebook.replay", "Replay Research Notebook", "Return deterministic replay refs and commands for a local research notebook.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("notebook_id", string_schema("Notebook ID.", None)), ("studio_base_url", studio_property())], []), true),
-        tool("tradeassembly.execution.config.save", "Save Execution Config", "Save a strategy execution configuration for a locked StrategyVersion, connection-selected paper or live mode, symbol, timeframe, and risk limits.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("version_id", string_schema("Optional StrategyVersion ID.", None)), ("provider_ref", string_schema("Installed plugin instance ref.", Some("sim"))), ("mode", string_schema("Execution mode selected by the configured connection: paper or live.", Some("paper"))), ("risk_limits", object_like_schema("Execution risk limits.")), ("symbol", string_schema("Optional symbol.", Some("BTC/USD"))), ("timeframe", string_schema("Optional timeframe.", Some("1m")))], []), false),
+        tool("tradeassembly.execution.config.save", "Save Execution Config", "Save a strategy execution configuration for a locked StrategyVersion, connection-selected paper or live mode, instrument scope, timeframe, and risk limits.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("version_id", string_schema("Optional StrategyVersion ID.", None)), ("provider_ref", string_schema("Installed plugin instance ref.", Some("sim"))), ("mode", string_schema("Execution mode selected by the configured connection: paper or live.", Some("paper"))), ("orchestrator", enum_string_schema("Evaluation owner; external_agent records authorization without scheduling deterministic ticks.", &["deterministic", "external_agent"])), ("allowed_symbols", json!({"type":"array","description":"Explicit owner-selected instrument scope for external_agent only. Exact broker symbols; no implicit aliases. This does not replace risk limits.","items":{"type":"string","minLength":1,"maxLength":32},"minItems":1,"maxItems":256,"uniqueItems":true})), ("account_ref", string_schema("Exact broker account reference from connection verification.", None)), ("data_provider_ref", string_schema("Optional installed market-data plugin instance.", None)), ("data_account_ref", string_schema("Exact data-provider account reference when required.", None)), ("asset_class", string_schema("Explicit instrument asset class.", None)), ("idempotency_key", string_schema("Stable configuration command key.", None)), ("risk_limits", object_like_schema("Execution risk limits.")), ("symbol", string_schema("Optional single symbol; when supplied with allowed_symbols it must be a member.", None)), ("timeframe", string_schema("Optional timeframe.", Some("1m")))], []), false),
         tool("tradeassembly.execution.live_mandate.issue", "Issue Local Live Mandate", "Issue an immutable local Live mandate for an exact verified execution configuration. User approval is explicit; no order is placed.", object_schema([("configId", string_schema("Exact Live execution config ID.", None)), ("expiresAtMs", integer_schema("Explicit expiry in Unix milliseconds.", None)), ("delegateDeploymentId", string_schema("Optional exact local agent deployment delegate.", None)), ("idempotencyKey", string_schema("Stable retry key.", None))], ["configId", "expiresAtMs", "idempotencyKey"]), false),
         tool("tradeassembly.execution.live_mandate.revoke", "Revoke Local Live Mandate", "Revoke one immutable local Live mandate. No broker call is made.", object_schema([( "mandateId", string_schema("Mandate ID.", None)), ("idempotencyKey", string_schema("Stable retry key.", None))], ["mandateId", "idempotencyKey"]), false),
         tool("tradeassembly.execution.live_mandate.status", "Read Local Live Mandate", "Read one local Live mandate after exact owner or verified agent-delegate checks.", object_schema([( "mandateId", string_schema("Mandate ID.", None))], ["mandateId"]), true),
@@ -1403,8 +1429,9 @@ fn agent_run_recover_schema() -> Value {
 }
 
 fn agent_deployment_schema() -> Value {
-    object_schema(
+    let mut schema = object_schema(
         [
+            ("executor", enum_string_schema("Agent process owner; defaults to supervised. external_client is never launched by the local supervisor.", &["supervised", "external_client"])),
             (
                 "deploymentId",
                 string_schema("Durable deployment ID.", None),
@@ -1477,10 +1504,13 @@ fn agent_deployment_schema() -> Value {
             "studioToolAllowlist",
             "desiredState",
             "mode",
-            "prompt",
-            "workspace",
         ],
-    )
+    );
+    schema["allOf"] = json!([{
+        "if": {"properties": {"executor": {"const": "external_client"}}, "required": ["executor"]},
+        "else": {"required": ["prompt", "workspace"]}
+    }]);
+    schema
 }
 
 fn agent_authority_schema() -> Value {
@@ -1503,6 +1533,67 @@ fn agent_authority_schema() -> Value {
             ),
         ],
         ["actor", "surface", "accountMode"],
+    )
+}
+
+/// Keep nested JSON Schema references rooted in the containing tool input.
+fn embedded_schema<T: schemars::JsonSchema>(pointer: &str) -> Value {
+    fn rebase(value: &mut Value, pointer: &str) {
+        match value {
+            Value::Object(object) => {
+                if let Some(Value::String(reference)) = object.get_mut("$ref") {
+                    if let Some(suffix) = reference.strip_prefix('#') {
+                        *reference = format!("#{pointer}{suffix}");
+                    }
+                }
+                for child in object.values_mut() {
+                    rebase(child, pointer);
+                }
+            }
+            Value::Array(values) => values.iter_mut().for_each(|value| rebase(value, pointer)),
+            _ => {}
+        }
+    }
+    let mut schema = serde_json::to_value(schemars::schema_for!(T)).expect("serializable schema");
+    schema
+        .as_object_mut()
+        .expect("object schema")
+        .remove("$schema");
+    rebase(&mut schema, pointer);
+    schema
+}
+
+fn backtest_request_schema() -> Value {
+    json!({
+        "type":"object",
+        "description":"Explicit backtest assumptions and immutable bindings. Capital, costs and risk are caller choices, not recommendations. Leave configuration.capabilityGraph identifiers empty to resolve a new backtest graph; dataset provenance retains the ingestion graph. Poll backtest.get after an idempotent create acknowledgment.",
+        "properties": {
+            "configuration": embedded_schema::<crate::backtest_contracts::BacktestConfiguration>("/properties/request/properties/configuration"),
+            "purpose": {"type":"string"},
+            "client": {"type":"string"},
+            "idempotencyKey": {"type":"string"},
+            "evaluationEpoch": {"type":"string"},
+            "evidenceRefs": {"type":"array", "items":{"type":"string"}}
+        },
+        "additionalProperties":true
+    })
+}
+
+fn dataset_ingestion_get_schema() -> Value {
+    object_schema(
+        [
+            ("ingestion_id", string_schema("Dataset ingestion ID.", None)),
+            (
+                "observation_offset",
+                json!({"type":"integer","minimum":0,"default":0}),
+            ),
+            (
+                "observation_limit",
+                json!({"type":"integer","minimum":0,"maximum":1000,"default":0,"description":"Zero returns metadata only; up to 1000 observations per explicit page."}),
+            ),
+            ("db", db_property()),
+        ],
+        ["ingestion_id"],
     )
 }
 
@@ -1531,19 +1622,23 @@ fn dataset_ingestion_create_schema() -> Value {
             ),
             (
                 "time_slice",
-                object_like_schema("Bounded start and end timestamps."),
+                embedded_schema::<crate::historical_data::DatasetTimeSlice>(
+                    "/properties/time_slice",
+                ),
             ),
             ("calendar", string_schema("Trading calendar ID.", None)),
             ("timezone", string_schema("Dataset timezone.", Some("UTC"))),
             (
                 "normalization_policy",
-                object_like_schema(
-                    "Explicit timestamp, duplicate, and price normalization policy.",
+                embedded_schema::<crate::historical_data::DatasetNormalizationPolicy>(
+                    "/properties/normalization_policy",
                 ),
             ),
             (
                 "quality_policy",
-                object_like_schema("Explicit missing, stale, outlier, and invalid-row policy."),
+                embedded_schema::<crate::historical_data::DatasetQualityPolicy>(
+                    "/properties/quality_policy",
+                ),
             ),
             (
                 "max_rows",

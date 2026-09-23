@@ -30,6 +30,326 @@ use std::sync::{Arc, Mutex};
 
 static SANDBOX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn external_agent_real_activation_dispatches_once_without_scheduler() {
+    run_external_activation(false);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn external_agent_real_activation_recovers_lost_response_without_resubmit() {
+    run_external_activation(true);
+}
+
+fn run_external_activation(lose_response: bool) {
+    use crate::runtime_config::{RuntimeConfig, RuntimeConfigLayer};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let db = root.join("runtime.db");
+    let mut warden = controlled_warden::ControlledWarden::start(&root);
+    warden.allow_controlled_submission();
+    let owner = LocalOwnerIdentity::for_database(&db).unwrap();
+    let config = RuntimeConfig::resolve(
+        Some(RuntimeConfigLayer {
+            database_path: Some(db.display().to_string()),
+            artifact_root: Some(root.join("artifacts").display().to_string()),
+            oidc_profile: Some("local_owner".into()),
+            warden_sidecar_url: Some(format!("http://127.0.0.1:{}", warden.port)),
+            warden_token_ref: Some(format!(
+                "file://{}",
+                root.join("warden/warden.token").display()
+            )),
+            ..Default::default()
+        }),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
+    let service = TradeAssemblyService::from_config(config)
+        .unwrap()
+        .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+    let package = controlled_broker_package::install_controlled_package(
+        &service,
+        &root,
+        &PathBuf::from(
+            std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY").expect("controlled broker"),
+        ),
+    );
+    let saved = service.handle_http(
+        "POST",
+        "/product/strategy-execution-configs/save",
+        json!({
+            "strategyId":"strat_local_btc_demo","orchestrator":"external_agent","mode":"live",
+            "allowedSymbols":["BTC/USD","ETH/USD"],
+            "providerRef":"mandate-live","accountRef":"account://mandate-live/controlled",
+            "dataProviderRef":"mandate-live","dataAccountRef":"account://mandate-live/controlled",
+            "legalReceiptRef":"receipt_external_test",
+            "riskLimits":{"max_notional":10,"max_order_quantity":2}
+        }),
+    );
+    assert_eq!(saved.status, 200, "{saved:#?}");
+    let config = &saved.body["body"]["item"];
+    let config_id = config["configId"].as_str().unwrap();
+    let legal = crate::adapters::legal_receipts::tests::bound_fixture(
+        crate::ports::LegalReceiptExpectation {
+            receipt_ref: "receipt_external_test".into(),
+            identity_issuer: owner.issuer.clone(),
+            identity_subject: owner.subject.clone(),
+            resource_ref: format!(
+                "tradeassembly://strategies/{}",
+                config["strategyId"].as_str().unwrap()
+            ),
+            resource_version_refs: vec![
+                format!(
+                    "tradeassembly://strategy-versions/{}",
+                    config["strategyVersionId"].as_str().unwrap()
+                ),
+                config["strategySpecHash"].as_str().unwrap().into(),
+            ],
+            environment: config["legalEnvironment"].as_str().unwrap().into(),
+        },
+        service.runtime().clock.now_ms(),
+    );
+    let sandbox = Arc::new(ControlledSandbox::new(
+        PathBuf::from(std::env::var_os("F2_TEST_SRT_CLI").unwrap())
+            .canonicalize()
+            .unwrap(),
+        PathBuf::from(std::env::var_os("F2_TEST_NODE_BINARY").unwrap())
+            .canonicalize()
+            .unwrap(),
+        &root.join("sandbox"),
+    ));
+    let deps = super::BrokerSubmissionDependencies {
+        storage: service.runtime().storage.clone(),
+        plugins: service.runtime().plugins.clone(),
+        plugin_packages: service.runtime().plugin_packages.clone(),
+        credentials: service.runtime().credentials.clone(),
+        capability_resolver: service.runtime().capability_resolver.clone(),
+        clock: service.runtime().clock.clone(),
+        leases: service.runtime().leases.clone(),
+        owner: owner.clone(),
+    };
+    let operations = Arc::new(
+        crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+            deps.storage.clone(),
+            deps.plugins.clone(),
+            deps.credentials.clone(),
+            deps.plugin_packages.clone(),
+            deps.clock.clone(),
+            sandbox.clone(),
+        )
+        .with_broker_boundary(Arc::new(super::LocalBrokerSubmissionBoundary::new(
+            deps.clone(),
+            Arc::new(warden.authority.clone()),
+        ))),
+    );
+    let mut runtime = service.runtime().as_ref().clone();
+    runtime.legal_receipts = Arc::new(legal.verifier.clone());
+    runtime.plugin_operations = operations.clone();
+    let service = service.with_test_runtime(runtime);
+    let deployment = AgentDeployment {
+        executor: agent_runner::AgentExecutor::ExternalClient,
+        deployment_id: "external-fixture".into(),
+        system_project_id: "system-1".into(),
+        agent_definition_version_id: "agent-v1".into(),
+        execution_config_version_id: config_id.into(),
+        studio_tool_allowlist: vec!["tradeassembly.health".into()],
+        desired_state: "active".into(),
+        interval_seconds: 60,
+        cron_utc: None,
+        mode: "live".into(),
+        prompt: String::new(),
+        workspace: String::new(),
+        runtime_profile: "local-read-only".into(),
+    };
+    agent_runner::put_deployment(&service.runtime(), &deployment).unwrap();
+    let issued=service.handle_http("POST","/product/live-mandates/issue",json!({"configId":config_id,"expiresAtMs":service.runtime().clock.now_ms()+600_000,"delegateDeploymentId":deployment.deployment_id,"idempotencyKey":"external-mandate"}));
+    assert_eq!(issued.status, 201, "{issued:#?}");
+    let activated=service.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":config_id,"localLiveMandateId":issued.body["mandate"]["mandateId"],"idempotencyKey":"external-activation"}));
+    assert_eq!(
+        activated.status, 200,
+        "code={} blockers={}",
+        activated.body["error"]["code"], activated.body["error"]["details"]["blockedReasons"]
+    );
+    let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
+    let mut session = service
+        .attach_external_agent_session(&deployment.deployment_id, activation_id, "external-attach")
+        .unwrap();
+    let verified = session.verified_context().unwrap();
+    let run = service
+        .runtime()
+        .storage
+        .get_json("execution_runs", &format!("run_{activation_id}"))
+        .unwrap()
+        .unwrap();
+    let revision = service
+        .runtime()
+        .storage
+        .get_json(
+            "capability_graph_revisions",
+            run["capabilityGraphRevisionId"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let request = |requirement: &str, operation: &str, purpose: &str, input: Value| {
+        let node = revision["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["requirement"]["requirementId"] == requirement)
+            .unwrap();
+        let selected = &node["selected"];
+        PluginOperationRequest {
+            correlation_id: format!("external-{operation}"),
+            plugin_instance_ref: selected["pluginInstanceRef"].as_str().unwrap().into(),
+            plugin_ref: selected["pluginRef"].as_str().unwrap().into(),
+            manifest_fingerprint: selected["manifestFingerprint"].as_str().unwrap().into(),
+            operation_id: operation.into(),
+            capability: node["requirement"]["capability"].as_str().unwrap().into(),
+            capability_graph_revision_id: run["capabilityGraphRevisionId"].as_str().unwrap().into(),
+            capability_graph_fingerprint: run["capabilityGraphFingerprint"]
+                .as_str()
+                .unwrap()
+                .into(),
+            strategy_id: run["strategyId"].as_str().unwrap().into(),
+            strategy_version_id: run["strategyVersionId"].as_str().unwrap().into(),
+            strategy_spec_hash: run["strategySpecHash"].as_str().unwrap().into(),
+            activation_id: activation_id.into(),
+            attempt_id: "external-attempt".into(),
+            evaluation_tick_id: "external-evaluation".into(),
+            mode: "live".into(),
+            purpose: purpose.into(),
+            account_ref: selected["accountRef"].as_str().map(str::to_owned),
+            timeout_ms: 10_000,
+            fencing_token: None,
+            input,
+            evidence_refs: vec![],
+        }
+    };
+    let context = |key: &str| {
+        SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new(key).unwrap(),
+        )
+        .with_agent_execution(Some(&verified))
+    };
+    let quote = operations
+        .invoke(
+            &request(
+                "execution.risk.quote",
+                "marketdata.quote.read",
+                "market_data_research",
+                json!({"symbol":"BTC/USD"}),
+            ),
+            &context("external-quote"),
+        )
+        .unwrap();
+    let order_node = revision["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| {
+            n["requirement"]["capability"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("broker.order_submit")
+        })
+        .unwrap();
+    let mut order = request(
+        order_node["requirement"]["requirementId"].as_str().unwrap(),
+        "broker.live_order_submit",
+        "live_order_submission",
+        json!({"symbol":"BTC/USD","side":"buy","orderType":"market","timeInForce":"gtc","clientOrderId":"external-order","quantity":"1"}),
+    );
+    order.evidence_refs = quote.evidence_refs;
+    super::load_current_state(&deps, &order, &context("external-order")).unwrap();
+    let other_quote = operations
+        .invoke(
+            &request(
+                "execution.risk.quote",
+                "marketdata.quote.read",
+                "market_data_research",
+                json!({"symbol":"SPY"}),
+            ),
+            &context("external-other-quote"),
+        )
+        .unwrap();
+    let mut outside_universe = order.clone();
+    outside_universe.input["symbol"] = json!("SPY");
+    outside_universe.evidence_refs = other_quote.evidence_refs;
+    let denied = operations.invoke(&outside_universe, &context("external-outside-universe"));
+    assert!(denied.is_err(), "out-of-config instrument was admitted");
+    assert_eq!(sandbox.launches.load(Ordering::SeqCst), 2);
+    if lose_response {
+        std::fs::write(
+            package
+                .install_root
+                .join(".f2-controlled-broker-lose-response"),
+            b"fixture",
+        )
+        .unwrap();
+        assert!(operations
+            .invoke(&order, &context("external-order"))
+            .is_err());
+        assert!(operations
+            .invoke(&order, &context("external-order"))
+            .is_err());
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
+        session.close().unwrap();
+        let revoked=service.handle_http("POST","/product/live-mandates/revoke",json!({"mandateId":issued.body["mandate"]["mandateId"],"idempotencyKey":"external-revoke"}));
+        assert_eq!(revoked.status, 200);
+        warden.stop();
+        let body = json!({"originalIdempotencyKey":"external-order","recoveryIdempotencyKey":"external-recovery"});
+        let recovered = service.handle_http("POST", "/orders/broker-recovery", body.clone());
+        assert_eq!(
+            recovered.status, 200,
+            "code={}",
+            recovered.body["error"]["code"]
+        );
+        assert_eq!(recovered.body["receipt"]["payload"]["submissionCount"], 1);
+        let repeated = service.handle_http("POST", "/orders/broker-recovery", body);
+        assert_eq!(repeated.status, 200);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 4);
+    } else {
+        let first = operations
+            .invoke(&order, &context("external-order"))
+            .unwrap();
+        let second = operations
+            .invoke(&order, &context("external-order"))
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
+    }
+    let sink = rusqlite::Connection::open_with_flags(
+        package.install_root.join(".f2-controlled-broker.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let counts: (i64, i64) = sink
+        .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+    assert!(!service
+        .runtime()
+        .evidence
+        .list(activation_id)
+        .unwrap()
+        .is_empty());
+    for namespace in ["scheduler_state", "execution_ticks"] {
+        assert!(service
+            .runtime()
+            .storage
+            .list_json(namespace)
+            .unwrap()
+            .is_empty());
+    }
+    session.close().unwrap();
+    drop(package);
+}
+
 struct ControlledSandbox {
     srt: PathBuf,
     node: PathBuf,
@@ -600,6 +920,7 @@ fn run_scenario(scenario: Scenario) {
     assert_eq!(saved.status, 200, "{saved:#?}");
     let config_id = saved.body["body"]["item"]["configId"].as_str().unwrap();
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "fixture-agent".into(),
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),

@@ -1390,6 +1390,8 @@ fn bar(timestamp: &str, open: f64, close: f64) -> HistoricalObservation {
             low: open.min(close),
             close,
             volume: 100.0,
+            vwap: None,
+            session: None,
         }),
     }
 }

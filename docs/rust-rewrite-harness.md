@@ -9,6 +9,12 @@ sandbox prerequisite installation, workspace tests and nextest, deny, audit,
 machete, language/source-cleanliness, plugin contracts, Core architecture,
 public-source scanning and Core publication boundary/license checks.
 
+`cargo xtask onboarding-verify` is the targeted local browser-onboarding gate:
+protected OAuth polling freshness/authority/redaction, OAuth binding/replay,
+public connection profiles, browser state/HTTP controls, identity bootstrap,
+and real stdio process restart/cancel. It does not prove deployed OAuth or
+customer installation; those require the actual packaged browser journey.
+
 No skipped, zero-test or mock-only result is end-to-end evidence. Ignored real
 M2 controlled-broker/Warden and packaged-sandbox cases require their explicit
 invocations and exact artifact-bound receipts. Never place actual broker orders

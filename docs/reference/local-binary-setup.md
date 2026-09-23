@@ -63,7 +63,32 @@ configuration, not broker connectivity or strategy readiness. Plugin installatio
 is the separate command above. Policy/agent supervision and the end-to-end
 broker/agent journey remain required F2 work; setup alone is not complete onboarding.
 
-## Optional hosted sign-in diagnostics
+## Browser connection through MCP
+
+A distributor may bundle public `bin/connection-profile.json` configuration.
+The binary validates it; users do not supply client IDs, issuer URLs, or broker
+application secrets. Invalid or missing hosted configuration fails closed without
+disabling account-free local Core.
+
+Call `tradeassembly.onboarding.start` with a user-selected `mode` (`paper` or
+`live`), an `idempotency_key`, and optionally `relay: true`. Open the returned
+`browserUrl`. The small local page handles sign-in, displays permissions from the
+installed broker plugin, and starts broker authorization. It does not require
+Studio. Do not ask users to paste OAuth codes, credentials, or configuration.
+
+Poll `tradeassembly.onboarding.status` with `onboardingId`. After an MCP restart,
+the same ID reopens the durable attempt at a newly bound browser URL. Reusing a
+start key with different settings is rejected. `tradeassembly.onboarding.cancel`
+ends the attempt without disconnecting an already stored broker credential.
+
+`ready: true` requires verified hosted identity, broker account verification,
+local Warden availability, acknowledged broker handoff, and any requested Relay
+entitlement. It does not activate a strategy or place an order. A local-owner
+session is not proof of Hub authentication. Provider authorization, subscription
+checkout, and installed-client verification remain separate release evidence;
+passing `cargo xtask onboarding-verify` proves only the local deterministic gate.
+
+## Optional hosted sign-in diagnostics (distributor only)
 
 Account-free local setup does not require WorkOS sign-in. When using an optional
 hosted connection, the distributor supplies the registered product client and
@@ -154,6 +179,45 @@ does not cache a missing-result error forever. Explicit caller keys retain exact
 request replay semantics.
 
 ## Owner publication
+
+Research tool discovery includes the full nested input contracts: use
+`backtest.run.inputSchema.properties.request.properties.configuration` for
+capital, risk, execution, costs, dataset provenance and instrument metadata.
+Ingestion discovery specifies each normalization/quality policy field and enum.
+These schemas are generated from the same Rust types used to accept requests.
+An empty backtest `capabilityGraph` revision/fingerprint requests resolution of
+a new backtest graph; the dataset binding retains its original ingestion graph.
+Capability evaluation mode is separate from broker-account authority.
+
+Dataset MCP create/list/status/get return metadata without observations by
+default. For rows, call `tradeassembly.dataset_ingestion.get` with
+`observation_offset` and `observation_limit` (0–1000). Follow `observationPage`
+pagination. The retained snapshot hash identifies the complete immutable stored
+dataset, not the returned page. Backtesting reads that stored dataset directly;
+agents need not download its rows. An idempotent backtest create may replay its
+original queued acknowledgment; use `backtest.get` for current durable state.
+
+Agents can discover the embedded contract with `tradeassembly.strategy.schema`.
+`tradeassembly.strategy.create` in blank mode creates an incomplete draft without
+instruments, provider selection, or trading rules. Encode only owner-supplied
+rules. Call `tradeassembly.strategy.validate` with inline `spec` JSON for
+structured validation without saving, or `strategy_id` to validate an owned
+saved draft. This tool does not load `spec_file` paths. Validation does not
+publish, activate, or prove research results.
+
+The schema response also includes `evaluators`: machine-readable configuration
+schemas, exact pipeline/exit/calendar requirements, units, and supported execution
+paths. Numeric strategy and risk values have no supplied defaults. Use these
+contracts rather than inspecting source. The portfolio evaluator supports
+provider-VWAP one-minute research with static equity/fund selectors and immutable
+calendar evidence. It does not make the stateless deterministic runner support
+the same strategy.
+
+Validation returns `compilation.backtest` and `compilation.statelessExecution`
+separately from schema `valid` (inside `body` for saved-draft validation). Check
+the supported flag and reason for the intended path. A structurally valid draft
+may still have unsupported semantics. Compilation is not an authorization grant,
+a successful backtest, or permission to promote or activate a strategy.
 
 After reviewing a draft and recording its exact hash, the local owner may
 publish it with the standalone CLI:

@@ -83,6 +83,8 @@ fn snapshot() -> DatasetSnapshot {
                         low: 0.9,
                         close: 1.0,
                         volume: 10.0,
+                        vwap: None,
+                        session: None,
                     }),
                 },
                 HistoricalObservation {
@@ -94,6 +96,8 @@ fn snapshot() -> DatasetSnapshot {
                         low: 1.0,
                         close: 1.1,
                         volume: 10.0,
+                        vwap: None,
+                        session: None,
                     }),
                 },
             ],

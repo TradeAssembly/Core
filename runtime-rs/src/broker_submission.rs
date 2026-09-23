@@ -30,6 +30,7 @@ pub(crate) use recovery::{prepare_plan as prepare_recovery_plan, RecoveryObserve
 mod prices;
 mod risk;
 pub use admission::LocalBrokerSubmissionBoundary;
+pub(crate) use risk::validate_order_limits;
 
 const ACTIVATIONS_NS: &str = "execution_activations";
 const RUNS_NS: &str = "execution_runs";
@@ -121,6 +122,7 @@ pub fn build_order_intent(
 ) -> Result<(Value, String), String> {
     validate_prepared_binding(state, prepared)?;
     let order = crate::broker_order_intent::CanonicalBrokerOrder::from_input(&request.input)?;
+    validate_order_symbol(&state.config, &order.symbol)?;
     let provenance = match &state.provenance {
         BrokerExecutionProvenance::Agent {
             run_id,
@@ -207,6 +209,9 @@ pub fn load_current_state(
         return Err("execution_not_active".into());
     }
     if activation["activationId"] != activation_id
+        || activation["orchestrator"] != run["orchestrator"]
+        || config["orchestrator"].as_str().unwrap_or("deterministic")
+            != run["orchestrator"].as_str().unwrap_or("deterministic")
         || activation["mode"] != run["mode"]
         || activation["localLiveAuthority"] != run["localLiveAuthority"]
         || activation["capabilityGraphRevisionId"] != run["capabilityGraphRevisionId"]
@@ -409,6 +414,60 @@ pub fn load_current_state(
         actor,
         now_ms,
     })
+}
+
+fn validate_order_symbol(config: &Value, symbol: &str) -> Result<(), String> {
+    if config.get("allowedSymbols").is_some() {
+        validate_execution_universe(config)?;
+        return if config["allowedSymbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some(symbol))
+        {
+            Ok(())
+        } else {
+            Err("order_symbol_outside_execution_config".into())
+        };
+    }
+    let configured = config["symbol"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "execution_symbol_missing".to_string())?;
+    // Do not normalize or infer broker instrument aliases at the authority boundary.
+    if configured != symbol {
+        return Err("order_symbol_outside_execution_config".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_execution_universe(config: &Value) -> Result<(), String> {
+    let Some(value) = config.get("allowedSymbols") else {
+        return Ok(());
+    };
+    if config["orchestrator"] != "external_agent" {
+        return Err("execution_universe_requires_external_agent".into());
+    }
+    let symbols = value
+        .as_array()
+        .filter(|items| !items.is_empty() && items.len() <= 256)
+        .ok_or_else(|| "execution_universe_invalid".to_string())?;
+    let mut unique = std::collections::BTreeSet::new();
+    for item in symbols {
+        let symbol = item
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 32 && s.trim() == *s)
+            .ok_or_else(|| "execution_universe_invalid".to_string())?;
+        if !unique.insert(symbol) {
+            return Err("execution_universe_duplicate".into());
+        }
+    }
+    if let Some(symbol) = config["symbol"].as_str().filter(|s| !s.is_empty()) {
+        if !unique.contains(symbol) {
+            return Err("execution_symbol_outside_universe".into());
+        }
+    }
+    Ok(())
 }
 
 fn exact(request: &PluginOperationRequest, run: &Value) -> Result<(), String> {

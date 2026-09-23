@@ -151,6 +151,7 @@ fn service() -> (NamedTempFile, TradeAssemblyService) {
 
 fn install_deployment(service: &TradeAssemblyService) -> String {
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "deployment-1".into(),
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),

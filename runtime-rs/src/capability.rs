@@ -777,6 +777,18 @@ fn constraints_from_traits(traits: &PluginOperationTraits) -> CapabilityRequirem
     }
 }
 
+/// Operations implemented by the portfolio research evaluator. These declarations
+/// do not authorize execution; the provider catalog restricts them to research.
+pub const PORTFOLIO_RESEARCH_OPERATIONS: &[(&str, &str)] = &[
+    ("universe.static.select@1", "universe.static.select_v1"),
+    ("signal.rule.evaluate@1", "signal.rule.evaluate_v1"),
+    ("intent.trade.build@1", "intent.trade.build_v1"),
+    ("sizing.relative.apply@1", "sizing.relative.apply_v1"),
+    ("risk.strategy.guard@1", "risk.strategy.guard_v1"),
+    ("exit.policy.evaluate@1", "exit.policy.evaluate_v1"),
+    ("price.snapshot.select@1", "price.snapshot.select_v1"),
+];
+
 pub fn local_full_entitlements() -> Vec<EntitlementGrant> {
     [
         "marketdata.quote",
@@ -801,9 +813,15 @@ pub fn local_full_entitlements() -> Vec<EntitlementGrant> {
         "feature.plugin.install",
         "plugin.capability_matrix",
         "account.health",
+        "account.portfolio_state.read@1",
         "indicator.calculate",
     ]
     .into_iter()
+    .chain(
+        PORTFOLIO_RESEARCH_OPERATIONS
+            .iter()
+            .map(|(capability, _)| *capability),
+    )
     .map(|capability| EntitlementGrant {
         grant_id: format!("grant:local_full:{capability}"),
         profile: LOCAL_FULL_PROFILE.to_string(),
@@ -1607,6 +1625,18 @@ mod tests {
         let denied = entitlement_decision(&requirement, &grants, None);
         assert_eq!(denied.decision, "deny");
         assert_eq!(denied.grant_id.as_deref(), Some("explicit-local-deny"));
+    }
+
+    #[test]
+    fn local_full_entitles_read_only_portfolio_observations() {
+        let requirement = CapabilityRequirement {
+            capability: "account.portfolio_state.read@1".into(),
+            mode: "paper".into(),
+            ..Default::default()
+        };
+        let decision = entitlement_decision(&requirement, &local_full_entitlements(), None);
+        assert_eq!(decision.decision, "allow");
+        assert_eq!(decision.source, "local_default");
     }
 
     #[test]

@@ -115,11 +115,32 @@ impl WorkosAuthManager {
         let token = self
             .exchange_code(callback.code.expose_secret(), &verifier)
             .await?;
-        let _lock = self.session_lock()?;
+        // The authorization code has already been exchanged. Wait only for
+        // local persistence contention; never repeat that exchange on retry.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let _lock = loop {
+            match self.session_lock() {
+                Ok(lock) => break lock,
+                Err(code)
+                    if code == "workos_session_busy" && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(code) => return Err(code),
+            }
+        };
         self.finish(token, None, None).await
     }
 
     pub async fn current_identity(&self) -> Result<CliIdentity, String> {
+        self.current_identity_and_token()
+            .await
+            .map(|(identity, _)| identity)
+    }
+
+    // One locked vault read and verification supplies both parts of the same
+    // session. Tokens remain internal and are never returned by MCP.
+    async fn current_identity_and_token(&self) -> Result<(CliIdentity, String), String> {
         self.validate_configuration()?;
         let _lock = self.session_lock()?;
         let session = self.load_session().map_err(|error| match error.as_str() {
@@ -144,7 +165,10 @@ impl WorkosAuthManager {
                 return Err("oidc_session_required".to_string());
             }
             if claims.exp as i64 * 1000 > now_ms() {
-                return Ok(identity_from_claims(&claims, &self.config));
+                return Ok((
+                    identity_from_claims(&claims, &self.config),
+                    session.access_token,
+                ));
             }
         }
         let mut token = self.refresh(&session.refresh_token).await.map_err(|_| {
@@ -154,12 +178,14 @@ impl WorkosAuthManager {
         if token.refresh_token.is_none() {
             token.refresh_token = Some(session.refresh_token.clone());
         }
+        let access_token = token.access_token.clone();
         self.finish(
             token,
             Some(&session.identity.subject),
             Some(&session.tenant_id),
         )
         .await
+        .map(|identity| (identity, access_token))
         .inspect_err(|_| {
             let _ = self.delete_session();
         })
@@ -170,27 +196,11 @@ impl WorkosAuthManager {
         &self,
         expected_actor: &str,
     ) -> Result<String, String> {
-        let identity = self.current_identity().await?;
+        let (identity, access_token) = self.current_identity_and_token().await?;
         if identity.stable_identity_id != expected_actor {
             return Err("oidc_session_required".to_string());
         }
-        let _lock = self.session_lock()?;
-        let session = self
-            .load_session()
-            .map_err(|_| "oidc_session_required".to_string())?;
-        if session.identity.stable_identity_id != expected_actor
-            || session.client_id != self.config.oidc_client_id
-            || session.issuer != configured_issuer(&self.config)
-        {
-            return Err("oidc_session_required".to_string());
-        }
-        let claims = verify_access_token(&self.config, &session.access_token)
-            .await
-            .map_err(|_| "oidc_session_required".to_string())?;
-        if claims.sub != identity.subject || claims.exp as i64 * 1000 <= now_ms() {
-            return Err("oidc_session_required".to_string());
-        }
-        Ok(session.access_token)
+        Ok(access_token)
     }
 
     pub fn logout(&self) -> Result<(), String> {

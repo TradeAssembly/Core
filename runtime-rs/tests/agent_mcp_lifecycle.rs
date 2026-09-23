@@ -54,6 +54,55 @@ fn code(response: &Value) -> &str {
 }
 
 #[test]
+fn external_client_mcp_deployment_does_not_require_a_supervised_workspace() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = directory.path().join("external.db");
+    let service = TradeAssemblyService::test_local(db.to_str().unwrap())
+        .for_authenticated_invocation("test", "external-owner", None, None);
+    let mut request = create_request("", "external-create", "");
+    request["deployment"]["executor"] = json!("external_client");
+    request["deployment"]["mode"] = json!("paper");
+    request["authority_context"] = authority("paper");
+    for field in ["workspace", "prompt", "intervalSeconds", "cronUtc"] {
+        request["deployment"].as_object_mut().unwrap().remove(field);
+    }
+    let created = service.call_mcp_tool("studio.deployment.create", request.clone());
+    assert_eq!(created["isError"], false, "{}", code(&created));
+    assert_eq!(
+        created["structuredContent"]["deployment"]["executor"],
+        "external_client"
+    );
+    let duplicate = service.call_mcp_tool("studio.deployment.create", request);
+    assert_eq!(duplicate["isError"], false);
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json(DEPLOYMENTS_NS)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(service
+        .runtime()
+        .storage
+        .list_json(tradeassembly_runtime::agent_runner::SCHEDULES_NS)
+        .unwrap()
+        .is_empty());
+    let definitions = mcp::tool_definitions();
+    let create = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "studio.deployment.create")
+        .unwrap();
+    assert_eq!(
+        create["inputSchema"]["properties"]["deployment"]["properties"]["executor"]["enum"],
+        json!(["supervised", "external_client"])
+    );
+}
+
+#[test]
 fn agent_deployment_mcp_lifecycle_is_redacted_authorized_and_idempotent() {
     let directory = tempfile::tempdir().expect("temporary workspace");
     let db = directory

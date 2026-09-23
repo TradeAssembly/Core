@@ -161,6 +161,7 @@ fn exercise_real_codex(interrupt: bool) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let deployment = tradeassembly_runtime::agent_runner::AgentDeployment {
+        executor: Default::default(),
         deployment_id: "nontrading-inspection".into(), system_project_id: "smoke".into(),
         agent_definition_version_id: "smoke-agent-v1".into(), execution_config_version_id: "smoke-config-v1".into(),
         studio_tool_allowlist: vec!["studio.deployment.inspect".into()], desired_state: "active".into(),
@@ -499,6 +500,14 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
     let config: Value =
         serde_json::from_slice(&std::fs::read(state.join("runtime.json")).unwrap()).unwrap();
     assert_eq!(config["oidcProfile"], "local_owner");
+    assert_eq!(
+        config["oidcSessionPath"],
+        state.join("auth/cli-session.bin").display().to_string()
+    );
+    assert_eq!(
+        config["oidcSessionKeyPath"],
+        state.join("auth/cli-session.key").display().to_string()
+    );
     let token_path = config["wardenTokenRef"]
         .as_str()
         .unwrap()
@@ -683,7 +692,11 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
         let installed: Value = serde_json::from_slice(&installed.stdout).unwrap();
         assert_eq!(installed["ok"], true);
         assert!(installed.to_string().contains("tradeassembly.alpaca"));
-        assert!(installed.to_string().contains("0.1.9"));
+        let bundled_version: Value =
+            serde_json::from_str(include_str!("../../packaging/alpaca.json")).unwrap();
+        assert!(installed
+            .to_string()
+            .contains(bundled_version["version"].as_str().unwrap()));
         // A new user must be able to inspect the installed connector before
         // providing brokerage credentials. Exercise the real Core host boundary.
         for args in [

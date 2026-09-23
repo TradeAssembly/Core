@@ -36,6 +36,8 @@ const MAX_COALESCED_TICKS: u64 = 1_024;
 const MAX_CRON_MISSED_SCAN_MINUTES: usize = 7 * 24 * 60;
 pub const MCP_CAPABILITY_ENV: &str = "TRADEASSEMBLY_AGENT_MCP_CAPABILITY";
 
+pub mod external_session;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentRunnerTiming {
     pub lease_ms: i64,
@@ -58,9 +60,20 @@ impl Default for AgentRunnerTiming {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExecutor {
+    #[default]
+    Supervised,
+    ExternalClient,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDeployment {
+    /// Who owns the agent process, independently of strategy evaluation mode.
+    #[serde(default)]
+    pub executor: AgentExecutor,
     pub deployment_id: String,
     pub system_project_id: String,
     pub agent_definition_version_id: String,
@@ -628,7 +641,11 @@ pub fn put_deployment_with_context(
     deployment: &AgentDeployment,
     side_effect_context: &SideEffectContext,
 ) -> Result<(), String> {
-    let schedule = deployment_schedule(deployment)?;
+    let schedule = if deployment.executor == AgentExecutor::Supervised {
+        Some(deployment_schedule(deployment)?)
+    } else {
+        None
+    };
     if deployment.deployment_id.trim().is_empty()
         || deployment.system_project_id.trim().is_empty()
         || deployment.agent_definition_version_id.trim().is_empty()
@@ -639,9 +656,10 @@ pub fn put_deployment_with_context(
             .iter()
             .any(|tool| !valid_agent_tool_id(tool))
         || !matches!(deployment.mode.as_str(), "paper" | "live")
-        || deployment.workspace.trim().is_empty()
-        || !Path::new(&deployment.workspace).is_dir()
-        || deployment.prompt.trim().is_empty()
+        || (deployment.executor == AgentExecutor::Supervised
+            && (deployment.workspace.trim().is_empty()
+                || !Path::new(&deployment.workspace).is_dir()
+                || deployment.prompt.trim().is_empty()))
         || secret_shaped(&deployment.prompt)
         || !matches!(
             deployment.desired_state.as_str(),
@@ -694,11 +712,14 @@ pub fn put_deployment_with_context(
         }),
         side_effect_context,
     )?;
-    if runtime
-        .storage
-        .get_json(SCHEDULES_NS, &deployment.deployment_id)?
-        .is_none()
-    {
+    if let Some(schedule) = schedule {
+        if runtime
+            .storage
+            .get_json(SCHEDULES_NS, &deployment.deployment_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
         runtime.storage.put_json(
             SCHEDULES_NS,
             &deployment.deployment_id,
@@ -715,15 +736,17 @@ pub fn deployment_binding_digest(deployment: &AgentDeployment) -> String {
     let mut tool_ids = deployment.studio_tool_allowlist.clone();
     tool_ids.sort();
     tool_ids.dedup();
-    short_hash(
-        &json!({
-            "systemProjectId": deployment.system_project_id,
-            "agentDefinitionVersionId": deployment.agent_definition_version_id,
-            "executionConfigVersionId": deployment.execution_config_version_id,
-            "studioToolAllowlist": tool_ids,
-        })
-        .to_string(),
-    )
+    let mut binding = json!({
+        "systemProjectId": deployment.system_project_id,
+        "agentDefinitionVersionId": deployment.agent_definition_version_id,
+        "executionConfigVersionId": deployment.execution_config_version_id,
+        "studioToolAllowlist": tool_ids,
+    });
+    // Preserve legacy supervised digests. External ownership is a new binding.
+    if deployment.executor == AgentExecutor::ExternalClient {
+        binding["executor"] = json!("external_client");
+    }
+    short_hash(&binding.to_string())
 }
 
 fn valid_agent_tool_id(tool: &str) -> bool {
@@ -857,6 +880,11 @@ pub fn bind_mcp_execution_context(
     if current != *execution_context {
         return Err("agent_mcp_execution_context_invalid".to_string());
     }
+    execution_context.current_lease(
+        runtime.storage.as_ref(),
+        runtime.clock.as_ref(),
+        runtime.leases.as_ref(),
+    )?;
     if !execution_context
         .studio_tool_allowlist
         .iter()
@@ -923,7 +951,13 @@ pub(crate) fn revalidate_mcp_execution_context(
     runtime: &ServiceRuntime,
     context: &VerifiedAgentMcpExecutionContext,
 ) -> Result<(), String> {
-    context.revalidate(runtime.storage.as_ref(), runtime.clock.as_ref())
+    context
+        .current_lease(
+            runtime.storage.as_ref(),
+            runtime.clock.as_ref(),
+            runtime.leases.as_ref(),
+        )
+        .map(|_| ())
 }
 
 fn bind_scoped_identifier(
@@ -1575,7 +1609,7 @@ pub fn supervise_once_with_timing_and_entitlement(
     let mut receipts = Vec::new();
     for deployment in deployments(runtime)?
         .into_iter()
-        .filter(|d| d.desired_state == "active")
+        .filter(|d| d.desired_state == "active" && d.executor == AgentExecutor::Supervised)
     {
         match supervise_deployment(
             runtime,
@@ -1637,6 +1671,9 @@ pub fn recover_pending_run_with_context(
     };
     let mut transition_started = false;
     let result = (|| {
+        if deployment.executor == AgentExecutor::ExternalClient {
+            external_session::quarantine_abandoned(runtime, deployment_id, side_effect_context)?;
+        }
         let receipt = match runtime
             .storage
             .get_json(RECOVERY_RECEIPTS_NS, &receipt_key)?
@@ -1735,13 +1772,15 @@ pub fn recover_pending_run_with_context(
             json!({"state": "reconciled", "resolvedRunId": run_id, "resolvedAtMs": recovery_at_ms}),
             side_effect_context,
         )?;
-        let next_schedule = schedule_after_operator_recovery(&deployment, recovery_at_ms)?;
-        persist_schedule_state_with_context(
-            runtime,
-            &deployment,
-            &next_schedule,
-            side_effect_context,
-        )?;
+        if deployment.executor == AgentExecutor::Supervised {
+            let next_schedule = schedule_after_operator_recovery(&deployment, recovery_at_ms)?;
+            persist_schedule_state_with_context(
+                runtime,
+                &deployment,
+                &next_schedule,
+                side_effect_context,
+            )?;
+        }
         append_evidence_with_context(
             runtime,
             &deployment,
@@ -2409,8 +2448,9 @@ mod tests {
     use super::*;
     use crate::service::TradeAssemblyService;
 
-    fn deployment() -> AgentDeployment {
+    pub(super) fn deployment() -> AgentDeployment {
         AgentDeployment {
+            executor: AgentExecutor::default(),
             deployment_id: "schedule-state-test".to_string(),
             system_project_id: "system-test".to_string(),
             agent_definition_version_id: "agent-v1".to_string(),
@@ -2748,6 +2788,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(replacement.fencing_token > supervisor_lease.fencing_token);
+        assert_eq!(
+            bind_mcp_execution_context(
+                &service.runtime(),
+                &resolved,
+                "tradeassembly.health",
+                json!({}),
+            )
+            .unwrap_err(),
+            "agent_run_lease_invalid"
+        );
+        assert_eq!(
+            revalidate_mcp_execution_context(&service.runtime(), &resolved).unwrap_err(),
+            "agent_run_lease_invalid"
+        );
+        assert_eq!(
+            authenticated.call_mcp_tool("tradeassembly.health", json!({}))["isError"],
+            true,
+            "an unexpired cached active pointer must not authorize a fenced-out MCP session"
+        );
         assert!(carried
             .revalidate(
                 service.runtime().storage.as_ref(),

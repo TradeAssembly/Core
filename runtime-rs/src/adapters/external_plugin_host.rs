@@ -463,7 +463,12 @@ fn execute(
     };
     let response = reader.join();
     if !status.success() {
-        return Err("plugin_process_failed".to_string());
+        // Exit status is safe operational evidence; never forward plugin stderr,
+        // which can contain provider payloads or credentials.
+        return Err(match status.code() {
+            Some(code) => format!("plugin_process_failed:exit_code={code}"),
+            None => "plugin_process_failed:terminated".to_string(),
+        });
     }
     response.map_err(|_| "plugin_response_invalid".to_string())?
 }
@@ -940,7 +945,7 @@ mod tests {
                     1_000,
                 )
                 .unwrap_err(),
-                "plugin_process_failed"
+                "plugin_process_failed:exit_code=7"
             );
         }
     }

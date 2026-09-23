@@ -108,7 +108,9 @@ pub fn runtime_from_config_with_authority(
             &storage,
         )),
     );
-    let plugin_operations = Arc::new(
+    let capability_resolver: Arc<dyn crate::ports::CapabilityResolverPort> =
+        Arc::new(LocalCapabilityResolver);
+    let mut plugin_operations =
         crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
             Arc::clone(&storage),
             Arc::clone(&plugins),
@@ -116,8 +118,31 @@ pub fn runtime_from_config_with_authority(
             Arc::clone(&plugin_packages),
             Arc::clone(&clock),
             plugin_sandbox,
-        ),
-    );
+        );
+    // Preserve inspection/research when installation-owner state is unavailable.
+    // Live readiness/dispatch remain closed without the enforcing boundary;
+    // never invent an owner or substitute a caller-provided identity.
+    let broker_owner = (config.oidc_profile == "local_owner")
+        .then(|| crate::local_owner_identity::LocalOwnerIdentity::for_database(&db_path))
+        .and_then(Result::ok);
+    if let Some(owner) = broker_owner {
+        plugin_operations = plugin_operations.with_broker_boundary(Arc::new(
+            crate::broker_submission::LocalBrokerSubmissionBoundary::new(
+                crate::broker_submission::BrokerSubmissionDependencies {
+                    storage: storage.clone(),
+                    plugins: plugins.clone(),
+                    plugin_packages: plugin_packages.clone(),
+                    credentials: credentials.clone(),
+                    capability_resolver: capability_resolver.clone(),
+                    clock: clock.clone(),
+                    leases: operations.clone(),
+                    owner,
+                },
+                finance_authority.clone(),
+            ),
+        ));
+    }
+    let plugin_operations = Arc::new(plugin_operations);
     let robustness = Arc::new(
         crate::adapters::robustness_repository::StorageRobustnessRunRepository::new(Arc::clone(
             &storage,
@@ -136,7 +161,7 @@ pub fn runtime_from_config_with_authority(
             )),
         ),
         finance_authority,
-        capability_resolver: Arc::new(LocalCapabilityResolver),
+        capability_resolver,
         credentials,
         historical_data,
         dataset_snapshots,

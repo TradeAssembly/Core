@@ -1,8 +1,8 @@
 {
-  "version": "0.1.9",
+  "version": "0.1.17",
   "target": "aarch64-apple-darwin",
-  "packageFile": "tradeassembly-plugin-alpaca-0.1.9.tar.gz",
-  "packageSha256": "0ab8b3b7b6e4fc5f55a4ce86100436c10e215b623447b2a3a4bd58b7334d12b0",
-  "manifestSha256": "8d8db8964623ea9634adaebddd1332ca8324b7101eca8e7532e0d6e352f3dfd9",
-  "sourceRevision": "69f7af89112f415aa4cb1865b06b9af587973209"
+  "packageFile": "tradeassembly-plugin-alpaca-0.1.17.tar.gz",
+  "packageSha256": "c9617227ff7d61db04b91c036b896f85e2d0b137d2d2bfd27447123024b23d8e",
+  "manifestSha256": "fd29c39e2b4fc55ac50797b5b4f6739db43756ce33a9fbab53f7486a77091329",
+  "sourceRevision": "e4ea4c186ae3d07d06ac4ed0fa13cb9a3201410c"
 }

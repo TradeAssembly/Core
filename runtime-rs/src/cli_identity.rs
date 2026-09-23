@@ -42,6 +42,8 @@ impl CliIdentity {
     pub fn redacted_status(&self) -> Value {
         json!({
             "authenticated": true,
+            "identityKind": if self.issuer == "local-owner" { "local_owner" } else { "provider" },
+            "hubAuthentication": "not_checked",
             "stableIdentityId": self.stable_identity_id,
             "issuer": self.issuer,
             "displayName": self.display_name,
@@ -70,6 +72,10 @@ impl CliIdentityManager {
 
     pub fn uses_local_owner(&self) -> bool {
         self.config.oidc_profile == "local_owner"
+    }
+
+    pub(crate) fn configuration(&self) -> &RuntimeConfig {
+        &self.config
     }
 
     pub async fn login(&self) -> Result<CliIdentity, String> {
@@ -419,12 +425,12 @@ pub(crate) async fn wait_for_callback(
     let (status, body) = if callback.is_ok() {
         (
             "200 OK",
-            "TradeAssembly authentication completed. You may close this window.",
+            "TradeAssembly received the sign-in response and is verifying it. Return to the connection page or your agent to check completion. You may close this window.",
         )
     } else {
         (
             "400 Bad Request",
-            "TradeAssembly authentication failed. Return to the terminal.",
+            "TradeAssembly could not complete this sign-in attempt. Return to the connection page or your agent to retry.",
         )
     };
     let response = format!(

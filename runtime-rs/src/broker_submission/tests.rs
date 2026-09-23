@@ -54,6 +54,51 @@ impl AgentRuntimePort for ContextCapturingAdapter {
 }
 
 #[test]
+fn explicit_external_universe_binds_each_instrument_without_expanding_legacy_scope() {
+    let config =
+        json!({"orchestrator":"external_agent", "symbol":"", "allowedSymbols":["SPY","QQQ"]});
+    for symbol in ["SPY", "QQQ"] {
+        assert!(super::validate_order_symbol(&config, symbol).is_ok());
+    }
+    assert!(super::validate_order_symbol(&config, "IWM").is_err());
+    for symbols in [
+        json!([]),
+        json!(["SPY", "SPY"]),
+        json!([" SPY"]),
+        json!([null]),
+        json!("SPY"),
+    ] {
+        let mut invalid = config.clone();
+        invalid["allowedSymbols"] = symbols;
+        assert!(super::validate_order_symbol(&invalid, "SPY").is_err());
+    }
+    let mut invalid = config.clone();
+    invalid["orchestrator"] = json!("deterministic");
+    assert!(super::validate_order_symbol(&invalid, "SPY").is_err());
+    invalid = config;
+    invalid["symbol"] = json!("IWM");
+    assert!(super::validate_order_symbol(&invalid, "SPY").is_err());
+}
+
+#[test]
+fn order_symbol_requires_exact_nonempty_execution_binding() {
+    for config in [json!({}), json!({"symbol":""}), json!({"symbol":"  "})] {
+        assert_eq!(
+            super::validate_order_symbol(&config, "SPY"),
+            Err("execution_symbol_missing".into())
+        );
+    }
+    let config = json!({"symbol":"BTC/USD"});
+    assert!(super::validate_order_symbol(&config, "BTC/USD").is_ok());
+    for symbol in ["SPY", "BTCUSD", "btc/usd", "BTC/USD "] {
+        assert_eq!(
+            super::validate_order_symbol(&config, symbol),
+            Err("order_symbol_outside_execution_config".into())
+        );
+    }
+}
+
+#[test]
 fn controls_fail_closed_for_pause_stop_and_emergency_actions() {
     for controls in [
         json!({"pauseEntries": "paused"}),
@@ -92,6 +137,7 @@ fn loads_agent_state_only_from_named_verified_provenance() {
     assert_eq!(saved.status, 200, "{saved:#?}");
     let config_id = saved.body["body"]["item"]["configId"].as_str().unwrap();
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "loader-agent".into(),
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),

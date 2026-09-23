@@ -98,6 +98,7 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
     };
 
     let database = state.join("runtime.db");
+    let auth = state.join("auth");
     let warden_database = state.join("warden.sqlite");
     let key = state.join("signing.seed");
     let token = state.join("warden.token");
@@ -131,6 +132,21 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
         database_path: Some(absolute(&database)?.display().to_string()),
         artifact_root: Some(absolute(&state.join("artifacts"))?.display().to_string()),
         oidc_profile: Some("local_owner".into()),
+        // Keep the optional hosted-session binding installation-scoped. The
+        // packaged connection profile derives a Bitwarden item name from this
+        // path; a relative default would make the same installation appear as
+        // a different user session when an MCP host changes its working
+        // directory.
+        oidc_session_path: Some(
+            absolute(&auth.join("cli-session.bin"))?
+                .display()
+                .to_string(),
+        ),
+        oidc_session_key_path: Some(
+            absolute(&auth.join("cli-session.key"))?
+                .display()
+                .to_string(),
+        ),
         legal_receipt_root: Some(
             absolute(&state.join("legal/receipts"))?
                 .display()

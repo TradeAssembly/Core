@@ -500,6 +500,14 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
     let config: Value =
         serde_json::from_slice(&std::fs::read(state.join("runtime.json")).unwrap()).unwrap();
     assert_eq!(config["oidcProfile"], "local_owner");
+    assert_eq!(
+        config["oidcSessionPath"],
+        state.join("auth/cli-session.bin").display().to_string()
+    );
+    assert_eq!(
+        config["oidcSessionKeyPath"],
+        state.join("auth/cli-session.key").display().to_string()
+    );
     let token_path = config["wardenTokenRef"]
         .as_str()
         .unwrap()

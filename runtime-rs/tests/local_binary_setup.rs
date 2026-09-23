@@ -684,7 +684,11 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
         let installed: Value = serde_json::from_slice(&installed.stdout).unwrap();
         assert_eq!(installed["ok"], true);
         assert!(installed.to_string().contains("tradeassembly.alpaca"));
-        assert!(installed.to_string().contains("0.1.9"));
+        let bundled_version: Value =
+            serde_json::from_str(include_str!("../../packaging/alpaca.json")).unwrap();
+        assert!(installed
+            .to_string()
+            .contains(bundled_version["version"].as_str().unwrap()));
         // A new user must be able to inspect the installed connector before
         // providing brokerage credentials. Exercise the real Core host boundary.
         for args in [

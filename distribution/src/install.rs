@@ -279,6 +279,16 @@ pub fn stopped_database(path: &Path, now_ms: i64) -> Result<()> {
 }
 
 fn stopped(root: &Path) -> Result<()> {
+    let config_path = root.join("state/local/runtime.json");
+    if config_path.exists() {
+        let config: Value = read_json(&config_path)?;
+        if ["postgresUrlRef", "natsUrlRef"]
+            .iter()
+            .any(|key| config.get(*key).is_some_and(|value| !value.is_null()))
+        {
+            return Err("upgrade_external_state_requires_qualified_migration".into());
+        }
+    }
     // Inspect only executable paths. Never read/emit command lines or environments.
     let system = sysinfo::System::new_all();
     if system
@@ -364,24 +374,50 @@ fn prepare(root: &Path, release: &Release, port: u16) -> Result<()> {
     let payload = root.join("versions").join(&release.archive_sha256);
     let runtime = payload.join(executable("bin/tradeassembly"));
     let state = root.join("state/local");
+    let config_path = state.join("runtime.json");
     let authority = root.join(executable("authority/bin/warden"));
     let port = port.to_string();
-    let mut setup = Command::new(&runtime);
-    setup
-        .args(["setup", "--state-dir"])
-        .arg(&state)
-        .arg("--warden-binary")
-        .arg(&authority)
-        .args(["--warden-port", &port]);
-    let (success, result) = bounded_output(&mut setup)?;
-    if !success {
-        return Err("runtime_setup_failed_no_pointer_changed".into());
-    }
-    // Structured setup may include local identity details; don't print its stdout.
-    if result.get("prepared").and_then(Value::as_bool) != Some(true)
-        || result.get("automationReady").and_then(Value::as_bool) != Some(false)
-    {
-        return Err("runtime_setup_result_invalid".into());
+    if config_path.exists() {
+        // Frozen Core setup verifies its original bootstrap JSON byte-for-byte;
+        // it is not a user-config migration API. Validate existing bindings and
+        // update only the versioned sandbox path, leaving user settings intact.
+        let mut prior = installed(root)?.unwrap_or(Installed {
+            schema_version: 1,
+            current: release.clone(),
+            previous: None,
+            warden_port: port.parse().map_err(|_| "warden_port_invalid")?,
+        });
+        let mut config: Value = read_json(&config_path)?;
+        let sandbox = payload.join(executable("bin/tradeassembly-sandbox"));
+        let next = Value::String(sandbox.to_str().ok_or("installation_path_invalid")?.into());
+        // A retry may already have switched this binding before registration
+        // failed. Only the verified prior or this staged release is admissible.
+        if config["pluginSandboxCommand"] == next {
+            prior.current = release.clone();
+        }
+        verify_prepared(root, &prior)?;
+        if config["pluginSandboxCommand"] != next {
+            config["pluginSandboxCommand"] = next;
+            atomic_json(&config_path, &config)?;
+        }
+    } else {
+        let mut setup = Command::new(&runtime);
+        setup
+            .args(["setup", "--state-dir"])
+            .arg(&state)
+            .arg("--warden-binary")
+            .arg(&authority)
+            .args(["--warden-port", &port]);
+        let (success, result) = bounded_output(&mut setup)?;
+        if !success {
+            return Err("runtime_setup_failed_no_pointer_changed".into());
+        }
+        // Structured setup may include local identity details; don't print its stdout.
+        if result.get("prepared").and_then(Value::as_bool) != Some(true)
+            || result.get("automationReady").and_then(Value::as_bool) != Some(false)
+        {
+            return Err("runtime_setup_result_invalid".into());
+        }
     }
     // Offline plugin registration is protected by real Warden. Run only the
     // freshly prepared, digest-bound local authority for this operation. It

@@ -111,6 +111,12 @@ fn frozen_package_setup_reinstall_upgrade_rollback_and_running_denial() {
     );
     drop(policy);
 
+    let config_path = root.join("state/local/runtime.json");
+    let mut config: Value = read_json(&config_path).unwrap();
+    let owner_scopes = json!("openid profile cohort_custom_scope");
+    config["oidcScopes"] = owner_scopes.clone();
+    atomic_json(&config_path, &config).unwrap();
+
     // Isolated persisted active state must block even with no live worker.
     let db = rusqlite::Connection::open(root.join("state/local/runtime.db")).unwrap();
     db.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES('execution_activations','distribution-negative-test',?1,'distribution-negative-test','local-user',1)", [json!({"state":"active"}).to_string()]).unwrap();
@@ -151,6 +157,21 @@ fn frozen_package_setup_reinstall_upgrade_rollback_and_running_denial() {
     let (success, result) = invoke(&next_package, &root, "rollback", port);
     assert!(success, "rollback: {result}");
     assert_eq!(result["version"], original.version);
+    let preserved: Value = read_json(&config_path).unwrap();
+    assert_eq!(
+        preserved["oidcScopes"], owner_scopes,
+        "owner connection settings survive upgrade and rollback"
+    );
+    let mut external = preserved.clone();
+    external["postgresUrlRef"] = json!("file:///unavailable-isolated-test-reference");
+    atomic_json(&config_path, &external).unwrap();
+    let (success, result) = invoke(&next_package, &root, "upgrade", port);
+    assert!(!success);
+    assert_eq!(
+        result["code"],
+        "upgrade_external_state_requires_qualified_migration"
+    );
+    atomic_json(&config_path, &preserved).unwrap();
     for (path, hash) in fingerprints {
         assert_eq!(digest(&path).unwrap(), hash, "credential binding preserved");
     }

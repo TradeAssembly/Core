@@ -47,6 +47,11 @@ kill a process, reset credentials, or place an order. First-version upgrades
 support unchanged state compatibility and Warden digest only. An incompatible
 authority or database migration must be supplied and qualified by a future
 release; blindly changing installation metadata is forbidden.
+External Postgres or NATS state is not covered by this local upgrade path and
+fails closed pending a qualified migration. Existing configuration is preserved;
+only the verified versioned sandbox path is updated. Frozen Core setup verifies
+bootstrap JSON byte-for-byte, so upgrades must not replay it against user-edited
+configuration.
 
 An interrupted setup leaves a resumable transaction, never a successful pointer.
 Rollback preserves state and is subject to the same compatibility and stopped
@@ -104,6 +109,40 @@ The Rust distribution crate and npm shim implement packing, byte verification,
 safe extraction, private per-user roots, source-free local setup, real-authority
 offline plugin registration, durable transaction guards, and stable launch paths.
 Do not mark the five-target release complete from these local results.
+
+Checkpoint (2026-09-28): branch `codex/f2-npm-distribution`, based on Core
+`a16d4a769258fb7354d9102017533850020f8f2c`. Local implementation commits
+`e1557c9` and `890eb5c` precede the configuration-preservation checkpoint.
+No push, merge, npm publication, or namespace-ownership verification has occurred.
+The local candidate is `target/npm-preserved-candidate`, version `0.1.0-beta.1`;
+its installer SHA-256 is
+`8d03610fddb22e3c4b5f1d7dcc5d41845b68a59e08d6e7d76b7c2e74082faaae`,
+archive SHA-256 is
+`7c0a4d6b55555a4a0e0a39bd9b65621879c0240e8b6ca663411973fb2dbdd8a4`,
+and release-manifest SHA-256 is
+`3f71fb0b87eb1f1bd1eb77fef54755fe045b262dfe1651052ae590a8f909e486`.
+The original bundle and parent-lock hashes above remain unchanged; original
+Core/Warden strict ad-hoc signature checks pass.
+
+Passing local evidence: seven Rust unit tests; distribution strict Clippy;
+actual frozen-binary installer acceptance (including edited-config preservation,
+external-state denial, running/active-state denial and interrupted recovery);
+actual offline local-tarball npm/pnpm acceptance with lifecycle scripts disabled;
+format/diff checks, dependency deny and machete checks, and current source
+whitelist/public-boundary/architecture checks. Native test logs are
+`target/distribution-native-install.log` and
+`target/distribution-package-managers.log`. These are Mac arm64 evidence, not
+five-target native or registry qualification; the local candidate remains
+`publishable: false`.
+
+The required full `just verify` / `cargo xtask verify` gate is **not passing**.
+Its workspace Clippy and pinned sandbox dependency setup passed, but workspace
+test linking exhausted disk (`errno=28`, including `backend_parity`) even with
+serialized compilation, disabled incremental/debug output, and stripped symbols.
+Evidence is preserved in `target/core-verification.log`; only this task's bulky
+build cache was cleaned. Workspace tests/nextest and subsequent full-gate stages
+were not completed. Do not claim merge or release readiness from targeted checks.
+No owned test processes remain running.
 
 Native target production remains a release dependency. The existing
 `xtask/src/bundle_local.rs` is Mac arm64 only; the frozen

@@ -44,7 +44,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local");
+            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-verify");
             0
         }
         _ => {

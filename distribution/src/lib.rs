@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_roundtrip_and_inventory_corruption() {
+    fn archive_roundtrip_preserves_files_and_links() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let output = temp.path().join("output");
@@ -427,5 +427,73 @@ mod tests {
             extract(&archive_path, &output).unwrap_err(),
             "archive_duplicate_or_limit"
         );
+    }
+
+    #[test]
+    fn synthetic_inventory_rejects_corruption_extras_and_missing_execution_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("bin")).unwrap();
+        let mut files = BTreeMap::new();
+        for name in [
+            "bin/tradeassembly",
+            "bin/warden",
+            "bin/tradeassembly-sandbox",
+        ] {
+            let name = executable(name);
+            fs::write(
+                root.join(&name),
+                b"synthetic parser fixture, not native qualification",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(root.join(&name), fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            files.insert(
+                name.clone(),
+                serde_json::json!({"sha256":digest(&root.join(name)).unwrap()}),
+            );
+        }
+        let target = install::host_target().unwrap();
+        atomic_json(
+            &root.join("bundle.json"),
+            &serde_json::json!({"target":target,"files":files}),
+        )
+        .unwrap();
+        let release = Release {
+            schema_version: 1,
+            version: "0.1.0-beta.1".into(),
+            target: target.into(),
+            parent_lock_sha256: PARENT_SHA.into(),
+            bundle_manifest_sha256: digest(&root.join("bundle.json")).unwrap(),
+            archive_sha256: "0".repeat(64),
+            warden_sha256: digest(&root.join(executable("bin/warden"))).unwrap(),
+            state_compatibility: "f2-local-v1".into(),
+        };
+        verify_bundle(root, &release).unwrap();
+        let core = root.join(executable("bin/tradeassembly"));
+        fs::write(&core, b"corrupted").unwrap();
+        assert_eq!(
+            verify_bundle(root, &release).unwrap_err(),
+            "payload_digest_or_containment_failed"
+        );
+        fs::write(&core, b"synthetic parser fixture, not native qualification").unwrap();
+        fs::write(root.join("extra"), b"unlisted").unwrap();
+        assert_eq!(
+            verify_bundle(root, &release).unwrap_err(),
+            "payload_inventory_mismatch"
+        );
+        fs::remove_file(root.join("extra")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(core, fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(
+                verify_bundle(root, &release).unwrap_err(),
+                "executable_permission_missing"
+            );
+        }
     }
 }

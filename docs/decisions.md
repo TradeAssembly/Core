@@ -1,5 +1,12 @@
 # Extraction decisions
 
+- Frozen F2 macOS arm64 bytes and the M0–M6 parent release lock are not rebuilt or
+  re-signed for npm delivery. New targets need independent native evidence. The
+  first distribution format accepts only prerelease versions on `beta`; no Apple
+  payment/notarization or lifecycle install scripts. Warden digest/state migrations
+  are excluded from v1 upgrades, which require a stopped rig and preserve identity.
+  Distribution proof is distinct from runtime and public-release qualification.
+
 - `portfolio_reservations` is the initial accounting kernel, not an authorization
   tool or activated broker feature. It uses an owner/account-scoped atomic storage
   expectation to reserve observed gross exposure plus all unreconciled holds,

@@ -5,6 +5,15 @@ service/port boundary. identity-sdk, plugin-sdk and sightline-sidecar are intern
 workspace crates. Brokers and Warden remain explicit external executable or
 package contracts, not private sibling-source dependencies.
 
+Distribution is a separate Rust installer around locked payload artifacts. npm
+glue selects an exact-version native package; it never builds customer source.
+Immutable payloads, a stable digest-bound Warden authority path, persistent state,
+and a shared launcher/exclusive installer lock keep delivery separate from runtime
+semantics. Installation registers the bundled Alpaca package through real local
+Warden, then reaps that temporary authority. Ongoing policy supervision is an
+explicit next command, not a hidden trading or agent activation. See
+docs/distribution.md for platform qualification and stopped-only upgrade limits.
+
 Agents and deterministic evaluation use the same versioned strategy, authority,
 risk, journal and side-effect machinery. Agent submission does not require a
 scheduler tick. Idempotency, durable intent, fencing and observation-only recovery

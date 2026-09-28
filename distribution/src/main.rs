@@ -1,0 +1,96 @@
+// Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+use std::path::{Path, PathBuf};
+use tradeassembly_distribution::{install, package, Result};
+
+fn option(args: &[String], name: &str) -> Result<Option<String>> {
+    let matches: Vec<_> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.as_str() == name)
+        .collect();
+    if matches.len() > 1 {
+        return Err("duplicate_option".into());
+    }
+    matches
+        .first()
+        .map(|(i, _)| {
+            args.get(i + 1)
+                .filter(|v| !v.starts_with("--"))
+                .cloned()
+                .ok_or_else(|| "option_value_required".into())
+        })
+        .transpose()
+}
+fn required(args: &[String], name: &str) -> Result<String> {
+    option(args, name)?.ok_or_else(|| format!("required_option:{name}"))
+}
+fn execute(args: &[String]) -> Result<i32> {
+    let exe = std::env::current_exe().map_err(|_| "installer_path_unavailable")?;
+    let facade = exe.file_stem().and_then(|s| s.to_str()) == Some("tradeassembly");
+    let root = if facade {
+        exe.parent()
+            .and_then(Path::parent)
+            .ok_or("facade_path_invalid")?
+            .to_owned()
+    } else {
+        option(args, "--root")?
+            .map(|path| Ok(PathBuf::from(path)))
+            .unwrap_or_else(install::default_root)?
+    };
+    if facade && !matches!(args.first().map(String::as_str), Some("distribution")) {
+        return install::run(&root, args);
+    }
+    let args = if facade { &args[1..] } else { args };
+    let command = args.first().map(String::as_str).unwrap_or("help");
+    let value = match command {
+        "install" | "upgrade" => {
+            let package = exe.parent().ok_or("package_path_invalid")?;
+            let port = option(args, "--warden-port")?
+                .unwrap_or_else(|| "8181".into())
+                .parse()
+                .map_err(|_| "warden_port_invalid")?;
+            install::install(
+                package,
+                &root,
+                command == "upgrade" || args.iter().any(|s| s == "--upgrade"),
+                port,
+            )?
+        }
+        "status" => install::status(&root)?,
+        "rollback" => install::rollback(&root)?,
+        "run" => return install::run(&root, &args[1..]),
+        "pack" => package::pack(
+            Path::new(&required(args, "--bundle")?),
+            Path::new(&required(args, "--parent")?),
+            &required(args, "--version")?,
+            Path::new(&required(args, "--installer")?),
+            Path::new(&required(args, "--out")?),
+        )?,
+        "verify" => package::verify_matrix(
+            Path::new(&required(args, "--evidence")?),
+            !args.iter().any(|arg| arg == "--candidate"),
+        )?,
+        "help" | "--help" => {
+            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY --out NEW_PATH; verify --evidence DIRECTORY.");
+            return Ok(0);
+        }
+        _ => return install::run(&root, args),
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value).map_err(|_| "output_encode_failed")?
+    );
+    Ok(0)
+}
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let status = match execute(&args) {
+        Ok(code) => code,
+        Err(code) => {
+            eprintln!("{}", serde_json::json!({"ok":false,"code":code}));
+            1
+        }
+    };
+    std::process::exit(status);
+}

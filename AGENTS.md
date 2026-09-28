@@ -10,3 +10,9 @@ Use Rust and cargo xtask/just command surfaces. Preserve original source; no
 broker orders, hosted implementations, secrets, generated trade advice, or Live
 policy activation. Existing M2 acceptance must survive relocation unchanged.
 EXTRACTION.md identifies the selected source and unresolved harness/license work.
+
+Distribution: `cargo xtask distribution-pack` owns frozen-payload packaging;
+`cargo xtask distribution-verify` owns the five-target native evidence matrix.
+The narrowly whitelisted `packaging/npm/cli.cjs` is native-launch glue only.
+No install scripts, source compilation, re-signing frozen bytes, unsandboxed
+fallback, Apple payment, automatic strategy activation, or active-rig upgrades.

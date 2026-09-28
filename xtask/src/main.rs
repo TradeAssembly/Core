@@ -19,6 +19,26 @@ fn main() {
         "architecture-check" => architecture_check::run_architecture_check_command(rest, root),
         "contract" => architecture_check::run_contract_check_command(rest, root),
         "bundle-local" => bundle_local::run(rest, root),
+        "distribution-pack" | "distribution-verify" => {
+            let subcommand = if args[0] == "distribution-pack" {
+                "pack"
+            } else {
+                "verify"
+            };
+            std::process::Command::new("cargo")
+                .args([
+                    "run",
+                    "--locked",
+                    "-p",
+                    "tradeassembly-distribution",
+                    "--",
+                    subcommand,
+                ])
+                .args(rest)
+                .status()
+                .map(|status| status.code().unwrap_or(1))
+                .unwrap_or(1)
+        }
         "check-whitelist" => check_whitelist::run_check_whitelist(rest, root),
         "plugin-contract" => plugin_contract::run_plugin_contract(rest, root),
         "scan-public" => public_scan::run_public_scan(rest, root),

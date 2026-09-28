@@ -10,6 +10,7 @@ publicPathPrefixes:
   - .github/
   - .sdlc/
   - docs/
+  - distribution/
   - examples/
   - identity-sdk/
   - plugin-contracts/

@@ -3,6 +3,15 @@
 Core's owning commands are `just` and `cargo xtask`. Product owns integrated
 release decisions; Studio owns its frontend and presentation contracts.
 
+`cargo xtask distribution-pack` packages an explicitly supplied frozen bundle
+and parent lock; it never recompiles or signs that payload. The Rust
+`tradeassembly-distribution` crate owns verification and installation. The only
+additional executable JavaScript exemption is `packaging/npm/cli.cjs`, a thin
+exact-version native-package selector without lifecycle hooks or business logic.
+`cargo xtask distribution-verify --evidence DIRECTORY` requires native receipts
+for all five supported targets, including published npm/pnpm delivery and actual
+Warden/sandbox enforcement. Unit tests or local tarballs are not that evidence.
+
 `cargo xtask verify` (also `just verify`) runs the fixed fail-fast registry in
 xtask/src/core_verify.rs: formatting, strict workspace Clippy, pinned standalone
 sandbox prerequisite installation, workspace tests and nextest, deny, audit,

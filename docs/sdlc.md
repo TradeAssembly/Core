@@ -3,6 +3,12 @@
 Use `just` / `cargo xtask` for local Core commands. `scripts/sdlc/verify` is a thin
 wrapper; Product owns the top-level release/control-plane SDLC.
 
+Distribution work uses `cargo xtask distribution-pack` and
+`cargo xtask distribution-verify`. Targeted installer tests include real opt-in
+frozen-binary acceptance; its environment variable and exact command are in
+docs/distribution.md. Packaging a local npm tarball is not public registry delivery
+or another platform's runtime/sandbox evidence. Keep the parent lock unchanged.
+
 Work on an issue branch, preserve unrelated changes, and use bounded packets with
 explicit acceptance evidence. Runtime changes need targeted behavior tests;
 integration requires the full registry in docs/rust-rewrite-harness.md. Review

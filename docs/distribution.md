@@ -517,11 +517,25 @@ Handles 24167, 5676 and 7821 are terminal, exit 0. Test-only changes are in
 `distribution/tests/package_managers.rs`, `runtime-rs/tests/packaged_sandbox.rs`
 and `runtime-rs/tests/local_binary_setup.rs`; full owning gates predate them.
 Frozen manifest and parent lock hashes were rechecked unchanged.
+Local checkpoint commit: `6f9edc4`; clean worktree before this status update.
 The checkpoint's targeted validation (handle 89575, terminal exit 0) passed
 `cargo fmt --check`, strict Clippy for those three test targets,
 `cargo xtask scan-public`, and `cargo xtask foss-core-boundary` (411 files,
 archive smoke not requested). This is a local checkpoint, not merge/release
 qualification or a newly passed full owning gate. No live process remains.
+The archive preflight confirmed that `run_archive_smoke` builds the extracted
+workspace from scratch in a separate target directory, and
+`configure_isolated_environment` clears the caller's stripped-profile settings.
+Only 2 GiB is currently available; no doomed full archive build was started,
+and its gate remains unsatisfied. This resource observation is separate from
+the required runtime amendment, not a reason to weaken archive acceptance.
+
+Execution is blocked pending the explicit frozen-runtime contract amendment.
+The same conflict has persisted across at least three consecutive goal turns;
+independent portable-test progress is checkpointed, not overall completion.
+Native build spending approval and supported npm MFA remain pending external
+dependencies. Do not resume automatic implementation merely to repeat these
+checks or add more planning artifacts; resume when an actual dependency changes.
 
 **Exact next action:** checkpoint these targeted tests; resolve the pending
 explicit amendment question before any runtime rebuild: may a new compatible

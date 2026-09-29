@@ -4,6 +4,8 @@ use tradeassembly_runtime as runtime_crate;
 #[path = "common/controlled_broker_package.rs"]
 #[allow(dead_code)]
 mod controlled_broker_package;
+#[path = "common/controlled_legal_receipt.rs"]
+mod controlled_legal_receipt;
 #[path = "common/controlled_warden.rs"]
 #[allow(dead_code)]
 mod controlled_warden;
@@ -11,9 +13,9 @@ mod controlled_warden;
 use axum::{
     body::{Body, Bytes},
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{any, post},
     Json, Router,
 };
 use rusqlite::{params, Connection};
@@ -24,7 +26,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -114,6 +116,157 @@ impl Drop for ControlledHttpSink {
             let _ = thread.join();
         }
     }
+}
+
+// Test-only loopback policy adapter. Core still sends its embedded shipping
+// bundle; only this disposable Warden instance receives the two Live allows.
+struct ControlledLivePolicyProxy {
+    url: String,
+    state: Arc<ControlledPolicyState>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct ControlledPolicyState {
+    warden_url: String,
+    installs: AtomicU64,
+    client: reqwest::Client,
+}
+
+impl ControlledLivePolicyProxy {
+    fn start(warden_port: u16) -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let state = Arc::new(ControlledPolicyState {
+            warden_url: format!("http://127.0.0.1:{warden_port}"),
+            installs: AtomicU64::new(0),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(4))
+                .build()
+                .unwrap(),
+        });
+        let server_state = Arc::clone(&state);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .fallback(any(controlled_warden_proxy_request))
+                        .with_state(server_state),
+                )
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+            });
+        });
+        Self {
+            url,
+            state,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
+    }
+
+    fn assert_used(&self) {
+        assert!(
+            self.state.installs.load(Ordering::SeqCst) > 0,
+            "private Live policy was never installed in real Warden"
+        );
+    }
+}
+
+impl Drop for ControlledLivePolicyProxy {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+async fn controlled_warden_proxy_request(
+    State(state): State<Arc<ControlledPolicyState>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let path = uri.path();
+    if path != "/health"
+        && path != "/v1/policies"
+        && path != "/v1/actions/authorize"
+        && !path.starts_with("/v1/receipts/")
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let payload = if method == Method::POST && path == "/v1/policies" {
+        let mut policy: Value =
+            serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+        if policy["schema_version"] != "apf.policy_bundle.v1"
+            || policy["bundle_id"] != "tradeassembly-studio-core"
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let rules = policy["rules"]
+            .as_array_mut()
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        for action in ["execution.activate.live", "order.submit.live"] {
+            let rule = rules
+                .iter_mut()
+                .find(|rule| rule["action"] == action)
+                .ok_or(StatusCode::BAD_REQUEST)?;
+            if rule["required_decision"] != "deny" {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            rule["required_decision"] = json!("allow");
+        }
+        policy["version"] = json!("2099-01-01.fixture-live");
+        state.installs.fetch_add(1, Ordering::SeqCst);
+        serde_json::to_vec(&policy).map_err(|_| StatusCode::BAD_REQUEST)?
+    } else {
+        body.to_vec()
+    };
+    let mut request = state.client.request(
+        reqwest::Method::from_bytes(method.as_str().as_bytes())
+            .map_err(|_| StatusCode::BAD_REQUEST)?,
+        format!("{}{}", state.warden_url, uri),
+    );
+    if let Some(authorization) = headers.get(axum::http::header::AUTHORIZATION) {
+        request = request.header(
+            reqwest::header::AUTHORIZATION,
+            authorization
+                .to_str()
+                .map_err(|_| StatusCode::BAD_REQUEST)?,
+        );
+    }
+    if method == Method::POST {
+        request = request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(payload);
+    }
+    let response = request.send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(bytes))
+        .unwrap())
 }
 
 async fn controlled_http_order(
@@ -360,7 +513,11 @@ fn installed_stdio_paper_order_recovers_ambiguous_crash_once() {
         json!({"configId":config_id,"idempotencyKey":"stdio-paper-activation",
             "acknowledgementIds":["user_logic","user_risk","no_advice"]}),
     );
-    assert_eq!(activated.status, 200, "{activated:#?}");
+    assert_eq!(
+        activated.status, 200,
+        "code={} blockers={:?}",
+        activated.body["error"]["code"], activated.body["error"]["details"]["blockedReasons"]
+    );
     let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
     let mut client = McpClient::start(&candidate, &config_path, &root);
     assert!(client.call("initialize", json!({}))["result"].is_object());
@@ -831,6 +988,263 @@ fn installed_stdio_unknown_lookup_fails_closed_without_replay() {
         .get_json("plugin_operation_receipts", "stdio-unknown-order")
         .unwrap()
         .is_none());
+    client.close();
+    warden.stop();
+}
+
+#[test]
+#[ignore = "requires explicit candidate Core, Warden, controlled broker, and SRT binaries"]
+fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
+    let candidate = PathBuf::from(
+        std::env::var_os("F2_TEST_RUNTIME_BINARY").expect("candidate Core binary required"),
+    )
+    .canonicalize()
+    .unwrap();
+    let controlled = PathBuf::from(
+        std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY")
+            .expect("controlled broker binary required"),
+    )
+    .canonicalize()
+    .unwrap();
+    let srt = PathBuf::from(std::env::var_os("F2_TEST_SRT_CLI").expect("SRT binary required"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let mut warden = controlled_warden::ControlledWarden::start(&root);
+    let proxy = ControlledLivePolicyProxy::start(warden.port);
+    let sink = ControlledHttpSink::start(&root);
+    let db = root.join("runtime.db");
+    let layer = RuntimeConfigLayer {
+        profile: Some("local".into()),
+        database_path: Some(db.display().to_string()),
+        artifact_root: Some(root.join("artifacts").display().to_string()),
+        oidc_profile: Some("local_owner".into()),
+        warden_sidecar_url: Some(proxy.url.clone()),
+        warden_token_ref: Some(format!(
+            "file://{}",
+            root.join("warden/warden.token").display()
+        )),
+        legal_receipt_root: Some(root.join("legal/receipts").display().to_string()),
+        legal_trusted_keys_path: Some(root.join("legal/trusted-keys.json").display().to_string()),
+        legal_policy_path: Some(root.join("legal/policy.json").display().to_string()),
+        plugin_sandbox_command: Some(srt.display().to_string()),
+        plugin_sandbox_allow_local_egress: Some(true),
+        ..Default::default()
+    };
+    let config_path = root.join("runtime.json");
+    std::fs::write(&config_path, serde_json::to_vec(&layer).unwrap()).unwrap();
+    let config =
+        RuntimeConfig::resolve(Some(layer), Default::default(), Default::default()).unwrap();
+    let owner = LocalOwnerIdentity::for_database(&db).unwrap();
+    let service = TradeAssemblyService::from_config(config)
+        .unwrap()
+        .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+    let _package = controlled_broker_package::install_controlled_package_for_mode_and_sink(
+        &service,
+        &root,
+        &controlled,
+        "live",
+        Some(&sink.url),
+    );
+    let saved = service.handle_http(
+        "POST",
+        "/product/strategy-execution-configs/save",
+        json!({"strategyId":"strat_local_btc_demo","orchestrator":"external_agent",
+            "mode":"live","allowedSymbols":["BTC/USD"],
+            "providerRef":"mandate-live","accountRef":"account://mandate-live/controlled",
+            "dataProviderRef":"mandate-live","dataAccountRef":"account://mandate-live/controlled",
+            "legalReceiptRef":controlled_legal_receipt::RECEIPT_REF,
+            "riskLimits":{"max_notional":10,"max_order_quantity":2}}),
+    );
+    assert_eq!(saved.status, 200, "{saved:#?}");
+    controlled_legal_receipt::write(
+        &root,
+        &saved.body["body"]["item"],
+        &owner,
+        service.runtime().clock.trusted_now_ms().unwrap(),
+    );
+    let configured = &saved.body["body"]["item"];
+    let verifier = tradeassembly_runtime::adapters::legal_receipts::FileLegalReceiptVerifier::new(
+        root.join("legal/receipts"),
+        root.join("legal/trusted-keys.json"),
+        root.join("legal/policy.json"),
+    );
+    let expectation = tradeassembly_runtime::ports::LegalReceiptExpectation {
+        receipt_ref: controlled_legal_receipt::RECEIPT_REF.into(),
+        identity_issuer: owner.issuer.clone(),
+        identity_subject: owner.subject.clone(),
+        resource_ref: format!(
+            "tradeassembly://strategies/{}",
+            configured["strategyId"].as_str().unwrap()
+        ),
+        resource_version_refs: vec![
+            format!(
+                "tradeassembly://strategy-versions/{}",
+                configured["strategyVersionId"].as_str().unwrap()
+            ),
+            configured["strategySpecHash"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase(),
+        ],
+        environment: configured["legalEnvironment"].as_str().unwrap().into(),
+    };
+    let verified = tradeassembly_runtime::ports::LegalReceiptPort::verify(
+        &verifier,
+        &expectation,
+        service.runtime().clock.trusted_now_ms().unwrap(),
+    );
+    assert!(
+        verified.is_ok(),
+        "controlled legal fixture verification: {verified:?}"
+    );
+    let config_id = saved.body["body"]["configId"].as_str().unwrap();
+    let deployment = AgentDeployment {
+        executor: AgentExecutor::ExternalClient,
+        deployment_id: "stdio-controlled-live".into(),
+        system_project_id: "system-1".into(),
+        agent_definition_version_id: "agent-v1".into(),
+        execution_config_version_id: config_id.into(),
+        studio_tool_allowlist: vec![
+            "tradeassembly.order.submit".into(),
+            "tradeassembly.order.reconcile".into(),
+        ],
+        desired_state: "active".into(),
+        interval_seconds: 60,
+        cron_utc: None,
+        mode: "live".into(),
+        prompt: String::new(),
+        workspace: String::new(),
+        runtime_profile: "local-read-only".into(),
+    };
+    agent_runner::put_deployment(&service.runtime(), &deployment).unwrap();
+    let without_mandate = service.handle_http(
+        "POST",
+        "/product/strategy-execution-activations/activate",
+        json!({"configId":config_id,"idempotencyKey":"stdio-live-no-mandate",
+            "acknowledgementIds":["user_logic","user_risk","no_advice"]}),
+    );
+    assert_ne!(
+        without_mandate.status, 200,
+        "live activation requires a mandate"
+    );
+    assert!(
+        !sink.db.exists(),
+        "unmandated activation cannot reach the sink"
+    );
+    let issued = service.handle_http(
+        "POST",
+        "/product/live-mandates/issue",
+        json!({"configId":config_id,
+            "expiresAtMs":service.runtime().clock.trusted_now_ms().unwrap()+600_000,
+            "delegateDeploymentId":deployment.deployment_id,
+            "idempotencyKey":"stdio-live-mandate"}),
+    );
+    assert_eq!(issued.status, 201, "{issued:#?}");
+    let mandate_id = issued.body["mandate"]["mandateId"].as_str().unwrap();
+    let activated = service.handle_http(
+        "POST",
+        "/product/strategy-execution-activations/activate",
+        json!({"configId":config_id,"idempotencyKey":"stdio-live-activation",
+            "localLiveMandateId":mandate_id,
+            "acknowledgementIds":["user_logic","user_risk","no_advice"]}),
+    );
+    assert_eq!(
+        activated.status, 200,
+        "code={} blockers={:?}",
+        activated.body["error"]["code"], activated.body["error"]["details"]["blockedReasons"]
+    );
+    let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
+    let mut client = McpClient::start(&candidate, &config_path, &root);
+    assert!(client.call("initialize", json!({}))["result"].is_object());
+    let attached = client.tool(
+        "tradeassembly.agent.session.attach",
+        json!({"deployment_id":deployment.deployment_id,"activation_id":activation_id,
+            "idempotency_key":"stdio-live-attach"}),
+    );
+    assert_eq!(attached["isError"], false, "{attached:#?}");
+    let order = json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-live",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-live-order","quantity":"1"},
+        "idempotency_key":"stdio-live-order"});
+    let mut other_client = McpClient::start(&candidate, &config_path, &root);
+    assert!(other_client.call("initialize", json!({}))["result"].is_object());
+    let competing_attach = other_client.tool(
+        "tradeassembly.agent.session.attach",
+        json!({"deployment_id":deployment.deployment_id,"activation_id":activation_id,
+            "idempotency_key":"stdio-live-competing-attach"}),
+    );
+    assert_eq!(
+        competing_attach["structuredContent"]["error"]["code"],
+        "agent_run_pending_reconcile"
+    );
+    let unattached_order = other_client.tool("tradeassembly.order.submit", order.clone());
+    assert_eq!(
+        unattached_order["structuredContent"]["error"]["code"],
+        "agent_order_attachment_required"
+    );
+    other_client.close();
+    assert!(
+        !sink.db.exists(),
+        "competing client cannot reach the broker sink"
+    );
+    let mut over_limit = order.clone();
+    over_limit["order"]["clientOrderId"] = json!("stdio-live-over-limit");
+    over_limit["order"]["quantity"] = json!("3");
+    over_limit["idempotency_key"] = json!("stdio-live-over-limit");
+    let denied = client.tool("tradeassembly.order.submit", over_limit);
+    assert_eq!(
+        denied["structuredContent"]["error"]["code"],
+        "agent_order_submission_denied"
+    );
+    assert!(
+        !sink.db.exists(),
+        "risk-denied order cannot reach the broker sink"
+    );
+    let first = client.tool("tradeassembly.order.submit", order.clone());
+    assert_eq!(
+        first["structuredContent"]["status"], "submitted",
+        "{first:#?}"
+    );
+    assert_eq!(client.tool("tradeassembly.order.submit", order), first);
+    let evidence =
+        Connection::open_with_flags(&sink.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let counts: (i64, i64) = evidence
+        .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+    let decisions = service
+        .runtime()
+        .storage
+        .list_json("warden_decisions")
+        .unwrap();
+    let live = decisions
+        .iter()
+        .find(|(_, record)| record["request"]["action"] == "order.submit.live")
+        .unwrap();
+    assert_eq!(live.1["decision"]["decision"], "allow");
+    assert_eq!(live.1["request"]["pep_coverage"], "c5");
+    let signed = service
+        .runtime()
+        .storage
+        .get_json("finance_receipts", &live.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(signed["schema_version"], "warden.signed_receipt.v2");
+    assert_eq!(signed["signature"]["algorithm"], "ed25519");
+    proxy.assert_used();
+    warden.assert_healthy();
+    for namespace in ["scheduler_state", "execution_ticks"] {
+        assert!(service
+            .runtime()
+            .storage
+            .list_json(namespace)
+            .unwrap()
+            .is_empty());
+    }
     client.close();
     warden.stop();
 }

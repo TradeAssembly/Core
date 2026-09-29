@@ -900,6 +900,30 @@ a private Warden policy-rewriting proxy with real Warden-signed decisions),
 not a shipping runtime flag or relaxation of the packaged policy. This design
 is not yet implemented or accepted as Live proof.
 
+R2 isolated Live continuation: the candidate binary stays unchanged and keeps
+its embedded deny rules. An opt-in test-only loopback adapter substitutes
+`allow` only for `execution.activate.live` and `order.submit.live` while
+installing the policy into a disposable real Warden. All authorization and
+receipt calls still go to that Warden; the test asserts a signed Ed25519
+receipt and C5 decision for the Live order. A separate synthetic signed legal
+receipt is bound to the disposable local owner, exact saved strategy version,
+spec hash and local-live environment, and is verified by the ordinary
+file-backed verifier before activation. No Hub key, real user acknowledgement,
+broker credential, production account, or real broker endpoint is used. The
+new source-free stdio Live test passed 1/1 in 29.04 seconds: attached MCP
+submit and sequential duplicate returned the same result, the sink recorded
+one row/one submission, and no scheduler tick existed. This is candidate
+binary evidence, not final packaged-artifact or five-target qualification.
+The Live test now also proves that activation without a mandate, a competing
+unattached client, and an over-limit order cannot reach the sink. Targeted
+strict Clippy and the expanded Live test passed. The combined opt-in stdio
+suite then passed 3/3 in 129.91 seconds with distinct disposable state for
+Paper crash/absence recovery, Paper unknown lookup, and Live C5 submit. The
+remaining R2 concurrent duplicate and full stale/replaced-session matrix
+still need proof; shipping-policy denial must remain part of the final
+negative matrix. This run does not close R1, qualify a packaged artifact, or
+complete R3–R6.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

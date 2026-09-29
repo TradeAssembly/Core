@@ -82,6 +82,11 @@ impl ControlledWarden {
 
     /// The allow policy exists only inside this fixture's private database.
     pub fn allow_controlled_submission(&mut self) {
+        self.allow_controlled_submission_for_mode("live");
+    }
+
+    pub fn allow_controlled_submission_for_mode(&mut self, mode: &str) {
+        assert!(matches!(mode, "paper" | "live"));
         let mut policy: serde_json::Value =
             serde_json::from_str(TRADEASSEMBLY_POLICY_BUNDLE).unwrap();
         policy["version"] = serde_json::json!("2099-01-01.fixture");
@@ -89,9 +94,12 @@ impl ControlledWarden {
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .find(|rule| rule["action"] == "order.submit.live")
+            .find(|rule| rule["action"] == format!("order.submit.{mode}"))
             .unwrap();
-        assert_eq!(rule["min_pep_coverage"], "c5");
+        assert_eq!(
+            rule["min_pep_coverage"],
+            if mode == "live" { "c5" } else { "c3" }
+        );
         rule["required_decision"] = serde_json::json!("allow");
         self.authority = self.authority.clone().with_policy_bundle(policy).unwrap();
     }

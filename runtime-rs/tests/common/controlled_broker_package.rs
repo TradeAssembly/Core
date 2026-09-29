@@ -10,6 +10,18 @@ pub fn install_controlled_package(
     root: &Path,
     binary: &Path,
 ) -> tradeassembly_runtime::ports::InstalledPluginPackage {
+    install_controlled_package_for_mode(service, root, binary, "live")
+}
+
+pub fn install_controlled_package_for_mode(
+    service: &TradeAssemblyService,
+    root: &Path,
+    binary: &Path,
+    mode: &str,
+) -> tradeassembly_runtime::ports::InstalledPluginPackage {
+    assert!(matches!(mode, "paper" | "live"));
+    let instance_ref = format!("mandate-{mode}");
+    let account_ref = format!("account://{instance_ref}/controlled");
     fn live(value: &mut Value) {
         match value {
             Value::String(s) => {
@@ -67,9 +79,12 @@ pub fn install_controlled_package(
     for operation in manifest["operations"].as_array_mut().unwrap() {
         operation["protocol"] = json!("stdio");
         match operation["id"].as_str() {
-            Some("marketdata.quote.read") => {
-                operation["traits"]["outputSchemaRefs"] =
-                    json!(["schema://tradeassembly.f2-controlled-broker/quote@1"])
+            Some("marketdata.quote.read" | "marketdata.bars.read" | "marketdata.bars.read_v1") => {
+                operation["traits"]["modes"] = json!(["paper", "live"]);
+                if operation["id"] == "marketdata.quote.read" {
+                    operation["traits"]["outputSchemaRefs"] =
+                        json!(["schema://tradeassembly.f2-controlled-broker/quote@1"]);
+                }
             }
             Some("broker.live_order_submit") => {
                 operation["traits"]["outputSchemaRefs"] =
@@ -169,12 +184,12 @@ pub fn install_controlled_package(
     std::fs::write(&path, &package).unwrap();
     let installed = service.handle_http("POST", "/plugins/packages", json!({"source":{"type":"package","locator":path,"package":{"type":"file","locator":path}},"integrity":{"packageSha256":sha(&package),"manifestSha256":canonical},"trust":{"level":"local-test"},"idempotencyKey":"install-controlled-broker"}));
     assert!(installed.status < 300, "{installed:#?}");
-    let created = service.handle_http("POST", "/plugins/instances", json!({"instanceRef":"mandate-live","pluginRef":"example.mandate-live","enabled":true,"configuration":{},"accountMode":"live","accountRef":"account://mandate-live/controlled"}));
+    let created = service.handle_http("POST", "/plugins/instances", json!({"instanceRef":instance_ref,"pluginRef":"example.mandate-live","enabled":true,"configuration":{},"accountMode":mode,"accountRef":account_ref}));
     assert!(created.status < 300, "{created:#?}");
     let runtime = service.runtime();
     let mut instance = runtime
         .plugins
-        .get_instance("mandate-live")
+        .get_instance(&instance_ref)
         .unwrap()
         .unwrap();
     runtime
@@ -184,19 +199,19 @@ pub fn install_controlled_package(
             &std::collections::BTreeMap::from([("fixture".into(), "controlled-test-value".into())]),
         )
         .unwrap();
-    instance["accountMode"] = json!("live");
-    instance["accountRef"] = json!("account://mandate-live/controlled");
+    instance["accountMode"] = json!(mode);
+    instance["accountRef"] = json!(account_ref);
     instance["credentialRevision"] = json!(1);
     let configuration_digest =
         tradeassembly_runtime::spec::canonical_hash(&instance["configuration"]).unwrap();
-    instance["health"] = json!({"state":"ready","connectivityChecked":true,"checkedAtMs":runtime.clock.now_ms(),"account":{"id":"controlled","mode":"live","status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false},"binding":{"instanceRef":instance["instanceRef"],"pluginRef":instance["pluginRef"],"packageSha256":instance["activePackageSha256"],"configurationDigest":configuration_digest,"credentialRevision":1,"accountRef":instance["accountRef"],"accountMode":"live"}});
+    instance["health"] = json!({"state":"ready","connectivityChecked":true,"checkedAtMs":runtime.clock.now_ms(),"account":{"id":"controlled","mode":mode,"status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false},"binding":{"instanceRef":instance["instanceRef"],"pluginRef":instance["pluginRef"],"packageSha256":instance["activePackageSha256"],"configurationDigest":configuration_digest,"credentialRevision":1,"accountRef":instance["accountRef"],"accountMode":mode}});
     let context = SideEffectContext::new(
         AuthorityContext::local_cli(),
         IdempotencyKey::new("controlled-health").unwrap(),
     );
     runtime
         .plugins
-        .put_instance("mandate-live", instance, &context)
+        .put_instance(&instance_ref, instance, &context)
         .unwrap();
     let package_sha = sha(&package);
     runtime

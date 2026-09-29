@@ -1827,7 +1827,10 @@ mod tests {
         let peps: Vec<PepPackEntry> =
             serde_json::from_str(TRADEASSEMBLY_PEP_MANIFEST).expect("peps");
         assert_eq!(peps.len(), 2);
-        assert_eq!(peps[1].actions, vec!["order.submit.live"]);
+        assert_eq!(
+            peps[1].actions,
+            vec!["order.submit.paper", "order.submit.live"]
+        );
         assert_eq!(peps[1].resources, vec!["brokerage_account"]);
         let registrations: Value = serde_json::from_str(TRADEASSEMBLY_PEP_MANIFEST).unwrap();
         assert_eq!(registrations[0]["coverage_class"], "c3");

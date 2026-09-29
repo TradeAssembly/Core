@@ -108,7 +108,7 @@
     "owner": {"kind": "application", "id": "tradeassembly-studio-core"},
     "coverage_class": "c5",
     "can_block": true,
-    "actions": ["order.submit.live"],
+    "actions": ["order.submit.paper", "order.submit.live"],
     "resources": ["brokerage_account"],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000

@@ -742,6 +742,24 @@ unknown observation must not authorize resubmission.
 Until those pass, R1 and the overall release gate remain open. No R2–R6
 acceptance is claimed.
 
+2026-09-29 real-process boundary checkpoint: four ignored Core library tests
+were explicitly executed (not merely compiled) with real Warden, SRT, Node,
+and an isolated controlled broker: Paper submit, Paper lost-response recovery,
+Live submit, and Live lost-response recovery all passed (`cargo test --offline
+--lib attached_agent_mcp_ -- --ignored --nocapture`: 4 passed). Each accepted
+case asserted exactly one durable broker sink row/submission, duplicate-safe
+replay, and no scheduler ticks. The service-level test uses a verified attached
+agent context, not the packaged stdio interface, so this is **not R2 proof**.
+The Paper path exposed and fixed a missing quote requirement for external-agent
+Paper activations and missing Paper action registration on the C5 broker PEP;
+the fixture-only Warden policy continues to isolate its allow decision. The
+shipping Warden Paper rule remains unchanged. `cargo test --offline --lib
+agent_order` passed 2/2 after the change. R1 remains open for its denial
+matrix, deterministic parity, and release-boundary gates; R2–R6 remain open.
+Exact next action: run policy/admission regressions, add the R1 zero-sink
+negative matrix, then build the source-free stdio driver without treating these
+service tests as a substitute.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

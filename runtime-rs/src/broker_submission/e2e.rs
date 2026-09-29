@@ -33,22 +33,47 @@ static SANDBOX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn external_agent_real_activation_dispatches_once_without_scheduler() {
-    run_external_activation(false);
+    run_external_activation(false, false, "live");
 }
 
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn external_agent_real_activation_recovers_lost_response_without_resubmit() {
-    run_external_activation(true);
+    run_external_activation(true, false, "live");
 }
 
-fn run_external_activation(lose_response: bool) {
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_submits_once_through_real_warden() {
+    run_external_activation(false, true, "live");
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_recovers_lost_response_without_resubmit() {
+    run_external_activation(true, true, "live");
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_paper_submits_once_through_real_warden() {
+    run_external_activation(false, true, "paper");
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_paper_recovers_lost_response_without_resubmit() {
+    run_external_activation(true, true, "paper");
+}
+
+fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
+    assert!(mode == "live" || via_mcp);
     use crate::runtime_config::{RuntimeConfig, RuntimeConfigLayer};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let db = root.join("runtime.db");
     let mut warden = controlled_warden::ControlledWarden::start(&root);
-    warden.allow_controlled_submission();
+    warden.allow_controlled_submission_for_mode(mode);
     let owner = LocalOwnerIdentity::for_database(&db).unwrap();
     let config = RuntimeConfig::resolve(
         Some(RuntimeConfigLayer {
@@ -69,21 +94,24 @@ fn run_external_activation(lose_response: bool) {
     let service = TradeAssemblyService::from_config(config)
         .unwrap()
         .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
-    let package = controlled_broker_package::install_controlled_package(
+    let package = controlled_broker_package::install_controlled_package_for_mode(
         &service,
         &root,
         &PathBuf::from(
             std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY").expect("controlled broker"),
         ),
+        mode,
     );
+    let instance_ref = format!("mandate-{mode}");
+    let account_ref = format!("account://{instance_ref}/controlled");
     let saved = service.handle_http(
         "POST",
         "/product/strategy-execution-configs/save",
         json!({
-            "strategyId":"strat_local_btc_demo","orchestrator":"external_agent","mode":"live",
+            "strategyId":"strat_local_btc_demo","orchestrator":"external_agent","mode":mode,
             "allowedSymbols":["BTC/USD","ETH/USD"],
-            "providerRef":"mandate-live","accountRef":"account://mandate-live/controlled",
-            "dataProviderRef":"mandate-live","dataAccountRef":"account://mandate-live/controlled",
+            "providerRef":instance_ref,"accountRef":account_ref,
+            "dataProviderRef":instance_ref,"dataAccountRef":account_ref,
             "legalReceiptRef":"receipt_external_test",
             "riskLimits":{"max_notional":10,"max_order_quantity":2}
         }),
@@ -154,22 +182,43 @@ fn run_external_activation(lose_response: bool) {
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),
         execution_config_version_id: config_id.into(),
-        studio_tool_allowlist: vec!["tradeassembly.health".into()],
+        studio_tool_allowlist: if via_mcp {
+            vec![
+                "tradeassembly.order.submit".into(),
+                "tradeassembly.order.reconcile".into(),
+            ]
+        } else {
+            vec!["tradeassembly.health".into()]
+        },
         desired_state: "active".into(),
         interval_seconds: 60,
         cron_utc: None,
-        mode: "live".into(),
+        mode: mode.into(),
         prompt: String::new(),
         workspace: String::new(),
         runtime_profile: "local-read-only".into(),
     };
     agent_runner::put_deployment(&service.runtime(), &deployment).unwrap();
-    let issued=service.handle_http("POST","/product/live-mandates/issue",json!({"configId":config_id,"expiresAtMs":service.runtime().clock.now_ms()+600_000,"delegateDeploymentId":deployment.deployment_id,"idempotencyKey":"external-mandate"}));
-    assert_eq!(issued.status, 201, "{issued:#?}");
-    let activated=service.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":config_id,"localLiveMandateId":issued.body["mandate"]["mandateId"],"idempotencyKey":"external-activation"}));
+    let issued = if mode == "live" {
+        let issued=service.handle_http("POST","/product/live-mandates/issue",json!({"configId":config_id,"expiresAtMs":service.runtime().clock.now_ms()+600_000,"delegateDeploymentId":deployment.deployment_id,"idempotencyKey":"external-mandate"}));
+        assert_eq!(issued.status, 201, "{issued:#?}");
+        issued
+    } else {
+        crate::service::ServiceResponse::ok(json!({}))
+    };
+    let mut activation_request =
+        json!({"configId":config_id,"idempotencyKey":"external-activation"});
+    if mode == "live" {
+        activation_request["localLiveMandateId"] = issued.body["mandate"]["mandateId"].clone();
+    }
+    let activated = service.handle_http(
+        "POST",
+        "/product/strategy-execution-activations/activate",
+        activation_request,
+    );
     assert_eq!(
         activated.status, 200,
-        "code={} blockers={}",
+        "code={} blockers={:?}",
         activated.body["error"]["code"], activated.body["error"]["details"]["blockedReasons"]
     );
     let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
@@ -192,6 +241,77 @@ fn run_external_activation(lose_response: bool) {
         )
         .unwrap()
         .unwrap();
+    if via_mcp {
+        let selected = revision["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["requirement"]["capability"] == format!("broker.order_submit.{mode}"))
+            .expect("bound broker submit node");
+        let agent_service = service.with_verified_agent_mcp_execution_context(verified);
+        let args = json!({
+            "activation_id": activation_id,
+            "plugin_instance_ref": selected["selected"]["pluginInstanceRef"],
+            "order": {"symbol":"BTC/USD","side":"buy","orderType":"market",
+                "timeInForce":"gtc","clientOrderId":"external-mcp-order","quantity":"1"},
+            "idempotency_key": "external-mcp-order"
+        });
+        if lose_response {
+            std::fs::write(
+                package
+                    .install_root
+                    .join(".f2-controlled-broker-lose-response"),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let first = agent_service.call_mcp_tool("tradeassembly.order.submit", args.clone());
+        let duplicate = agent_service.call_mcp_tool("tradeassembly.order.submit", args);
+        if lose_response {
+            assert_eq!(first["isError"], true, "{first:#?}");
+            assert_eq!(duplicate["isError"], true, "{duplicate:#?}");
+            let recovered = agent_service.call_mcp_tool(
+                "tradeassembly.order.reconcile",
+                json!({"original_idempotency_key":"external-mcp-order",
+                    "idempotency_key":"external-mcp-recovery"}),
+            );
+            assert_eq!(
+                recovered["structuredContent"]["state"], "observed",
+                "{recovered:#?}"
+            );
+            assert_eq!(
+                recovered["structuredContent"]["receipt"]["payload"]["submissionCount"],
+                1
+            );
+        } else {
+            assert_eq!(
+                first["structuredContent"]["status"], "submitted",
+                "{first:#?}"
+            );
+            assert_eq!(first, duplicate);
+        }
+        let sink = rusqlite::Connection::open_with_flags(
+            package.install_root.join(".f2-controlled-broker.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let counts: (i64, i64) = sink
+            .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(counts, (1, 1));
+        for namespace in ["scheduler_state", "execution_ticks"] {
+            assert!(service
+                .runtime()
+                .storage
+                .list_json(namespace)
+                .unwrap()
+                .is_empty());
+        }
+        session.close().unwrap();
+        return;
+    }
     let request = |requirement: &str, operation: &str, purpose: &str, input: Value| {
         let node = revision["graph"]["nodes"]
             .as_array()

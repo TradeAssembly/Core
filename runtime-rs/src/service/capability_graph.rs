@@ -408,8 +408,10 @@ fn execution_revision(
         requirement.capability == "market_data.bars.read@1"
             && !bindings.contains_key(&requirement.requirement_id)
     });
+    let needs_quote =
+        mode.eq_ignore_ascii_case("live") || config["orchestrator"] == "external_agent";
     let mut additional_requirements = vec![execution_broker_requirement(config)];
-    if mode.eq_ignore_ascii_case("live") {
+    if needs_quote {
         additional_requirements.push(execution_quote_requirement(config));
     }
     expected_requirements.extend(parse_requirements(
@@ -441,7 +443,7 @@ fn execution_revision(
         "execution.broker.submit".to_string(),
         broker_binding.clone(),
     );
-    let quote_binding = if mode.eq_ignore_ascii_case("live") {
+    let quote_binding = if needs_quote {
         let binding = exact_plugin_binding(
             service,
             data_provider_ref,
@@ -639,11 +641,12 @@ fn execution_broker_requirement(config: &Value) -> Value {
 }
 
 fn execution_quote_requirement(config: &Value) -> Value {
+    let mode = config["mode"].as_str().unwrap_or("paper");
     json!({
         "requirementId": "execution.risk.quote",
         "capability": "marketdata.quote",
-        "purpose": "live_order_submission",
-        "requiredFor": ["live"],
+        "purpose": if mode.eq_ignore_ascii_case("live") { "live_order_submission" } else { "paper_trading" },
+        "requiredFor": [mode],
         "constraints": {
             "instrumentFamilies": [instrument_family(config["symbol"].as_str().unwrap_or_default())]
         },

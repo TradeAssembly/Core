@@ -9,7 +9,6 @@ use tradeassembly_plugin_sdk::{
 };
 
 fn run() -> Result<(), &'static str> {
-    const ACCOUNT_REF: &str = "account://mandate-live/controlled";
     if !std::fs::symlink_metadata(".f2-controlled-broker-fixture")
         .map(|m| m.file_type().is_file())
         .unwrap_or(false)
@@ -21,6 +20,11 @@ fn run() -> Result<(), &'static str> {
         DEFAULT_MAX_ENVELOPE_BYTES,
     )
     .map_err(|_| "controlled_request_invalid")?;
+    let account_ref = match request.context.mode.as_str() {
+        "paper" => "account://mandate-paper/controlled",
+        "live" => "account://mandate-live/controlled",
+        _ => return Err("controlled_mode_invalid"),
+    };
     let body = match &request.payload {
         RequestPayload::Operation(body) | RequestPayload::BrokerOrder(body) => body,
         _ => return Err("controlled_operation_required"),
@@ -93,7 +97,7 @@ fn run() -> Result<(), &'static str> {
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "controlled_storage_failed")?;
-        tx.execute("INSERT INTO orders(client_id,account_ref,provider_order_id,symbol,side,quantity,order_type,time_in_force,digest,submissions) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(client_id) DO UPDATE SET submissions=submissions+1", params![client_id, ACCOUNT_REF, client_id, body["symbol"].as_str().ok_or("controlled_request_invalid")?, body["side"].as_str().ok_or("controlled_request_invalid")?, body["quantity"].as_str().ok_or("controlled_request_invalid")?, body["orderType"].as_str().ok_or("controlled_request_invalid")?, body["timeInForce"].as_str().ok_or("controlled_request_invalid")?, digest]).map_err(|_| "controlled_storage_failed")?;
+        tx.execute("INSERT INTO orders(client_id,account_ref,provider_order_id,symbol,side,quantity,order_type,time_in_force,digest,submissions) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(client_id) DO UPDATE SET submissions=submissions+1", params![client_id, account_ref, client_id, body["symbol"].as_str().ok_or("controlled_request_invalid")?, body["side"].as_str().ok_or("controlled_request_invalid")?, body["quantity"].as_str().ok_or("controlled_request_invalid")?, body["orderType"].as_str().ok_or("controlled_request_invalid")?, body["timeInForce"].as_str().ok_or("controlled_request_invalid")?, digest]).map_err(|_| "controlled_storage_failed")?;
         let stored: String = tx
             .query_row(
                 "SELECT digest FROM orders WHERE client_id=?1",

@@ -419,7 +419,7 @@ impl PluginOperationPort for LocalPluginOperations {
         let mut response = match response {
             Ok(response) => response,
             Err(_) if broker_submission => {
-                return Err("plugin_order_reconciliation_required".into())
+                return Err("plugin_order_reconciliation_required".into());
             }
             Err(error) => return Err(error),
         };

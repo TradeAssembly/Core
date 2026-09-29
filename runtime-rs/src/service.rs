@@ -3208,60 +3208,72 @@ impl TradeAssemblyService {
                 }
             }
         }
-        let command_envelope = match control_plane::mcp_envelope(name, &arguments)
-            .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
-        {
-            Ok(envelope) => match control_plane::prepare_command(
-                self.runtime.storage.as_ref(),
-                self.runtime.finance_authority.as_ref(),
-                envelope.clone(),
-            ) {
-                Ok(record) if record.duplicate => {
-                    return record
-                        .response_status
-                        .map(|status| {
-                            record.response_body.clone().map_or_else(
-                                || mcp_duplicate_response(name, status),
-                                |body| mcp_duplicate_response_with_body(name, status, body),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            mcp::tool_error(
-                                name,
-                                "idempotency_in_progress",
-                                "MCP command is already in progress for this idempotency key.",
-                                None,
-                            )
-                        });
-                }
-                Ok(_) => Some(envelope),
-                Err(error) if error == "idempotency_conflict" => {
-                    return mcp::tool_error(
-                        name,
-                        "idempotency_conflict",
-                        "MCP command idempotency key was reused with a different payload.",
-                        None,
-                    );
-                }
-                Err(error) if error.starts_with("finance_authority:") => {
-                    let details = if name == "tradeassembly.execution.activate" {
-                        Some(execution::activation_blocked_preflight(
-                            self,
-                            arguments.clone(),
-                        ))
-                    } else {
-                        None
-                    };
-                    return mcp::tool_error(
-                        name,
-                        "finance_authority_denied",
-                        "MCP command failed TradeAssembly finance authority checks.",
-                        details,
-                    );
-                }
+        // Broker order tools have their own durable request/dispatch claims and
+        // mandatory C5 Warden admission. A second generic MCP command would
+        // misclassify the request before those exact authority bindings exist.
+        // Only the explicit bound handlers below may use this path.
+        let broker_order_tool = matches!(
+            name,
+            "tradeassembly.order.submit" | "tradeassembly.order.reconcile"
+        );
+        let command_envelope = if broker_order_tool {
+            None
+        } else {
+            match control_plane::mcp_envelope(name, &arguments)
+                .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
+            {
+                Ok(envelope) => match control_plane::prepare_command(
+                    self.runtime.storage.as_ref(),
+                    self.runtime.finance_authority.as_ref(),
+                    envelope.clone(),
+                ) {
+                    Ok(record) if record.duplicate => {
+                        return record
+                            .response_status
+                            .map(|status| {
+                                record.response_body.clone().map_or_else(
+                                    || mcp_duplicate_response(name, status),
+                                    |body| mcp_duplicate_response_with_body(name, status, body),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                mcp::tool_error(
+                                    name,
+                                    "idempotency_in_progress",
+                                    "MCP command is already in progress for this idempotency key.",
+                                    None,
+                                )
+                            });
+                    }
+                    Ok(_) => Some(envelope),
+                    Err(error) if error == "idempotency_conflict" => {
+                        return mcp::tool_error(
+                            name,
+                            "idempotency_conflict",
+                            "MCP command idempotency key was reused with a different payload.",
+                            None,
+                        );
+                    }
+                    Err(error) if error.starts_with("finance_authority:") => {
+                        let details = if name == "tradeassembly.execution.activate" {
+                            Some(execution::activation_blocked_preflight(
+                                self,
+                                arguments.clone(),
+                            ))
+                        } else {
+                            None
+                        };
+                        return mcp::tool_error(
+                            name,
+                            "finance_authority_denied",
+                            "MCP command failed TradeAssembly finance authority checks.",
+                            details,
+                        );
+                    }
+                    Err(_) => None,
+                },
                 Err(_) => None,
-            },
-            Err(_) => None,
+            }
         };
         let arguments = command_envelope
             .as_ref()

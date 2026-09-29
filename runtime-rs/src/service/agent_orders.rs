@@ -84,7 +84,14 @@ fn submit_bound(service: &TradeAssemblyService, arguments: &Value) -> Result<Val
                 .then(|| &node["selected"])
         })
         .ok_or("agent_order_binding_missing")?;
-    let input = serde_json::to_value(&order).map_err(|_| "agent_order_invalid")?;
+    let input = json!({
+        "symbol": &order.symbol,
+        "side": &order.side,
+        "orderType": &order.order_type,
+        "timeInForce": &order.time_in_force,
+        "clientOrderId": &order.client_order_id,
+        "quantity": order.canonical_quantity(),
+    });
     let mut request = PluginOperationRequest {
         correlation_id: run["correlationId"]
             .as_str()

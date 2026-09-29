@@ -36,6 +36,7 @@ fn binary_target(path: &Path, target: &str) -> Result<()> {
     file.read_exact(&mut header)
         .map_err(|_| "native_binary_invalid")?;
     let valid = match target {
+        "aarch64-apple-darwin" => header[..8] == [0xcf, 0xfa, 0xed, 0xfe, 12, 0, 0, 1],
         "x86_64-apple-darwin" => header[..8] == [0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1],
         "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu" => {
             let machine = if target.starts_with("x86_64") {
@@ -148,9 +149,6 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
     let spec: NativeInputs = read_json(metadata)?;
     if digest(parent)? != PARENT_SHA || spec.schema_version != 1 {
         return Err("native_input_contract_invalid".into());
-    }
-    if spec.target == TARGETS[0] {
-        return Err("use_existing_frozen_mac_bundle".into());
     }
     if spec.target != crate::install::host_target()? {
         return Err("native_host_required".into());
@@ -374,6 +372,14 @@ mod tests {
             "native_binary_target_mismatch"
         );
         assert!(binary_target(&file, TARGETS[1]).is_err());
+        let mut arm_mach_o = [0_u8; 64];
+        arm_mach_o[..8].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe, 12, 0, 0, 1]);
+        fs::write(&file, arm_mach_o).unwrap();
+        assert!(binary_target(&file, TARGETS[0]).is_ok());
+        assert_eq!(
+            binary_target(&file, TARGETS[1]).unwrap_err(),
+            "native_binary_target_mismatch"
+        );
         fs::write(&file, b"MZ").unwrap();
         assert_eq!(
             binary_target(&file, TARGETS[4]).unwrap_err(),

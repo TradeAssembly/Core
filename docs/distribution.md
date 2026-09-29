@@ -993,6 +993,15 @@ substantially evidenced, but no packaged candidate or five-target result is
 inferred from this matrix. R2's final installed-artifact rerun and R3–R6
 remain open.
 
+R3 prerequisite: native freezing now accepts a separately staged Mac arm64
+input with an arm64 Mach-O header, while retaining the host-target and
+explicit input-hash checks. The targeted binary-header test passed 1/1. The
+baseline Mac manifest hash is still enforced at packaging/installation, so
+this change does **not** authorize or qualify a replacement candidate yet.
+The next R3 change must introduce the versioned candidate descriptor and
+verify its parent, source revisions, artifact digests and new Mac manifest
+before relaxing that packaging check.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

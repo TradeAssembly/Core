@@ -8,7 +8,14 @@ mod controlled_broker_package;
 #[allow(dead_code)]
 mod controlled_warden;
 
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{
+    body::{Body, Bytes},
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+    Json, Router,
+};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -16,7 +23,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tradeassembly_runtime::agent_runner::{self, AgentDeployment, AgentExecutor};
 use tradeassembly_runtime::local_owner_identity::LocalOwnerIdentity;
@@ -26,8 +36,14 @@ use tradeassembly_runtime::service::TradeAssemblyService;
 struct ControlledHttpSink {
     url: String,
     db: PathBuf,
+    state: Arc<ControlledSinkState>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct ControlledSinkState {
+    db: PathBuf,
+    drop_next_response: AtomicBool,
 }
 
 impl ControlledHttpSink {
@@ -40,7 +56,11 @@ impl ControlledHttpSink {
             listener.local_addr().unwrap().port()
         );
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let state = Arc::new(db.clone());
+        let state = Arc::new(ControlledSinkState {
+            db: db.clone(),
+            drop_next_response: AtomicBool::new(false),
+        });
+        let server_state = Arc::clone(&state);
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -50,7 +70,7 @@ impl ControlledHttpSink {
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 let app = Router::new()
                     .route("/orders", post(controlled_http_order))
-                    .with_state(state);
+                    .with_state(server_state);
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async {
                         let _ = stopped.await;
@@ -62,9 +82,14 @@ impl ControlledHttpSink {
         Self {
             url,
             db,
+            state,
             stop: Some(stop),
             thread: Some(thread),
         }
+    }
+
+    fn drop_next_response(&self) {
+        self.state.drop_next_response.store(true, Ordering::SeqCst);
     }
 }
 
@@ -80,9 +105,9 @@ impl Drop for ControlledHttpSink {
 }
 
 async fn controlled_http_order(
-    State(db_path): State<Arc<PathBuf>>,
+    State(state): State<Arc<ControlledSinkState>>,
     Json(request): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Response, StatusCode> {
     let body = &request["body"];
     let client_id = body["clientOrderId"]
         .as_str()
@@ -92,11 +117,10 @@ async fn controlled_http_order(
         .ok_or(StatusCode::BAD_REQUEST)?;
     let is_lookup = request["operation"] == "broker.order_lookup.paper"
         || request["operation"] == "broker.order_lookup";
-    if is_lookup && !db_path.exists() {
+    if is_lookup && !state.db.exists() {
         return Err(StatusCode::NOT_FOUND);
     }
-    let mut db =
-        Connection::open(db_path.as_ref()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut db = Connection::open(&state.db).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     db.busy_timeout(Duration::from_secs(2))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !is_lookup {
@@ -116,12 +140,19 @@ async fn controlled_http_order(
             Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))
         })
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(
-        json!({"accountRef":result.0,"clientOrderId":client_id,
+    if !is_lookup && state.drop_next_response.swap(false, Ordering::SeqCst) {
+        let broken = Body::from_stream(futures_util::stream::once(async {
+            Err::<Bytes, std::io::Error>(std::io::Error::other(
+                "controlled response dropped after sink commit",
+            ))
+        }));
+        return Ok(Response::builder().status(200).body(broken).unwrap());
+    }
+    Ok(Json(json!({"accountRef":result.0,"clientOrderId":client_id,
         "providerOrderId":result.1,"symbol":result.2,"side":result.3,
         "quantity":result.4,"orderType":result.5,"timeInForce":result.6,
-        "status":"accepted","intentDigest":result.7,"submissionCount":result.8}),
-    ))
+        "status":"accepted","intentDigest":result.7,"submissionCount":result.8}))
+    .into_response())
 }
 
 struct McpClient {
@@ -220,7 +251,7 @@ impl Drop for McpClient {
 
 #[test]
 #[ignore = "requires explicit candidate Core, Warden, controlled broker, and SRT binaries"]
-fn installed_stdio_paper_order_reaches_controlled_sink_once() {
+fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
     let candidate = PathBuf::from(
         std::env::var_os("F2_TEST_RUNTIME_BINARY").expect("candidate Core binary required"),
     )
@@ -319,6 +350,19 @@ fn installed_stdio_paper_order_reaches_controlled_sink_once() {
         "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
             "timeInForce":"gtc","clientOrderId":"stdio-paper-order","quantity":"1"},
         "idempotency_key":"stdio-paper-order"});
+    let mut over_limit = order.clone();
+    over_limit["order"]["clientOrderId"] = json!("stdio-over-limit");
+    over_limit["order"]["quantity"] = json!("3");
+    over_limit["idempotency_key"] = json!("stdio-over-limit");
+    let denied = client.tool("tradeassembly.order.submit", over_limit);
+    assert_eq!(
+        denied["structuredContent"]["error"]["code"], "agent_order_submission_denied",
+        "{denied:#?}"
+    );
+    assert!(
+        !sink.db.exists(),
+        "denied order cannot reach the broker sink"
+    );
     let first = client.tool("tradeassembly.order.submit", order.clone());
     assert_eq!(
         first["structuredContent"]["status"], "submitted",
@@ -360,6 +404,34 @@ fn installed_stdio_paper_order_reaches_controlled_sink_once() {
     assert_eq!(reattached["isError"], false, "{reattached:#?}");
     let after_restart = restarted.tool("tradeassembly.order.submit", order);
     assert_eq!(after_restart, first);
+    let ambiguous = json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-paper",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-ambiguous-order","quantity":"1"},
+        "idempotency_key":"stdio-ambiguous-order"});
+    sink.drop_next_response();
+    let lost = restarted.tool("tradeassembly.order.submit", ambiguous.clone());
+    assert_eq!(
+        lost["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{lost:#?}"
+    );
+    let retry = restarted.tool("tradeassembly.order.submit", ambiguous);
+    assert_eq!(
+        retry["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{retry:#?}"
+    );
+    let observed = restarted.tool(
+        "tradeassembly.order.reconcile",
+        json!({"original_idempotency_key":"stdio-ambiguous-order",
+            "idempotency_key":"stdio-ambiguous-observation"}),
+    );
+    assert_eq!(
+        observed["structuredContent"]["state"], "observed",
+        "{observed:#?}"
+    );
+    assert_eq!(
+        observed["structuredContent"]["receipt"]["payload"]["submissionCount"],
+        1
+    );
     let evidence =
         rusqlite::Connection::open_with_flags(&sink.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -368,7 +440,36 @@ fn installed_stdio_paper_order_reaches_controlled_sink_once() {
             Ok((row.get(0)?, row.get(1)?))
         })
         .unwrap();
-    assert_eq!(counts, (1, 1));
+    assert_eq!(counts, (2, 2));
+    let ambiguous_submissions: i64 = evidence
+        .query_row(
+            "SELECT submissions FROM orders WHERE client_id='stdio-ambiguous-order'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ambiguous_submissions, 1);
+    for key in ["stdio-paper-order", "stdio-ambiguous-order"] {
+        let intent_key = format!("intent_{:x}", Sha256::digest(key.as_bytes()));
+        assert!(
+            service
+                .runtime()
+                .storage
+                .get_json("broker_order_intents", &intent_key)
+                .unwrap()
+                .is_some(),
+            "missing durable intent for {key}"
+        );
+        assert!(
+            service
+                .runtime()
+                .storage
+                .get_json("plugin_operation_receipts", key)
+                .unwrap()
+                .is_some(),
+            "missing durable receipt for {key}"
+        );
+    }
     for namespace in ["scheduler_state", "execution_ticks"] {
         assert!(service
             .runtime()
@@ -377,6 +478,24 @@ fn installed_stdio_paper_order_reaches_controlled_sink_once() {
             .unwrap()
             .is_empty());
     }
+    let mut paused = deployment.clone();
+    paused.desired_state = "paused".into();
+    agent_runner::put_deployment(&service.runtime(), &paused).unwrap();
+    let revoked = restarted.tool(
+        "tradeassembly.order.submit",
+        json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-paper",
+            "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+                "timeInForce":"gtc","clientOrderId":"stdio-revoked-order","quantity":"1"},
+            "idempotency_key":"stdio-revoked-order"}),
+    );
+    assert_eq!(revoked["isError"], true, "{revoked:#?}");
+    assert_eq!(
+        evidence
+            .query_row("SELECT COUNT(*) FROM orders", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
     restarted.close();
     warden.stop();
 }

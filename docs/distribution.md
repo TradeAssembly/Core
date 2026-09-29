@@ -804,6 +804,23 @@ revocation/risk denials, and isolated Live stdio proof. R1 and R3–R6 remain
 open. Next: extend the single stdio fixture with the remaining finite matrix;
 do not mark a disconnected run reconciled without order observation.
 
+R2 fault-path continuation: the same real-stdio test now has a controlled
+broker response-body failure *after* the isolated sink commits. The first
+submit and identical retry both report reconciliation required; the public
+`tradeassembly.order.reconcile` tool observes the original order through the
+broker lookup, persists its receipt, and the sink records one submission for
+that order. A quantity above configured risk limits is denied before any sink
+file exists; pausing the deployment revokes further order authority and adds
+no sink row. The test asserts both durable intent keys and operation receipts,
+two accepted orders with exactly two total sink effects, and zero scheduler
+ticks. Explicit `cargo test --offline --test agent_order_mcp -- --ignored
+--nocapture` passed 1/1 after these assertions; targeted strict Clippy passed.
+The test was renamed after the run to describe its broader behavior, with no
+semantic change. R2 still needs separate crash-during-uncertainty,
+found/absent/unknown, concurrent duplicate, stale-session and Live cases;
+the current owner recovery followed a known successful receipt, not an
+unobserved ambiguous outcome.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

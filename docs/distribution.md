@@ -681,6 +681,44 @@ qualification is claimed yet. Next: implement explicit tool definitions and
 service handler with enforced attached-session binding; then extend the shared
 mode-specific admission/recovery path before enabling any broker effect.
 
+2026-09-29 R1 continuation: `bff7cba` committed the status fix. Current
+uncommitted Core edits add `tradeassembly.order.submit` and `.reconcile`
+definitions in `runtime-rs/src/mcp.rs`, dispatch in `service.rs`, and a narrow
+`service/agent_orders.rs`. The submit adapter takes only activation ID,
+selected broker instance, canonical market order and idempotency key. It
+derives strategy/configuration/revision/account and operation bindings from
+durable records, verifies the attached run and lease, acquires a fresh quote
+through the pinned market-data plugin (with its own durable receipt), then
+calls the existing duplicate-safe broker operation and Warden boundary.
+Reconcile calls the existing observation-only recovery boundary.
+Both reject bare MCP connections; Paper explicitly fails closed for now. No
+generic plugin invocation, scheduler tick, caller-authored permit or owner
+identity has been added. The narrow `cargo test --locked -p
+tradeassembly-runtime --lib agent_order` ran two cases successfully, covering
+discovery/standalone-mock denial and bare-connection denial with zero dispatch
+claims. This is not accepted-order or real-Warden proof. Strict Clippy handle
+`36930` exited 0 for the initial narrow route. Subsequent shared-boundary
+edits generalize account observation, mode-specific broker admission and
+stored Warden validation to Paper while preserving the Live mandate branch.
+Recovery now derives its mode and original operation from durable intent, not
+caller parameters. `cargo test --locked -p tradeassembly-runtime --lib
+broker_submission` passed 16 cases (27 real-process cases ignored), and the
+new Paper Warden-envelope unit test passed. The changed code has not yet
+passed real-Warden/controlled-sink proof. Disk free was 3.9 GiB after focused
+builds; do not start broad link-heavy suites blindly.
+
+Next R1 work: wire a mode-specific read-only `broker.order_lookup.paper`
+operation into the controlled broker fixture and Alpaca producer. The Alpaca
+producer at `592bd8f` has Paper and Live submission but **no order lookup**;
+neither mode can claim broker-ambiguity recovery from that producer yet. Do
+not release it as-is. Extend Paper agent submit only after this lookup and the
+shared admission path pass true attached-agent controlled-sink tests for both
+modes, denial/duplicate/ambiguity, and deterministic parity. Resolve the
+pending-reconcile reattachment rule without allowing new orders while an
+uncertain original is unresolved.
+Until those pass, R1 and the overall release gate remain open. No R2–R6
+acceptance is claimed.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

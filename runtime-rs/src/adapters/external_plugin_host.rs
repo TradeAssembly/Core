@@ -163,9 +163,11 @@ impl ExternalPluginHost {
         context: &SideEffectContext,
     ) -> Result<PreparedPluginInvocation, String> {
         if request.operation_id != "broker.order_lookup"
-            || request.capability != "broker.order_lookup.live"
+            || !matches!(
+                (request.capability.as_str(), request.mode.as_str()),
+                ("broker.order_lookup.live", "live") | ("broker.order_lookup.paper", "paper")
+            )
             || request.purpose != "recovery"
-            || request.mode != "live"
         {
             return Err("broker_recovery_operation_invalid".into());
         }

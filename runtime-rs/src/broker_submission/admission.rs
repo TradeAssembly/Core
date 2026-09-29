@@ -1,4 +1,4 @@
-//! Concrete, local admission boundary for live broker orders.
+//! Concrete, local admission boundary for Paper and Live broker orders.
 //!
 //! This module deliberately stops at the finance-authority C5 boundary.  It
 //! does not dispatch to a provider and it never treats an accepted submission
@@ -88,6 +88,22 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
     ) -> Result<BrokerSubmissionPermit, String> {
         let (price_ref, receipt_id) = Self::receipt_reference(request)?;
         let state = load_current_state(&self.deps, request, context)?;
+        if state.mode == "paper"
+            && !state.manifest["manifest"]["operations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|operation| {
+                    operation["id"] == "broker.order_lookup"
+                        && operation["capability"] == "broker.order_lookup.paper"
+                        && operation["effect"] == "read"
+                        && operation["traits"]["modes"]
+                            .as_array()
+                            .is_some_and(|modes| modes.iter().any(|mode| mode == "paper"))
+                })
+        {
+            return Err("broker_paper_recovery_operation_missing".into());
+        }
         let (base_intent, _) = build_order_intent(&state, request, context, prepared)?;
         let symbol = required_value(&base_intent["order"], "symbol")?;
         let price_evidence = prices::load_price_evidence(&self.deps, &state, symbol, &receipt_id)?;
@@ -128,17 +144,22 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         let authority = AuthorityContext {
             actor: current.actor.subject.clone(),
             surface: "broker_boundary".into(),
-            account_mode: "live".into(),
+            account_mode: current.mode.clone(),
+        };
+        let (command_name, side_effect_class) = if current.mode == "live" {
+            ("order.submit.live", "live_order")
+        } else {
+            ("order.submit.paper", "paper_order")
         };
         let envelope = ControlPlaneCommandEnvelope {
             schema_version: "tradeassembly.control_plane.command.v1".into(),
             command_id: format!("cmd_{}", hash_text(context.idempotency_key.as_str())),
             correlation_id: request.correlation_id.clone(),
-            command_name: "order.submit.live".into(),
+            command_name: command_name.into(),
             command_group: "order".into(),
             source_interface: "broker_boundary".into(),
-            target_object: Some(current.mandate.binding.account_ref.clone()),
-            side_effect_class: "live_order".into(),
+            target_object: Some(required_value(&current.selected, "accountRef")?.into()),
+            side_effect_class: side_effect_class.into(),
             authority,
             idempotency_key: context.idempotency_key.clone(),
             idempotency_requirement: "required".into(),

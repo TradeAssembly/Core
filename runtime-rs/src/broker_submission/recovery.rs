@@ -69,6 +69,10 @@ pub(crate) fn prepare_plan(
 }
 
 impl BrokerOrderRecoveryPlan {
+    pub(crate) fn mode(&self) -> Result<&str, String> {
+        original_mode(&self.intent)
+    }
+
     pub(crate) fn revalidate(&self) -> Result<(), String> {
         let records = load_records(&self.deps, &self.original_key)?;
         validate_observer(&self.deps, &self.observer, &records["intent"])?;
@@ -136,6 +140,7 @@ fn validate_records(
     }
     let config = &records["config"];
     if config["configId"] != intent["configId"]
+        || config["mode"] != original_mode(intent)?
         || crate::spec::canonical_hash(config).map_err(|_| "recovery_config_invalid".to_string())?
             != intent["configDigest"]
     {
@@ -164,12 +169,18 @@ fn validate_records(
             return Err("recovery_request_binding_mismatch".into());
         }
     }
+    let mode = original_mode(intent)?;
+    let (operation, capability) = if mode == "live" {
+        ("broker.live_order_submit", "broker.order_submit.live")
+    } else {
+        ("broker.paper_order_submit", "broker.order_submit.paper")
+    };
     if rb["schemaVersion"] != "tradeassembly.plugin_request_binding.v1"
-        || rb["mode"] != "live"
+        || rb["mode"] != mode
         || rb["accountRef"] != intent["accountRef"]
-        || rb["operationId"] != "broker.live_order_submit"
-        || rb["capability"] != "broker.order_submit.live"
-        || intent["operationId"] != "broker.live_order_submit"
+        || rb["operationId"] != operation
+        || rb["capability"] != capability
+        || intent["operationId"] != operation
         || records["claim"]["state"] != "claimed"
         || rb["symbolHash"] != crate::spec::canonical_hash(&intent["order"]["symbol"])?
     {
@@ -184,7 +195,7 @@ fn validate_records(
         || instance["instanceRef"] != binding.plugin_instance_ref
         || instance["pluginRef"] != binding.plugin_ref
         || instance["accountRef"] != intent["accountRef"]
-        || instance["accountMode"] != "live"
+        || instance["accountMode"] != mode
         || instance["activePackageSha256"] != binding.package_sha256
         || crate::spec::canonical_hash(&instance["configuration"])? != binding.configuration_digest
         || instance["credentialRef"] != binding.credential_ref
@@ -233,7 +244,7 @@ fn build_lookup(
         plugin_ref: binding.plugin_ref.clone(),
         manifest_fingerprint: binding.manifest_fingerprint.clone(),
         operation_id: "broker.order_lookup".into(),
-        capability: "broker.order_lookup.live".into(),
+        capability: format!("broker.order_lookup.{}", original_mode(intent)?),
         capability_graph_revision_id: intent_field(
             &request_record["binding"],
             "capabilityGraphRevisionId",
@@ -249,7 +260,7 @@ fn build_lookup(
         activation_id: intent_field(intent, "activationId")?.into(),
         attempt_id: format!("recovery:{key}"),
         evaluation_tick_id: format!("recovery:{key}"),
-        mode: "live".into(),
+        mode: original_mode(intent)?.into(),
         purpose: "recovery".into(),
         account_ref: intent["accountRef"].as_str().map(str::to_string),
         timeout_ms: 5000,
@@ -260,24 +271,25 @@ fn build_lookup(
 }
 
 fn envelope(intent: &Value) -> Result<ControlPlaneCommandEnvelope, String> {
+    let mode = original_mode(intent)?;
     let digest = crate::spec::canonical_hash(intent)
         .map_err(|_| "recovery_intent_digest_invalid".to_string())?;
     Ok(ControlPlaneCommandEnvelope {
         schema_version: "tradeassembly.control_plane.command.v1".into(),
         command_id: format!("cmd_{}", hash(intent_field(intent, "idempotencyKey")?)),
         correlation_id: intent_field(intent, "correlationId")?.into(),
-        command_name: "order.submit.live".into(),
+        command_name: format!("order.submit.{mode}"),
         command_group: "order".into(),
         source_interface: "broker_boundary".into(),
         target_object: intent["accountRef"].as_str().map(str::to_string),
-        side_effect_class: "live_order".into(),
+        side_effect_class: format!("{mode}_order"),
         authority: AuthorityContext {
             actor: intent["actor"]["subject"]
                 .as_str()
                 .unwrap_or_default()
                 .into(),
             surface: "broker_boundary".into(),
-            account_mode: "live".into(),
+            account_mode: mode.into(),
         },
         idempotency_key: IdempotencyKey::new(intent_field(intent, "idempotencyKey")?)?,
         idempotency_requirement: "required".into(),
@@ -286,6 +298,13 @@ fn envelope(intent: &Value) -> Result<ControlPlaneCommandEnvelope, String> {
         payload_hash: digest,
         payload_preview: intent.clone(),
     })
+}
+
+fn original_mode(intent: &Value) -> Result<&str, String> {
+    match intent["requestBinding"]["mode"].as_str() {
+        Some(mode @ ("paper" | "live")) => Ok(mode),
+        _ => Err("recovery_original_mode_invalid".into()),
+    }
 }
 
 fn validate_observer(
@@ -307,6 +326,7 @@ fn validate_observer(
             )?;
             let p = &intent["executionProvenance"];
             if p["kind"] != "agent"
+                || agent.mode() != original_mode(intent)?
                 || p["deploymentId"] != agent.deployment_id()
                 || p["bindingDigest"] != agent.binding_digest()
                 || intent["actor"]

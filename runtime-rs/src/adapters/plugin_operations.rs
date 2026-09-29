@@ -229,7 +229,7 @@ impl PluginOperationPort for LocalPluginOperations {
         validate_request(request)?;
         // An unavailable boundary has made no attempt. Do not create a
         // dispatch claim that would turn its next retry into an ambiguity.
-        if is_live_submission(request) && self.broker_boundary.is_none() {
+        if is_guarded_submission(request) && self.broker_boundary.is_none() {
             return Err("plugin_operation_mode_unsupported".into());
         }
         let mut hash_request = serde_json::to_value(request)
@@ -301,7 +301,7 @@ impl PluginOperationPort for LocalPluginOperations {
 
         let broker_submission = request.operation_id.starts_with("broker.")
             || request.capability.starts_with("broker.");
-        let live_submission = is_live_submission(request);
+        let guarded_submission = is_guarded_submission(request);
         if broker_submission {
             // A request record is not an exclusive dispatch claim. A matching
             // concurrent call, or a restart after an uncertain effect, must not
@@ -366,7 +366,7 @@ impl PluginOperationPort for LocalPluginOperations {
             }
         };
 
-        let permit = if live_submission {
+        let permit = if guarded_submission {
             let Some(boundary) = self.broker_boundary.as_ref() else {
                 self.record_terminal_denial(
                     receipt_key,
@@ -478,7 +478,10 @@ fn validated_stored_response(
 
 fn validate_request(request: &PluginOperationRequest) -> Result<(), String> {
     if request.operation_id == "broker.order_lookup"
-        || request.capability == "broker.order_lookup.live"
+        || matches!(
+            request.capability.as_str(),
+            "broker.order_lookup.live" | "broker.order_lookup.paper"
+        )
     {
         return Err("broker_order_recovery_plan_required".into());
     }
@@ -553,6 +556,15 @@ fn is_live_submission(request: &PluginOperationRequest) -> bool {
         && request.capability == "broker.order_submit.live"
         && request.operation_id == "broker.live_order_submit"
         && request.purpose == "live_order_submission"
+}
+
+fn is_guarded_submission(request: &PluginOperationRequest) -> bool {
+    is_live_submission(request)
+        || (request.mode == "paper"
+            && request.capability == "broker.order_submit.paper"
+            && request.operation_id == "broker.paper_order_submit"
+            && request.purpose == "paper_trading"
+            && request.plugin_ref != "tradeassembly.simbroker")
 }
 
 fn contains_secret_shaped_field(value: &Value) -> bool {

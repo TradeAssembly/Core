@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod agent_deployment;
+mod agent_orders;
 mod attribution_journal;
 mod backtest;
 pub mod backtest_lifecycle;
@@ -3279,6 +3280,8 @@ impl TradeAssemblyService {
             "tradeassembly.broker.connect" => broker_onboarding::connect(self, arguments.clone()),
             "tradeassembly.broker.status" => broker_onboarding::status(self, arguments.clone()),
             "tradeassembly.broker.verify" => broker_onboarding::verify(self, arguments.clone()),
+            "tradeassembly.order.submit" => agent_orders::submit(self, arguments.clone()),
+            "tradeassembly.order.reconcile" => agent_orders::reconcile(self, arguments.clone()),
             "tradeassembly.health" => {
                 let mut body = self.handle_http("GET", "/health", json!({})).body;
                 body["ok"] = json!(true);
@@ -3995,6 +3998,11 @@ impl TradeAssemblyService {
         if name.starts_with("tradeassembly.journal.") {
             if let Some(code) = service_error_code(&payload) {
                 return mcp::tool_error(name, &code, "Journal access failed.", None);
+            }
+        }
+        if name.starts_with("tradeassembly.order.") {
+            if let Some(code) = service_error_code(&payload) {
+                return mcp::tool_error(name, &code, "Order operation failed closed.", None);
             }
         }
         let response = mcp::call_tool_with_payload(name, payload);

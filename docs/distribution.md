@@ -971,6 +971,28 @@ bind each named denial to zero controlled-sink submissions and preserve the
 deterministic path; rerun the exact command after sufficient build space is
 available.
 
+R1 continuation: after two disk-limited link attempts, the exact named command
+passed with `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0` (2 `agent_order` tests
+executed, other targets filtered). Space was recovered by deleting only Cargo
+incremental and `deps` cache files from the inactive
+`rename-tradeassembly-studio-f2` worktree; its binaries, source and the active
+F2 extraction rig were preserved. These caches can be regenerated. The
+following targeted R1 proof matrix also passed:
+
+| Boundary | Executed evidence | Result |
+| --- | --- | --- |
+| No attached/unauthenticated agent; wrong owner and mode binding | named `agent_order` 2/2; `mcp_parity::external_agent_attachment_requires_authenticated_persistent_transport` 1/1; isolated Live fixture rejects other owner and Paper deployment against Live activation before sink | Pass |
+| Current run and lease | `external_session::tests` 3/3; isolated Live fixture rejects released and replaced lease with sink unchanged; `event_replay_checkpoint_inbox_and_lease_survive_restart` 1/1 acquires a replacement only after the recorded expiry and rejects stale release | Pass; released lease models lost ownership, while the local port test proves elapsed expiry and fencing |
+| Revocation, configuration/package/credential drift, mandate and risk | real-Warden `prevents_real_dispatch` 10/10 and `never_reaches_sink` 7/7, including missing grant, paused/stopped agent, wrong account, excess quantity/notional, revoked/expired mandate, stale quote, changed config, replaced lease and Warden denial | Pass; zero controlled sink effects |
+| Paper/Live order outcome, signed decision, and duplicate/recovery | opt-in source-free MCP suite 4/4 in separate rigs; `owner_recovers_lost_response_after_stop_and_revocation_without_resubmit` 1/1 against real Warden and controlled broker | Pass for unpackaged candidate only |
+| Deterministic runtime retained | `execution_parity` persisted scheduler/worker and activation/tick/control/APF cases 2/2 | Pass |
+
+The two Live fixture variants passed individually again after wrong-owner,
+mode-mismatch and released-lease assertions were added. R1 source behavior is
+substantially evidenced, but no packaged candidate or five-target result is
+inferred from this matrix. R2's final installed-artifact rerun and R3–R6
+remain open.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

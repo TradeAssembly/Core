@@ -1196,9 +1196,37 @@ fn controlled_live_order_case(override_live_policy: bool) {
             "localLiveMandateId":mandate_id,
             "acknowledgementIds":["user_logic","user_risk","no_advice"]}),
     );
+    assert_eq!(activated.status, 200, "valid mandate can activate locally");
+    let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
+    let other_owner =
+        service.for_authenticated_invocation(&owner.issuer, "controlled-other-owner", None, None);
+    let wrong_identity = other_owner.attach_external_agent_session(
+        &deployment.deployment_id,
+        activation_id,
+        "stdio-live-wrong-identity",
+    );
+    assert!(
+        wrong_identity.is_err(),
+        "other owner cannot attach to the deployment"
+    );
+    let mut wrong_mode = deployment.clone();
+    wrong_mode.deployment_id = "stdio-live-wrong-mode".into();
+    wrong_mode.mode = "paper".into();
+    agent_runner::put_deployment(&service.runtime(), &wrong_mode).unwrap();
+    let mode_mismatch = service.attach_external_agent_session(
+        &wrong_mode.deployment_id,
+        activation_id,
+        "stdio-live-mode-mismatch",
+    );
+    assert_eq!(
+        mode_mismatch.err().unwrap().body["error"]["code"],
+        "external_agent_binding_invalid"
+    );
+    assert!(
+        !sink.db.exists(),
+        "failed attach cannot reach the broker sink"
+    );
     if !override_live_policy {
-        assert_eq!(activated.status, 200, "valid mandate can activate locally");
-        let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
         let mut client = McpClient::start(&candidate, &config_path, &root);
         assert!(client.call("initialize", json!({}))["result"].is_object());
         let attached = client.tool(
@@ -1368,6 +1396,14 @@ fn controlled_live_order_case(override_live_policy: bool) {
         .unwrap()
         .unwrap();
     service.runtime().leases.release(&original_lease).unwrap();
+    let unleased = client.tool(
+        "tradeassembly.order.submit",
+        json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-live",
+            "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+                "timeInForce":"gtc","clientOrderId":"stdio-live-unleased","quantity":"1"},
+            "idempotency_key":"stdio-live-unleased"}),
+    );
+    assert_eq!(unleased["isError"], true, "released lease cannot submit");
     let replacement_lease = service
         .runtime()
         .leases

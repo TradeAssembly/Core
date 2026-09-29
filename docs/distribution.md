@@ -336,8 +336,9 @@ Warden prepare/receipt tests alone, and cross-compilation do not satisfy them.
 
 ### Current execution checkpoint
 
-**Current step: D2; D1 decisions are recorded above.** Core and Warden changes
-below remain local; Alpaca candidate branch is committed/pushed at `592bd8f`.
+**Current step: D2; D1 decisions are recorded above.** Core source checkpoints
+are `7782118` and `48eb1d2` (local, not pushed). Warden checkpoint is `d2bd10d`
+(local, not pushed); Alpaca candidate branch is committed/pushed at `592bd8f`.
 Core remote PR #2 remains at `520be81`. No native Windows success or five-target
 qualification is claimed. Prior turn was a status-only/no-progress turn; this
 continuation implemented recovery/read fixes and obtained new verification.
@@ -373,6 +374,13 @@ continuation implemented recovery/read fixes and obtained new verification.
   increase. Actions is enabled. No native receipt/artifact exists for this run.
   This is a verified native-runner dependency, not a build failure or assumption.
   Do not retry unchanged jobs or publish unqualified packages.
+  Authenticated CLI billing inspection confirmed the organization Actions budget
+  is **0**, with `prevent_further_usage: true`. No budget change was made. The
+  retired `/orgs/TradeAssembly/settings/billing/actions` endpoint returns 410;
+  the current `/organizations/TradeAssembly/settings/billing/budgets` API works.
+  Core's `native-core.yml` is now committed and passes actionlint and source/
+  publication-boundary checks; it supplies actual native compile/storage tests
+  and binaries only, never a qualification receipt or private producer source.
 - Full owning Warden `cargo xtask verify` exits 0 on Mac: formatting, strict
   workspace Clippy, 245 Rust tests (one ignored PostgreSQL test), boundary,
   dependency/license checks, machete and all 25 SDK tests. Evidence:
@@ -431,8 +439,19 @@ release bytes and other worktrees were preserved. The prior xtask binary was
 copied and byte-compared to `target/native-distribution-checks-xtask` first.
 Prior full Core gates are evidence for `36dd8aa`, **not** the new edits.
 
-**Exact next action:** checkpoint the coherent Core/Warden source under source
-and boundary checks, then run full Core owning gates. Resolve GitHub's verified
+Core's new full `cargo xtask verify` attempt failed during test linking with
+`errno=28 (No space left on device)`; retain `target/native-core-owning-verify.log`
+as failed evidence. Reclaimed only the two new producer worktrees' disposable
+debug caches with `cargo clean --profile dev` (1.6 GiB Alpaca, 2.9 GiB Warden),
+preserving package artifacts, frozen payloads and evidence logs. Core retry is
+genuinely running under process handle **76254**, with debug/incremental disabled,
+output `target/native-core-owning-verify-retry.log`. Revalidate this handle before
+doing anything else; do not restart because output is quiet. No other worker,
+build or routing-operation handle remains live. Core's full gate is not yet green.
+
+**Exact next action:** resume Core verify handle 76254 and inspect its actual
+terminal result; scoped source is checkpointed and producer caches are reclaimed.
+Resolve GitHub's verified
 native-runner billing dependency through the mandatory operations route without
 inventing success or silently raising an unbounded spending limit. Execute owning
 native builders and real Windows authority tests. Resolve native failures against the

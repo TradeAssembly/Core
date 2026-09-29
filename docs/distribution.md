@@ -337,11 +337,11 @@ Warden prepare/receipt tests alone, and cross-compilation do not satisfy them.
 ### Current execution checkpoint
 
 **Current step: D2; D1 decisions are recorded above.** Core source checkpoints
-are `7782118` and `48eb1d2` (local, not pushed). Warden checkpoint is `d2bd10d`
+include `7782118`, `48eb1d2`, and `b711ffc` (local, not pushed). Warden checkpoint is `d2bd10d`
 (local, not pushed); Alpaca candidate branch is committed/pushed at `592bd8f`.
 Core remote PR #2 remains at `520be81`. No native Windows success or five-target
-qualification is claimed. Prior turn was a status-only/no-progress turn; this
-continuation implemented recovery/read fixes and obtained new verification.
+qualification is claimed. The current continuation corrected the workflow's
+required copyright notice and obtained a passing complete Core gate.
 
 - Core Windows adapter is now shared by distribution and runtime through
   `platform/windows_private.rs`, explicitly classified as public Core source.
@@ -466,12 +466,37 @@ and dependency, whitelist, plugin-contract and architecture checks passed.
 `scan-public` then rejected the new workflow's missing copyright header. The
 header is corrected; retain `target/native-core-owning-verify-stripped.log` as
 failed whole-gate evidence. No process remains live; do not reuse terminal
-handles. Core's full gate is not yet green. The composite proof must use Paper: the existing
+handles. The composite proof must use Paper: the existing
 controlled-broker helper/example are Live-only and cannot be substituted.
 
-**Exact next action:** run Core verification with the symbol-stripped dev/test
-profile and stable committed revision; confirm the failing soak test and all
-owning checks pass, with actual disk headroom, before pushing.
+The complete rerun **passed**, exit 0: `just verify` invokes the complete
+`cargo xtask verify`, pinned to source
+`b711ffcee2a525888cf7e7a9255571add7eab73c` with the stripped dev/test profile.
+All 1,312 nextest tests passed (51 skipped), as did the workspace test suite,
+strict workspace Clippy, formatting, deny/audit/machete, whitelist,
+plugin-contract, architecture, public scan and FOSS boundary. Evidence:
+`target/native-core-owning-verify-final.log` SHA
+`e234d547bfaf9bcdabb577c8dde2374e6acae69f7eb201b3d5c7d6b8eb98dc39`.
+Handle 90265 is terminal; no build/test process remains live. Archive smoke is
+not yet qualified on this revision. The original frozen manifest and parent
+lock hashes remain unchanged. This is local Core acceptance, not five-target
+distribution or registry qualification.
+
+The supported npm legacy CLI reached an OTP challenge. The existing Bitwarden
+login has no TOTP field; notes indicate MFA/recovery information but no TOTP URI.
+No secret was printed or authentication claimed. A bounded Gmail CLI search
+found no npmjs.com message in the last day; this does not prove an email challenge
+or permit assuming the challenge type. Resolve the actual supported MFA path,
+not a recovery/reset loop. The native Actions dollar-cap question is pending;
+the verified $0 cutoff has not been changed.
+
+**Exact next action:** implement Paper-mode controlled-package/sink support and
+the composite real-stdio MCP/Warden acceptance without changing the shipping
+Live policy. Bind actual controlled-sink outcomes, duplicate and lost-response
+recovery, authority/risk decisions, and durable receipts; separate transport tests
+are not a substitute. Run the smallest affected checks, then required archive
+and integration gates before pushing. Do not rerun the unchanged full gate merely
+to duplicate its passing evidence.
 Resolve GitHub's verified
 native-runner billing dependency through the mandatory operations route without
 inventing success or silently raising an unbounded spending limit. Execute owning

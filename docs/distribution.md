@@ -443,14 +443,30 @@ Core's new full `cargo xtask verify` attempt failed during test linking with
 `errno=28 (No space left on device)`; retain `target/native-core-owning-verify.log`
 as failed evidence. Reclaimed only the two new producer worktrees' disposable
 debug caches with `cargo clean --profile dev` (1.6 GiB Alpaca, 2.9 GiB Warden),
-preserving package artifacts, frozen payloads and evidence logs. Core retry is
-genuinely running under process handle **76254**, with debug/incremental disabled,
-output `target/native-core-owning-verify-retry.log`. Revalidate this handle before
-doing anything else; do not restart because output is quiet. No other worker,
-build or routing-operation handle remains live. Core's full gate is not yet green.
+preserving package artifacts, frozen payloads and evidence logs. Core retry handle
+**76254** is terminal, exit 101: another linker `errno=28` in
+`target/native-core-owning-verify-retry.log`. Reclaimed only this worktree's
+generated runtime dev artifacts with `cargo clean -p tradeassembly-runtime
+--profile dev` (7.1 GiB). A third actual full attempt, handle **55626**, reached
+workspace tests but exited 101: the bounded virtual-time soak failed at
+`service/execution.rs:6341` with `local database schema operation failed`;
+free space was 180 MiB. Preserve `target/native-core-owning-verify-clean.log`.
+Disk pressure is suspected, not a proven substitute for rerunning that test.
 
-**Exact next action:** resume Core verify handle 76254 and inspect its actual
-terminal result; scoped source is checkpointed and producer caches are reclaimed.
+A generated executable probe went from 137,699,856 to 83,178,960 bytes with
+system symbol stripping and still ran `--help` successfully. Reclaimed only
+this worktree's disposable release/dev caches with Cargo (197.7 MiB / 9.3 GiB),
+preserving all candidate/frozen artifacts and logs, and removed the temporary
+probe. Next gate uses consistent dev/test `DEBUG=0`, `STRIP=symbols`,
+`INCREMENTAL=0`, two build jobs, and the exact committed source revision.
+These are build settings, not changed assertions or a weakened gate. No test
+process currently remains live; do not reuse terminal handles. Core's full
+gate is not yet green. The composite proof must use Paper: the existing
+controlled-broker helper/example are Live-only and cannot be substituted.
+
+**Exact next action:** run Core verification with the symbol-stripped dev/test
+profile and stable committed revision; confirm the failing soak test and all
+owning checks pass, with actual disk headroom, before pushing.
 Resolve GitHub's verified
 native-runner billing dependency through the mandatory operations route without
 inventing success or silently raising an unbounded spending limit. Execute owning

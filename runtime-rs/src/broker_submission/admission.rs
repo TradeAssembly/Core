@@ -94,7 +94,7 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
                 .into_iter()
                 .flatten()
                 .any(|operation| {
-                    operation["id"] == "broker.order_lookup"
+                    operation["id"] == "broker.order_lookup.paper"
                         && operation["capability"] == "broker.order_lookup.paper"
                         && operation["effect"] == "read"
                         && operation["traits"]["modes"]

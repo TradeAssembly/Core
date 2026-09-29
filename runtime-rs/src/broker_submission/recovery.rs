@@ -243,7 +243,12 @@ fn build_lookup(
         plugin_instance_ref: binding.plugin_instance_ref.clone(),
         plugin_ref: binding.plugin_ref.clone(),
         manifest_fingerprint: binding.manifest_fingerprint.clone(),
-        operation_id: "broker.order_lookup".into(),
+        operation_id: if original_mode(intent)? == "paper" {
+            "broker.order_lookup.paper"
+        } else {
+            "broker.order_lookup"
+        }
+        .into(),
         capability: format!("broker.order_lookup.{}", original_mode(intent)?),
         capability_graph_revision_id: intent_field(
             &request_record["binding"],

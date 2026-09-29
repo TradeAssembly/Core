@@ -194,6 +194,9 @@ impl PluginOperationPort for LocalPluginOperations {
                 json!({"state":"found", "originalKey":plan.original_key, "response":response})
             }
             // Do not persist provider diagnostics or credentials in failure evidence.
+            Err(error) if error == "plugin_operation_failed:provider_order_absent" => {
+                json!({"state":"absent", "originalKey":plan.original_key})
+            }
             Err(_) => json!({"state":"unresolved", "originalKey":plan.original_key}),
         };
         if self
@@ -477,12 +480,13 @@ fn validated_stored_response(
 }
 
 fn validate_request(request: &PluginOperationRequest) -> Result<(), String> {
-    if request.operation_id == "broker.order_lookup"
-        || matches!(
-            request.capability.as_str(),
-            "broker.order_lookup.live" | "broker.order_lookup.paper"
-        )
-    {
+    if matches!(
+        request.operation_id.as_str(),
+        "broker.order_lookup" | "broker.order_lookup.paper"
+    ) || matches!(
+        request.capability.as_str(),
+        "broker.order_lookup.live" | "broker.order_lookup.paper"
+    ) {
         return Err("broker_order_recovery_plan_required".into());
     }
     if [

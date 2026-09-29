@@ -17,11 +17,22 @@ fn submit_bound(service: &TradeAssemblyService, arguments: &Value) -> Result<Val
     let agent = service
         .agent_mcp_execution_context()
         .ok_or("agent_order_attachment_required")?;
-    // Paper must enter the same risk/Warden boundary before this tool can
-    // support it. A request flag cannot opt around that boundary.
-    if agent.mode() != "live" {
+    if !matches!(agent.mode(), "paper" | "live") {
         return Err("agent_order_mode_unsupported");
     }
+    let (submit_capability, submit_operation, purpose) = if agent.mode() == "paper" {
+        (
+            "broker.order_submit.paper",
+            "broker.paper_order_submit",
+            "paper_trading",
+        )
+    } else {
+        (
+            "broker.order_submit.live",
+            "broker.live_order_submit",
+            "live_order_submission",
+        )
+    };
     let activation_id = text(arguments, "activation_id")?;
     let instance_ref = text(arguments, "plugin_instance_ref")?;
     let key = IdempotencyKey::new(text(arguments, "idempotency_key")?)
@@ -67,8 +78,8 @@ fn submit_bound(service: &TradeAssemblyService, arguments: &Value) -> Result<Val
         .flatten()
         .filter(|node| node["blockers"].as_array().is_some_and(Vec::is_empty))
         .find_map(|node| {
-            (node["requirement"]["capability"] == "broker.order_submit.live"
-                && node["selected"]["operationId"] == "broker.live_order_submit"
+            (node["requirement"]["capability"] == submit_capability
+                && node["selected"]["operationId"] == submit_operation
                 && node["selected"]["pluginInstanceRef"] == instance_ref)
                 .then(|| &node["selected"])
         })
@@ -82,8 +93,8 @@ fn submit_bound(service: &TradeAssemblyService, arguments: &Value) -> Result<Val
         plugin_instance_ref: field(selected, "pluginInstanceRef")?.into(),
         plugin_ref: field(selected, "pluginRef")?.into(),
         manifest_fingerprint: field(selected, "manifestFingerprint")?.into(),
-        operation_id: "broker.live_order_submit".into(),
-        capability: "broker.order_submit.live".into(),
+        operation_id: submit_operation.into(),
+        capability: submit_capability.into(),
         capability_graph_revision_id: revision_id.into(),
         capability_graph_fingerprint: field(&run, "capabilityGraphFingerprint")?.into(),
         strategy_id: field(&run, "strategyId")?.into(),
@@ -92,8 +103,8 @@ fn submit_bound(service: &TradeAssemblyService, arguments: &Value) -> Result<Val
         activation_id: activation_id.into(),
         attempt_id: format!("agent-order:{}", key.as_str()),
         evaluation_tick_id: format!("agent-order:{}", key.as_str()),
-        mode: "live".into(),
-        purpose: "live_order_submission".into(),
+        mode: agent.mode().into(),
+        purpose: purpose.into(),
         account_ref: selected["accountRef"].as_str().map(str::to_string),
         timeout_ms: 10_000,
         fencing_token: None,
@@ -104,7 +115,7 @@ fn submit_bound(service: &TradeAssemblyService, arguments: &Value) -> Result<Val
         AuthorityContext {
             actor: format!("agent-deployment:{}", agent.deployment_id()),
             surface: "agent_order".into(),
-            account_mode: "live".into(),
+            account_mode: agent.mode().into(),
         },
         key,
     )

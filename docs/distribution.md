@@ -681,8 +681,8 @@ qualification is claimed yet. Next: implement explicit tool definitions and
 service handler with enforced attached-session binding; then extend the shared
 mode-specific admission/recovery path before enabling any broker effect.
 
-2026-09-29 R1 continuation: `bff7cba` committed the status fix. Current
-uncommitted Core edits add `tradeassembly.order.submit` and `.reconcile`
+2026-09-29 R1 continuation: `bff7cba` committed the status fix; `bd05ecd`
+committed the initial Core order boundary. Those edits add `tradeassembly.order.submit` and `.reconcile`
 definitions in `runtime-rs/src/mcp.rs`, dispatch in `service.rs`, and a narrow
 `service/agent_orders.rs`. The submit adapter takes only activation ID,
 selected broker instance, canonical market order and idempotency key. It
@@ -707,15 +707,25 @@ new Paper Warden-envelope unit test passed. The changed code has not yet
 passed real-Warden/controlled-sink proof. Disk free was 3.9 GiB after focused
 builds; do not start broad link-heavy suites blindly.
 
-Next R1 work: wire a mode-specific read-only `broker.order_lookup.paper`
-operation into the controlled broker fixture and Alpaca producer. The Alpaca
-producer at `592bd8f` has Paper and Live submission but **no order lookup**;
-neither mode can claim broker-ambiguity recovery from that producer yet. Do
-not release it as-is. Extend Paper agent submit only after this lookup and the
-shared admission path pass true attached-agent controlled-sink tests for both
-modes, denial/duplicate/ambiguity, and deterministic parity. Resolve the
-pending-reconcile reattachment rule without allowing new orders while an
-uncertain original is unresolved.
+Current R1 follow-up: Core now selects the mode-specific Paper submit
+capability and operation, retains the legacy Live lookup ID, and requires a
+distinct Paper lookup ID. Core narrow broker-submission tests passed 16/16
+(27 real-process ignored), agent-order tests 2/2, strict library Clippy passed.
+The Alpaca producer worktree has an explicit read-only Paper and Live lookup
+contract and complete host-bound receipt identity; mock-provider tests passed
+3/3, including found and absent observations. A verified 404 is classified
+as `absent` in durable Core recovery outcomes, while unknown failures remain
+`unresolved`; neither outcome permits blind original resubmission. This is
+not yet an integrated package or R1 acceptance. Local producer verification
+uses a noncommitted Cargo patch to Core's unpublished plugin SDK; the
+registry-exact dependency is unchanged. The Alpaca producer follow-up is
+committed on its isolated branch as `e1d8385`; no publication is claimed.
+
+Next R1 work: extend the controlled broker fixture with the Paper lookup,
+execute attached-agent real-Warden controlled-sink tests in both modes, and
+resolve the `pending_reconcile` reattachment rule without allowing a new
+order while the original is uncertain. Then run deterministic parity and the
+specified R1 acceptance matrix.
 Until those pass, R1 and the overall release gate remain open. No R2–R6
 acceptance is claimed.
 

@@ -162,12 +162,19 @@ impl ExternalPluginHost {
         request: &PluginOperationRequest,
         context: &SideEffectContext,
     ) -> Result<PreparedPluginInvocation, String> {
-        if request.operation_id != "broker.order_lookup"
-            || !matches!(
-                (request.capability.as_str(), request.mode.as_str()),
-                ("broker.order_lookup.live", "live") | ("broker.order_lookup.paper", "paper")
-            )
-            || request.purpose != "recovery"
+        if !matches!(
+            (
+                request.operation_id.as_str(),
+                request.capability.as_str(),
+                request.mode.as_str()
+            ),
+            ("broker.order_lookup", "broker.order_lookup.live", "live")
+                | (
+                    "broker.order_lookup.paper",
+                    "broker.order_lookup.paper",
+                    "paper"
+                )
+        ) || request.purpose != "recovery"
         {
             return Err("broker_recovery_operation_invalid".into());
         }

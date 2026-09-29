@@ -1,0 +1,63 @@
+name: Native Core candidate
+on:
+  push:
+    branches: [codex/f2-npm-distribution]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Native builder (not release qualification)
+        type: choice
+        default: windows-2022
+        options:
+          - windows-2022
+          - macos-15-intel
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+permissions:
+  contents: read
+concurrency:
+  group: native-core-${{ github.ref }}-${{ inputs.runner || 'windows-2022' }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: ${{ inputs.runner || 'windows-2022' }}
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Native compile and authority-storage checks
+        run: |
+          set -euo pipefail
+          mkdir -p target/native-proof
+          cargo fmt --all --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | tee target/native-proof/clippy.log
+          cargo test --locked -p tradeassembly-distribution --lib 2>&1 | tee target/native-proof/distribution.log
+          cargo test --locked -p tradeassembly-runtime --lib windows_private::tests 2>&1 | tee target/native-proof/private-files.log
+          cargo test --locked -p tradeassembly-runtime --lib local_install::tests 2>&1 | tee target/native-proof/setup.log
+          cargo test --locked -p tradeassembly-runtime --test local_owner_identity 2>&1 | tee target/native-proof/owner.log
+          cargo build --release --locked -p tradeassembly-runtime --bins -p tradeassembly-distribution 2>&1 | tee target/native-proof/build.log
+      - name: Preserve native binaries and output; no private producer source
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-${{ inputs.runner || 'windows-2022' }}-${{ github.sha }}
+          path: |
+            target/release/tradeassembly
+            target/release/tradeassembly.exe
+            target/release/tradeassembly-core-runner
+            target/release/tradeassembly-core-runner.exe
+            target/release/tradeassembly-sandbox
+            target/release/tradeassembly-sandbox.exe
+            target/release/tradeassembly-distribution
+            target/release/tradeassembly-distribution.exe
+            target/native-proof/
+          if-no-files-found: error
+          retention-days: 14

@@ -459,9 +459,14 @@ this worktree's disposable release/dev caches with Cargo (197.7 MiB / 9.3 GiB),
 preserving all candidate/frozen artifacts and logs, and removed the temporary
 probe. Next gate uses consistent dev/test `DEBUG=0`, `STRIP=symbols`,
 `INCREMENTAL=0`, two build jobs, and the exact committed source revision.
-These are build settings, not changed assertions or a weakened gate. No test
-process currently remains live; do not reuse terminal handles. Core's full
-gate is not yet green. The composite proof must use Paper: the existing
+These are build settings, not changed assertions or a weakened gate. The
+stripped-profile gate (handle 80962, committed source `edca828`) exited 1 after
+all 1,312 nextest cases passed (51 skipped), the previously failing soak passed,
+and dependency, whitelist, plugin-contract and architecture checks passed.
+`scan-public` then rejected the new workflow's missing copyright header. The
+header is corrected; retain `target/native-core-owning-verify-stripped.log` as
+failed whole-gate evidence. No process remains live; do not reuse terminal
+handles. Core's full gate is not yet green. The composite proof must use Paper: the existing
 controlled-broker helper/example are Live-only and cannot be substituted.
 
 **Exact next action:** run Core verification with the symbol-stripped dev/test

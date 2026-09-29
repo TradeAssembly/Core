@@ -45,6 +45,7 @@ struct ControlledSinkState {
     db: PathBuf,
     drop_next_response: AtomicBool,
     reject_next_submit: AtomicBool,
+    fail_next_lookup: AtomicBool,
 }
 
 impl ControlledHttpSink {
@@ -61,6 +62,7 @@ impl ControlledHttpSink {
             db: db.clone(),
             drop_next_response: AtomicBool::new(false),
             reject_next_submit: AtomicBool::new(false),
+            fail_next_lookup: AtomicBool::new(false),
         });
         let server_state = Arc::clone(&state);
         let thread = std::thread::spawn(move || {
@@ -97,6 +99,10 @@ impl ControlledHttpSink {
     fn reject_next_submit(&self) {
         self.state.reject_next_submit.store(true, Ordering::SeqCst);
     }
+
+    fn fail_next_lookup(&self) {
+        self.state.fail_next_lookup.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Drop for ControlledHttpSink {
@@ -123,6 +129,9 @@ async fn controlled_http_order(
         .ok_or(StatusCode::BAD_REQUEST)?;
     let is_lookup = request["operation"] == "broker.order_lookup.paper"
         || request["operation"] == "broker.order_lookup";
+    if is_lookup && state.fail_next_lookup.swap(false, Ordering::SeqCst) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     if !is_lookup && state.reject_next_submit.swap(false, Ordering::SeqCst) {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -671,5 +680,157 @@ fn installed_stdio_paper_order_recovers_ambiguous_crash_once() {
         3
     );
     after_crash.close();
+    warden.stop();
+}
+
+#[test]
+#[ignore = "requires explicit candidate Core, Warden, controlled broker, and SRT binaries"]
+fn installed_stdio_unknown_lookup_fails_closed_without_replay() {
+    let candidate = PathBuf::from(
+        std::env::var_os("F2_TEST_RUNTIME_BINARY").expect("candidate Core binary required"),
+    )
+    .canonicalize()
+    .unwrap();
+    let controlled = PathBuf::from(
+        std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY")
+            .expect("controlled broker binary required"),
+    )
+    .canonicalize()
+    .unwrap();
+    let srt = PathBuf::from(std::env::var_os("F2_TEST_SRT_CLI").expect("SRT binary required"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let mut warden = controlled_warden::ControlledWarden::start(&root);
+    let sink = ControlledHttpSink::start(&root);
+    let db = root.join("runtime.db");
+    let layer = RuntimeConfigLayer {
+        profile: Some("local".into()),
+        database_path: Some(db.display().to_string()),
+        artifact_root: Some(root.join("artifacts").display().to_string()),
+        oidc_profile: Some("local_owner".into()),
+        warden_sidecar_url: Some(format!("http://127.0.0.1:{}", warden.port)),
+        warden_token_ref: Some(format!(
+            "file://{}",
+            root.join("warden/warden.token").display()
+        )),
+        plugin_sandbox_command: Some(srt.display().to_string()),
+        plugin_sandbox_allow_local_egress: Some(true),
+        ..Default::default()
+    };
+    let config_path = root.join("runtime.json");
+    std::fs::write(&config_path, serde_json::to_vec(&layer).unwrap()).unwrap();
+    let config =
+        RuntimeConfig::resolve(Some(layer), Default::default(), Default::default()).unwrap();
+    let owner = LocalOwnerIdentity::for_database(&db).unwrap();
+    let service = TradeAssemblyService::from_config(config)
+        .unwrap()
+        .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+    let _package = controlled_broker_package::install_controlled_package_for_mode_and_sink(
+        &service,
+        &root,
+        &controlled,
+        "paper",
+        Some(&sink.url),
+    );
+    let saved = service.handle_http(
+        "POST",
+        "/product/strategy-execution-configs/save",
+        json!({"strategyId":"strat_local_btc_demo","orchestrator":"external_agent",
+            "mode":"paper","allowedSymbols":["BTC/USD"],
+            "providerRef":"mandate-paper","accountRef":"account://mandate-paper/controlled",
+            "dataProviderRef":"mandate-paper","dataAccountRef":"account://mandate-paper/controlled",
+            "riskLimits":{"max_notional":10,"max_order_quantity":2}}),
+    );
+    assert_eq!(saved.status, 200, "{saved:#?}");
+    let config_id = saved.body["body"]["configId"].as_str().unwrap();
+    let deployment = AgentDeployment {
+        executor: AgentExecutor::ExternalClient,
+        deployment_id: "stdio-controlled-unknown".into(),
+        system_project_id: "system-1".into(),
+        agent_definition_version_id: "agent-v1".into(),
+        execution_config_version_id: config_id.into(),
+        studio_tool_allowlist: vec![
+            "tradeassembly.order.submit".into(),
+            "tradeassembly.order.reconcile".into(),
+        ],
+        desired_state: "active".into(),
+        interval_seconds: 60,
+        cron_utc: None,
+        mode: "paper".into(),
+        prompt: String::new(),
+        workspace: String::new(),
+        runtime_profile: "local-read-only".into(),
+    };
+    agent_runner::put_deployment(&service.runtime(), &deployment).unwrap();
+    let activated = service.handle_http(
+        "POST",
+        "/product/strategy-execution-activations/activate",
+        json!({"configId":config_id,"idempotencyKey":"stdio-unknown-activation",
+            "acknowledgementIds":["user_logic","user_risk","no_advice"]}),
+    );
+    assert_eq!(activated.status, 200, "{activated:#?}");
+    let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
+    let mut client = McpClient::start(&candidate, &config_path, &root);
+    assert!(client.call("initialize", json!({}))["result"].is_object());
+    let attached = client.tool(
+        "tradeassembly.agent.session.attach",
+        json!({"deployment_id":deployment.deployment_id,"activation_id":activation_id,
+            "idempotency_key":"stdio-unknown-attach"}),
+    );
+    assert_eq!(attached["isError"], false, "{attached:#?}");
+    let order = json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-paper",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-unknown-order","quantity":"1"},
+        "idempotency_key":"stdio-unknown-order"});
+    sink.drop_next_response();
+    let uncertain = client.tool("tradeassembly.order.submit", order.clone());
+    assert_eq!(
+        uncertain["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{uncertain:#?}"
+    );
+    sink.fail_next_lookup();
+    let unknown = client.tool(
+        "tradeassembly.order.reconcile",
+        json!({"original_idempotency_key":"stdio-unknown-order",
+            "idempotency_key":"stdio-unknown-observation"}),
+    );
+    assert_eq!(
+        unknown["structuredContent"]["error"]["code"], "plugin_order_reconciliation_required",
+        "{unknown:#?}"
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .get_json(
+                "plugin_broker_recovery_outcomes",
+                "stdio-unknown-observation"
+            )
+            .unwrap()
+            .unwrap()["state"],
+        "unresolved"
+    );
+    let replay = client.tool("tradeassembly.order.submit", order);
+    assert_eq!(
+        replay["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{replay:#?}"
+    );
+    let evidence =
+        Connection::open_with_flags(&sink.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let counts: (i64, i64) = evidence
+        .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+    assert!(service
+        .runtime()
+        .storage
+        .get_json("plugin_operation_receipts", "stdio-unknown-order")
+        .unwrap()
+        .is_none());
+    client.close();
     warden.stop();
 }

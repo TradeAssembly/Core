@@ -874,6 +874,21 @@ Next: isolate the unknown-lookup case, then concurrent duplicate and
 stale/replaced-session proof; settle isolated Live source-free policy injection
 without enabling the shipping Live policy.
 
+R2 unknown-lookup continuation: a second opt-in stdio test uses a fresh
+private database, real Warden, production SRT and the same controlled sink.
+The sink commits one order and loses its response; the subsequent lookup
+returns unavailable, not absent. The public MCP reconcile call fails closed,
+the durable outcome is `unresolved`, original-key replay remains blocked, no
+successful order receipt appears, and sink counts stay exactly (1 row, 1
+submission). The targeted command filtered to
+`installed_stdio_unknown_lookup` passed 1/1 in 22.46 seconds after correcting
+its isolated fixture to use the existing test strategy ID. Targeted strict
+Clippy passed before that fixture-ID correction. This is still a candidate
+binary test, not packaged-artifact or five-target qualification. Next: run the
+combined R2 tests at an integration checkpoint, prove concurrent duplicate and
+stale/replaced session paths, then settle isolated Live proof without changing
+shipping Live policy.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

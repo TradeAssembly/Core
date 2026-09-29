@@ -1235,6 +1235,43 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
         .unwrap();
     assert_eq!(signed["schema_version"], "warden.signed_receipt.v2");
     assert_eq!(signed["signature"]["algorithm"], "ed25519");
+    let detached = client.tool("tradeassembly.agent.session.detach", json!({}));
+    assert_eq!(detached["structuredContent"]["status"], "detached");
+    assert_eq!(
+        detached["structuredContent"]["reconciliationRequired"],
+        true
+    );
+    let unattached_after_detach = client.tool(
+        "tradeassembly.order.submit",
+        json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-live",
+            "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+                "timeInForce":"gtc","clientOrderId":"stdio-live-detached","quantity":"1"},
+            "idempotency_key":"stdio-live-detached"}),
+    );
+    assert_eq!(
+        unattached_after_detach["structuredContent"]["error"]["code"],
+        "agent_order_attachment_required"
+    );
+    let recovered = client.tool(
+        "studio.agent_run.recover",
+        json!({"deployment_id":deployment.deployment_id,
+            "acknowledge_reconciled":true,"idempotency_key":"stdio-live-owner-recovery",
+            "authority_context":{"actor":"ignored","surface":"mcp","accountMode":"live"}}),
+    );
+    assert_eq!(
+        recovered["isError"], false,
+        "owner recovery code={}",
+        recovered["structuredContent"]["error"]["code"]
+    );
+    let reattached = client.tool(
+        "tradeassembly.agent.session.attach",
+        json!({"deployment_id":deployment.deployment_id,"activation_id":activation_id,
+            "idempotency_key":"stdio-live-reattach"}),
+    );
+    assert_eq!(
+        reattached["isError"], false,
+        "clean detach can re-attach after reconciliation"
+    );
     let lease_resource = format!("agent-deployment:{}", deployment.deployment_id);
     let original_lease = service
         .runtime()

@@ -934,9 +934,12 @@ the first deployment session is active. A subsequent Live source-free stdio
 run passed 1/1 after the test replaced the active deployment lease: two calls
 from the old attached process failed, the replacement lease remained current,
 and the sink stayed at one row/one submission. This proves lease replacement
-denial for the already-attached client. R2 concurrent-client duplicate
-acceptance and clean detach/re-attach remain open; the successful source-free
-tests still use an unpackaged candidate binary.
+denial for the already-attached client. The Live test then added an explicit
+MCP detach: the detached client could not submit, owner recovery using the
+required authority context succeeded, and the same connection re-attached
+before lease replacement. That targeted test passed 1/1 in 39.93 seconds.
+R2 concurrent-client duplicate acceptance remains open; the successful
+source-free tests still use an unpackaged candidate binary.
 
 ### Historical execution checkpoint — before the amendment
 

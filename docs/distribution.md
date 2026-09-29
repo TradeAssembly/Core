@@ -785,6 +785,25 @@ count service-level proof as source-free stdio proof. Probe the actual
 candidate binary with an isolated Paper sink first, then settle a fixture
 transport that preserves production sandbox rules before extending to Live.
 
+2026-09-29 R2 stdio checkpoint: the new opt-in
+`runtime-rs/tests/agent_order_mcp.rs` runs the actual candidate Core binary
+over MCP stdio with real Warden and production SRT. The controlled broker
+fixture declares a narrow loopback HTTP destination to an isolated SQLite sink
+outside the sandbox; production sandbox rules were not disabled. With explicit
+`F2_TEST_RUNTIME_BINARY`, `F2_TEST_WARDEN_BINARY`,
+`F2_TEST_CONTROLLED_BROKER_BINARY`, and `F2_TEST_SRT_CLI`, `cargo test --offline
+--test agent_order_mcp -- --ignored --nocapture` executed 1/1 passing. It
+proves Paper attach, accepted order, sequential duplicate, conflicting-key
+rejection, process restart fail-closed as `agent_run_pending_reconcile`, owner
+recovery via MCP, fresh attach, same-order replay, one sink row/submission, and
+zero scheduler ticks. `cargo clippy --offline --test agent_order_mcp -- -D
+warnings` passed. This is candidate-binary evidence, not a frozen packaged
+artifact qualification. R2 remains open for concurrent duplicate, dropped
+broker response, found/absent/unknown reconciliation, stale/replaced session,
+revocation/risk denials, and isolated Live stdio proof. R1 and R3–R6 remain
+open. Next: extend the single stdio fixture with the remaining finite matrix;
+do not mark a disconnected run reconciled without order observation.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

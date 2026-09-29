@@ -19,6 +19,16 @@ pub fn install_controlled_package_for_mode(
     binary: &Path,
     mode: &str,
 ) -> tradeassembly_runtime::ports::InstalledPluginPackage {
+    install_controlled_package_for_mode_and_sink(service, root, binary, mode, None)
+}
+
+pub fn install_controlled_package_for_mode_and_sink(
+    service: &TradeAssemblyService,
+    root: &Path,
+    binary: &Path,
+    mode: &str,
+    sink_url: Option<&str>,
+) -> tradeassembly_runtime::ports::InstalledPluginPackage {
     assert!(matches!(mode, "paper" | "live"));
     let instance_ref = format!("mandate-{mode}");
     let account_ref = format!("account://{instance_ref}/controlled");
@@ -58,7 +68,17 @@ pub fn install_controlled_package_for_mode(
     manifest["metadata"]["id"] = json!("example.mandate-live");
     manifest["metadata"]["version"] = json!("0.1.0");
     manifest["runtime"] = json!({"protocol":"stdio","entrypoint":"fixture","timeoutSeconds":5});
-    manifest["configuration"] = json!({"fields":[]});
+    manifest["configuration"] = if sink_url.is_some() {
+        manifest["permissions"].as_array_mut().unwrap().push(json!({
+            "id":"network.outbound",
+            "description":"Connect only to the isolated controlled broker sink."
+        }));
+        json!({"fields":[{"id":"sink_url","label":"Controlled sink URL",
+            "description":"Isolated test broker endpoint.","inputType":"url",
+            "required":true,"storageClass":"configuration"}]})
+    } else {
+        json!({"fields":[]})
+    };
     manifest["health"] = json!({"requiredConfiguration":[],"requiredCredentials":[],"connectionCheckOperation":null});
     manifest["capabilities"]
         .as_array_mut()
@@ -184,7 +204,8 @@ pub fn install_controlled_package_for_mode(
     std::fs::write(&path, &package).unwrap();
     let installed = service.handle_http("POST", "/plugins/packages", json!({"source":{"type":"package","locator":path,"package":{"type":"file","locator":path}},"integrity":{"packageSha256":sha(&package),"manifestSha256":canonical},"trust":{"level":"local-test"},"idempotencyKey":"install-controlled-broker"}));
     assert!(installed.status < 300, "{installed:#?}");
-    let created = service.handle_http("POST", "/plugins/instances", json!({"instanceRef":instance_ref,"pluginRef":"example.mandate-live","enabled":true,"configuration":{},"accountMode":mode,"accountRef":account_ref}));
+    let configuration = sink_url.map_or_else(|| json!({}), |url| json!({"sink_url":url}));
+    let created = service.handle_http("POST", "/plugins/instances", json!({"instanceRef":instance_ref,"pluginRef":"example.mandate-live","enabled":true,"configuration":configuration,"accountMode":mode,"accountRef":account_ref}));
     assert!(created.status < 300, "{created:#?}");
     let runtime = service.runtime();
     let mut instance = runtime

@@ -1,6 +1,6 @@
 //! Offline test-only controlled broker fixture.
 use rusqlite::{params, Connection};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::{self, BufReader};
 use tradeassembly_plugin_sdk::{
@@ -77,6 +77,50 @@ fn run() -> Result<(), &'static str> {
         request.metadata.operation_id.as_str(),
         "broker.order_lookup" | "broker.order_lookup.paper"
     );
+    if let Some(sink_url) = body["config"]["sink_url"].as_str() {
+        let response = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|_| "controlled_sink_unavailable")?
+            .post(sink_url)
+            .json(&json!({"operation":request.metadata.operation_id,
+                "accountRef":account_ref,"body":body}))
+            .send()
+            .map_err(|_| "controlled_sink_unavailable")?;
+        if !response.status().is_success() {
+            return Err(if response.status().as_u16() == 404 {
+                "controlled_order_not_found"
+            } else {
+                "controlled_sink_unavailable"
+            });
+        }
+        let payload: Value = response.json().map_err(|_| "controlled_sink_invalid")?;
+        let provider_order_id = payload["providerOrderId"]
+            .as_str()
+            .ok_or("controlled_sink_invalid")?
+            .to_string();
+        let plugin_response = PluginResponse {
+            schema_version: "1".into(),
+            request_id: request.request_id,
+            status: ResponseStatus::Succeeded,
+            response_schema: "schema://tradeassembly.f2-controlled-broker/order@1".into(),
+            payload,
+            provider_outcome: ProviderOutcome {
+                code: "ok".into(),
+                provider_request_id: None,
+                provider_reference: Some(provider_order_id),
+            },
+            reconciliation: Reconciliation::Reconciled,
+            evidence_references: vec![],
+            redacted_diagnostics: vec![],
+        };
+        return write_response(
+            io::stdout().lock(),
+            &plugin_response,
+            DEFAULT_MAX_ENVELOPE_BYTES,
+        )
+        .map_err(|_| "controlled_response_write_failed");
+    }
     if is_lookup && !std::path::Path::new(db_path).exists() {
         return Err("controlled_order_not_found");
     }

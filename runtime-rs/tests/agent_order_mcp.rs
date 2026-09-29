@@ -389,6 +389,19 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
         pending["structuredContent"]["error"]["code"], "agent_run_pending_reconcile",
         "{pending:#?}"
     );
+    let owner_observation = restarted.tool(
+        "tradeassembly.order.observe",
+        json!({"original_idempotency_key":"stdio-paper-order",
+            "idempotency_key":"stdio-owner-observation"}),
+    );
+    assert_eq!(
+        owner_observation["structuredContent"]["state"], "observed",
+        "{owner_observation:#?}"
+    );
+    assert_eq!(
+        owner_observation["structuredContent"]["receipt"]["payload"]["submissionCount"],
+        1
+    );
     let recovery = restarted.tool(
         "studio.agent_run.recover",
         json!({"deployment_id":deployment.deployment_id,
@@ -402,6 +415,15 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
             "idempotency_key":"stdio-paper-reattach"}),
     );
     assert_eq!(reattached["isError"], false, "{reattached:#?}");
+    let owner_tool_as_agent = restarted.tool(
+        "tradeassembly.order.observe",
+        json!({"original_idempotency_key":"stdio-paper-order",
+            "idempotency_key":"stdio-agent-owner-observation"}),
+    );
+    assert_eq!(
+        owner_tool_as_agent["structuredContent"]["error"]["code"], "agent_mcp_tool_not_allowed",
+        "{owner_tool_as_agent:#?}"
+    );
     let after_restart = restarted.tool("tradeassembly.order.submit", order);
     assert_eq!(after_restart, first);
     let ambiguous = json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-paper",

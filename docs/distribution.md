@@ -821,6 +821,25 @@ found/absent/unknown, concurrent duplicate, stale-session and Live cases;
 the current owner recovery followed a known successful receipt, not an
 unobserved ambiguous outcome.
 
+Crash-recovery contract decision: an MCP connection that dies cannot use its
+agent-scoped `tradeassembly.order.reconcile`, and `studio.agent_run.recover`
+must not acknowledge reconciliation before the order outcome is observed.
+Expose one owner-scoped MCP observation tool backed by the existing
+`POST /orders/broker-recovery` path and its authenticated `RecoveryObserver::Owner`.
+It accepts only the original and distinct recovery keys, never submits or
+replays, and has no independent authority grant. It is unavailable from an
+attached agent's restricted allowlist. The crash test must call this through
+the restarted candidate binary, observe found/absent/unknown, then acknowledge
+only a genuinely reconciled run. Source pointers: `runtime-rs/src/service/
+broker_recovery.rs`, `runtime-rs/src/agent_runner/external_session.rs`,
+`runtime-rs/src/service/agent_deployment.rs`, and `runtime-rs/src/mcp.rs`.
+The candidate implementation of `tradeassembly.order.observe` now reuses
+that owner HTTP boundary; the real-stdio test confirms a bare authenticated
+owner connection can observe the existing order before run acknowledgement,
+while the attached agent's allowlist denies this owner tool. Candidate binary
+rebuild, the explicit R2 test (1/1), and targeted strict Clippy passed. This
+does not yet prove the crash/unknown variants, and no final release gate ran.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

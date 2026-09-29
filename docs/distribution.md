@@ -924,6 +924,20 @@ still need proof; shipping-policy denial must remain part of the final
 negative matrix. This run does not close R1, qualify a packaged artifact, or
 complete R3–R6.
 
+Concurrency boundary check: the existing real-Warden controlled-broker unit
+case `named_agent_real_plugin_quote_and_c5_order_are_duplicate_safe` passed
+1/1 with simultaneous calls into the plugin-operation adapter and one
+controlled sink effect. This is useful lower-layer evidence, not a claim that
+the synchronous stdio MCP transport dispatched concurrent calls. The installed
+binary suite separately proves a second client cannot attach or submit while
+the first deployment session is active. A subsequent Live source-free stdio
+run passed 1/1 after the test replaced the active deployment lease: two calls
+from the old attached process failed, the replacement lease remained current,
+and the sink stayed at one row/one submission. This proves lease replacement
+denial for the already-attached client. R2 concurrent-client duplicate
+acceptance and clean detach/re-attach remain open; the successful source-free
+tests still use an unpackaged candidate binary.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

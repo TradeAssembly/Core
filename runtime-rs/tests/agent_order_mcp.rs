@@ -1235,6 +1235,56 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
         .unwrap();
     assert_eq!(signed["schema_version"], "warden.signed_receipt.v2");
     assert_eq!(signed["signature"]["algorithm"], "ed25519");
+    let lease_resource = format!("agent-deployment:{}", deployment.deployment_id);
+    let original_lease = service
+        .runtime()
+        .leases
+        .current(&lease_resource)
+        .unwrap()
+        .unwrap();
+    service.runtime().leases.release(&original_lease).unwrap();
+    let replacement_lease = service
+        .runtime()
+        .leases
+        .acquire(
+            &lease_resource,
+            "controlled-replacement",
+            service.runtime().clock.trusted_now_ms().unwrap(),
+            90_000,
+        )
+        .unwrap()
+        .unwrap();
+    let mut stale_order = json!({"activation_id":activation_id,
+        "plugin_instance_ref":"mandate-live",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-live-stale","quantity":"1"},
+        "idempotency_key":"stdio-live-stale"});
+    let stale = client.tool("tradeassembly.order.submit", stale_order.clone());
+    assert_eq!(
+        stale["isError"], true,
+        "replaced lease must reject old session"
+    );
+    stale_order["idempotency_key"] = json!("stdio-live-stale-again");
+    let stale_again = client.tool("tradeassembly.order.submit", stale_order);
+    assert_eq!(stale_again["isError"], true, "old session cannot revive");
+    assert_eq!(
+        service
+            .runtime()
+            .leases
+            .current(&lease_resource)
+            .unwrap()
+            .unwrap(),
+        replacement_lease
+    );
+    assert_eq!(
+        evidence
+            .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap(),
+        (1, 1),
+        "stale session cannot add a sink effect"
+    );
     proxy.assert_used();
     warden.assert_healthy();
     for namespace in ["scheduler_state", "execution_ticks"] {

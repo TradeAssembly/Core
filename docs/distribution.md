@@ -857,6 +857,23 @@ while the attached agent's allowlist denies this owner tool. Candidate binary
 rebuild, the explicit R2 test (1/1), and targeted strict Clippy passed. This
 does not yet prove the crash/unknown variants, and no final release gate ran.
 
+R2 explicit-absence continuation: the controlled broker now reports an
+explicit 404 lookup as a failed, bounded `provider_order_absent` response.
+The host retains envelope/output-policy, declared-schema and installed-schema
+digest checks, but does not require a failed response to contain a successful
+order payload. A focused schema regression passed, including digest tampering.
+The actual candidate stdio → real Warden → production SRT → controlled sink
+test passed 1/1 in 130.38 seconds: an order rejected before sink commit left
+no sink row, lookup persisted `plugin_broker_recovery_outcomes.state=absent`,
+same-key replay stayed fail-closed, and a subsequent distinct order was denied
+before sink dispatch. Strict targeted Clippy passed. This does not establish
+unavailable/unknown lookup behavior: that case needs a fresh isolated rig,
+because the absent-order rig denied the next distinct submit. Nor does this
+qualify a packaged artifact or close the remaining R1/R2 matrix or R3–R6.
+Next: isolate the unknown-lookup case, then concurrent duplicate and
+stale/replaced-session proof; settle isolated Live source-free policy injection
+without enabling the shipping Live policy.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

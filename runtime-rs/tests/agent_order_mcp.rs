@@ -44,6 +44,7 @@ struct ControlledHttpSink {
 struct ControlledSinkState {
     db: PathBuf,
     drop_next_response: AtomicBool,
+    reject_next_submit: AtomicBool,
 }
 
 impl ControlledHttpSink {
@@ -59,6 +60,7 @@ impl ControlledHttpSink {
         let state = Arc::new(ControlledSinkState {
             db: db.clone(),
             drop_next_response: AtomicBool::new(false),
+            reject_next_submit: AtomicBool::new(false),
         });
         let server_state = Arc::clone(&state);
         let thread = std::thread::spawn(move || {
@@ -91,6 +93,10 @@ impl ControlledHttpSink {
     fn drop_next_response(&self) {
         self.state.drop_next_response.store(true, Ordering::SeqCst);
     }
+
+    fn reject_next_submit(&self) {
+        self.state.reject_next_submit.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Drop for ControlledHttpSink {
@@ -117,6 +123,9 @@ async fn controlled_http_order(
         .ok_or(StatusCode::BAD_REQUEST)?;
     let is_lookup = request["operation"] == "broker.order_lookup.paper"
         || request["operation"] == "broker.order_lookup";
+    if !is_lookup && state.reject_next_submit.swap(false, Ordering::SeqCst) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     if is_lookup && !state.db.exists() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -538,6 +547,53 @@ fn installed_stdio_paper_order_recovers_ambiguous_crash_once() {
         replay_after_crash["structuredContent"]["status"], "submitted",
         "{replay_after_crash:#?}"
     );
+    let absent_order = json!({"activation_id":activation_id,
+        "plugin_instance_ref":"mandate-paper",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-absent-order","quantity":"1"},
+        "idempotency_key":"stdio-absent-order"});
+    sink.reject_next_submit();
+    let absent_submit = after_crash.tool("tradeassembly.order.submit", absent_order.clone());
+    assert_eq!(
+        absent_submit["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{absent_submit:#?}"
+    );
+    let absent_lookup = after_crash.tool(
+        "tradeassembly.order.reconcile",
+        json!({"original_idempotency_key":"stdio-absent-order",
+            "idempotency_key":"stdio-absent-observation"}),
+    );
+    assert_eq!(
+        absent_lookup["structuredContent"]["error"]["code"], "plugin_order_reconciliation_required",
+        "{absent_lookup:#?}"
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .get_json(
+                "plugin_broker_recovery_outcomes",
+                "stdio-absent-observation"
+            )
+            .unwrap()
+            .unwrap()["state"],
+        "absent"
+    );
+    let absent_replay = after_crash.tool("tradeassembly.order.submit", absent_order);
+    assert_eq!(
+        absent_replay["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{absent_replay:#?}"
+    );
+    let blocked_after_absence = json!({"activation_id":activation_id,
+        "plugin_instance_ref":"mandate-paper",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-after-absent-order","quantity":"1"},
+        "idempotency_key":"stdio-after-absent-order"});
+    let blocked = after_crash.tool("tradeassembly.order.submit", blocked_after_absence);
+    assert_eq!(
+        blocked["structuredContent"]["error"]["code"], "agent_order_submission_denied",
+        "{blocked:#?}"
+    );
     let evidence =
         rusqlite::Connection::open_with_flags(&sink.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -547,6 +603,14 @@ fn installed_stdio_paper_order_recovers_ambiguous_crash_once() {
         })
         .unwrap();
     assert_eq!(counts, (3, 3));
+    let absent_submissions: i64 = evidence
+        .query_row(
+            "SELECT COUNT(*) FROM orders WHERE client_id='stdio-absent-order'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(absent_submissions, 0);
     let ambiguous_submissions: i64 = evidence
         .query_row(
             "SELECT submissions FROM orders WHERE client_id='stdio-ambiguous-order'",

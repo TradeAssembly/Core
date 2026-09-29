@@ -87,12 +87,30 @@ fn run() -> Result<(), &'static str> {
                 "accountRef":account_ref,"body":body}))
             .send()
             .map_err(|_| "controlled_sink_unavailable")?;
+        if is_lookup && response.status().as_u16() == 404 {
+            // An explicit negative lookup is evidence of absence; a timeout or
+            // other sink failure is not. The real host maps this provider code
+            // to a durable absent recovery outcome without replaying the order.
+            let absent = PluginResponse {
+                schema_version: "1".into(),
+                request_id: request.request_id,
+                status: ResponseStatus::Failed,
+                response_schema: "schema://tradeassembly.f2-controlled-broker/order@1".into(),
+                payload: json!({}),
+                provider_outcome: ProviderOutcome {
+                    code: "provider_order_absent".into(),
+                    provider_request_id: None,
+                    provider_reference: None,
+                },
+                reconciliation: Reconciliation::Required,
+                evidence_references: vec![],
+                redacted_diagnostics: vec![],
+            };
+            return write_response(io::stdout().lock(), &absent, DEFAULT_MAX_ENVELOPE_BYTES)
+                .map_err(|_| "controlled_response_write_failed");
+        }
         if !response.status().is_success() {
-            return Err(if response.status().as_u16() == 404 {
-                "controlled_order_not_found"
-            } else {
-                "controlled_sink_unavailable"
-            });
+            return Err("controlled_sink_unavailable");
         }
         let payload: Value = response.json().map_err(|_| "controlled_sink_invalid")?;
         let provider_order_id = payload["providerOrderId"]

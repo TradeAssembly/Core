@@ -212,7 +212,9 @@ fn validate_response_schema_document(
         serde_json::from_slice(&bytes).map_err(|_| "plugin_response_schema_invalid".to_string())?;
     let validator = jsonschema::validator_for(&schema)
         .map_err(|_| "plugin_response_schema_invalid".to_string())?;
-    if !validator.is_valid(&response.payload) {
+    // A provider failure has no success payload. Its envelope, declared schema,
+    // installed schema digest, and lexical output policy are still verified.
+    if response.status != ResponseStatus::Failed && !validator.is_valid(&response.payload) {
         return Err("plugin_response_payload_schema_mismatch".to_string());
     }
     Ok(())
@@ -892,6 +894,10 @@ mod tests {
             validate_response_schema_document(&package, &wire_response(json!({"account": 42}))),
             Err("plugin_response_payload_schema_mismatch".to_string())
         );
+        let mut failed = wire_response(json!({}));
+        failed.status = ResponseStatus::Failed;
+        failed.provider_outcome.code = "provider_order_absent".into();
+        assert!(validate_response_schema_document(&package, &failed).is_ok());
         fs::write(
             directory.path().join("schemas/account.json"),
             br#"{"type":"object"}"#,
@@ -902,6 +908,10 @@ mod tests {
                 &package,
                 &wire_response(json!({"account": "connected"}))
             ),
+            Err("plugin_response_schema_digest_mismatch".to_string())
+        );
+        assert_eq!(
+            validate_response_schema_document(&package, &failed),
             Err("plugin_response_schema_digest_mismatch".to_string())
         );
     }

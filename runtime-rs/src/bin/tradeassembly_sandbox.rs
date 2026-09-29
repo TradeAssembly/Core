@@ -4,29 +4,25 @@
 //! it resolves the two files from its own bundle, scrubs Node/dynamic-loader
 //! injection variables, and replaces itself with the bundled Node process.
 
-#[cfg(any(target_os = "macos", test))]
 use std::ffi::{OsStr, OsString};
-#[cfg(any(target_os = "macos", test))]
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "macos", test))]
 use std::process::Command;
 use std::process::ExitCode;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(not(target_os = "windows"))]
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(not(target_os = "windows"))]
 const NODE_RELATIVE: &str = "runtime/node/bin/node";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "windows")]
+const NODE_RELATIVE: &str = "runtime/node/bin/node.exe";
 const CLI_RELATIVE: &str = "runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js";
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BundlePaths {
     node: PathBuf,
     cli: PathBuf,
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn resolve_bundle_paths(root: &Path) -> Result<BundlePaths, ()> {
     let root = root.canonicalize().map_err(|_| ())?;
     let node = contained_file(&root, &root.join(NODE_RELATIVE))?;
@@ -34,7 +30,6 @@ fn resolve_bundle_paths(root: &Path) -> Result<BundlePaths, ()> {
     Ok(BundlePaths { node, cli })
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn contained_file(root: &Path, candidate: &Path) -> Result<PathBuf, ()> {
     let resolved = candidate.canonicalize().map_err(|_| ())?;
     if !resolved.starts_with(root) {
@@ -46,7 +41,6 @@ fn contained_file(root: &Path, candidate: &Path) -> Result<PathBuf, ()> {
     Ok(resolved)
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn bundle_root(executable: &Path) -> Result<PathBuf, ()> {
     let executable = executable.canonicalize().map_err(|_| ())?;
     let bin = executable.parent().ok_or(())?;
@@ -56,13 +50,11 @@ fn bundle_root(executable: &Path) -> Result<PathBuf, ()> {
     bin.parent().map(Path::to_path_buf).ok_or(())
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn forwarded_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     args.into_iter().collect()
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn scrubbed_environment(command: &mut Command) {
+fn scrubbed_environment(command: &mut Command) -> Result<(), ()> {
     command.env_clear();
     for name in [
         "HOME",
@@ -75,26 +67,66 @@ fn scrubbed_environment(command: &mut Command) {
             command.env(name, value);
         }
     }
+    #[cfg(not(target_os = "windows"))]
     command.env("PATH", SYSTEM_PATH);
+    #[cfg(target_os = "windows")]
+    {
+        // SRT's dedicated-account broker needs Windows system/profile paths,
+        // not the host PATH or arbitrary Node/process-injection variables.
+        let system = PathBuf::from(std::env::var_os("SystemRoot").ok_or(())?);
+        if !system.is_absolute() || !system.join("System32/cmd.exe").is_file() {
+            return Err(());
+        }
+        for name in [
+            "SystemRoot",
+            "WINDIR",
+            "ProgramData",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "USERPROFILE",
+            "TEMP",
+            "TMP",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        command.env("ComSpec", system.join("System32/cmd.exe"));
+        command.env(
+            "PATH",
+            std::env::join_paths([
+                system.join("System32"),
+                system.clone(),
+                system.join("System32/Wbem"),
+                system.join("System32/WindowsPowerShell/v1.0"),
+            ])
+            .map_err(|_| ())?,
+        );
+    }
+    Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn exec_bundled(args: Vec<OsString>) -> Result<(), ()> {
-    use std::os::unix::process::CommandExt;
-
+fn bundled_command(args: Vec<OsString>) -> Result<Command, ()> {
     let executable = std::env::current_exe().map_err(|_| ())?;
     let root = bundle_root(&executable)?;
     let paths = resolve_bundle_paths(&root)?;
     let mut command = Command::new(paths.node);
     command.arg(paths.cli);
     command.args(forwarded_args(args.into_iter().skip(1)));
-    scrubbed_environment(&mut command);
+    scrubbed_environment(&mut command)?;
+    Ok(command)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn exec_bundled(args: Vec<OsString>) -> Result<(), ()> {
+    use std::os::unix::process::CommandExt;
+    let mut command = bundled_command(args)?;
     let error = command.exec();
     let _ = error;
     Err(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn main() -> ExitCode {
     if exec_bundled(std::env::args_os().collect()).is_err() {
         eprintln!("tradeassembly-sandbox: bundled runtime unavailable");
@@ -104,7 +136,25 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn main() -> ExitCode {
+    match bundled_command(std::env::args_os().collect())
+        .and_then(|mut command| command.status().map_err(|_| ()))
+    {
+        Ok(status) => ExitCode::from(
+            status
+                .code()
+                .and_then(|code| u8::try_from(code).ok())
+                .unwrap_or(1),
+        ),
+        Err(()) => {
+            eprintln!("tradeassembly-sandbox: bundled runtime unavailable");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn main() -> ExitCode {
     eprintln!("tradeassembly-sandbox: unsupported runtime platform");
     ExitCode::FAILURE
@@ -165,5 +215,21 @@ mod tests {
             OsString::from("quotes='\" and \\slashes"),
         ];
         assert_eq!(forwarded_args(args.clone()), args);
+    }
+
+    #[test]
+    fn launcher_drops_injection_and_credential_environment() {
+        let mut command = Command::new("not-executed");
+        command.env("NODE_OPTIONS", "fixture-injection");
+        command.env("AWS_SECRET_ACCESS_KEY", "fixture-not-a-secret");
+        command.env("PATH", "fixture-untrusted-path");
+        scrubbed_environment(&mut command).expect("native system environment");
+        let names: Vec<_> = command.get_envs().map(|(name, _)| name).collect();
+        assert!(!names.contains(&OsStr::new("NODE_OPTIONS")));
+        assert!(!names.contains(&OsStr::new("AWS_SECRET_ACCESS_KEY")));
+        assert!(command
+            .get_envs()
+            .any(|(name, value)| name == "PATH"
+                && value != Some(OsStr::new("fixture-untrusted-path"))));
     }
 }

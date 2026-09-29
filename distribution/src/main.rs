@@ -60,6 +60,15 @@ fn execute(args: &[String]) -> Result<i32> {
         "status" => install::status(&root)?,
         "rollback" => install::rollback(&root)?,
         "run" => return install::run(&root, &args[1..]),
+        "freeze-native" => {
+            tradeassembly_distribution::native::freeze(
+                Path::new(&required(args, "--input")?),
+                Path::new(&required(args, "--metadata")?),
+                Path::new(&required(args, "--parent")?),
+                Path::new(&required(args, "--out")?),
+            )?;
+            serde_json::json!({"frozen":true,"qualified":false})
+        }
         "pack" => package::pack(
             Path::new(&required(args, "--bundle")?),
             Path::new(&required(args, "--parent")?),
@@ -72,7 +81,7 @@ fn execute(args: &[String]) -> Result<i32> {
             !args.iter().any(|arg| arg == "--candidate"),
         )?,
         "help" | "--help" => {
-            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY --out NEW_PATH; verify --evidence DIRECTORY.");
+            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY --out NEW_PATH; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); verify --evidence DIRECTORY [--candidate].");
             return Ok(0);
         }
         _ => return install::run(&root, args),

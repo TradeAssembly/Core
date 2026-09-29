@@ -13,6 +13,9 @@ semantics. Installation registers the bundled Alpaca package through real local
 Warden, then reaps that temporary authority. Ongoing policy supervision is an
 explicit next command, not a hidden trading or agent activation. See
 docs/distribution.md for platform qualification and stopped-only upgrade limits.
+New native inputs are separately inventoried with `distribution-freeze-native`,
+binding binary digests, architecture headers and pinned Node/SRT versions.
+Freezing inputs neither grants authority nor supplies native qualification.
 
 Agents and deterministic evaluation use the same versioned strategy, authority,
 risk, journal and side-effect machinery. Agent submission does not require a

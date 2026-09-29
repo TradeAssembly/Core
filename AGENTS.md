@@ -13,6 +13,8 @@ EXTRACTION.md identifies the selected source and unresolved harness/license work
 
 Distribution: `cargo xtask distribution-pack` owns frozen-payload packaging;
 `cargo xtask distribution-verify` owns the five-target native evidence matrix.
+`cargo xtask distribution-freeze-native` inventories staged native inputs on
+their actual host; its output is explicitly not native qualification.
 The narrowly whitelisted `packaging/npm/cli.cjs` is native-launch glue only.
 No install scripts, source compilation, re-signing frozen bytes, unsandboxed
 fallback, Apple payment, automatic strategy activation, or active-rig upgrades.

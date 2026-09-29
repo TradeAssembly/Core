@@ -13,6 +13,7 @@ use std::{
 use walkdir::WalkDir;
 
 pub mod install;
+pub mod native;
 pub mod package;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -130,7 +131,46 @@ pub fn relative(path: &Path) -> Result<()> {
     {
         return Err("unsafe_payload_path".into());
     }
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            return Err("unsafe_payload_path".into());
+        };
+        let name = name.to_str().ok_or("unsafe_payload_path")?;
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if name.ends_with(['.', ' '])
+            || name
+                .chars()
+                .any(|c| c.is_control() || "<>\"|?*".contains(c))
+            || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || ["COM", "LPT"].iter().any(|prefix| {
+                stem.strip_prefix(prefix).is_some_and(|suffix| {
+                    suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9')
+                })
+            })
+        {
+            return Err("unsafe_payload_path".into());
+        }
+    }
     Ok(())
+}
+
+/// Convert filesystem-native separators to canonical archive/manifest names.
+/// Serialized payload paths still reject literal backslashes on every host.
+pub fn portable_name(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            return Err("unsafe_payload_path".into());
+        };
+        parts.push(name.to_str().ok_or("unsafe_payload_path")?);
+    }
+    let name = parts.join("/");
+    relative(Path::new(&name))?;
+    Ok(name)
 }
 
 pub fn verify_bundle(root: &Path, release: &Release) -> Result<()> {
@@ -236,9 +276,9 @@ pub fn archive(root: &Path, destination: &Path) -> Result<()> {
             .path()
             .strip_prefix(root)
             .map_err(|_| "archive_inventory_failed")?;
-        relative(name)?;
+        let name = portable_name(name)?;
         builder
-            .append_path_with_name(entry.path(), name)
+            .append_path_with_name(entry.path(), &name)
             .map_err(|_| "archive_write_failed")?;
     }
     builder
@@ -375,11 +415,34 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_paths_and_links() {
-        for path in ["../escape", "/absolute", "C:\\escape", "a/../b", "a:b"] {
+        for path in [
+            "../escape",
+            "/absolute",
+            "C:\\escape",
+            "a/../b",
+            "a:b",
+            "bin/NUL",
+            "bin/COM1.txt",
+            "bin/LPT9",
+            "bin/trailing.",
+            "bin/trailing ",
+            "bin/wild*card",
+        ] {
             assert!(relative(Path::new(path)).is_err());
         }
         assert!(safe_link(Path::new("bin/tool"), Path::new("../../escape")).is_err());
         assert!(safe_link(Path::new("bin/tool"), Path::new("../lib/tool")).is_ok());
+    }
+
+    #[test]
+    fn native_names_are_serialized_with_portable_separators() {
+        let native = PathBuf::from("runtime")
+            .join("node")
+            .join("bin")
+            .join("node.exe");
+        assert_eq!(portable_name(&native).unwrap(), "runtime/node/bin/node.exe");
+        assert!(portable_name(Path::new("../escape")).is_err());
+        assert!(relative(Path::new("bin/good name.exe")).is_ok());
     }
 
     #[test]

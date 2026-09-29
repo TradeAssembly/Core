@@ -197,9 +197,19 @@ fn bundled_sandbox_command() -> Option<String> {
     if bin.file_name()? != "bin" || !root.join("bundle.json").is_file() {
         return None;
     }
-    let launcher = bin.join("tradeassembly-sandbox");
+    let launcher = bin.join(if cfg!(windows) {
+        "tradeassembly-sandbox.exe"
+    } else {
+        "tradeassembly-sandbox"
+    });
     if !launcher.is_file()
-        || !root.join("runtime/node/bin/node").is_file()
+        || !root
+            .join(if cfg!(windows) {
+                "runtime/node/bin/node.exe"
+            } else {
+                "runtime/node/bin/node"
+            })
+            .is_file()
         || !root
             .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js")
             .is_file()

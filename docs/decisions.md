@@ -6,6 +6,8 @@
   payment/notarization or lifecycle install scripts. Warden digest/state migrations
   are excluded from v1 upgrades, which require a stopped rig and preserve identity.
   Distribution proof is distinct from runtime and public-release qualification.
+  Native freezing requires the actual host, exact input digests and pinned
+  Node/SRT versions. It cannot replace controlled-sink or OS-enforcement tests.
 
 - `portfolio_reservations` is the initial accounting kernel, not an authorization
   tool or activated broker feature. It uses an owner/account-scoped atomic storage

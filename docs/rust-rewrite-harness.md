@@ -3,6 +3,10 @@
 Core's owning commands are `just` and `cargo xtask`. Product owns integrated
 release decisions; Studio owns its frontend and presentation contracts.
 
+`cargo xtask distribution-freeze-native` validates and inventories explicitly
+staged native inputs on the target host. It preserves the original Mac arm64
+bundle and reports `qualified: false`; runtime enforcement receipts are separate.
+
 `cargo xtask distribution-pack` packages an explicitly supplied frozen bundle
 and parent lock; it never recompiles or signs that payload. The Rust
 `tradeassembly-distribution` crate owns verification and installation. The only

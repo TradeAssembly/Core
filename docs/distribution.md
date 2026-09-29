@@ -84,6 +84,7 @@ lock, not a fresh runtime build:
 ```text
 cargo build --release --locked -p tradeassembly-distribution
 cargo xtask distribution-pack --bundle BUNDLE --parent LOCK --version 0.1.0-beta.1 --installer INSTALLER --out NEW_DIRECTORY
+cargo xtask distribution-freeze-native --input STAGING --metadata INPUTS_JSON --parent LOCK --out NEW_NATIVE_BUNDLE
 cargo test --locked -p tradeassembly-distribution
 TRADEASSEMBLY_DISTRIBUTION_PACKAGE=NEW_DIRECTORY/tradeassembly-darwin-arm64 cargo test --locked -p tradeassembly-distribution --test packaged_install -- --ignored
 TRADEASSEMBLY_DISTRIBUTION_CANDIDATE=NEW_DIRECTORY cargo test --locked -p tradeassembly-distribution --test package_managers -- --ignored
@@ -103,6 +104,15 @@ runtime locks can update the installer's candidate pins without invalidating
 structurally valid previous installation records. Changed Warden or state
 compatibility still requires an explicit, separately qualified migration.
 
+For a new target, native freezing requires an explicit schema-1 input descriptor
+(`distribution/src/native.rs`), the actual target host, three source revisions,
+four binary digests, and the Alpaca archive/manifest digests. It checks binary
+architecture, Node `22.23.2`, locked and installed SRT `0.0.67`, contained links,
+and complete payload inventory. Windows staged links are rejected. This is
+trusted-build-input validation, not source attestation or runtime qualification;
+the command explicitly reports `qualified: false`. It refuses to recreate the
+original Mac arm64 bundle.
+
 ## Current implementation and remaining release gaps
 
 The Rust distribution crate and npm shim implement packing, byte verification,
@@ -112,7 +122,7 @@ Do not mark the five-target release complete from these local results.
 
 Checkpoint (2026-09-28): branch `codex/f2-npm-distribution`, based on Core
 `a16d4a769258fb7354d9102017533850020f8f2c`. Local implementation commits
-`e1557c9` and `890eb5c` precede the configuration-preservation checkpoint.
+`e1557c9`, `890eb5c`, and `3abcafb` precede the native portability checkpoint.
 No push, merge, npm publication, or namespace-ownership verification has occurred.
 The local candidate is `target/npm-preserved-candidate`, version `0.1.0-beta.1`;
 its installer SHA-256 is
@@ -135,21 +145,33 @@ whitelist/public-boundary/architecture checks. Native test logs are
 five-target native or registry qualification; the local candidate remains
 `publishable: false`.
 
-The required full `just verify` / `cargo xtask verify` gate is **not passing**.
-Its workspace Clippy and pinned sandbox dependency setup passed, but workspace
-test linking exhausted disk (`errno=28`, including `backend_parity`) even with
-serialized compilation, disabled incremental/debug output, and stripped symbols.
-Evidence is preserved in `target/core-verification.log`; only this task's bulky
-build cache was cleaned. Workspace tests/nextest and subsequent full-gate stages
-were not completed. Do not claim merge or release readiness from targeted checks.
-No owned test processes remain running.
+The required full `just verify` (which invokes `cargo xtask verify`) **passed at
+commit `3abcafb`** after reclaiming disposable package caches and using serialized,
+stripped compilation. Workspace tests, strict Clippy, dependency/security/source
+gates and nextest passed (1301 passed, 51 explicitly skipped). Log:
+`target/core-verification.log`, SHA-256
+`674bd7e78065ad7b12809f6a31f600cf38062c44df19ff7f3555ed59edf55e41`.
+Clean-revision source archive qualification also passed at `3abcafb`; log
+`target/source-archive-verification.log`, SHA-256
+`4a19e81fe8ce983f81ac9bcbed02013b5f300a4d147b8f890d6e930e1ac64ce0`.
+These prove that checkpoint, not later native portability edits. The integration
+gate must be rerun for those edits. No skip is claimed as native enforcement.
 
 Native target production remains a release dependency. The existing
-`xtask/src/bundle_local.rs` is Mac arm64 only; the frozen
-`runtime-rs/src/bin/tradeassembly_sandbox.rs` rejects non-Mac platforms. New target
+`xtask/src/bundle_local.rs` is Mac arm64 only. The new source sandbox launcher
+supports Linux/Windows dispatch and Windows `.exe` lookup, but the frozen Mac
+launcher remains unchanged. New target
 payloads need native Node, Warden, Alpaca and sandbox prerequisite packaging,
 including Windows SRT installation/ACL checks, and actual controlled-sink
 qualification. The distribution wrapper cannot cure a missing native runtime.
+The pinned Warden SQLite authority explicitly rejects non-Unix secure integrity
+locking and integrity-key creation/loading (`warden-storage-sqlite/src/lib.rs`).
+Thus native Windows requires a separately qualified authority-storage port; it
+cannot pass by changing the package name or using permissive file access.
+GitHub Core has no native workflows/self-hosted runners; Warden and Alpaca have
+no published native sidecar releases. Alpaca's package builder also needs native
+Windows `.exe` path handling. These are concrete producer/qualification gaps,
+not npm installer test failures.
 Authenticated npm namespace ownership, package publication/provenance, and public
 registry installation tests are still required. Apple notarization remains
 excluded. Keep one current-state section here rather than per-repair plans.

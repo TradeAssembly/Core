@@ -19,11 +19,11 @@ fn main() {
         "architecture-check" => architecture_check::run_architecture_check_command(rest, root),
         "contract" => architecture_check::run_contract_check_command(rest, root),
         "bundle-local" => bundle_local::run(rest, root),
-        "distribution-pack" | "distribution-verify" => {
-            let subcommand = if args[0] == "distribution-pack" {
-                "pack"
-            } else {
-                "verify"
+        "distribution-pack" | "distribution-verify" | "distribution-freeze-native" => {
+            let subcommand = match args[0].as_str() {
+                "distribution-pack" => "pack",
+                "distribution-freeze-native" => "freeze-native",
+                _ => "verify",
             };
             std::process::Command::new("cargo")
                 .args([
@@ -44,7 +44,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-verify");
+            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-freeze-native, distribution-verify");
             0
         }
         _ => {

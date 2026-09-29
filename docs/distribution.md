@@ -124,7 +124,9 @@ Checkpoint (2026-09-28): branch `codex/f2-npm-distribution`, based on Core
 `a16d4a769258fb7354d9102017533850020f8f2c`. Local implementation commits
 `e1557c9`, `890eb5c`, `3abcafb`, and `36dd8aa` cover the installer and native
 portability checkpoints. The latter is the source revision qualified below.
-No push, merge, npm publication, or namespace-ownership verification has occurred.
+The implementation branch is pushed as draft PR
+https://github.com/TradeAssembly/Core/pull/2. No merge, npm publication, or
+namespace-ownership verification has occurred. GitHub CI is not claimed green.
 The local candidate is `target/npm-qualified-candidate`, version `0.1.0-beta.1`;
 its installer SHA-256 is
 `15a5703a0431c412061630f5ed5e435f45416eea1c5783a3fb7f5289866d53aa`,

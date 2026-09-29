@@ -1028,6 +1028,16 @@ fn installed_stdio_unknown_lookup_fails_closed_without_replay() {
 #[test]
 #[ignore = "requires explicit candidate Core, Warden, controlled broker, and SRT binaries"]
 fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
+    controlled_live_order_case(true);
+}
+
+#[test]
+#[ignore = "requires explicit candidate Core, Warden, controlled broker, and SRT binaries"]
+fn installed_stdio_shipping_live_policy_denies_order() {
+    controlled_live_order_case(false);
+}
+
+fn controlled_live_order_case(override_live_policy: bool) {
     let candidate = PathBuf::from(
         std::env::var_os("F2_TEST_RUNTIME_BINARY").expect("candidate Core binary required"),
     )
@@ -1045,7 +1055,7 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let mut warden = controlled_warden::ControlledWarden::start(&root);
-    let proxy = ControlledLivePolicyProxy::start(warden.port);
+    let proxy = override_live_policy.then(|| ControlledLivePolicyProxy::start(warden.port));
     let sink = ControlledHttpSink::start(&root);
     let db = root.join("runtime.db");
     let layer = RuntimeConfigLayer {
@@ -1053,7 +1063,10 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
         database_path: Some(db.display().to_string()),
         artifact_root: Some(root.join("artifacts").display().to_string()),
         oidc_profile: Some("local_owner".into()),
-        warden_sidecar_url: Some(proxy.url.clone()),
+        warden_sidecar_url: Some(proxy.as_ref().map_or_else(
+            || format!("http://127.0.0.1:{}", warden.port),
+            |proxy| proxy.url.clone(),
+        )),
         warden_token_ref: Some(format!(
             "file://{}",
             root.join("warden/warden.token").display()
@@ -1183,6 +1196,46 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
             "localLiveMandateId":mandate_id,
             "acknowledgementIds":["user_logic","user_risk","no_advice"]}),
     );
+    if !override_live_policy {
+        assert_eq!(activated.status, 200, "valid mandate can activate locally");
+        let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
+        let mut client = McpClient::start(&candidate, &config_path, &root);
+        assert!(client.call("initialize", json!({}))["result"].is_object());
+        let attached = client.tool(
+            "tradeassembly.agent.session.attach",
+            json!({"deployment_id":deployment.deployment_id,
+                "activation_id":activation_id,"idempotency_key":"shipping-live-attach"}),
+        );
+        assert_eq!(attached["isError"], false, "valid Live session can attach");
+        let denied = client.tool(
+            "tradeassembly.order.submit",
+            json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-live",
+                "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+                    "timeInForce":"gtc","clientOrderId":"shipping-live-denied","quantity":"1"},
+                "idempotency_key":"shipping-live-denied"}),
+        );
+        assert_eq!(
+            denied["structuredContent"]["error"]["code"], "agent_order_submission_denied",
+            "shipping Live order denied"
+        );
+        assert!(
+            !sink.db.exists(),
+            "shipping denial cannot reach broker sink"
+        );
+        let decisions = service
+            .runtime()
+            .storage
+            .list_json("warden_decisions")
+            .unwrap();
+        assert!(decisions.iter().any(|(_, decision)| {
+            decision["request"]["action"] == "order.submit.live"
+                && decision["decision"]["decision"] == "deny"
+        }));
+        client.close();
+        warden.assert_healthy();
+        warden.stop();
+        return;
+    }
     assert_eq!(
         activated.status, 200,
         "code={} blockers={:?}",
@@ -1357,7 +1410,7 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
         (1, 1),
         "stale session cannot add a sink effect"
     );
-    proxy.assert_used();
+    proxy.as_ref().unwrap().assert_used();
     warden.assert_healthy();
     for namespace in ["scheduler_state", "execution_ticks"] {
         assert!(service

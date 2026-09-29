@@ -944,9 +944,32 @@ recorded one effect; that source-free Live test passed 1/1 in 40.84 seconds.
 This is concurrent in-flight MCP input, not simultaneous handler execution:
 the stdio server serializes its dispatch, and a second process cannot attach
 to the active deployment. The lower adapter's simultaneous-call test covers
-the underlying race. R2 still needs the shipping-Live-deny negative and
-final packaged-artifact rerun; these source-free tests use an unpackaged
-candidate binary.
+the underlying race. These source-free tests use an unpackaged candidate
+binary.
+
+Shipping Live negative checkpoint: the same disposable setup now runs without
+the test-only policy adapter. A valid local mandate permits activation and
+agent session attachment, but the embedded shipping policy denies
+`order.submit.live` at the real Warden C5 broker boundary. The source-free
+stdio order returns `agent_order_submission_denied`, a durable Warden deny
+decision exists, and the controlled sink is untouched. The targeted test
+passed 1/1 in 27.60 seconds. Activation itself is not a shipping-policy deny
+gate; an earlier test assumption to that effect failed and was corrected.
+The combined opt-in `agent_order_mcp` regression passed 4/4 in 130.88
+seconds with separate disposable state. This is an unpackaged candidate
+binary, not packaged-artifact or five-target evidence, so R2 is not closed.
+
+R1 command checkpoint: the exact `cargo test --offline --locked -p
+tradeassembly-runtime agent_order` invocation failed at link time with
+`No space left on device`, before it could execute its intended test matrix.
+Four identified, regenerable non-candidate Rust test executables were
+removed from this worktree's `target/debug/deps`, recovering about 500 MB.
+The narrower `cargo test --offline --locked -p tradeassembly-runtime --lib
+agent_order` then passed 2/2. This does not substitute for the plan's exact
+R1 command or prove its complete negative matrix. Remaining R1 proof must
+bind each named denial to zero controlled-sink submissions and preserve the
+deterministic path; rerun the exact command after sufficient build space is
+available.
 
 ### Historical execution checkpoint — before the amendment
 

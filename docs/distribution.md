@@ -2,9 +2,10 @@
 
 The canonical F2 plan remains Product's
 `product/release-plans/2026-09-23-f2-implementation-completion-plan.md`.
-This document specifies its separately qualified distribution layer, not a new
-runtime release lock. No Apple payment, notarization, broker orders, or trading
-activation is authorized by an install or upgrade.
+This document specifies its separately qualified distribution layer and the
+bounded runtime repairs required to qualify that distribution. The amendment
+below controls older packaging-only instructions. No Apple payment, notarization,
+broker orders, or trading activation is authorized by an install or upgrade.
 
 ## Frozen input and proof matrix
 
@@ -12,8 +13,10 @@ The parent unsigned-cohort lock SHA-256 is
 `222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
 The Mac arm64 bundle manifest SHA-256 is
 `6740c7d7f4e8a692ff005dd18b6dc2656883eb8e366253e4e8e6aa054108f5dc`.
-Packaging must not rebuild, re-sign, or edit its 846 payload files. New targets
-must have separate native qualification, never copied Mac receipts.
+Preserve these baseline artifacts and their 846 payload files unchanged. A new
+candidate may be built in a separate directory under the amendment below; it
+receives its own hashes and qualification. All five targets, including the new
+Mac arm64 candidate, require evidence for their actual bytes.
 
 | Requirement | Owner / deterministic acceptance | Evidence |
 | --- | --- | --- |
@@ -79,8 +82,9 @@ acceptance, not filled with assertions based on compilation or mocked brokers.
 
 ## Maintainer acceptance commands
 
-Use an absolute, new output directory and the actual locked bundle and parent
-lock, not a fresh runtime build:
+Use absolute, new output directories and the selected candidate's qualified
+bundle and evidence. The commands below describe the original baseline; the
+amendment adds candidate qualification and supersedes its fixed version/pins:
 
 ```text
 cargo build --release --locked -p tradeassembly-distribution
@@ -100,9 +104,9 @@ preservation, and continued operation after package-manager directories are
 deleted. They do not connect Alpaca accounts or place broker orders. The npm/pnpm
 test is offline local-tarball evidence, explicitly not registry evidence.
 
-This cohort deliberately fixes the current Mac arm64 payload. Later qualified
-runtime locks can update the installer's candidate pins without invalidating
-structurally valid previous installation records. Changed Warden or state
+The original cohort fixes its Mac arm64 payload. The amended candidate contract
+updates candidate pins without invalidating structurally valid previous
+installation records. Changed Warden or state
 compatibility still requires an explicit, separately qualified migration.
 
 For a new target, native freezing requires an explicit schema-1 input descriptor
@@ -111,8 +115,8 @@ four binary digests, and the Alpaca archive/manifest digests. It checks binary
 architecture, Node `22.23.2`, locked and installed SRT `0.0.67`, contained links,
 and complete payload inventory. Windows staged links are rejected. This is
 trusted-build-input validation, not source attestation or runtime qualification;
-the command explicitly reports `qualified: false`. It refuses to recreate the
-original Mac arm64 bundle.
+the command explicitly reports `qualified: false`. Preserve the original Mac
+arm64 bundle; extend this command for a separately identified new Mac candidate.
 
 ## Current implementation and remaining release gaps
 
@@ -202,10 +206,10 @@ distribution is in scope; it does not certify M7/M8 or a production SLA.
 
 Resume Core branch `codex/f2-npm-distribution` and draft PR #2 at `520be81`.
 The worktree was clean when this goal was defined; no worker agents remain live.
-Reuse the qualified Mac candidate and recorded checks. Preserve the frozen Mac
-inventory and parent lock byte-for-byte. New targets receive independent native
-qualification; they do not inherit Mac proof or require rerunning unchanged
-M0–M6 captures. Revalidate only evidence whose actual inputs change.
+Reuse the original Mac candidate as baseline/upgrade input and preserve its
+inventory and parent lock byte-for-byte. Follow the amendment below for the
+replacement candidate and runtime boundary repairs. Targets receive independent
+native qualification; revalidate evidence whose actual inputs change.
 
 | Step | Bounded outcome and owning surfaces | Deterministic exit |
 | --- | --- | --- |
@@ -277,7 +281,8 @@ not required for customer binary/npm installation and is not added to this goal.
 
 Native builders use standard GitHub runner labels `macos-15-intel`,
 `ubuntu-22.04`, `ubuntu-22.04-arm`, and `windows-2022`. Preserve the already
-frozen Mac arm64 bundle. Producer workflows run in their owning private repos;
+frozen Mac arm64 bundle and qualify its replacement on a native arm64 Mac.
+Producer workflows run in their owning private repos;
 Core never receives private source or a broad personal token. Root downloads
 producer artifacts with authenticated `gh run download`, verifies run/head SHA,
 target and digests, then stages only non-secret binaries and notices as candidate
@@ -334,7 +339,303 @@ The capture command and composite controlled-boundary tests are implementation
 requirements, not existing passing evidence. Direct sink tests alone, current
 Warden prepare/receipt tests alone, and cross-compilation do not satisfy them.
 
-### Current execution checkpoint
+### Runtime repair and candidate amendment — planned, execution stopped
+
+This amendment supersedes packaging-only restrictions and the historical
+Paper-only interpretation below. The user requested this plan on 2026-09-29
+and explicitly instructed that execution and the new goal must not start yet.
+The existing goal remains blocked. The goal text at the end of this amendment
+is a draft for later activation with **GPT-6 Sol Medium**, not an active goal.
+
+#### Settled scope and design
+
+- Preserve the original bundle and M0–M6 lock at the hashes above. Treat them
+  as immutable provenance and upgrade inputs. Build a new candidate separately;
+  old evidence does not certify changed runtime bytes. No M7/M8 work is added.
+- Add explicit `tradeassembly.order.submit` and
+  `tradeassembly.order.reconcile` MCP tools. These names are the planned API,
+  not existing functionality. Submission accepts execution/run identity,
+  selected broker instance, caller-defined order, and an idempotency key.
+  Reconciliation accepts an existing submission/receipt identity and its own
+  idempotency key. Never accept a caller-authored owner, lease, Warden permit,
+  risk verdict, or capability grant as authority. Reuse existing order schema
+  and stored configuration; reject conflicting mode/account overrides.
+- Bind both tools to the existing authenticated MCP execution context from
+  `cli/external_mcp.rs` / `agent_runner/external_session.rs`. Check identity,
+  tool grant, current lease/fencing token, deployment/run/activation binding,
+  strategy/configuration revision, broker/account binding, current controls,
+  risk limits and authorization before dispatch. Recheck mutable authority at
+  the existing commit/dispatch boundary. A bare setup connection cannot submit.
+- Route through the shared service and broker submission/recovery machinery.
+  Preserve the deterministic evaluator's rejection of externally driven ticks;
+  agent submission requires no scheduler tick. The deterministic path retains
+  its existing behavior and reaches the same applicable risk/authority checks.
+- Keep explicit Paper and Live modes. Extend the shared admission/recovery
+  boundary to Paper where currently bypassed, with mode-appropriate policy.
+  Live continues to require its existing mandate, account and C5 checks.
+  Do not copy Live policy into Paper or let mode changes bypass authorization.
+- An isolated controlled sink may exercise both modes using a test-only
+  authority configuration and disposable activation/session state. It must be
+  a separate executable with no broker credentials or real broker endpoint;
+  enforce that isolation in the driver. Never change the installed user's
+  policy, activate a real trading rig, or send a real broker order. This
+  supersedes the older prohibition's overly broad interpretation of isolated
+  test activation; production Live activation remains outside this work.
+- Persist an intent/dispatch claim before effects. Same key/same input returns
+  the original result or reconciliation-required; changed input with the same
+  key is rejected. Recovery observes and records the broker outcome without
+  blind resubmission. Unknown remains quarantined until a trusted observation
+  resolves it. `studio.agent_run.recover` is not broker-order reconciliation.
+- Correct misleading status documentation: only advertise implemented tools.
+  Do not solve this by exposing arbitrary plugin invocation or by trusting MCP
+  request flags such as `allow_mcp_order_submission` as identity/authority.
+
+#### Ordered implementation and acceptance
+
+Execute these six finite work packages within D1–D5. Finish each package's
+acceptance and record evidence in the existing checkpoint before advancing.
+No separate plan/ledger per repair. The code audit above is the starting point;
+only inspect additional source needed to resolve an actual implementation gap.
+
+**R1 — Define and implement the agent order boundary (D1/D2).**
+Outcome: an attached external agent can submit its chosen order through the
+same enforced machinery and obtain a durable submission identity.
+Files: Core `runtime-rs/src/mcp.rs`, `service.rs`, `cli/mod.rs`,
+`cli/external_mcp.rs`, `agent_runner/external_session.rs`,
+`service/agent_deployment.rs`, new `service/agent_orders.rs`,
+`broker_submission.rs`, `broker_submission/{admission,risk,recovery}.rs`,
+`adapters/plugin_operations.rs`, `service/broker_recovery.rs`, and existing
+policy/schema files only where required by these explicit tools.
+First trace the existing attach-to-service execution context and record the
+exact reused binding types; settle schema fields and error codes before coding.
+Reuse existing storage namespaces and claims where possible. If a schema or
+Warden protocol migration is actually needed, specify it before implementation;
+do not silently declare `f2-local-v1` compatibility.
+Acceptance: targeted Rust cases reject missing attachment, identity mismatch,
+expired/replaced lease, revoked grant, stale configuration, mode/account
+mismatch, pause/kill control, risk violation, missing Live mandate, and Warden
+denial. Each rejection produces zero sink submissions. Accepted Paper and
+isolated Live paths retain exact authority/receipt bindings. Existing
+deterministic-path tests remain green. Test the behavior, not just tool names.
+Commands: `cargo test --locked -p tradeassembly-runtime agent_order` (new named
+test group; require nonzero executed cases), then existing affected admission,
+recovery and deterministic execution tests identified from their exact names.
+Stop this package on passing boundary behavior; no new scheduler, strategy
+language, risk model, UI, agent hosting, or generic plugin API.
+
+**R2 — Prove actual MCP submission and fault recovery (D3).**
+Outcome: a source-free installed binary demonstrates the promised agent loop
+interface, including recovery after a crash or lost response.
+Files: new Core `runtime-rs/tests/agent_order_mcp.rs`, existing
+`tests/common/controlled_warden.rs`, `tests/common/controlled_broker_package.rs`,
+`examples/f2_controlled_broker.rs`, and `tests/local_binary_setup.rs` only as
+needed for shared real-process setup. The driver starts actual packaged Core
+stdio, authenticates/attaches using the supported session path, starts real
+Warden and a controlled sink, and drives the public tools. No direct service
+injection may stand in for the final end-to-end assertion. A simulated
+external-agent driver is sufficient; paid model inference is not required.
+Cases: successful submit; sequential and concurrent duplicate; conflicting-key
+payload; sink commits then drops response; Core restart during uncertain
+outcome; reconciliation with found/absent/unknown outcomes; stale/replaced
+session; revoked authority; risk rejection; clean detach/re-attach. Prove one
+sink effect for an accepted order across duplicate/recovery cases and zero for
+denials. Persist ordered journal/receipt references and observe current state;
+do not prepopulate success evidence or enable a shipping policy exception.
+Command: with explicit new-candidate Core/Warden paths,
+`cargo test --locked -p tradeassembly-runtime --test agent_order_mcp -- --ignored`.
+Require actual executed tests and captured exits/transcripts/sink counts.
+Stop when this finite matrix passes in both applicable modes. Unknown outcomes
+must fail closed; no new automatic strategy promotion or autonomous recovery
+policy beyond existing user-configured behavior.
+
+**R3 — Qualify a replacement candidate and compatibility (D2/D3).**
+Outcome: a new exact-version candidate can be installed, upgraded to and rolled
+back under the existing stopped-rig and state-compatibility rules.
+Files: Core `distribution/src/{lib,native,package,install}.rs`,
+`distribution/tests/{packaged_install,package_managers}.rs`, packaging pins,
+and the existing distribution xtask routing/verification implementation.
+Replace the old Mac-only hardcoded candidate restriction with a versioned,
+explicit candidate descriptor pinned to approved source/artifact hashes and
+the immutable baseline digest. Do not simply remove hash verification. Retain
+strict target, inventory, parent/provenance, installer, tarball and receipt
+bindings; reject baseline-receipt reuse for replacement bytes and tampering.
+Extend native freezing for a new Mac arm64 output without overwriting baseline.
+Select an unused beta version after checking the registry; do not assume a
+specific version remains unpublished. Every target uses that exact version.
+Test baseline-to-candidate upgrade on Mac arm64 with unchanged state/identity/
+configuration and compatible authority, then rollback. On other targets test
+compatible version upgrades of their actual qualified native payloads. Where
+Warden bytes differ, do not falsely call them compatible: either keep that
+target's authority stable or design and qualify an explicit migration. No
+cross-platform authority migration is required.
+Commands: `cargo test --locked -p tradeassembly-distribution`, explicit ignored
+`packaged_install` and `package_managers` tests, plus candidate manifest/digest
+negative tests. Retain the existing no-running-rig and interruption cases.
+
+**R4 — Produce and qualify all five native targets (D2/D3).**
+Outcome: each required OS/architecture has genuine native build, installation,
+authority and sandbox evidence, bound to its exact candidate artifacts.
+Files/repos: existing Core `.github/workflows/native-core.yml`; owning Warden
+worktree `f2-warden-native-distribution`, its native-authority workflow and
+private-files adapter; owning Alpaca worktree `f2-alpaca-native-distribution`
+and its native-plugin workflow. Preserve the D1 ACL/reparse/locking contract.
+Implement `cargo xtask distribution-qualify --candidate DIR --out DIR` in the
+existing Core distribution command plane. It runs the real acceptance drivers
+and hashes artifacts/results; it cannot accept a caller's success booleans.
+Complete native Windows account/elevation/WFP/ACL proof and all installation,
+recovery and sandbox cases already enumerated in D3. Use target-local positive
+controls for denial tests; unavailable/skipped tests fail qualification.
+Before dispatch, resolve GitHub's actual $0 cap: use an already authorized
+explicit spending limit if found, otherwise obtain a finite cap or use an
+available native host within an established budget. Do not spend merely because
+an option was preselected. AWS credits do not establish GitHub spending approval.
+Keep timed jobs and bounded parallelism; reuse successful immutable artifacts.
+Native macOS, Linux and Windows evidence must come from their actual hosts.
+Run producer owning gates, Core `just verify` (which invokes full
+`cargo xtask verify`), and required archive qualification once at the coherent
+integration checkpoint. Confirm every mandated gate actually ran.
+Exit: `cargo xtask distribution-verify --candidate --evidence ABSOLUTE_DIR`
+returns 0 with all five targets and R2 proof. No target exclusions/WSL substitute.
+
+**R5 — Publish and verify the npm beta (D4).**
+Outcome: the documented one-command install works from the actual registry,
+and a compatible next packaging version demonstrates the upgrade path.
+Files: existing distribution launcher/package metadata, registry acceptance
+driver and this document's install/update/rollback instructions.
+Resolve npm authentication through CLI first, Bitwarden and the supported
+account MFA flow. Inspect the actual challenge; use the authorized available
+factor, and preserve an unavoidable human handoff without retry/recovery loops.
+Verify ownership of the launcher and all platform package names, unused version,
+package contents, licenses/notices, and exact optional-dependency versions.
+Publish only the R4-qualified bytes under `beta`, with supported provenance and
+integrity evidence; never claim provenance exists if only checksums exist.
+If a trusted CI publication path requires additional configuration, make it
+explicit and complete it before publishing, without exposing producer secrets.
+Run actual npm and pnpm registry installation with scripts disabled on each
+target, compare registry tarballs to qualified bytes, then exercise compatible
+upgrade/rollback. No rebuild between qualification and publication. A second
+packaging version must receive changed-input qualification before publication;
+unchanged runtime artifacts may retain valid evidence, but package receipts
+must bind the new package version/bytes. If a platform fails, preserve the beta
+failure record, remediate and publish a new immutable version; do not overwrite
+or report matrix completion from partial success.
+Exit: `cargo xtask distribution-verify --evidence ABSOLUTE_DIR` returns 0 from
+genuine registry evidence for all five targets.
+
+**R6 — Integrate and hand off (D5).**
+Outcome: scoped changes are committed, merged and pushed under owning repo
+rules, with reproducible installation instructions and an auditable candidate.
+Keep existing worktrees/PRs, preserve unrelated edits, and complete mandatory
+producer review where required. Do not add automatic Core reviewer chains.
+Record exact merged source, artifact hashes, native receipts, package versions,
+baseline lineage, platform prerequisites and unsigned/not-notarized caveats.
+Classify existing M0–M6 evidence by actual input dependencies: unchanged service
+deployments retain their valid evidence; changed Core/artifact bindings need
+new evidence and any dependent aggregate must be regenerated separately.
+Never alter the old lock or imply it qualifies new bytes. Update Product plan
+links/receipts only where needed; do not reopen its full commercial M8 lock.
+Finish with both matrix commands passing for the published candidate, owning
+integration gates, archive/review evidence, source integrated/pushed, and no
+uncommitted task edits. Account for unrelated dirty state rather than deleting it.
+M7/M8 and public/paid Product readiness verdicts stay false.
+
+#### Resource and execution controls
+
+- Root orchestration/implementation/integration: **GPT-6 Sol Medium**, selected
+  by the user before execution. No model change or delegation starts from this
+  planning request. Use deterministic commands for builds, test selection,
+  hashing, receipts and status. No mandatory helper agents or reviewer chains.
+- Before large builds, check disk and bound concurrency. Reclaim only verified
+  disposable caches owned by these worktrees using Cargo; preserve frozen
+  payloads, candidate assets, evidence and user files. The archive gate clears
+  inherited profile options: if needed, give its isolated build explicit fixed
+  stripped-debug/two-job settings in `xtask/src/foss_core_boundary.rs`, with
+  tests that secret-environment isolation and all-target build remain intact.
+  Update `docs/rust-rewrite-harness.md` for changed harness settings. A fresh
+  archive still compiles extracted sources and executes runtime smoke. Use an
+  available larger native build host if local space cannot support that build.
+- Run focused tests while changing code; full required gates at integration.
+  Reuse live process handles. Do not rerun unchanged full suites, authentication
+  attempts, failed unpaid CI dispatches or immutable-baseline captures.
+- Unknown implementation details are resolved within R1, not by indefinitely
+  extending the roadmap. No new product features or unrelated cleanup. After
+  two equivalent failures of an approach, diagnose/change the approach and
+  report the concrete unresolved dependency; do not blindly retry.
+- There is no user-imposed token/time budget. Do not invent one. Keep one compact
+  checkpoint containing package R1–R6, changed files, decisions, evidence,
+  handles and next action. Actual account handoffs/spending decisions can block
+  their dependent work; continue only independent work that advances this plan.
+- The original release contract conflict is resolved in this proposed plan by
+  qualifying a new candidate. It must not be re-asked as routine permission
+  once the user activates this amended goal. Execution is still explicitly
+  stopped until that activation.
+
+#### Updated goal text — ready to activate, DO NOT START
+
+```text
+Complete the amended D1–D5 F2 npm beta distribution plan in
+/Users/davidjbeveridge/.codex/worktrees/f2-npm-distribution/docs/distribution.md,
+section “Runtime repair and candidate amendment”, using its ordered R1–R6
+work packages and deterministic acceptance. Execute with GPT-6 Sol Medium.
+Resume existing Core branch codex/f2-npm-distribution at its current verified
+HEAD (planning baseline 3594b6a), and existing Warden/Alpaca producer worktrees.
+Read the compact checkpoint first; preserve existing work and live processes.
+
+Preserve the original Mac bundle and M0–M6 lock byte-for-byte as immutable
+baseline/provenance. Build and separately qualify a new versioned candidate,
+including Mac arm64, for the bounded runtime repairs. Implement explicit
+authenticated MCP order submission and broker reconciliation using existing
+session/lease, strategy/configuration, risk, Warden, idempotency and receipt
+machinery. Preserve deterministic evaluation and mode-specific Paper/Live
+constraints. Agent submission must not depend on scheduler ticks. No arbitrary
+plugin execution or caller-authored authority may bypass the shared boundary.
+
+Prove actual source-free stdio MCP → Core → real Warden → controlled broker
+executable, including denials, concurrent duplicates, changed-input keys,
+crashes/lost responses and durable reconciliation. Isolated test activations
+and test-only authority for a credential-free controlled sink are permitted;
+real broker orders, real rig activation and shipping policy weakening are not.
+Never substitute direct service mocks or prewritten success receipts.
+
+Finish native qualification for Mac arm64/x64, GNU Linux x64/arm64, and native
+Windows x64 MSVC/SRT alpha. Preserve private storage/ACL/reparse/locking and
+sandbox guarantees. Complete source-free install, npm/pnpm scripts-disabled
+delivery, identity/config/state preservation, stopped upgrade/rollback,
+running-rig denial, interrupted recovery and Windows account/elevation/WFP
+evidence. Resolve build resources, native CI and npm authentication through
+the required CLI → integration → supported API → Chrome route. Use established
+spending authorization; do not invent a cap or bypass mandatory human handoffs.
+
+Publish exact-qualified packages only under npm beta after candidate matrix
+acceptance and namespace verification. Verify actual registry bytes and npm/
+pnpm install/compatible upgrade on all five targets. Complete owning gates,
+archive proof, mandatory producer reviews and scoped integration/push. Preserve
+the old lock; requalify changed inputs and regenerate affected aggregates in
+new artifacts, reusing unchanged evidence only where its bindings remain valid.
+
+Completion requires both cargo xtask distribution-verify --candidate --evidence
+ABSOLUTE_DIR and cargo xtask distribution-verify --evidence ABSOLUTE_DIR to exit
+0 from genuine digest-bound evidence for all five targets and the exact
+published versions; owning integration/archive/review gates pass; scoped
+source is integrated/pushed; task edits are committed; baseline hashes remain
+unchanged. Narrow passing tests, draft PRs and local-only installs are not
+completion. Keep the full scope; checkpoint actual blockers without weakening
+acceptance or repeatedly consuming tokens on unchanged failures.
+
+M7/M8 remain excluded and false: no Apple payment/enrollment, Developer ID
+signing, notarization, Gatekeeper certification, full/public/commercial Product
+release lock, paid Relay launch or SLA claims. No new scheduler, hosted agent
+runtime, pricing, UI or unrelated refactor. Use the selected root model and
+deterministic tools; no automatic reviewer chains or full-history forks.
+```
+
+### Historical execution checkpoint — before the amendment
+
+The records below preserve prior evidence and failures. Statements that the
+runtime amendment is awaiting approval, that the shipping Mac candidate must
+retain the baseline hash, or that controlled proof must be Paper-only are
+superseded by the plan above when it is activated. No activation occurred as
+part of writing this amendment.
 
 **Current step: D2; D1 decisions are recorded above.** Core source checkpoints
 include `7782118`, `48eb1d2`, and `b711ffc` (local, not pushed). Warden checkpoint is `d2bd10d`

@@ -122,11 +122,12 @@ Do not mark the five-target release complete from these local results.
 
 Checkpoint (2026-09-28): branch `codex/f2-npm-distribution`, based on Core
 `a16d4a769258fb7354d9102017533850020f8f2c`. Local implementation commits
-`e1557c9`, `890eb5c`, and `3abcafb` precede the native portability checkpoint.
+`e1557c9`, `890eb5c`, `3abcafb`, and `36dd8aa` cover the installer and native
+portability checkpoints. The latter is the source revision qualified below.
 No push, merge, npm publication, or namespace-ownership verification has occurred.
-The local candidate is `target/npm-preserved-candidate`, version `0.1.0-beta.1`;
+The local candidate is `target/npm-qualified-candidate`, version `0.1.0-beta.1`;
 its installer SHA-256 is
-`8d03610fddb22e3c4b5f1d7dcc5d41845b68a59e08d6e7d76b7c2e74082faaae`,
+`15a5703a0431c412061630f5ed5e435f45416eea1c5783a3fb7f5289866d53aa`,
 archive SHA-256 is
 `7c0a4d6b55555a4a0e0a39bd9b65621879c0240e8b6ca663411973fb2dbdd8a4`,
 and release-manifest SHA-256 is
@@ -134,14 +135,21 @@ and release-manifest SHA-256 is
 The original bundle and parent-lock hashes above remain unchanged; original
 Core/Warden strict ad-hoc signature checks pass.
 
-Passing local evidence: seven Rust unit tests; distribution strict Clippy;
+Passing local evidence: eleven Rust unit tests; distribution strict Clippy;
 actual frozen-binary installer acceptance (including edited-config preservation,
 external-state denial, running/active-state denial and interrupted recovery);
 actual offline local-tarball npm/pnpm acceptance with lifecycle scripts disabled;
 format/diff checks, dependency deny and machete checks, and current source
 whitelist/public-boundary/architecture checks. Native test logs are
-`target/distribution-native-install.log` and
-`target/distribution-package-managers.log`. These are Mac arm64 evidence, not
+`target/distribution-install-final.log` (SHA-256
+`a47466630195064a30e9e14ee75f6dc4092810c7cad14478cf16f660f7a8befb`) and
+`target/distribution-package-managers-final.log` (SHA-256
+`bc4fc43d0656f85450ecf61d6c62d3e466a0a245b7e9d2d9f82bcdaebb1af251`).
+Both npm tarballs are retained in the candidate directory. The current installer
+passes strict ad-hoc signature verification. Five launcher tests and all four
+other-target compilation checks pass (`target/native-launcher-verification.log`,
+SHA-256 `b0cc3322a0a1daaf9191793e58408e0032bde6fa0100135a7961fe9ee22ad06e`).
+These are Mac arm64 evidence and cross-compilation checks, not
 five-target native or registry qualification; the local candidate remains
 `publishable: false`.
 
@@ -154,8 +162,13 @@ gates and nextest passed (1301 passed, 51 explicitly skipped). Log:
 Clean-revision source archive qualification also passed at `3abcafb`; log
 `target/source-archive-verification.log`, SHA-256
 `4a19e81fe8ce983f81ac9bcbed02013b5f300a4d147b8f890d6e930e1ac64ce0`.
-These prove that checkpoint, not later native portability edits. The integration
-gate must be rerun for those edits. No skip is claimed as native enforcement.
+The complete gate also **passed at `36dd8aa`** for the native portability edits:
+1306 nextest tests passed, 51 explicitly skipped; all subsequent gates passed.
+Log `target/core-native-verification.log`, SHA-256
+`e8671539bc739561fe4e5ab20845512b16a038d51a97b4100bf5ac5baa52b630`.
+Archive smoke remains evidence for `3abcafb`, not the later source revision.
+No skip is claimed as native enforcement, and the candidate matrix still fails
+closed without all native target receipts. No owned test processes remain.
 
 Native target production remains a release dependency. The existing
 `xtask/src/bundle_local.rs` is Mac arm64 only. The new source sandbox launcher

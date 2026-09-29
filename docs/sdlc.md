@@ -8,6 +8,8 @@ Distribution work uses `cargo xtask distribution-pack` and
 frozen-binary acceptance; its environment variable and exact command are in
 docs/distribution.md. Packaging a local npm tarball is not public registry delivery
 or another platform's runtime/sandbox evidence. Keep the parent lock unchanged.
+`cargo xtask distribution-freeze-native` inventories new native inputs on their
+actual target host; freezing is not qualification or permission to publish.
 
 Work on an issue branch, preserve unrelated changes, and use bounded packets with
 explicit acceptance evidence. Runtime changes need targeted behavior tests;

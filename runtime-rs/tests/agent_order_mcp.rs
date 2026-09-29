@@ -240,6 +240,12 @@ impl McpClient {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+
+    fn crash(&mut self) {
+        self.child.kill().unwrap();
+        assert!(!self.child.wait().unwrap().success());
+        self.input.take();
+    }
 }
 
 impl Drop for McpClient {
@@ -251,7 +257,7 @@ impl Drop for McpClient {
 
 #[test]
 #[ignore = "requires explicit candidate Core, Warden, controlled broker, and SRT binaries"]
-fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
+fn installed_stdio_paper_order_recovers_ambiguous_crash_once() {
     let candidate = PathBuf::from(
         std::env::var_os("F2_TEST_RUNTIME_BINARY").expect("candidate Core binary required"),
     )
@@ -454,6 +460,84 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
         observed["structuredContent"]["receipt"]["payload"]["submissionCount"],
         1
     );
+    let interrupted = json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-paper",
+        "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+            "timeInForce":"gtc","clientOrderId":"stdio-crash-order","quantity":"1"},
+        "idempotency_key":"stdio-crash-order"});
+    sink.drop_next_response();
+    let uncertain = restarted.tool("tradeassembly.order.submit", interrupted.clone());
+    assert_eq!(
+        uncertain["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
+        "{uncertain:#?}"
+    );
+    restarted.crash();
+    let mut after_crash = McpClient::start(&candidate, &config_path, &root);
+    assert!(after_crash.call("initialize", json!({}))["result"].is_object());
+    let stale = after_crash.tool(
+        "tradeassembly.agent.session.attach",
+        json!({"deployment_id":deployment.deployment_id,"activation_id":activation_id,
+            "idempotency_key":"stdio-crash-reattach"}),
+    );
+    assert_eq!(
+        stale["structuredContent"]["error"]["code"], "agent_run_pending_reconcile",
+        "{stale:#?}"
+    );
+    let owner_found = after_crash.tool(
+        "tradeassembly.order.observe",
+        json!({"original_idempotency_key":"stdio-crash-order",
+            "idempotency_key":"stdio-crash-observation"}),
+    );
+    assert_eq!(
+        owner_found["structuredContent"]["state"], "observed",
+        "{owner_found:#?}"
+    );
+    assert_eq!(
+        owner_found["structuredContent"]["receipt"]["payload"]["submissionCount"],
+        1
+    );
+    warden.assert_healthy();
+    let lease = service
+        .runtime()
+        .leases
+        .current(&format!("agent-deployment:{}", deployment.deployment_id))
+        .unwrap()
+        .unwrap();
+    let early_recovery = after_crash.tool(
+        "studio.agent_run.recover",
+        json!({"deployment_id":deployment.deployment_id,
+            "acknowledge_reconciled":true,"idempotency_key":"stdio-crash-owner-early",
+            "authority_context":{"actor":"ignored","surface":"mcp","accountMode":"paper"}}),
+    );
+    assert_eq!(
+        early_recovery["structuredContent"]["error"]["code"], "agent_recovery_lease_held",
+        "{early_recovery:#?}"
+    );
+    let recovery_deadline = Instant::now() + Duration::from_secs(130);
+    while service.runtime().clock.trusted_now_ms().unwrap() <= lease.expires_at_ms {
+        assert!(
+            Instant::now() < recovery_deadline,
+            "abandoned lease did not expire"
+        );
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    let owner_recovery = after_crash.tool(
+        "studio.agent_run.recover",
+        json!({"deployment_id":deployment.deployment_id,
+            "acknowledge_reconciled":true,"idempotency_key":"stdio-crash-owner-recovered",
+            "authority_context":{"actor":"ignored","surface":"mcp","accountMode":"paper"}}),
+    );
+    assert_eq!(owner_recovery["isError"], false, "{owner_recovery:#?}");
+    let recovered_attach = after_crash.tool(
+        "tradeassembly.agent.session.attach",
+        json!({"deployment_id":deployment.deployment_id,"activation_id":activation_id,
+            "idempotency_key":"stdio-crash-reattach"}),
+    );
+    assert_eq!(recovered_attach["isError"], false, "{recovered_attach:#?}");
+    let replay_after_crash = after_crash.tool("tradeassembly.order.submit", interrupted);
+    assert_eq!(
+        replay_after_crash["structuredContent"]["status"], "submitted",
+        "{replay_after_crash:#?}"
+    );
     let evidence =
         rusqlite::Connection::open_with_flags(&sink.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -462,7 +546,7 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
             Ok((row.get(0)?, row.get(1)?))
         })
         .unwrap();
-    assert_eq!(counts, (2, 2));
+    assert_eq!(counts, (3, 3));
     let ambiguous_submissions: i64 = evidence
         .query_row(
             "SELECT submissions FROM orders WHERE client_id='stdio-ambiguous-order'",
@@ -471,7 +555,11 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
         )
         .unwrap();
     assert_eq!(ambiguous_submissions, 1);
-    for key in ["stdio-paper-order", "stdio-ambiguous-order"] {
+    for key in [
+        "stdio-paper-order",
+        "stdio-ambiguous-order",
+        "stdio-crash-order",
+    ] {
         let intent_key = format!("intent_{:x}", Sha256::digest(key.as_bytes()));
         assert!(
             service
@@ -503,7 +591,7 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
     let mut paused = deployment.clone();
     paused.desired_state = "paused".into();
     agent_runner::put_deployment(&service.runtime(), &paused).unwrap();
-    let revoked = restarted.tool(
+    let revoked = after_crash.tool(
         "tradeassembly.order.submit",
         json!({"activation_id":activation_id,"plugin_instance_ref":"mandate-paper",
             "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
@@ -516,8 +604,8 @@ fn installed_stdio_paper_order_recovers_ambiguous_outcome_once() {
             .query_row("SELECT COUNT(*) FROM orders", [], |row| row
                 .get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
-    restarted.close();
+    after_crash.close();
     warden.stop();
 }

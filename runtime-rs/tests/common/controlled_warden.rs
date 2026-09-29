@@ -14,6 +14,18 @@ pub struct ControlledWarden {
 }
 
 impl ControlledWarden {
+    pub fn assert_healthy(&mut self) {
+        assert!(
+            self.child.try_wait().unwrap().is_none(),
+            "isolated Warden exited"
+        );
+        let health =
+            reqwest::blocking::get(format!("http://127.0.0.1:{}/health", self.port)).unwrap();
+        assert!(
+            health.status().is_success(),
+            "isolated Warden health failed"
+        );
+    }
     pub fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();

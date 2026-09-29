@@ -821,6 +821,23 @@ found/absent/unknown, concurrent duplicate, stale-session and Live cases;
 the current owner recovery followed a known successful receipt, not an
 unobserved ambiguous outcome.
 
+R2 crash continuation: a third controlled order commits at the sink and loses
+its response, then the candidate MCP process is killed without graceful
+detach. A restarted candidate refuses immediate attachment, the authenticated
+owner observes the order through `tradeassembly.order.observe`, and a recovery
+attempt before the durable 90-second lease expires returns
+`agent_recovery_lease_held`. After expiry, a fresh owner recovery attempt
+acknowledges the quarantined run, a new session attaches, and replay of the
+same order leaves exactly one sink submission. The complete opt-in stdio test
+executed 1/1 passing in 116.19 seconds with real Warden and production SRT;
+targeted strict Clippy passed. The first implementation of the test reused a
+Warden authorization idempotency key after a retryable lease-held response and
+hit `warden_request_failed:409:idempotency_conflict`. The test now uses a new
+key for the post-expiry *recovery attempt*; order submission/recovery retain
+their original stable order key. This interaction deserves a separate explicit
+retry contract and regression before R2 closes. The test was renamed after
+the passing run only to reflect crash coverage.
+
 Crash-recovery contract decision: an MCP connection that dies cannot use its
 agent-scoped `tradeassembly.order.reconcile`, and `studio.agent_run.recover`
 must not acknowledge reconciliation before the order outcome is observed.

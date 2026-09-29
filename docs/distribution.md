@@ -889,6 +889,17 @@ combined R2 tests at an integration checkpoint, prove concurrent duplicate and
 stale/replaced session paths, then settle isolated Live proof without changing
 shipping Live policy.
 
+Combined R2 Paper checkpoint: with explicit candidate Core, real Warden,
+controlled broker and SRT paths, the full opt-in `agent_order_mcp` binary ran
+2/2 passing in 129.32 seconds. Both tests use separate disposable state and
+controlled loopback sinks; neither invokes a real broker. The candidate still
+uses the embedded shipping Live rules, which deny
+`execution.activate.live` and `order.submit.live`. A positive source-free
+Live case therefore needs an isolated test-only authority route (for example,
+a private Warden policy-rewriting proxy with real Warden-signed decisions),
+not a shipping runtime flag or relaxation of the packaged policy. This design
+is not yet implemented or accepted as Live proof.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

@@ -770,8 +770,20 @@ reported as `agent_order_idempotency_conflict` and leaves the sink at one
 submission; this required mapping immutable storage's conflict result at the
 plugin request boundary. The expanded Paper/Live MCP group passed 4/4;
 `cargo test --offline --lib broker_submission::` passed 16 nonignored cases
-(31 explicitly ignored). Missing/revoked MCP grant, source-free stdio, and
+(31 explicitly ignored). Revoked MCP grant, source-free stdio, and
 deterministic-path parity remain unclaimed. R1 is not yet closed.
+
+The missing-order-tool-grant case also executed with real Warden and a
+controlled broker: `attached_agent_missing_order_grant_never_reaches_sink`
+passed 1/1. The existing verified MCP context binder returns
+`agent_mcp_tool_not_allowed` before any dispatch. R2 can reuse the real-stdio
+attach/quarantine pattern in `runtime-rs/tests/external_mcp_process.rs`, but
+that fixture is inspection-only. The packaged binary uses the production SRT
+sandbox and shipping Warden policy, unlike the injected service fixture; the
+controlled broker's local SQLite sink may be blocked by that sandbox. Do not
+count service-level proof as source-free stdio proof. Probe the actual
+candidate binary with an isolated Paper sink first, then settle a fixture
+transport that preserves production sandbox rules before extending to Live.
 
 ### Historical execution checkpoint — before the amendment
 

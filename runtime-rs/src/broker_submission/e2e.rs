@@ -33,40 +33,46 @@ static SANDBOX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn external_agent_real_activation_dispatches_once_without_scheduler() {
-    run_external_activation(false, false, "live");
+    run_external_activation(false, false, "live", true);
 }
 
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn external_agent_real_activation_recovers_lost_response_without_resubmit() {
-    run_external_activation(true, false, "live");
+    run_external_activation(true, false, "live", true);
 }
 
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn attached_agent_mcp_submits_once_through_real_warden() {
-    run_external_activation(false, true, "live");
+    run_external_activation(false, true, "live", true);
 }
 
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn attached_agent_mcp_recovers_lost_response_without_resubmit() {
-    run_external_activation(true, true, "live");
+    run_external_activation(true, true, "live", true);
 }
 
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn attached_agent_mcp_paper_submits_once_through_real_warden() {
-    run_external_activation(false, true, "paper");
+    run_external_activation(false, true, "paper", true);
 }
 
 #[test]
 #[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
 fn attached_agent_mcp_paper_recovers_lost_response_without_resubmit() {
-    run_external_activation(true, true, "paper");
+    run_external_activation(true, true, "paper", true);
 }
 
-fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_missing_order_grant_never_reaches_sink() {
+    run_external_activation(false, true, "paper", false);
+}
+
+fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str, order_granted: bool) {
     assert!(mode == "live" || via_mcp);
     use crate::runtime_config::{RuntimeConfig, RuntimeConfigLayer};
     let dir = tempfile::tempdir().unwrap();
@@ -182,11 +188,13 @@ fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),
         execution_config_version_id: config_id.into(),
-        studio_tool_allowlist: if via_mcp {
+        studio_tool_allowlist: if via_mcp && order_granted {
             vec![
                 "tradeassembly.order.submit".into(),
                 "tradeassembly.order.reconcile".into(),
             ]
+        } else if via_mcp {
+            vec!["tradeassembly.order.reconcile".into()]
         } else {
             vec!["tradeassembly.health".into()]
         },
@@ -256,6 +264,16 @@ fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
                 "timeInForce":"gtc","clientOrderId":"external-mcp-order","quantity":"1"},
             "idempotency_key": "external-mcp-order"
         });
+        if !order_granted {
+            let denied = agent_service.call_mcp_tool("tradeassembly.order.submit", args);
+            assert_eq!(
+                denied["structuredContent"]["error"]["code"], "agent_mcp_tool_not_allowed",
+                "{denied:#?}"
+            );
+            assert_no_controlled_orders(&package.install_root);
+            session.close().unwrap();
+            return;
+        }
         for (caller, changed, expected) in [
             (&service, args.clone(), "agent_order_attachment_required"),
             (

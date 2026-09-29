@@ -938,8 +938,15 @@ denial for the already-attached client. The Live test then added an explicit
 MCP detach: the detached client could not submit, owner recovery using the
 required authority context succeeded, and the same connection re-attached
 before lease replacement. That targeted test passed 1/1 in 39.93 seconds.
-R2 concurrent-client duplicate acceptance remains open; the successful
-source-free tests still use an unpackaged candidate binary.
+The test also sends two identical JSON-RPC order requests before reading
+either response. Both returned the same accepted result and the sink still
+recorded one effect; that source-free Live test passed 1/1 in 40.84 seconds.
+This is concurrent in-flight MCP input, not simultaneous handler execution:
+the stdio server serializes its dispatch, and a second process cannot attach
+to the active deployment. The lower adapter's simultaneous-call test covers
+the underlying race. R2 still needs the shipping-Live-deny negative and
+final packaged-artifact rerun; these source-free tests use an unpackaged
+candidate binary.
 
 ### Historical execution checkpoint — before the amendment
 

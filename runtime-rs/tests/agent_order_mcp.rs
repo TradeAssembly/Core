@@ -396,6 +396,39 @@ impl McpClient {
         self.call("tools/call", json!({"name":name,"arguments":arguments}))["result"].clone()
     }
 
+    fn tool_pair_in_flight(&mut self, name: &str, arguments: Value) -> [Value; 2] {
+        let first_id = self.sequence + 1;
+        let second_id = self.sequence + 2;
+        self.sequence = second_id;
+        let input = self.input.as_mut().unwrap();
+        for id in [first_id, second_id] {
+            writeln!(
+                input,
+                "{}",
+                json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+                    "params":{"name":name,"arguments":arguments}})
+            )
+            .unwrap();
+        }
+        input.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut results = [None, None];
+        while results.iter().any(Option::is_none) {
+            let response = self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("both in-flight MCP calls answered before deadline");
+            if response["id"] == first_id {
+                results[0] = Some(response["result"].clone());
+            } else if response["id"] == second_id {
+                results[1] = Some(response["result"].clone());
+            } else {
+                assert_eq!(response["method"], "notifications/tools/list_changed");
+            }
+        }
+        [results[0].take().unwrap(), results[1].take().unwrap()]
+    }
+
     fn close(&mut self) {
         self.input.take();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1202,11 +1235,13 @@ fn installed_stdio_live_order_uses_private_real_warden_c5_once() {
         !sink.db.exists(),
         "risk-denied order cannot reach the broker sink"
     );
-    let first = client.tool("tradeassembly.order.submit", order.clone());
+    let [first, concurrent_duplicate] =
+        client.tool_pair_in_flight("tradeassembly.order.submit", order.clone());
     assert_eq!(
         first["structuredContent"]["status"], "submitted",
         "{first:#?}"
     );
+    assert_eq!(concurrent_duplicate, first);
     assert_eq!(client.tool("tradeassembly.order.submit", order), first);
     let evidence =
         Connection::open_with_flags(&sink.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();

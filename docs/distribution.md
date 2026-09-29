@@ -760,6 +760,19 @@ Exact next action: run policy/admission regressions, add the R1 zero-sink
 negative matrix, then build the source-free stdio driver without treating these
 service tests as a substitute.
 
+R1 negative-matrix continuation: `cargo test --offline --lib
+never_reaches_sink -- --ignored` passed 6/6, and `prevents_real_dispatch
+-- --ignored` passed 10/10 with the same real-process environment. The
+attached-agent MCP service tests now also assert zero sink submissions for an
+unattached caller, wrong activation, wrong plugin binding, and excess quantity
+before the accepted order. A same-key/different-quantity attempt is explicitly
+reported as `agent_order_idempotency_conflict` and leaves the sink at one
+submission; this required mapping immutable storage's conflict result at the
+plugin request boundary. The expanded Paper/Live MCP group passed 4/4;
+`cargo test --offline --lib broker_submission::` passed 16 nonignored cases
+(31 explicitly ignored). Missing/revoked MCP grant, source-free stdio, and
+deterministic-path parity remain unclaimed. R1 is not yet closed.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

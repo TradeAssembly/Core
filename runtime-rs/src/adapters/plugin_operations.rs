@@ -270,12 +270,17 @@ impl PluginOperationPort for LocalPluginOperations {
                     .map_err(|_| "plugin_request_binding_invalid".to_string())?,
             },
         });
-        if self.storage.put_json_if_absent(
-            REQUESTS_NS,
-            receipt_key,
-            request_record.clone(),
-            context,
-        )? == ImmutablePutOutcome::AlreadyPresent
+        if self
+            .storage
+            .put_json_if_absent(REQUESTS_NS, receipt_key, request_record.clone(), context)
+            .map_err(|error| {
+                if error == "immutable_storage_conflict" {
+                    "plugin_operation_idempotency_conflict".to_string()
+                } else {
+                    error
+                }
+            })?
+            == ImmutablePutOutcome::AlreadyPresent
         {
             let existing = self
                 .storage

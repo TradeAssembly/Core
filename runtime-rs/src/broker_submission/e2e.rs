@@ -256,6 +256,36 @@ fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
                 "timeInForce":"gtc","clientOrderId":"external-mcp-order","quantity":"1"},
             "idempotency_key": "external-mcp-order"
         });
+        for (caller, changed, expected) in [
+            (&service, args.clone(), "agent_order_attachment_required"),
+            (
+                &agent_service,
+                json!({"activation_id":"wrong-activation","plugin_instance_ref":instance_ref,
+                    "order":args["order"],"idempotency_key":"wrong-activation"}),
+                "agent_order_activation_mismatch",
+            ),
+            (
+                &agent_service,
+                json!({"activation_id":activation_id,"plugin_instance_ref":"wrong-instance",
+                    "order":args["order"],"idempotency_key":"wrong-instance"}),
+                "agent_order_binding_missing",
+            ),
+            (
+                &agent_service,
+                json!({"activation_id":activation_id,"plugin_instance_ref":instance_ref,
+                    "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+                        "timeInForce":"gtc","clientOrderId":"excess-order","quantity":"3"},
+                    "idempotency_key":"excess-order"}),
+                "agent_order_submission_denied",
+            ),
+        ] {
+            let denied = caller.call_mcp_tool("tradeassembly.order.submit", changed);
+            assert_eq!(
+                denied["structuredContent"]["error"]["code"], expected,
+                "{denied:#?}"
+            );
+            assert_no_controlled_orders(&package.install_root);
+        }
         if lose_response {
             std::fs::write(
                 package
@@ -266,7 +296,7 @@ fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
             .unwrap();
         }
         let first = agent_service.call_mcp_tool("tradeassembly.order.submit", args.clone());
-        let duplicate = agent_service.call_mcp_tool("tradeassembly.order.submit", args);
+        let duplicate = agent_service.call_mcp_tool("tradeassembly.order.submit", args.clone());
         if lose_response {
             assert_eq!(first["isError"], true, "{first:#?}");
             assert_eq!(duplicate["isError"], true, "{duplicate:#?}");
@@ -289,6 +319,13 @@ fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
                 "{first:#?}"
             );
             assert_eq!(first, duplicate);
+            let mut conflict = args;
+            conflict["order"]["quantity"] = json!("0.5");
+            let rejected = agent_service.call_mcp_tool("tradeassembly.order.submit", conflict);
+            assert_eq!(
+                rejected["structuredContent"]["error"]["code"], "agent_order_idempotency_conflict",
+                "{rejected:#?}"
+            );
         }
         let sink = rusqlite::Connection::open_with_flags(
             package.install_root.join(".f2-controlled-broker.sqlite"),
@@ -468,6 +505,20 @@ fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str) {
     }
     session.close().unwrap();
     drop(package);
+}
+
+fn assert_no_controlled_orders(install_root: &Path) {
+    let path = install_root.join(".f2-controlled-broker.sqlite");
+    if !path.exists() {
+        return;
+    }
+    let sink =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let count: i64 = sink
+        .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "rejected order reached controlled broker");
 }
 
 struct ControlledSandbox {

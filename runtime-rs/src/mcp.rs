@@ -1173,22 +1173,18 @@ fn studio_link(arguments: &Value) -> Value {
 }
 
 fn plugin_status(arguments: &Value) -> Value {
+    let tools = tool_names()
+        .into_iter()
+        .filter(|name| {
+            name.starts_with("tradeassembly.plugin.") || name.starts_with("tradeassembly.provider.")
+        })
+        .collect::<Vec<_>>();
     json!({
         "schemaVersion": "tradeassembly.mcp.plugin_status.v1",
         "ok": true,
         "registryPath": optional_string_arg(arguments, "registry_path"),
-        "status": "plugin install, disable, uninstall, invoke, and provider compatibility commands are available through shared application commands",
-        "tools": [
-            "tradeassembly.plugin.install",
-            "tradeassembly.plugin.disable",
-            "tradeassembly.plugin.uninstall",
-            "tradeassembly.plugin.invoke",
-            "tradeassembly.plugin.list",
-            "tradeassembly.plugin.capability_resolve",
-            "tradeassembly.plugin.capability_matrix",
-            "tradeassembly.provider.capability_matrix",
-            "tradeassembly.provider.pack_compatibility"
-        ]
+        "status": "Available plugin and provider MCP tools are listed below; order submission requires its explicit authority-bound MCP tool.",
+        "tools": tools
     })
 }
 
@@ -2312,6 +2308,18 @@ mod tests {
             .as_array()
             .expect("required fields")
             .contains(&json!("operation_id")));
+    }
+
+    #[test]
+    fn plugin_status_only_advertises_callable_mcp_tools() {
+        let status = super::plugin_status(&json!({}));
+        let available = super::tool_names();
+        let advertised = status["tools"].as_array().expect("plugin tool list");
+        assert!(!advertised.is_empty());
+        for name in advertised {
+            assert!(available.contains(&name.as_str().expect("tool name")));
+        }
+        assert!(!advertised.contains(&json!("tradeassembly.plugin.invoke")));
     }
 
     #[test]

@@ -339,13 +339,12 @@ The capture command and composite controlled-boundary tests are implementation
 requirements, not existing passing evidence. Direct sink tests alone, current
 Warden prepare/receipt tests alone, and cross-compilation do not satisfy them.
 
-### Runtime repair and candidate amendment — planned, execution stopped
+### Runtime repair and candidate amendment — active goal
 
 This amendment supersedes packaging-only restrictions and the historical
-Paper-only interpretation below. The user requested this plan on 2026-09-29
-and explicitly instructed that execution and the new goal must not start yet.
-The existing goal remains blocked. The goal text at the end of this amendment
-is a draft for later activation with **GPT-6 Sol Medium**, not an active goal.
+Paper-only interpretation below. The user activated the amended goal on
+2026-09-29 with **GPT-6 Sol Medium**. The goal is active; the text below is its
+durable execution contract.
 
 #### Settled scope and design
 
@@ -566,11 +565,10 @@ M7/M8 and public/paid Product readiness verdicts stay false.
   handles and next action. Actual account handoffs/spending decisions can block
   their dependent work; continue only independent work that advances this plan.
 - The original release contract conflict is resolved in this proposed plan by
-  qualifying a new candidate. It must not be re-asked as routine permission
-  once the user activates this amended goal. Execution is still explicitly
-  stopped until that activation.
+  qualifying a new candidate. The user activated the amended goal; do not
+  re-ask the frozen-candidate question as routine permission.
 
-#### Updated goal text — ready to activate, DO NOT START
+#### Updated goal text — activated 2026-09-29
 
 ```text
 Complete the amended D1–D5 F2 npm beta distribution plan in
@@ -628,6 +626,60 @@ release lock, paid Relay launch or SLA claims. No new scheduler, hosted agent
 runtime, pricing, UI or unrelated refactor. Use the selected root model and
 deterministic tools; no automatic reviewer chains or full-history forks.
 ```
+
+#### Current amended-goal checkpoint
+
+**R1 in progress.** Core source HEAD at goal start: `7e975eb`; Warden
+`d2bd10d`; Alpaca `592bd8f`; all three worktrees were clean. No live build
+or worker process was found at startup. Exact source audit confirms:
+
+- `cli/external_mcp.rs` owns attach/detach and renewable lease; the capability
+  is verified by `agent_runner.rs` against durable run, deployment, tool
+  allowlist, mode and current fencing lease. `service.rs::call_mcp_tool` binds
+  that context, and `ports::SideEffectContext` can carry it into plugin dispatch.
+- `service/execution.rs::evaluate_tick_response` correctly rejects agent ticks.
+  Preserve that invariant. `broker_submission.rs::load_current_state` already
+  accepts agent provenance without a deterministic attempt, but its current
+  `BrokerCurrentState`, mandate, actor and recovery validation require Live.
+- `adapters/plugin_operations.rs` already writes a request/dispatch claim before
+  broker effects and checks duplicate hashes; only Live calls the common
+  `LocalBrokerSubmissionBoundary`. Paper needs mode-appropriate admission.
+  `service/broker_recovery.rs` accepts an agent observer but hardcodes a Live
+  recovery `SideEffectContext`. Extend these shared paths rather than create a
+  second unaudited submission engine.
+- `finance_authority.rs` already defines `order.submit.paper` and
+  `paper_order`, but its specialized broker envelope validation accepts only
+  `order.submit.live`; `broker_submission/admission.rs` builds only the Live
+  envelope. Implement a Paper admission branch using the existing Paper action
+  and selected account, while preserving the Live C5 path and its mandate.
+  The old status helper advertised generic `plugin.invoke` despite its absence
+  from MCP definitions; derive advertised names from the real registry.
+- The R1 public tool arguments will carry only an existing activation ID,
+  selected broker instance, order fields and idempotency key. The service
+  derives plugin/package/strategy/configuration/lease/account/mode bindings
+  from durable state. The per-run allowlist must explicitly include each new
+  tool; attachment alone does not imply a submission grant. Recovery derives
+  the original operation from persisted intent/request bindings.
+
+R1 proof matrix: absent or stale connection and missing tool grant -> MCP
+denial/zero dispatch; stale lease/config/controls or changed mode/account ->
+broker admission denial/zero dispatch; accepted Paper and isolated Live ->
+Warden/appropriate risk verdict plus durable receipt; duplicate and lost
+response -> one durable claim, one sink effect, trusted reconciliation.
+R2's actual packaged stdio/real-Warden driver will prove the full path.
+
+Current local edit: `runtime-rs/src/mcp.rs` derives plugin status names from
+real MCP definitions, removing the advertised nonexistent generic invoke.
+The first broad-filter `cargo test` handle `60384` failed at the link step with
+ENOSPC while compiling unrelated integration test targets; no assertion ran.
+`cargo clean --profile dev` removed only this worktree's 10.0 GiB generated
+debug cache; no candidate, frozen bundle or evidence was removed. The narrower
+`--lib` test handle `68501` exited 0: one focused test passed. Handle `62930`
+exited 0 for `cargo fmt --check` and strict library Clippy. This proves the
+status fix, not order submission. No runtime boundary or new-candidate
+qualification is claimed yet. Next: implement explicit tool definitions and
+service handler with enforced attached-session binding; then extend the shared
+mode-specific admission/recovery path before enabling any broker effect.
 
 ### Historical execution checkpoint — before the amendment
 

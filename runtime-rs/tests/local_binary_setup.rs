@@ -647,6 +647,7 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tradeassembly.strategy.list","arguments":{}}}),
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tradeassembly.setup.inspect","arguments":{"surface":"agent"}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}),
     ] {
         writeln!(input, "{message}").unwrap();
     }
@@ -675,6 +676,25 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
     assert_eq!(
         messages[2]["result"]["structuredContent"]["automationReady"],
         false
+    );
+    let tools = messages
+        .iter()
+        .find(|message| message["id"] == 4)
+        .expect("actual stdio inventory response")["result"]["tools"]
+        .as_array()
+        .expect("actual stdio tool definitions");
+    let names: Vec<_> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"tradeassembly.execution.run"));
+    // Public tool names only: diagnostic evidence, not controlled-order proof.
+    eprintln!(
+        "actual MCP execution interface: {}",
+        json!({
+            "pluginInvoke":names.contains(&"tradeassembly.plugin.invoke"),
+            "orderAndRecoveryTools":names.iter().filter(|name| name.contains("order") || name.contains("recover")).collect::<Vec<_>>()
+        })
     );
     if std::env::var_os("F2_TEST_TRADEASSEMBLY_BINARY").is_some() {
         assert_eq!(first["sandboxConfigured"], true);

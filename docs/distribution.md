@@ -490,13 +490,46 @@ or permit assuming the challenge type. Resolve the actual supported MFA path,
 not a recovery/reset loop. The native Actions dollar-cap question is pending;
 the verified $0 cutoff has not been changed.
 
-**Exact next action:** implement Paper-mode controlled-package/sink support and
-the composite real-stdio MCP/Warden acceptance without changing the shipping
-Live policy. Bind actual controlled-sink outcomes, duplicate and lost-response
-recovery, authority/risk decisions, and durable receipts; separate transport tests
-are not a substitute. Run the smallest affected checks, then required archive
-and integration gates before pushing. Do not rerun the unchanged full gate merely
-to duplicate its passing evidence.
+The next bounded audit identified a frozen-contract conflict. Actual frozen
+binary stdio `tools/list` returned `pluginInvoke:false`; its only order/recovery
+named tool was `studio.agent_run.recover`. Source pointers: `mcp.rs` lists
+`tradeassembly.plugin.invoke` in help, not the tool dispatcher;
+`service/execution.rs` rejects external-agent evaluation;
+`adapters/plugin_operations.rs` applies submission permits only to Live;
+`broker_submission.rs` and `service/broker_recovery.rs` bind Live authority.
+The existing controlled tests use a Live allow override, not the required
+agent-driven Paper MCP boundary. They cannot qualify D3. A packaging wrapper
+cannot supply missing connection-owned authority semantics in frozen bytes.
+
+Independent portability checks passed using the actual frozen Mac bundle:
+`packaged_sandbox` exercised bundled Node, positive outside controls, denied
+reads/writes/egress, and offline invocation of the pinned Alpaca plugin
+(`target/native-portable-sandbox-test.log`, SHA
+`676c9ee8fd227c44623b9b23ca1382c029aea9e1162651225cb84e698a23d7cc`).
+Actual local npm/pnpm installs with lifecycle scripts disabled passed
+(`target/native-portable-package-managers.log`, SHA
+`2815f8dc5298ebe5bbb8b296f1fc1248deb0738926ddecbc42852bbff23d2685`).
+Actual source-free setup, real Warden and stdio inventory passed
+(`target/native-frozen-mcp-inventory.log`, SHA
+`a531453dc69c1aaca3a249ce4958516f442edae7d229065e85ea25d203fe9d5e`).
+These are Mac results, not Windows, registry or controlled-order qualification.
+Handles 24167, 5676 and 7821 are terminal, exit 0. Test-only changes are in
+`distribution/tests/package_managers.rs`, `runtime-rs/tests/packaged_sandbox.rs`
+and `runtime-rs/tests/local_binary_setup.rs`; full owning gates predate them.
+Frozen manifest and parent lock hashes were rechecked unchanged.
+The checkpoint's targeted validation (handle 89575, terminal exit 0) passed
+`cargo fmt --check`, strict Clippy for those three test targets,
+`cargo xtask scan-public`, and `cargo xtask foss-core-boundary` (411 files,
+archive smoke not requested). This is a local checkpoint, not merge/release
+qualification or a newly passed full owning gate. No live process remains.
+
+**Exact next action:** checkpoint these targeted tests; resolve the pending
+explicit amendment question before any runtime rebuild: may a new compatible
+candidate be built/qualified while preserving the original frozen payload and
+M0–M6 lock? Keeping packaging-only leaves the composite D3 proof unsatisfied;
+do not redefine success or enable Live to avoid that conflict. Independent
+native qualification and authentication work may continue within existing
+scope. Do not rerun unchanged full gates just to duplicate evidence.
 Resolve GitHub's verified
 native-runner billing dependency through the mandatory operations route without
 inventing success or silently raising an unbounded spending limit. Execute owning

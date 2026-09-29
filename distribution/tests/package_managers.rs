@@ -4,6 +4,14 @@
 use std::{fs, path::Path, process::Command};
 use tradeassembly_distribution::{atomic_json, executable};
 
+fn package_manager(name: &str) -> Command {
+    // Windows installs these CLIs as batch launchers. Rust's Command handles
+    // batch-file argument escaping; do not concatenate paths into a shell line.
+    #[cfg(windows)]
+    let name = format!("{name}.cmd");
+    Command::new(name)
+}
+
 fn succeeds(command: &mut Command) {
     let result = command.output().expect("command starts");
     assert!(
@@ -29,7 +37,7 @@ fn npm_and_pnpm_local_tarballs_work_without_lifecycle_scripts_or_source() {
         .unwrap();
     for name in ["tradeassembly", platform] {
         succeeds(
-            Command::new("npm")
+            package_manager("npm")
                 .current_dir(candidate.join(name))
                 .args(["pack", "--ignore-scripts", "--json", "--pack-destination"])
                 .arg(temp.path()),
@@ -48,7 +56,7 @@ fn npm_and_pnpm_local_tarballs_work_without_lifecycle_scripts_or_source() {
     let pnpm_client = temp.path().join("pnpm-client");
     let rig = temp.path().join("isolated owned rig");
     succeeds(
-        Command::new("npm")
+        package_manager("npm")
             .args(["install", "--prefix"])
             .arg(&npm_client)
             .args(["--offline", "--ignore-scripts", "--no-audit", "--no-fund"])
@@ -59,7 +67,7 @@ fn npm_and_pnpm_local_tarballs_work_without_lifecycle_scripts_or_source() {
     let port = listener.local_addr().unwrap().port().to_string();
     drop(listener);
     succeeds(
-        Command::new("npm")
+        package_manager("npm")
             .args(["exec", "--prefix"])
             .arg(&npm_client)
             .args([
@@ -84,7 +92,7 @@ fn npm_and_pnpm_local_tarballs_work_without_lifecycle_scripts_or_source() {
     )
     .unwrap();
     succeeds(
-        Command::new("pnpm")
+        package_manager("pnpm")
             .arg("--dir")
             .arg(&pnpm_client)
             .args(["add", "--offline", "--ignore-scripts"])
@@ -92,7 +100,7 @@ fn npm_and_pnpm_local_tarballs_work_without_lifecycle_scripts_or_source() {
             .arg(&native),
     );
     succeeds(
-        Command::new("pnpm")
+        package_manager("pnpm")
             .arg("--dir")
             .arg(&pnpm_client)
             .args(["exec", "tradeassembly", "install", "--root"])

@@ -49,8 +49,10 @@ fn run() -> Result<(), &'static str> {
             .map_err(|_| "controlled_response_write_failed");
     }
     if request.metadata.operation_id != "broker.live_order_submit"
+        && request.metadata.operation_id != "broker.paper_order_submit"
         && request.metadata.operation_id != "broker.order_submit"
         && request.metadata.operation_id != "broker.order_lookup"
+        && request.metadata.operation_id != "broker.order_lookup.paper"
     {
         return Err("controlled_operation_unsupported");
     }
@@ -67,7 +69,10 @@ fn run() -> Result<(), &'static str> {
     if std::fs::symlink_metadata(db_path).is_ok_and(|m| !m.file_type().is_file()) {
         return Err("controlled_state_path_invalid");
     }
-    let is_lookup = request.metadata.operation_id == "broker.order_lookup";
+    let is_lookup = matches!(
+        request.metadata.operation_id.as_str(),
+        "broker.order_lookup" | "broker.order_lookup.paper"
+    );
     if is_lookup && !std::path::Path::new(db_path).exists() {
         return Err("controlled_order_not_found");
     }

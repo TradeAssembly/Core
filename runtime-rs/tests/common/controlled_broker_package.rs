@@ -55,6 +55,15 @@ pub fn install_controlled_package(
             "id": "broker.order_lookup.live",
             "description": "Read a previously submitted controlled order for recovery."
         }));
+    for capability in ["broker.order_submit.paper", "broker.order_lookup.paper"] {
+        manifest["capabilities"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": capability,
+                "description": "Controlled paper order admission and recovery."
+            }));
+    }
     for operation in manifest["operations"].as_array_mut().unwrap() {
         operation["protocol"] = json!("stdio");
         match operation["id"].as_str() {
@@ -76,6 +85,17 @@ pub fn install_controlled_package(
         .find(|operation| operation["id"] == "broker.live_order_submit")
         .cloned()
         .expect("controlled live submit operation");
+    let mut paper_submit = submit.clone();
+    paper_submit["id"] = json!("broker.paper_order_submit");
+    paper_submit["capability"] = json!("broker.order_submit.paper");
+    paper_submit["financeAction"] =
+        json!({"actionId":"order.submit.paper","resourceType":"brokerage_account"});
+    paper_submit["purpose"] = json!("paper_trading");
+    paper_submit["traits"]["modes"] = json!(["paper"]);
+    manifest["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(paper_submit);
     let mut lookup = submit;
     lookup["id"] = json!("broker.order_lookup");
     lookup["capability"] = json!("broker.order_lookup.live");
@@ -98,6 +118,21 @@ pub fn install_controlled_package(
     lookup["checkPacks"] = json!(["recovery_reconciliation"]);
     lookup["receiptClass"] = json!("recovery_evidence");
     manifest["operations"].as_array_mut().unwrap().push(lookup);
+    let mut paper_lookup = manifest["operations"]
+        .as_array()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("controlled live lookup operation");
+    paper_lookup["id"] = json!("broker.order_lookup.paper");
+    paper_lookup["capability"] = json!("broker.order_lookup.paper");
+    paper_lookup["financeAction"] =
+        json!({"actionId":"order.lookup.paper","resourceType":"brokerage_account"});
+    paper_lookup["traits"]["modes"] = json!(["paper"]);
+    manifest["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(paper_lookup);
     let quote_schema = br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["quote"],"properties":{"quote":{"type":"object","additionalProperties":false,"required":["symbol","bid","ask","timestamp"],"properties":{"symbol":{"type":"string"},"bid":{"type":"string"},"ask":{"type":"string"},"timestamp":{"type":"string"}}}}}"#;
     let order_schema = br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["accountRef","clientOrderId","providerOrderId","symbol","side","quantity","orderType","timeInForce","status","intentDigest","submissionCount"],"properties":{"accountRef":{"type":"string"},"clientOrderId":{"type":"string"},"providerOrderId":{"type":"string"},"symbol":{"type":"string"},"side":{"type":"string"},"quantity":{"type":"string"},"orderType":{"type":"string"},"timeInForce":{"type":"string"},"status":{"const":"accepted"},"intentDigest":{"type":"string"},"submissionCount":{"type":"integer"}}}"#;
     let executable = std::fs::read(binary).unwrap();

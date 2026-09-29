@@ -17,6 +17,13 @@ New native inputs are separately inventoried with `distribution-freeze-native`,
 binding binary digests, architecture headers and pinned Node/SRT versions.
 Freezing inputs neither grants authority nor supplies native qualification.
 
+Native Windows distribution and local owner/setup storage share the Core-owned
+`platform/windows_private.rs` adapter. It validates owner-only DACLs and rejects
+reparse points using the actual file handles, protects new state before writing
+secrets, and publishes synced files through write-through atomic moves. It does
+not depend on private Warden source. Warden independently implements the same
+external authority-storage contract; native qualification remains required.
+
 Agents and deterministic evaluation use the same versioned strategy, authority,
 risk, journal and side-effect machinery. Agent submission does not require a
 scheduler tick. Idempotency, durable intent, fencing and observation-only recovery

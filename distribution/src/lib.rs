@@ -4,10 +4,12 @@
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(not(windows))]
+use std::io::Write;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 use walkdir::WalkDir;
@@ -15,6 +17,10 @@ use walkdir::WalkDir;
 pub mod install;
 pub mod native;
 pub mod package;
+
+#[cfg(windows)]
+#[path = "../../platform/windows_private.rs"]
+pub mod windows_private;
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const TARGETS: [&str; 5] = [
@@ -394,19 +400,31 @@ fn safe_link(path: &Path, link: &Path) -> Result<()> {
 }
 
 pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let parent = path.parent().ok_or("metadata_path_invalid")?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|_| "metadata_create_failed")?;
-    serde_json::to_writer_pretty(temp.as_file_mut(), value).map_err(|_| "metadata_write_failed")?;
-    temp.write_all(b"\n").map_err(|_| "metadata_write_failed")?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|_| "metadata_sync_failed")?;
-    temp.persist(path).map_err(|_| "metadata_replace_failed")?;
-    #[cfg(unix)]
-    File::open(parent)
-        .and_then(|f| f.sync_all())
-        .map_err(|_| "metadata_sync_failed")?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        let mut bytes = serde_json::to_vec_pretty(value).map_err(|_| "metadata_write_failed")?;
+        bytes.push(b'\n');
+        return windows_private::write_atomic(path, &bytes)
+            .map_err(|_| "metadata_replace_failed".into());
+    }
+    #[cfg(not(windows))]
+    {
+        let parent = path.parent().ok_or("metadata_path_invalid")?;
+        let mut temp =
+            tempfile::NamedTempFile::new_in(parent).map_err(|_| "metadata_create_failed")?;
+        serde_json::to_writer_pretty(temp.as_file_mut(), value)
+            .map_err(|_| "metadata_write_failed")?;
+        temp.write_all(b"\n").map_err(|_| "metadata_write_failed")?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|_| "metadata_sync_failed")?;
+        temp.persist(path).map_err(|_| "metadata_replace_failed")?;
+        #[cfg(unix)]
+        File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "metadata_sync_failed")?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

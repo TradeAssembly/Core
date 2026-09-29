@@ -78,6 +78,22 @@ fn sandbox_pin(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn plugin_pin(root: &Path, spec: &NativeInputs) -> Result<()> {
+    let lock: serde_json::Value = read_json(&root.join("plugins/alpaca.json"))?;
+    if lock["target"] != spec.target
+        || lock["version"] != "0.1.17"
+        || lock["sourceRevision"] != spec.alpaca_revision
+        || lock["packageFile"] != spec.alpaca_package
+        || lock["packageSha256"] != spec.alpaca_package_sha256
+        || lock["manifestSha256"] != spec.alpaca_manifest_sha256
+        || !crate::is_digest(&spec.alpaca_package_sha256)
+        || digest(&root.join("plugins").join(&spec.alpaca_package))? != spec.alpaca_package_sha256
+    {
+        return Err("native_plugin_lock_binding_failed".into());
+    }
+    Ok(())
+}
+
 fn node_pin(binary: &Path) -> Result<()> {
     use std::io::{Seek, SeekFrom};
     use std::process::{Command, Stdio};
@@ -230,11 +246,7 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
         binary_target(&stage.path().join(&name), &spec.target)?;
     }
     node_pin(&stage.path().join(node))?;
-    if digest(&stage.path().join("plugins").join(&spec.alpaca_package))?
-        != spec.alpaca_package_sha256
-    {
-        return Err("native_plugin_digest_mismatch".into());
-    }
+    plugin_pin(stage.path(), &spec)?;
     for name in ["LICENSE", "NOTICE", "SETUP.md", "runtime/node/LICENSE"] {
         if fs::metadata(stage.path().join(name))
             .map_err(|_| "native_notice_missing")?
@@ -288,6 +300,65 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_plugin_lock_must_bind_every_input_not_a_copied_mac_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("plugins")).unwrap();
+        let package = "alpaca.tar.gz";
+        fs::write(
+            temp.path().join("plugins").join(package),
+            b"package fixture",
+        )
+        .unwrap();
+        let spec = NativeInputs {
+            schema_version: 1,
+            target: TARGETS[4].into(),
+            core_revision: "a".repeat(40),
+            warden_revision: "b".repeat(40),
+            alpaca_revision: "c".repeat(40),
+            core_sha256: "d".repeat(64),
+            warden_sha256: "e".repeat(64),
+            launcher_sha256: "f".repeat(64),
+            node_sha256: "0".repeat(64),
+            alpaca_package: package.into(),
+            alpaca_package_sha256: digest(&temp.path().join("plugins").join(package)).unwrap(),
+            alpaca_manifest_sha256: "1".repeat(64),
+        };
+        let lock = json!({"version":"0.1.17","target":spec.target,
+            "sourceRevision":spec.alpaca_revision,"packageFile":spec.alpaca_package,
+            "packageSha256":spec.alpaca_package_sha256,
+            "manifestSha256":spec.alpaca_manifest_sha256});
+        let path = temp.path().join("plugins/alpaca.json");
+        atomic_json(&path, &lock).unwrap();
+        assert!(plugin_pin(temp.path(), &spec).is_ok());
+        for field in [
+            "target",
+            "version",
+            "sourceRevision",
+            "packageFile",
+            "packageSha256",
+            "manifestSha256",
+        ] {
+            let mut wrong = lock.clone();
+            wrong[field] = json!("stale");
+            atomic_json(&path, &wrong).unwrap();
+            assert_eq!(
+                plugin_pin(temp.path(), &spec).unwrap_err(),
+                "native_plugin_lock_binding_failed"
+            );
+        }
+        atomic_json(&path, &lock).unwrap();
+        fs::write(
+            temp.path().join("plugins").join(package),
+            b"changed package",
+        )
+        .unwrap();
+        assert_eq!(
+            plugin_pin(temp.path(), &spec).unwrap_err(),
+            "native_plugin_lock_binding_failed"
+        );
+    }
 
     #[test]
     fn binary_headers_reject_cross_target_and_truncation() {

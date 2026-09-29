@@ -5,8 +5,10 @@ use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -118,14 +120,20 @@ pub fn default_root() -> Result<PathBuf> {
 }
 
 fn private_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).map_err(|_| "install_directory_failed")?;
-    #[cfg(unix)]
+    #[cfg(windows)]
+    return crate::windows_private::ensure_directory(path)
+        .map_err(|_| "install_permissions_failed".into());
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "install_permissions_failed")?;
+        fs::create_dir_all(path).map_err(|_| "install_directory_failed")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .map_err(|_| "install_permissions_failed")?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn root_path(path: &Path) -> Result<PathBuf> {
@@ -190,6 +198,7 @@ fn lock(root: &Path, exclusive: bool) -> Result<File> {
     if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
         return Err("installation_lock_unsafe".into());
     }
+    #[cfg(not(windows))]
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -197,6 +206,9 @@ fn lock(root: &Path, exclusive: bool) -> Result<File> {
         .truncate(false)
         .open(path)
         .map_err(|_| "installation_lock_unavailable")?;
+    #[cfg(windows)]
+    let file =
+        crate::windows_private::open_lock(&path).map_err(|_| "installation_lock_unavailable")?;
     let outcome = if exclusive {
         file.try_lock_exclusive()
     } else {
@@ -520,15 +532,30 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
             .prefix("stage-")
             .tempdir_in(root.join("versions"))
             .map_err(|_| "stage_create_failed")?;
+        #[cfg(windows)]
+        crate::windows_private::protect_empty_staging_directory(stage.path())
+            .map_err(|_| "stage_create_failed")?;
         extract(&package.join("bundle.tar.gz"), stage.path())?;
         verify_bundle(stage.path(), &release)?;
+        #[cfg(not(windows))]
         fs::rename(stage.path(), &destination).map_err(|_| "payload_commit_failed")?;
+        #[cfg(windows)]
+        crate::windows_private::publish_directory(stage.path(), &destination)
+            .map_err(|_| "payload_commit_failed")?;
     }
     verify_bundle(&destination, &release)?;
     let authority = root.join(executable("authority/bin/warden"));
     if !authority.exists() {
+        #[cfg(not(windows))]
         fs::copy(destination.join(executable("bin/warden")), &authority)
             .map_err(|_| "authority_install_failed")?;
+        #[cfg(windows)]
+        crate::windows_private::copy_private(
+            &destination.join(executable("bin/warden")),
+            &authority,
+            false,
+        )
+        .map_err(|_| "authority_install_failed")?;
     }
     if digest(&authority)? != release.warden_sha256 {
         return Err("installed_authority_changed".into());
@@ -545,11 +572,17 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     // its own executable location, not caller-controlled runtime configuration.
     let facade = root.join(executable("bin/tradeassembly"));
     let source = std::env::current_exe().map_err(|_| "installer_path_unavailable")?;
-    let temp = root.join(executable("bin/tradeassembly-next"));
-    fs::copy(source, &temp).map_err(|_| "facade_install_failed")?;
-    fs::rename(temp, facade).map_err(|_| "facade_install_failed")?;
+    #[cfg(not(windows))]
+    {
+        let temp = root.join(executable("bin/tradeassembly-next"));
+        fs::copy(source, &temp).map_err(|_| "facade_install_failed")?;
+        fs::rename(temp, facade).map_err(|_| "facade_install_failed")?;
+    }
+    #[cfg(windows)]
+    crate::windows_private::copy_private(&source, &facade, true)
+        .map_err(|_| "facade_install_failed")?;
     atomic_json(&root.join("installed.json"), &next)?;
-    fs::remove_file(root.join("pending.json")).map_err(|_| "transaction_cleanup_failed")?;
+    remove_pending(&root)?;
     status(&root)
 }
 
@@ -652,8 +685,16 @@ pub fn rollback(root: &Path) -> Result<Value> {
     atomic_json(&root.join("pending.json"), &next)?;
     prepare(&root, &next.current, next.warden_port)?;
     atomic_json(&root.join("installed.json"), &next)?;
-    fs::remove_file(root.join("pending.json")).map_err(|_| "transaction_cleanup_failed")?;
+    remove_pending(&root)?;
     status(&root)
+}
+
+fn remove_pending(root: &Path) -> Result<()> {
+    #[cfg(windows)]
+    return crate::windows_private::remove_durable(&root.join("pending.json"))
+        .map_err(|_| "transaction_cleanup_failed".into());
+    #[cfg(not(windows))]
+    fs::remove_file(root.join("pending.json")).map_err(|_| "transaction_cleanup_failed".into())
 }
 
 pub fn run(root: &Path, args: &[String]) -> Result<i32> {

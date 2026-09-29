@@ -17,3 +17,9 @@ sysinfo = "0.33"
 tar = "0.4"
 tempfile = "3"
 walkdir = "2"
+
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+getrandom = "0.3"
+hex = "0.4"
+windows-permissions = "0.2.4"

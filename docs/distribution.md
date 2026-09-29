@@ -721,11 +721,24 @@ uses a noncommitted Cargo patch to Core's unpublished plugin SDK; the
 registry-exact dependency is unchanged. The Alpaca producer follow-up is
 committed on its isolated branch as `e1d8385`; no publication is claimed.
 
-Next R1 work: extend the controlled broker fixture with the Paper lookup,
-execute attached-agent real-Warden controlled-sink tests in both modes, and
-resolve the `pending_reconcile` reattachment rule without allowing a new
-order while the original is uncertain. Then run deterministic parity and the
-specified R1 acceptance matrix.
+Next R1 work: execute attached-agent real-Warden controlled-sink tests in both
+modes, then run deterministic parity and the specified R1 acceptance matrix.
+
+Follow-up checkpoint: Core commits `bd4fa1a` and `36a0220` now include the
+Paper/Live lookup split, Paper agent submit selection, durable `absent` versus
+`unresolved` recovery observations, and a controlled broker fixture that
+declares the Paper submit/lookup operations. Alpaca producer commit `e1d8385`
+adds found/absent lookup and exact receipt identity. Focused Core checks:
+`cargo test --offline --lib broker_submission::` 16 passed, 27 ignored;
+`cargo test --offline --lib agent_order` 2 passed; library strict Clippy and
+`cargo check --offline --example f2_controlled_broker` passed. Alpaca
+`cargo test --offline --workspace` with a local uncommitted SDK source
+override passed. No real-Warden attached-agent MCP path has passed yet. For
+reattachment, preserve the existing quarantine and owner-acknowledged
+`agent_run.recover` transition rather than automatically marking a disconnected
+run reconciled. The R2 matrix must show original-order observation before
+acknowledgement and a fresh attached session after acknowledgement; absent or
+unknown observation must not authorize resubmission.
 Until those pass, R1 and the overall release gate remain open. No R2–R6
 acceptance is claimed.
 

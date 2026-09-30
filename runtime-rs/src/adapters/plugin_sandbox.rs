@@ -235,15 +235,19 @@ pub fn resolve_sandbox_command(configured: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::PluginProcessSandboxPort;
     use super::{
-        normalized_domains, resolve_executable, resolve_sandbox_command, PluginProcessSandboxPort,
-        PluginSandboxRequest, SandboxRuntimePluginSandbox,
+        normalized_domains, resolve_executable, resolve_sandbox_command, PluginSandboxRequest,
+        SandboxRuntimePluginSandbox,
     };
     use serde_json::Value;
     use std::fs;
+    #[cfg(unix)]
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[test]

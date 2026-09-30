@@ -420,8 +420,7 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     {
         let mut bytes = serde_json::to_vec_pretty(value).map_err(|_| "metadata_write_failed")?;
         bytes.push(b'\n');
-        return windows_private::write_atomic(path, &bytes)
-            .map_err(|_| "metadata_replace_failed".into());
+        windows_private::write_atomic(path, &bytes).map_err(|_| "metadata_replace_failed".into());
     }
     #[cfg(not(windows))]
     {

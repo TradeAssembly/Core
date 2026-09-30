@@ -1106,6 +1106,17 @@ and the controlled-Warden test helper asserts readiness and health. This
 local gate does not establish the other four native receipts, five-target
 matrix, registry publication, or Relay integration.
 
+Native builder checkpoint: Core run `36662130016` started on Windows and
+failed strict Clippy on Windows-only imports, return expressions and an unused
+Unix-only test sandbox. The subsequent Core repair also routes local credential
+files through the private Windows ACL/atomic-file adapter instead of treating
+Windows permissions as a no-op; this must be retested on the actual Windows
+runner. Warden run `36663034275` and Alpaca run `36663412517` did not start:
+GitHub reported account-payment or spending-limit admission rejection. Neither
+is native qualification evidence. Do not raise the recorded $0 Actions cap
+without an explicit finite budget decision; use another approved native host
+if GitHub remains unavailable.
+
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with
 `prevent_further_usage=true`; the current usage API reports Actions net charges

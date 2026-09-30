@@ -580,15 +580,17 @@ fn short_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::ports::{
-        FailureMode, InstalledPluginPackage, PluginOperationRequest, PortDescriptor, PortKind,
-        SandboxedPluginProcess, VersionedPort,
+        FailureMode, PortDescriptor, PortKind, SandboxedPluginProcess, VersionedPort,
     };
+    use crate::ports::{InstalledPluginPackage, PluginOperationRequest};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
     use tradeassembly_plugin_sdk::{PluginRequest, PluginResponse};
 
@@ -720,8 +722,10 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     struct NativeTestSandbox;
 
+    #[cfg(unix)]
     impl VersionedPort for NativeTestSandbox {
         fn descriptors(&self) -> Vec<PortDescriptor> {
             let mut descriptor = PortDescriptor::new(PortKind::Plugins, "test.plugin-sandbox");
@@ -730,6 +734,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl PluginProcessSandboxPort for NativeTestSandbox {
         fn spawn(&self, request: &PluginSandboxRequest) -> Result<SandboxedPluginProcess, String> {
             let child = Command::new(&request.executable)

@@ -520,7 +520,7 @@ fn validate_private_file(path: &Path, size: u64) -> Result<(), String> {
         {
             return Err("local_install_secret_invalid".into());
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     {
@@ -589,7 +589,7 @@ fn publish_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     #[cfg(windows)]
     {
-        return match crate::windows_private::write_new(path, bytes) {
+        match crate::windows_private::write_new(path, bytes) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 let existing = crate::windows_private::read(path)
@@ -601,7 +601,7 @@ fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
                 }
             }
             Err(_) => Err("local_install_state_write_failed".into()),
-        };
+        }
     }
     #[cfg(not(windows))]
     {

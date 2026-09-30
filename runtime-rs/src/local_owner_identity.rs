@@ -141,11 +141,11 @@ fn create_state(path: &Path) -> Result<StoredIdentity, String> {
         serde_json::to_vec(&stored).map_err(|_| "local_owner_state_unavailable".to_string())?;
     #[cfg(windows)]
     {
-        return match crate::windows_private::write_new(path, &encoded) {
+        match crate::windows_private::write_new(path, &encoded) {
             Ok(()) => Ok(stored),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => read_state(path),
             Err(_) => Err("local_owner_state_unavailable".into()),
-        };
+        }
     }
     #[cfg(not(windows))]
     {

@@ -75,7 +75,7 @@ beta.2 staging-profile candidate, **not** production Relay, registry, or the
 amended release-matrix qualification. Do not reuse this result for changed
 candidate bytes.
 
-First-release package-label slice (uncommitted, 2026-09-30): replacement
+First-release package-label slice (committed at `eaa61fccbe0d683b5c3a33e8fca72e45e2f2a120`, 2026-09-30): replacement
 candidate packaging now excludes Intel macOS from launcher dependencies, marks
 Mac arm64 qualification required and Windows/Linux acceptance deferred, and
 requires the same policy metadata at the package/launcher integrity boundary.
@@ -106,6 +106,17 @@ produced a real registry receipt. Published status also requires a separate
 Mac registry upgrade/rollback proof. Targeted Clippy passed and `cargo check
 --locked --manifest-path xtask/Cargo.toml` passed. The revised published
 verifier has not passed on actual artifacts.
+
+Core integration checkpoint (2026-09-30): `just verify` exited 0 on
+`eaa61fccbe0d683b5c3a33e8fca72e45e2f2a120`, including workspace tests,
+nextest, language/public-boundary gates and the FOSS publication scan. The
+branch has not been pushed and no candidate or registry qualification is
+claimed. A separate coordination worktree on `codex/f2-codebuild-distribution`
+was created for private CodeBuild configuration; no build configuration or AWS
+resource has yet been created. A fresh CLI SSO device authorization required
+interactive browser approval; the official AWS integration again returned
+`Unknown tool`, which the operations route could not record as a completed
+integration attempt. The pending CLI login was cancelled, not restarted.
 
 Frozen-scope proof matrix for this release gate:
 

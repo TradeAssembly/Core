@@ -428,6 +428,10 @@ mod tests {
             .canonicalize()
             .unwrap()
             .join("canonical-state");
+        let parsed = local_path(&canonical).expect("parse canonical local path");
+        let ancestor = parsed.parent().expect("canonical parent");
+        fs::symlink_metadata(ancestor).expect("stat canonical parent");
+        private_parent(&parsed).expect("open canonical parent handles");
         ensure_directory(&canonical).expect("canonical private root");
         validate_directory(&canonical).expect("canonical private ACL");
     }

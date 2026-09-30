@@ -1146,6 +1146,12 @@ temporary-path or ACL traversal defect; the new narrow native test compares
 raw and canonicalized private temp roots and reports the underlying error
 before changing security behavior. The full Core `just verify` gate passed on
 clean commit `61dd2f4`. No Windows receipt exists yet.
+Native Core run `36668630926` on `0e97c7b` isolated the defect further:
+raw private temp-root creation passed, while the canonicalized `\\?\` Windows
+path failed with OS code 1 (`Incorrect function`) before the local-install
+tests ran. The follow-up native diagnostic separates local path parsing,
+canonical-parent metadata, parent-handle traversal, and directory creation.
+Do not loosen owner/DACL or reparse-point validation to make this pass.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

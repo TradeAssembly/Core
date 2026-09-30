@@ -6,6 +6,7 @@ on:
       - codex/f2-npm-distribution
     paths:
       - .github/workflows/native-windows-srt-probe.yml
+      - runtime-rs/src/bin/tradeassembly_sandbox.rs
   workflow_dispatch:
 permissions:
   contents: read

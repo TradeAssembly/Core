@@ -209,6 +209,7 @@ pub fn create_new(path: &Path) -> io::Result<File> {
     let parents = private_parent(&path)?;
     let mut file = OpenOptions::new()
         .create_new(true)
+        .write(true)
         .access_mode(READ_WRITE | CHANGE_SECURITY)
         .share_mode(SHARE_READ_WRITE)
         .custom_flags(OPEN_REPARSE_POINT)

@@ -1132,6 +1132,13 @@ The pinned SRT Windows alpha requires a one-time elevated `windows-install`
 that provisions its sandbox account and machine WFP filters. A native test must
 observe that setup plus restricted account, elevation, ACL and WFP behavior;
 mere compilation or a mock receipt cannot open the Windows qualification gate.
+Native run `36666676094` compiled the branch and reached distribution unit
+tests. Several tests failed from one Windows private-file primitive:
+`OpenOptions::create_new` was rejected because the Rust API requires an
+explicit write flag even when custom Windows access bits grant write access.
+The primitive now requests `.write(true)` before its owner-ACL protection and
+validation; this still needs an actual Windows retest. No native release
+receipt was emitted.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

@@ -224,8 +224,15 @@ Core/Warden. Core's verifier requires the Alpaca SDK SHA to equal its Core
 producer SHA. `just f2-codebuild-test` passed three tests; Core
 `cargo test --locked -p tradeassembly-distribution` passed 25 unit tests and
 `cargo clippy --locked -p tradeassembly-distribution --all-targets -- -D warnings`
-passed. This is contract evidence only: there is still no connection, project,
-real build, candidate or registry receipt.
+passed. This is contract evidence only: the connection created on 2026-09-30
+remains `PENDING`, and there is no CodeBuild project, real build, candidate or
+registry receipt. AWS billing readback reported $4,966.26 estimated credit
+remaining with CodeBuild applicable; the separate $25 monthly pre-credit
+CodeBuild budget has 50%, 75% and 90% actual-spend email alerts. At observed
+us-east-1 medium rates, nine 60-minute jobs have a $6.30 compute ceiling for
+one pass before artifacts, logs or retries. The AWS Connector for GitHub
+authorization page is open in Chrome awaiting action-time confirmation before
+any app grant or repository selection. No source access is claimed.
 
 ### Relay production configuration and private staging — release gate
 

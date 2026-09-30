@@ -1029,9 +1029,11 @@ current tree. Inspection of the exact historical/current lines shows a
 authentication secret or external credential; this specific finding is
 classified as a false positive. Neither producer has submodule
 or LFS entries at these heads. Alpaca has nine tracked historical distribution
-tarballs containing native executables; those archives still require an
-explicit binary-content and disclosure review before any public visibility
-change. No publication approval or public-repository verdict follows from this
+tarballs containing native executables. Each extracted executable's printable
+strings passed a separate Gitleaks 8.30.0 scan with zero findings. This does
+not review all binary content, personal/customer data, licensing or hosted-only
+boundaries; those checks remain open before any public visibility change. No
+publication approval or public-repository verdict follows from this
 preliminary scan. A first worktree-directory scan was contaminated by ignored
 `target/` build outputs and is not used as evidence.
 Public standard GitHub runners remain a future option if those repositories

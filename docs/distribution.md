@@ -298,6 +298,16 @@ existing source-free installation/onboarding tests with the new candidate paths.
 Exit: negative cases fail deterministically and clean installation reports the
 production profile without changing the user's Paper/Live choice.
 
+E3 Core binding checkpoint (2026-09-30): schema-2 release and candidate
+descriptors now bind `deploymentEnvironment` and
+`connectionProfileSha256`. Bundle verification checks the inventoried profile
+bytes against those fields, and the first-release matrix rejects anything but
+production. Legacy schema-1 frozen payloads remain unchanged; generic local-only
+schema-2 bundles remain possible. Targeted distribution tests (25/25), Clippy,
+format and diff checks pass. This is not the completed E3 gate: the private
+approved production profile, exact endpoint validation, new native candidate,
+source-free setup and live deployed readback remain outstanding.
+
 **E4 — Exercise real production and staging boundaries.**
 Outcome: evidence covers actual deployments and real authenticated identities.
 Add one bounded driver under private Relay `xtask/src/relay_environment.rs`,

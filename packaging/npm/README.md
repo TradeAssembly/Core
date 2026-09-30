@@ -27,3 +27,9 @@ runtime security prerequisite fails closed even on an experimental platform.
 No release is available merely because this source README exists. Use the exact
 published prerelease version linked from the release announcement. The `beta`
 tag is not a stable production channel.
+
+Customer beta packages must bind a production connection profile to their
+release manifest by digest. A staging-profile package is rejected by the
+first-release verifier even if its native binaries pass. The profile contains
+public endpoints and client identifiers, never credentials. Local-only Core
+bundles may omit a hosted profile; they are not the customer Relay release.

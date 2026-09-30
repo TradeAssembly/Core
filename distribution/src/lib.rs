@@ -50,6 +50,10 @@ pub struct Release {
     pub state_compatibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_descriptor_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_profile_sha256: Option<String>,
 }
 
 impl Release {
@@ -78,6 +82,20 @@ impl Release {
                     .is_none_or(|sha| !is_digest(sha)))
         {
             return Err("release_candidate_descriptor_invalid".into());
+        }
+        let profile_binding_valid = match (
+            self.deployment_environment.as_deref(),
+            self.connection_profile_sha256.as_deref(),
+        ) {
+            (None, None) => self.schema_version == 1,
+            (Some("local"), None) => self.schema_version == 2,
+            (Some("staging" | "production"), Some(sha)) => {
+                self.schema_version == 2 && is_digest(sha)
+            }
+            _ => false,
+        };
+        if !profile_binding_valid {
+            return Err("release_connection_profile_invalid".into());
         }
         Ok(())
     }
@@ -246,6 +264,14 @@ pub fn verify_bundle(root: &Path, release: &Release) -> Result<()> {
     if expected != actual {
         return Err("payload_inventory_mismatch".into());
     }
+    if release.schema_version == 2 {
+        let (environment, profile_sha) = connection_profile_binding(root)?;
+        if release.deployment_environment.as_deref() != Some(environment.as_str())
+            || release.connection_profile_sha256 != profile_sha
+        {
+            return Err("release_connection_profile_mismatch".into());
+        }
+    }
     if digest(&root.join(executable("bin/warden")))? != release.warden_sha256 {
         return Err("authority_digest_mismatch".into());
     }
@@ -257,6 +283,21 @@ pub fn verify_bundle(root: &Path, release: &Release) -> Result<()> {
         executable_file(&root.join(executable(name)))?;
     }
     Ok(())
+}
+
+pub fn connection_profile_binding(root: &Path) -> Result<(String, Option<String>)> {
+    let path = root.join("bin/connection-profile.json");
+    if !path.exists() {
+        return Ok(("local".into(), None));
+    }
+    let profile: serde_json::Value = read_json(&path)?;
+    let environment = profile["environment"]
+        .as_str()
+        .ok_or("connection_profile_environment_invalid")?;
+    if !matches!(environment, "staging" | "production") {
+        return Err("connection_profile_environment_invalid".into());
+    }
+    Ok((environment.into(), Some(digest(&path)?)))
 }
 
 pub fn executable(name: &str) -> String {
@@ -568,8 +609,54 @@ mod tests {
             warden_sha256: digest(&root.join(executable("bin/warden"))).unwrap(),
             state_compatibility: "f2-local-v1".into(),
             candidate_descriptor_sha256: None,
+            deployment_environment: None,
+            connection_profile_sha256: None,
         };
         verify_bundle(root, &release).unwrap();
+        let mut candidate = release.clone();
+        candidate.schema_version = 2;
+        candidate.candidate_descriptor_sha256 = Some("d".repeat(64));
+        candidate.deployment_environment = Some("local".into());
+        verify_bundle(root, &candidate).unwrap();
+        candidate.deployment_environment = Some("production".into());
+        assert_eq!(
+            candidate.validate().unwrap_err(),
+            "release_connection_profile_invalid"
+        );
+        candidate.deployment_environment = Some("local".into());
+        let profile = root.join("bin/connection-profile.json");
+        atomic_json(&profile, &serde_json::json!({"environment":"staging"})).unwrap();
+        files.insert(
+            "bin/connection-profile.json".into(),
+            serde_json::json!({"sha256":digest(&profile).unwrap()}),
+        );
+        atomic_json(
+            &root.join("bundle.json"),
+            &serde_json::json!({"target":target,"files":files}),
+        )
+        .unwrap();
+        candidate.bundle_manifest_sha256 = digest(&root.join("bundle.json")).unwrap();
+        candidate.deployment_environment = Some("staging".into());
+        candidate.connection_profile_sha256 = Some(digest(&profile).unwrap());
+        verify_bundle(root, &candidate).unwrap();
+        candidate.deployment_environment = Some("production".into());
+        assert_eq!(
+            verify_bundle(root, &candidate).unwrap_err(),
+            "release_connection_profile_mismatch"
+        );
+        candidate.deployment_environment = Some("staging".into());
+        candidate.connection_profile_sha256 = Some("f".repeat(64));
+        assert_eq!(
+            verify_bundle(root, &candidate).unwrap_err(),
+            "release_connection_profile_mismatch"
+        );
+        fs::remove_file(profile).unwrap();
+        files.remove("bin/connection-profile.json");
+        atomic_json(
+            &root.join("bundle.json"),
+            &serde_json::json!({"target":target,"files":files}),
+        )
+        .unwrap();
         let core = root.join(executable("bin/tradeassembly"));
         fs::write(&core, b"corrupted").unwrap();
         assert_eq!(

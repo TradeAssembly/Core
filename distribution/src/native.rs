@@ -344,6 +344,8 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
         warden_sha256: spec.warden_sha256,
         state_compatibility: "f2-local-v1".into(),
         candidate_descriptor_sha256: None,
+        deployment_environment: None,
+        connection_profile_sha256: None,
     };
     verify_bundle(stage.path(), &release)?;
     fs::rename(stage.path(), out).map_err(|_| "native_freeze_failed")?;

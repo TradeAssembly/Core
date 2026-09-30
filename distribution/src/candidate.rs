@@ -20,6 +20,8 @@ pub struct CandidateDescriptor {
     pub parent_lock_sha256: String,
     pub baseline_mac_manifest_sha256: String,
     pub bundle_manifest_sha256: String,
+    pub deployment_environment: String,
+    pub connection_profile_sha256: Option<String>,
     pub native_inputs: NativeInputs,
 }
 
@@ -36,6 +38,7 @@ pub fn describe(bundle: &Path, parent: &Path, version: &str, out: &Path) -> Resu
         .ok_or("candidate_target_missing")?;
     let inputs: NativeInputs = serde_json::from_value(manifest["nativeInputs"].clone())
         .map_err(|_| "candidate_native_inputs_missing")?;
+    let (environment, profile_sha) = crate::connection_profile_binding(bundle)?;
     let descriptor = CandidateDescriptor {
         schema_version: 1,
         version: version.into(),
@@ -43,6 +46,8 @@ pub fn describe(bundle: &Path, parent: &Path, version: &str, out: &Path) -> Resu
         parent_lock_sha256: PARENT_SHA.into(),
         baseline_mac_manifest_sha256: FROZEN_MAC_SHA.into(),
         bundle_manifest_sha256: digest(&bundle.join("bundle.json"))?,
+        deployment_environment: environment.clone(),
+        connection_profile_sha256: profile_sha.clone(),
         native_inputs: inputs,
     };
     let parent = out.parent().ok_or("candidate_descriptor_output_invalid")?;
@@ -60,6 +65,8 @@ pub fn describe(bundle: &Path, parent: &Path, version: &str, out: &Path) -> Resu
         warden_sha256: descriptor.native_inputs.warden_sha256.clone(),
         state_compatibility: "f2-local-v1".into(),
         candidate_descriptor_sha256: Some(digest(&staged)?),
+        deployment_environment: Some(environment),
+        connection_profile_sha256: profile_sha,
     };
     verify_bundle(bundle, &release)?;
     verify(stage.path(), bundle, &release)?;
@@ -95,6 +102,9 @@ pub fn verify(package: &Path, bundle: &Path, release: &Release) -> Result<()> {
         || descriptor.parent_lock_sha256 != PARENT_SHA
         || descriptor.baseline_mac_manifest_sha256 != FROZEN_MAC_SHA
         || descriptor.bundle_manifest_sha256 != release.bundle_manifest_sha256
+        || release.deployment_environment.as_deref()
+            != Some(descriptor.deployment_environment.as_str())
+        || release.connection_profile_sha256 != descriptor.connection_profile_sha256
         || digest(&bundle.join("bundle.json"))? != descriptor.bundle_manifest_sha256
         || descriptor.native_inputs.target != descriptor.target
         || descriptor.native_inputs.warden_sha256 != release.warden_sha256
@@ -224,6 +234,8 @@ mod tests {
             parent_lock_sha256: PARENT_SHA.into(),
             baseline_mac_manifest_sha256: FROZEN_MAC_SHA.into(),
             bundle_manifest_sha256: digest(&root.join("bundle.json")).unwrap(),
+            deployment_environment: "local".into(),
+            connection_profile_sha256: None,
             native_inputs: inputs,
         };
         atomic_json(&root.join(NAME), &descriptor).unwrap();
@@ -237,8 +249,20 @@ mod tests {
             warden_sha256: descriptor.native_inputs.warden_sha256.clone(),
             state_compatibility: "f2-local-v1".into(),
             candidate_descriptor_sha256: Some(digest(&root.join(NAME)).unwrap()),
+            deployment_environment: Some("local".into()),
+            connection_profile_sha256: None,
         };
         verify(root, root, &release).unwrap();
+        descriptor.deployment_environment = "staging".into();
+        atomic_json(&root.join(NAME), &descriptor).unwrap();
+        release.candidate_descriptor_sha256 = Some(digest(&root.join(NAME)).unwrap());
+        assert_eq!(
+            verify(root, root, &release).unwrap_err(),
+            "candidate_descriptor_binding_invalid"
+        );
+        descriptor.deployment_environment = "local".into();
+        atomic_json(&root.join(NAME), &descriptor).unwrap();
+        release.candidate_descriptor_sha256 = Some(digest(&root.join(NAME)).unwrap());
         fs::write(root.join("bin/tradeassembly"), b"changed core").unwrap();
         assert_eq!(
             verify(root, root, &release).unwrap_err(),

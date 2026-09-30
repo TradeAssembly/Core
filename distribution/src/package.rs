@@ -98,6 +98,7 @@ pub(crate) fn verify_delivery_artifacts(
     if release.schema_version == 2 {
         let candidate_stage = tempfile::tempdir().map_err(|_| "qualification_stage_failed")?;
         crate::extract(&payload.join("bundle.tar.gz"), candidate_stage.path())?;
+        verify_bundle(candidate_stage.path(), release)?;
         crate::candidate::verify(&payload, candidate_stage.path(), release)?;
         let native_binary = |name: &str| {
             if release.target == TARGETS[4] {
@@ -211,6 +212,11 @@ pub fn pack(
     if descriptor.is_none() && version != "0.1.0-beta.1" {
         return Err("replacement_candidate_descriptor_required".into());
     }
+    let (environment, profile_sha) = if descriptor.is_some() {
+        crate::connection_profile_binding(bundle)?
+    } else {
+        (String::new(), None)
+    };
     let mut release = Release {
         schema_version: if descriptor.is_some() { 2 } else { 1 },
         version: version.into(),
@@ -221,6 +227,8 @@ pub fn pack(
         warden_sha256: digest(&bundle.join(crate::executable("bin/warden")))?,
         state_compatibility: "f2-local-v1".into(),
         candidate_descriptor_sha256: descriptor_digest,
+        deployment_environment: descriptor.map(|_| environment),
+        connection_profile_sha256: profile_sha,
     };
     verify_bundle(bundle, &release)?;
     release.validate_candidate()?;
@@ -777,6 +785,17 @@ fn verify_first_release_matrix(
     if !first_release_matrix_valid(matrix) {
         return Err("first_release_matrix_policy_invalid".into());
     }
+    for index in FIRST_RELEASE_INDICES {
+        let release: Release = read_json(&root.join(TARGETS[index]).join("release.json"))?;
+        if release.deployment_environment.as_deref() != Some("production")
+            || release.connection_profile_sha256.is_none()
+        {
+            return Err(format!(
+                "first_release_production_profile_required:{}",
+                TARGETS[index]
+            ));
+        }
+    }
     let qualified = verify_native_targets(root, &[TARGETS[0]], version, published)?;
     let mut experimental = Vec::new();
     for index in [2, 3, 4] {
@@ -911,6 +930,37 @@ mod tests {
         });
         assert!(first_release_matrix_valid(&matrix));
         atomic_json(&root.path().join("matrix.json"), &matrix).unwrap();
+        for index in FIRST_RELEASE_INDICES {
+            let target_root = root.path().join(TARGETS[index]);
+            fs::create_dir(&target_root).unwrap();
+            atomic_json(
+                &target_root.join("release.json"),
+                &Release {
+                    schema_version: 2,
+                    version: "0.1.0-beta.3".into(),
+                    target: TARGETS[index].into(),
+                    parent_lock_sha256: PARENT_SHA.into(),
+                    bundle_manifest_sha256: "a".repeat(64),
+                    archive_sha256: "b".repeat(64),
+                    warden_sha256: "c".repeat(64),
+                    state_compatibility: "f2-local-v1".into(),
+                    candidate_descriptor_sha256: Some("d".repeat(64)),
+                    deployment_environment: Some("production".into()),
+                    connection_profile_sha256: Some("e".repeat(64)),
+                },
+            )
+            .unwrap();
+        }
+        let mac_release = root.path().join(TARGETS[0]).join("release.json");
+        let mut mac: Release = read_json(&mac_release).unwrap();
+        mac.deployment_environment = Some("staging".into());
+        atomic_json(&mac_release, &mac).unwrap();
+        assert_eq!(
+            verify_matrix(root.path(), false).unwrap_err(),
+            format!("first_release_production_profile_required:{}", TARGETS[0])
+        );
+        mac.deployment_environment = Some("production".into());
+        atomic_json(&mac_release, &mac).unwrap();
         assert_eq!(
             verify_matrix(root.path(), false).unwrap_err(),
             format!("native_qualification_missing:{}", TARGETS[0])
@@ -1040,6 +1090,8 @@ mod tests {
             warden_sha256: "b".repeat(64),
             state_compatibility: "f2-local-v1".into(),
             candidate_descriptor_sha256: None,
+            deployment_environment: None,
+            connection_profile_sha256: None,
         };
         atomic_json(&package.join("release.json"), &release).unwrap();
         atomic_json(
@@ -1140,6 +1192,8 @@ mod tests {
             warden_sha256: "b".repeat(64),
             state_compatibility: "f2-local-v1".into(),
             candidate_descriptor_sha256: None,
+            deployment_environment: None,
+            connection_profile_sha256: None,
         };
         atomic_json(&target.join("release.json"), &release).unwrap();
         atomic_json(&target.join("receipt.json"), &json!({
@@ -1176,6 +1230,8 @@ mod tests {
             warden_sha256: "c".repeat(64),
             state_compatibility: "f2-local-v1".into(),
             candidate_descriptor_sha256: Some("d".repeat(64)),
+            deployment_environment: Some("local".into()),
+            connection_profile_sha256: None,
         };
         atomic_json(&target.join("release.json"), &release).unwrap();
         atomic_json(

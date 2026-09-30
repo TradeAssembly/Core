@@ -69,11 +69,20 @@ fn execute(args: &[String]) -> Result<i32> {
             )?;
             serde_json::json!({"frozen":true,"qualified":false})
         }
+        "describe-candidate" => tradeassembly_distribution::candidate::describe(
+            Path::new(&required(args, "--bundle")?),
+            Path::new(&required(args, "--parent")?),
+            &required(args, "--version")?,
+            Path::new(&required(args, "--out")?),
+        )?,
         "pack" => package::pack(
             Path::new(&required(args, "--bundle")?),
             Path::new(&required(args, "--parent")?),
             &required(args, "--version")?,
             Path::new(&required(args, "--installer")?),
+            option(args, "--candidate-descriptor")?
+                .as_deref()
+                .map(Path::new),
             Path::new(&required(args, "--out")?),
         )?,
         "verify" => package::verify_matrix(
@@ -81,7 +90,7 @@ fn execute(args: &[String]) -> Result<i32> {
             !args.iter().any(|arg| arg == "--candidate"),
         )?,
         "help" | "--help" => {
-            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY --out NEW_PATH; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); verify --evidence DIRECTORY [--candidate].");
+            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); verify --evidence DIRECTORY [--candidate].");
             return Ok(0);
         }
         _ => return install::run(&root, args),

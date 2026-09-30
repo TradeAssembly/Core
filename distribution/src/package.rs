@@ -68,6 +68,13 @@ fn verify_delivery_artifacts(root: &Path, receipt: &Value, release: &Release) ->
     {
         return Err("qualified_platform_package_binding_failed".into());
     }
+    if release.schema_version == 2 {
+        let candidate_stage = tempfile::tempdir().map_err(|_| "qualification_stage_failed")?;
+        crate::extract(&payload.join("bundle.tar.gz"), candidate_stage.path())?;
+        crate::candidate::verify(&payload, candidate_stage.path(), release)?;
+    } else {
+        crate::candidate::verify(&payload, &payload, release)?;
+    }
     let launcher_stage = tempfile::tempdir().map_err(|_| "qualification_stage_failed")?;
     crate::extract(&launcher, launcher_stage.path())?;
     let payload = launcher_stage.path().join("package");
@@ -99,6 +106,7 @@ pub fn pack(
     parent: &Path,
     version: &str,
     installer: &Path,
+    descriptor: Option<&Path>,
     out: &Path,
 ) -> Result<Value> {
     if digest(parent)? != PARENT_SHA {
@@ -114,8 +122,17 @@ pub fn pack(
         .iter()
         .position(|t| *t == target)
         .ok_or("bundle_target_unsupported")?;
+    if descriptor.is_some_and(|path| {
+        path.file_name().and_then(|name| name.to_str()) != Some(crate::candidate::NAME)
+    }) {
+        return Err("candidate_descriptor_filename_invalid".into());
+    }
+    let descriptor_digest = descriptor.map(digest).transpose()?;
+    if descriptor.is_none() && version != "0.1.0-beta.1" {
+        return Err("replacement_candidate_descriptor_required".into());
+    }
     let mut release = Release {
-        schema_version: 1,
+        schema_version: if descriptor.is_some() { 2 } else { 1 },
         version: version.into(),
         target: target.into(),
         parent_lock_sha256: PARENT_SHA.into(),
@@ -123,9 +140,19 @@ pub fn pack(
         archive_sha256: "0".repeat(64),
         warden_sha256: digest(&bundle.join(crate::executable("bin/warden")))?,
         state_compatibility: "f2-local-v1".into(),
+        candidate_descriptor_sha256: descriptor_digest,
     };
     verify_bundle(bundle, &release)?;
     release.validate_candidate()?;
+    if let Some(descriptor) = descriptor {
+        crate::candidate::verify(
+            descriptor
+                .parent()
+                .ok_or("candidate_descriptor_path_invalid")?,
+            bundle,
+            &release,
+        )?;
+    }
     if out.exists() {
         return Err("output_exists_use_new_candidate_directory".into());
     }
@@ -137,6 +164,10 @@ pub fn pack(
         .map_err(|_| "output_create_failed")?;
     let platform = stage.path().join(NPM_NAMES[index]);
     fs::create_dir(&platform).map_err(|_| "output_create_failed")?;
+    if let Some(descriptor) = descriptor {
+        fs::copy(descriptor, platform.join(crate::candidate::NAME))
+            .map_err(|_| "candidate_descriptor_copy_failed")?;
+    }
     archive(bundle, &platform.join("bundle.tar.gz"))?;
     release.archive_sha256 = digest(&platform.join("bundle.tar.gz"))?;
     atomic_json(&platform.join("release.json"), &release)?;
@@ -153,12 +184,17 @@ pub fn pack(
         3 => ("linux", "arm64"),
         _ => ("win32", "x64"),
     };
+    let mut package_files = vec!["bundle.tar.gz", "release.json", "installer.json"];
+    if descriptor.is_some() {
+        package_files.push(crate::candidate::NAME);
+    }
+    package_files.extend([installer_name.as_str(), "LICENSE", "NOTICE"]);
     atomic_json(
         &platform.join("package.json"),
         &json!({
             "name":NPM_NAMES[index],"version":version,"description":"TradeAssembly native F2 prerelease payload",
             "license":"Apache-2.0","os":[os],"cpu":[cpu],
-            "files":["bundle.tar.gz","release.json","installer.json",installer_name,"LICENSE","NOTICE"],
+            "files":package_files,
             "engines":{"node":">=22"},"publishConfig":{"access":"public","tag":"beta"}
         }),
     )?;
@@ -338,6 +374,7 @@ mod tests {
             archive_sha256: digest(&package.join("bundle.tar.gz")).unwrap(),
             warden_sha256: "b".repeat(64),
             state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: None,
         };
         atomic_json(&package.join("release.json"), &release).unwrap();
         atomic_json(
@@ -437,6 +474,7 @@ mod tests {
             archive_sha256: "a".repeat(64),
             warden_sha256: "b".repeat(64),
             state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: None,
         };
         atomic_json(&target.join("release.json"), &release).unwrap();
         atomic_json(&target.join("receipt.json"), &json!({
@@ -444,6 +482,48 @@ mod tests {
             "version":release.version,"releaseManifestSha256":digest(&target.join("release.json")).unwrap(),
             "native":true,"realWarden":true,"actualBrokerOrders":false,"liveActivated":false
         })).unwrap();
+        assert_eq!(
+            verify_matrix(root.path(), false).unwrap_err(),
+            format!("native_qualification_binding_failed:{}", TARGETS[0])
+        );
+    }
+
+    #[test]
+    fn baseline_receipt_cannot_qualify_replacement_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        atomic_json(
+            &root.path().join("matrix.json"),
+            &json!({
+                "schemaVersion":1,"parentLockSha256":PARENT_SHA,
+                "version":"0.1.0-beta.2","npmTag":"beta"
+            }),
+        )
+        .unwrap();
+        let target = root.path().join(TARGETS[0]);
+        fs::create_dir(&target).unwrap();
+        let release = Release {
+            schema_version: 2,
+            version: "0.1.0-beta.2".into(),
+            target: TARGETS[0].into(),
+            parent_lock_sha256: PARENT_SHA.into(),
+            bundle_manifest_sha256: "a".repeat(64),
+            archive_sha256: "b".repeat(64),
+            warden_sha256: "c".repeat(64),
+            state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: Some("d".repeat(64)),
+        };
+        atomic_json(&target.join("release.json"), &release).unwrap();
+        atomic_json(
+            &target.join("receipt.json"),
+            &json!({
+                "schemaVersion":"tradeassembly.distribution-native.v2",
+                "target":TARGETS[0],"version":release.version,
+                "releaseManifestSha256":crate::FROZEN_MAC_SHA,
+                "native":true,"host":{"os":"macos","arch":"aarch64","target":TARGETS[0]},
+                "realWarden":true,"actualBrokerOrders":false,"liveActivated":false
+            }),
+        )
+        .unwrap();
         assert_eq!(
             verify_matrix(root.path(), false).unwrap_err(),
             format!("native_qualification_binding_failed:{}", TARGETS[0])

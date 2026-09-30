@@ -3,7 +3,7 @@
 
 use crate::{
     atomic_json, digest, executable, portable_name, read_json, verify_bundle, Release, Result,
-    PARENT_SHA, TARGETS,
+    PARENT_SHA,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,7 +12,7 @@ use std::{collections::BTreeMap, fs, io::Read, path::Path};
 const NODE_VERSION: &str = "v22.23.2";
 const SANDBOX_VERSION: &str = "0.0.67";
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeInputs {
     pub schema_version: u32,
@@ -289,6 +289,7 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
         archive_sha256: "0".repeat(64),
         warden_sha256: spec.warden_sha256,
         state_compatibility: "f2-local-v1".into(),
+        candidate_descriptor_sha256: None,
     };
     verify_bundle(stage.path(), &release)?;
     fs::rename(stage.path(), out).map_err(|_| "native_freeze_failed")?;
@@ -298,6 +299,7 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TARGETS;
 
     #[test]
     fn native_plugin_lock_must_bind_every_input_not_a_copied_mac_lock() {

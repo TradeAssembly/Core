@@ -14,6 +14,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
+pub mod candidate;
 pub mod install;
 pub mod native;
 pub mod package;
@@ -46,13 +47,15 @@ pub struct Release {
     pub archive_sha256: String,
     pub warden_sha256: String,
     pub state_compatibility: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_descriptor_sha256: Option<String>,
 }
 
 impl Release {
     pub fn validate(&self) -> Result<()> {
         let version = semver::Version::parse(&self.version).map_err(|_| "version_invalid")?;
         if version.pre.is_empty()
-            || self.schema_version != 1
+            || !matches!(self.schema_version, 1 | 2)
             || !TARGETS.contains(&self.target.as_str())
             || self.state_compatibility != "f2-local-v1"
             || [
@@ -66,6 +69,15 @@ impl Release {
         {
             return Err("release_contract_invalid".into());
         }
+        if (self.schema_version == 1 && self.candidate_descriptor_sha256.is_some())
+            || (self.schema_version == 2
+                && self
+                    .candidate_descriptor_sha256
+                    .as_deref()
+                    .is_none_or(|sha| !is_digest(sha)))
+        {
+            return Err("release_candidate_descriptor_invalid".into());
+        }
         Ok(())
     }
 
@@ -74,7 +86,10 @@ impl Release {
         if self.parent_lock_sha256 != PARENT_SHA {
             return Err("candidate_parent_release_lock_changed".into());
         }
-        if self.target == TARGETS[0] && self.bundle_manifest_sha256 != FROZEN_MAC_SHA {
+        if self.schema_version == 1
+            && self.target == TARGETS[0]
+            && self.bundle_manifest_sha256 != FROZEN_MAC_SHA
+        {
             return Err("frozen_mac_payload_changed".into());
         }
         Ok(())
@@ -552,6 +567,7 @@ mod tests {
             archive_sha256: "0".repeat(64),
             warden_sha256: digest(&root.join(executable("bin/warden"))).unwrap(),
             state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: None,
         };
         verify_bundle(root, &release).unwrap();
         let core = root.join(executable("bin/tradeassembly"));

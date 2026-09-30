@@ -537,6 +537,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
             .map_err(|_| "stage_create_failed")?;
         extract(&package.join("bundle.tar.gz"), stage.path())?;
         verify_bundle(stage.path(), &release)?;
+        crate::candidate::verify(package, stage.path(), &release)?;
         #[cfg(not(windows))]
         fs::rename(stage.path(), &destination).map_err(|_| "payload_commit_failed")?;
         #[cfg(windows)]
@@ -544,6 +545,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
             .map_err(|_| "payload_commit_failed")?;
     }
     verify_bundle(&destination, &release)?;
+    crate::candidate::verify(package, &destination, &release)?;
     let authority = root.join(executable("authority/bin/warden"));
     if !authority.exists() {
         #[cfg(not(windows))]

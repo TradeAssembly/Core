@@ -996,11 +996,26 @@ remain open.
 R3 prerequisite: native freezing now accepts a separately staged Mac arm64
 input with an arm64 Mach-O header, while retaining the host-target and
 explicit input-hash checks. The targeted binary-header test passed 1/1. The
-baseline Mac manifest hash is still enforced at packaging/installation, so
-this change does **not** authorize or qualify a replacement candidate yet.
-The next R3 change must introduce the versioned candidate descriptor and
-verify its parent, source revisions, artifact digests and new Mac manifest
-before relaxing that packaging check.
+baseline Mac manifest hash remains enforced for schema-1 releases.
+
+R3 descriptor implementation is now in progress: schema-2 releases require a
+SHA-256-bound `candidate-descriptor.json` naming the exact version, target,
+immutable parent lock and baseline Mac manifest, replacement bundle manifest,
+three source revisions and native binary/plugin input digests. The new
+`cargo xtask distribution-describe-candidate --bundle FROZEN --parent LOCK
+--version VERSION --out NEW_DIRECTORY/candidate-descriptor.json` command
+derives it from a native-frozen bundle, checks the actual bytes, and will not
+overwrite an existing output. `distribution-pack` takes that exact file with
+`--candidate-descriptor`; the installer and delivery verifier check its hash
+and content. The old schema-1 Mac bundle is still accepted only at its frozen
+manifest hash. Targeted descriptor tamper and baseline-receipt reuse tests,
+the distribution crate suite (17/17), strict distribution Clippy and xtask
+check passed. The ignored real packaged-install/npm/pnpm tests have **not**
+run against a new candidate. Registry CLI returned 404 for five names; a
+bounded curl retry confirmed 404 for the sixth Windows package after the npm
+request timed out. `0.1.0-beta.2` is provisionally unused, subject to a fresh
+pre-publish ownership/version check. R3 and R2 packaged-artifact proof are
+not closed; neither the five-target qualification nor npm publication exists.
 
 ### Historical execution checkpoint — before the amendment
 

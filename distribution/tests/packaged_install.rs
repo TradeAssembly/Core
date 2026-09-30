@@ -78,7 +78,19 @@ fn frozen_package_setup_reinstall_upgrade_rollback_and_running_denial() {
         fs::hard_link(package.join(&name), next_package.join(name)).unwrap();
     }
     let mut next = original.clone();
-    next.version = "0.1.0-beta.2".into();
+    let parsed = semver::Version::parse(&original.version).unwrap();
+    next.version = format!(
+        "{}.{}.{}-{}.next",
+        parsed.major, parsed.minor, parsed.patch, parsed.pre
+    );
+    if original.schema_version == 2 {
+        let mut descriptor: Value =
+            read_json(&package.join(tradeassembly_distribution::candidate::NAME)).unwrap();
+        descriptor["version"] = json!(next.version);
+        let path = next_package.join(tradeassembly_distribution::candidate::NAME);
+        atomic_json(&path, &descriptor).unwrap();
+        next.candidate_descriptor_sha256 = Some(digest(&path).unwrap());
+    }
     atomic_json(&next_package.join("release.json"), &next).unwrap();
 
     let payload = root.join("versions").join(&original.archive_sha256);

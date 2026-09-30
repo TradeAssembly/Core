@@ -69,6 +69,7 @@ jobs:
           $argvExit = $LASTEXITCODE
           "path=$pathExit forward=$forwardExit argv=$argvExit" | Out-File target/native-srt-proof/child-exits.txt
           if ($pathExit -ne 0 -or $forwardExit -ne 0) { throw 'Windows SRT Node child still lacks a working launch form' }
+          exit 0
       - name: Build and exercise actual bundled Rust launcher
         shell: pwsh
         timeout-minutes: 25

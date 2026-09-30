@@ -12,7 +12,13 @@ policy activation. Existing M2 acceptance must survive relocation unchanged.
 EXTRACTION.md identifies the selected source and unresolved harness/license work.
 
 Distribution: `cargo xtask distribution-pack` owns frozen-payload packaging;
-`cargo xtask distribution-verify` owns the five-target native evidence matrix.
+`cargo xtask distribution-verify` owns the versioned evidence matrix. The
+first-release schema-v2 policy fully qualifies Mac arm64 and requires
+digest-bound experimental build evidence, not native runtime acceptance, for
+Windows x64 and GNU Linux x64/arm64; Intel Mac is excluded. The historical
+schema-v1 five-target contract remains readable for baseline evidence.
+`cargo xtask distribution-capture-registry` obtains read-only npm registry
+evidence after candidate qualification; it does not publish packages.
 `cargo xtask distribution-freeze-native` inventories staged native inputs on
 their actual host; its output is explicitly not native qualification.
 The narrowly whitelisted `packaging/npm/cli.cjs` is native-launch glue only.

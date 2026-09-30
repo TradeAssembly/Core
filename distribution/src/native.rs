@@ -83,7 +83,7 @@ pub fn describe_inputs(
     Ok(json!({"metadata":out,"sha256":digest(out)?,"target":target,"qualified":false}))
 }
 
-fn binary_target(path: &Path, target: &str) -> Result<()> {
+pub(crate) fn binary_target(path: &Path, target: &str) -> Result<()> {
     use std::io::{Seek, SeekFrom};
     let mut file = fs::File::open(path).map_err(|_| "native_binary_unavailable")?;
     let mut header = [0; 64];

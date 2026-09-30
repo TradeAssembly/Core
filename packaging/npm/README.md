@@ -16,10 +16,13 @@ never kills processes or liquidates positions. Use the same `--root` and
 `--warden-port` options if you customized them. Use `rollback` for the previous
 compatible version while stopped. `status` verifies the installed payload.
 
-macOS releases are ad-hoc signed, not Apple notarized. Other platforms require
-their documented sandbox prerequisites. Never disable OS security globally to
-run a prerelease. Windows sandbox support is alpha and needs one-time elevated
-SRT setup. Platform support is not promised until its native qualification passes.
+The first beta qualifies macOS arm64 only. Windows x64 and GNU Linux x64/arm64
+packages are experimental builds whose installation, upgrade, and runtime
+acceptance is deferred; the launcher warns when one runs. Intel macOS is not
+distributed in this beta. macOS releases are ad-hoc signed, not Apple
+notarized. Never disable OS security globally to run a prerelease. Windows
+sandbox support is alpha and needs one-time elevated SRT setup. A missing
+runtime security prerequisite fails closed even on an experimental platform.
 
 No release is available merely because this source README exists. Use the exact
 published prerelease version linked from the release announcement. The `beta`

@@ -21,6 +21,7 @@ fn main() {
         "bundle-local" => bundle_local::run(rest, root),
         "distribution-pack"
         | "distribution-verify"
+        | "distribution-capture-registry"
         | "distribution-freeze-native"
         | "distribution-describe-native-inputs"
         | "distribution-qualify"
@@ -31,6 +32,7 @@ fn main() {
                 "distribution-describe-native-inputs" => "describe-native-inputs",
                 "distribution-qualify" => "qualify",
                 "distribution-describe-candidate" => "describe-candidate",
+                "distribution-capture-registry" => "capture-registry",
                 _ => "verify",
             };
             std::process::Command::new("cargo")
@@ -52,7 +54,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-qualify, distribution-verify");
+            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-qualify, distribution-verify, distribution-capture-registry");
             0
         }
         _ => {

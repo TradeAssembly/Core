@@ -3,11 +3,15 @@
 use crate::{
     archive, atomic_json, digest, read_json, verify_bundle, Release, Result, PARENT_SHA, TARGETS,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha512};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn evidence_file(root: &Path, proof: &Value) -> Result<PathBuf> {
@@ -33,6 +37,24 @@ fn evidence_file(root: &Path, proof: &Value) -> Result<PathBuf> {
         return Err("artifact_binding_failed".into());
     }
     Ok(file)
+}
+
+fn first_release_platform_metadata_valid(package: &Value, index: usize) -> bool {
+    FIRST_RELEASE_INDICES.contains(&index)
+        && package["tradeassemblyReleasePolicy"] == FIRST_RELEASE_POLICY
+        && package["tradeassemblyPlatformQualification"] == platform_qualification(index)
+}
+
+fn first_release_launcher_metadata_valid(package: &Value) -> bool {
+    package["tradeassemblyReleasePolicy"] == FIRST_RELEASE_POLICY
+        && package["optionalDependencies"]
+            .as_object()
+            .is_some_and(|dependencies| {
+                dependencies.len() == FIRST_RELEASE_INDICES.len()
+                    && FIRST_RELEASE_INDICES
+                        .iter()
+                        .all(|index| dependencies[NPM_NAMES[*index]] == package["version"])
+            })
 }
 
 pub(crate) fn verify_delivery_artifacts(
@@ -66,6 +88,7 @@ pub(crate) fn verify_delivery_artifacts(
         || package["name"] != NPM_NAMES[index]
         || package["version"] != release.version
         || package.get("scripts").is_some()
+        || (release.schema_version == 2 && !first_release_platform_metadata_valid(&package, index))
         || digest(&payload.join("installer.json"))? != digest(&descriptor)?
         || digest(&payload.join(filename))? != digest(&installer)?
         || digest(&payload.join("bundle.tar.gz"))? != release.archive_sha256
@@ -76,6 +99,29 @@ pub(crate) fn verify_delivery_artifacts(
         let candidate_stage = tempfile::tempdir().map_err(|_| "qualification_stage_failed")?;
         crate::extract(&payload.join("bundle.tar.gz"), candidate_stage.path())?;
         crate::candidate::verify(&payload, candidate_stage.path(), release)?;
+        let native_binary = |name: &str| {
+            if release.target == TARGETS[4] {
+                format!("{name}.exe")
+            } else {
+                name.to_owned()
+            }
+        };
+        for name in [
+            "bin/tradeassembly",
+            "bin/warden",
+            "bin/tradeassembly-sandbox",
+        ] {
+            crate::native::binary_target(
+                &candidate_stage.path().join(native_binary(name)),
+                &release.target,
+            )?;
+        }
+        let node = if release.target == TARGETS[4] {
+            "runtime/node/bin/node.exe"
+        } else {
+            "runtime/node/bin/node"
+        };
+        crate::native::binary_target(&candidate_stage.path().join(node), &release.target)?;
         let candidate_descriptor = payload.join(crate::candidate::NAME);
         let described: Value = read_json(&candidate_descriptor)?;
         if receipt["candidateDescriptorSha256"] != digest(&candidate_descriptor)?
@@ -97,9 +143,14 @@ pub(crate) fn verify_delivery_artifacts(
         || package.get("scripts").is_some()
         || package["bin"]["tradeassembly"] != "cli.cjs"
         || receipt["launcherSha256"] != digest(&payload.join("cli.cjs"))?
-        || NPM_NAMES
-            .iter()
-            .any(|name| package["optionalDependencies"][name] != release.version)
+        || (release.schema_version == 2 && !first_release_launcher_metadata_valid(&package))
+        || (release.schema_version == 1
+            && (package["optionalDependencies"]
+                .as_object()
+                .is_none_or(|dependencies| dependencies.len() != NPM_NAMES.len())
+                || NPM_NAMES
+                    .iter()
+                    .any(|name| package["optionalDependencies"][name] != release.version)))
     {
         return Err("qualified_launcher_package_binding_failed".into());
     }
@@ -113,6 +164,19 @@ pub const NPM_NAMES: [&str; 5] = [
     "tradeassembly-linux-arm64",
     "tradeassembly-win32-x64",
 ];
+
+// The supported first-release matrix deliberately excludes Intel macOS. The
+// full TARGETS/NPM_NAMES inventory remains available to read older artifacts.
+pub const FIRST_RELEASE_INDICES: [usize; 4] = [0, 2, 3, 4];
+pub const FIRST_RELEASE_POLICY: &str = "macos-arm64-qualified-experimental-v1";
+
+fn platform_qualification(index: usize) -> &'static str {
+    if index == 0 {
+        "required"
+    } else {
+        "deferred-experimental"
+    }
+}
 
 pub fn pack(
     bundle: &Path,
@@ -135,6 +199,9 @@ pub fn pack(
         .iter()
         .position(|t| *t == target)
         .ok_or("bundle_target_unsupported")?;
+    if descriptor.is_some() && !FIRST_RELEASE_INDICES.contains(&index) {
+        return Err("first_release_target_excluded".into());
+    }
     if descriptor.is_some_and(|path| {
         path.file_name().and_then(|name| name.to_str()) != Some(crate::candidate::NAME)
     }) {
@@ -207,6 +274,8 @@ pub fn pack(
         &json!({
             "name":NPM_NAMES[index],"version":version,"description":"TradeAssembly native F2 prerelease payload",
             "license":"Apache-2.0","os":[os],"cpu":[cpu],
+            "tradeassemblyReleasePolicy":FIRST_RELEASE_POLICY,
+            "tradeassemblyPlatformQualification":platform_qualification(index),
             "files":package_files,
             "engines":{"node":">=22"},"publishConfig":{"access":"public","tag":"beta"}
         }),
@@ -224,12 +293,21 @@ pub fn pack(
         fs::set_permissions(launcher.join("cli.cjs"), fs::Permissions::from_mode(0o755))
             .map_err(|_| "launcher_permission_failed")?;
     }
-    let deps: BTreeMap<_, _> = NPM_NAMES.into_iter().map(|name| (name, version)).collect();
+    let release_indices: &[usize] = if descriptor.is_some() {
+        &FIRST_RELEASE_INDICES
+    } else {
+        &[0, 1, 2, 3, 4]
+    };
+    let deps: BTreeMap<_, _> = release_indices
+        .iter()
+        .map(|index| (NPM_NAMES[*index], version))
+        .collect();
     atomic_json(
         &launcher.join("package.json"),
         &json!({
             "name":"tradeassembly","version":version,"description":"Local-first trading tooling. Users supply and authorize all strategies.",
             "license":"Apache-2.0","bin":{"tradeassembly":"cli.cjs"},"files":["cli.cjs","LICENSE","NOTICE","README.md"],
+            "tradeassemblyReleasePolicy":FIRST_RELEASE_POLICY,
             "optionalDependencies":deps,"engines":{"node":">=22"},"publishConfig":{"access":"public","tag":"beta"}
         }),
     )?;
@@ -282,17 +360,32 @@ fn verify_windows_native_proof(root: &Path, receipt: &Value) -> Result<()> {
 
 pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
     let matrix: Value = read_json(&root.join("matrix.json"))?;
-    if matrix["schemaVersion"] != 1
-        || matrix["parentLockSha256"] != PARENT_SHA
-        || matrix["npmTag"] != "beta"
-    {
+    if matrix["parentLockSha256"] != PARENT_SHA || matrix["npmTag"] != "beta" {
         return Err("distribution_matrix_invalid".into());
     }
     let version = matrix["version"]
         .as_str()
         .ok_or("distribution_version_missing")?;
+    if matrix["schemaVersion"] == 2 {
+        return verify_first_release_matrix(root, &matrix, version, published);
+    }
+    if matrix["schemaVersion"] != 1 {
+        return Err("distribution_matrix_invalid".into());
+    }
+    let qualified = verify_native_targets(root, &TARGETS, version, published)?;
+    Ok(
+        json!({"schemaVersion":1,"qualified":true,"phase":if published {"published"} else {"candidate"},"releaseReady":published,"commercialReleaseReady":false,"m7":false,"m8":false,"version":version,"targets":qualified,"npmTag":"beta","appleNotarized":false}),
+    )
+}
+
+fn verify_native_targets<'a>(
+    root: &Path,
+    targets: &[&'a str],
+    version: &str,
+    published: bool,
+) -> Result<Vec<&'a str>> {
     let mut qualified = Vec::new();
-    for target in TARGETS {
+    for &target in targets {
         let (host_os, host_arch) = match target {
             "aarch64-apple-darwin" => ("macos", "aarch64"),
             "x86_64-apple-darwin" => ("macos", "x86_64"),
@@ -388,14 +481,497 @@ pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
         }
         qualified.push(target);
     }
-    Ok(
-        json!({"schemaVersion":1,"qualified":true,"phase":if published {"published"} else {"candidate"},"releaseReady":published,"commercialReleaseReady":false,"m7":false,"m8":false,"version":version,"targets":qualified,"npmTag":"beta","appleNotarized":false}),
-    )
+    Ok(qualified)
+}
+
+fn first_release_matrix_valid(matrix: &Value) -> bool {
+    if matrix["releasePolicy"] != FIRST_RELEASE_POLICY {
+        return false;
+    }
+    matrix["targetQualification"]
+        .as_object()
+        .is_some_and(|qualifications| {
+            qualifications.len() == FIRST_RELEASE_INDICES.len()
+                && FIRST_RELEASE_INDICES
+                    .iter()
+                    .all(|index| qualifications[TARGETS[*index]] == platform_qualification(*index))
+        })
+}
+
+fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
+    for owner in ["core", "warden", "alpaca"] {
+        let proof = &receipt["buildReadbacks"][owner];
+        let file = evidence_file(root, proof)?;
+        let readback: Value = read_json(&file)?;
+        if readback["schemaVersion"] != "tradeassembly.codebuild-sanitized.v1"
+            || readback.as_object().is_none_or(|fields| fields.len() != 2)
+        {
+            return Err("experimental_codebuild_readback_invalid".into());
+        }
+        let builds = readback["builds"]
+            .as_array()
+            .ok_or("experimental_codebuild_readback_invalid")?;
+        if builds.len() != 1 {
+            return Err("experimental_codebuild_readback_invalid".into());
+        }
+        let build = &builds[0];
+        if build.as_object().is_none_or(|fields| fields.len() != 3) {
+            return Err("experimental_codebuild_readback_invalid".into());
+        }
+        let revision = receipt["sourceRevisions"][owner]
+            .as_str()
+            .ok_or("experimental_source_revision_missing")?;
+        let arn = build["arn"]
+            .as_str()
+            .ok_or("experimental_codebuild_readback_invalid")?;
+        if revision.len() != 40
+            || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !arn.starts_with("arn:aws:codebuild:")
+            || build["buildStatus"] != "SUCCEEDED"
+            || build["resolvedSourceVersion"] != revision
+            || receipt["buildArns"][owner] != arn
+        {
+            return Err("experimental_codebuild_readback_invalid".into());
+        }
+    }
+    Ok(())
+}
+
+fn verify_experimental_target(root: &Path, target: &str, version: &str) -> Result<()> {
+    let target_root = root.join(target);
+    let receipt: Value = read_json(&target_root.join("receipt.json"))
+        .map_err(|_| format!("experimental_build_missing:{target}"))?;
+    let release_path = target_root.join("release.json");
+    let release: Release = read_json(&release_path)?;
+    release.validate_candidate()?;
+    if release.schema_version != 2
+        || release.target != target
+        || release.version != version
+        || receipt["schemaVersion"] != "tradeassembly.distribution-experimental-build.v1"
+        || receipt["qualification"] != "deferred-experimental"
+        || receipt["target"] != target
+        || receipt["version"] != version
+        || receipt["releaseManifestSha256"] != digest(&release_path)?
+    {
+        return Err(format!("experimental_build_binding_failed:{target}"));
+    }
+    verify_codebuild_readbacks(&target_root, &receipt)
+        .map_err(|code| format!("experimental_build_provenance_failed:{target}:{code}"))?;
+    verify_delivery_artifacts(&target_root, &receipt, &release)
+        .map_err(|code| format!("experimental_delivery_binding_failed:{target}:{code}"))?;
+    let platform = evidence_file(&target_root, &receipt["artifacts"]["npmPlatform"])?;
+    let unpacked = tempfile::tempdir().map_err(|_| "experimental_output_stage_failed")?;
+    crate::extract(&platform, unpacked.path())?;
+    let descriptor: Value =
+        read_json(&unpacked.path().join("package").join(crate::candidate::NAME))?;
+    for (name, field) in [
+        ("core", "coreSha256"),
+        ("warden", "wardenSha256"),
+        ("sandbox", "launcherSha256"),
+        ("node", "nodeSha256"),
+        ("alpaca", "alpacaPackageSha256"),
+    ] {
+        let output = evidence_file(&target_root, &receipt["buildOutputs"][name])?;
+        if descriptor["nativeInputs"][field] != digest(&output)? {
+            return Err(format!(
+                "experimental_build_output_mismatch:{target}:{name}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sha512_integrity(path: &Path) -> Result<String> {
+    let mut file = File::open(path).map_err(|_| "registry_tarball_unavailable")?;
+    let mut hash = Sha512::new();
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| "registry_tarball_read_failed")?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("sha512-{}", STANDARD.encode(hash.finalize())))
+}
+
+fn verify_registry_package(
+    root: &Path,
+    registry: &Value,
+    name: &str,
+    version: &str,
+    qualified_tarball: &Path,
+) -> Result<()> {
+    let record = &registry["packages"][name];
+    let metadata = &record["metadata"];
+    let tarball = evidence_file(&root.join("registry"), &record["tarball"])?;
+    let expected_url = format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz");
+    if metadata["name"] != name
+        || metadata["version"] != version
+        || metadata["dist"]["tarball"] != expected_url
+        || metadata["dist"]["integrity"] != sha512_integrity(&tarball)?
+        || record["betaTagVersion"] != version
+        || digest(&tarball)? != digest(qualified_tarball)?
+    {
+        return Err(format!("registry_package_binding_failed:{name}"));
+    }
+    Ok(())
+}
+
+fn verify_first_release_registry(root: &Path, version: &str) -> Result<()> {
+    let registry: Value =
+        read_json(&root.join("registry/registry.json")).map_err(|_| "registry_evidence_missing")?;
+    if registry["schemaVersion"] != "tradeassembly.npm-registry.v1"
+        || registry["registryBase"] != "https://registry.npmjs.org"
+        || registry["version"] != version
+        || registry["packages"]
+            .as_object()
+            .is_none_or(|packages| packages.len() != FIRST_RELEASE_INDICES.len() + 1)
+    {
+        return Err("registry_evidence_invalid".into());
+    }
+    let mut launcher_sha: Option<String> = None;
+    for index in FIRST_RELEASE_INDICES {
+        let target_root = root.join(TARGETS[index]);
+        let receipt: Value = read_json(&target_root.join("receipt.json"))?;
+        let platform = evidence_file(&target_root, &receipt["artifacts"]["npmPlatform"])?;
+        let launcher = evidence_file(&target_root, &receipt["artifacts"]["npmLauncher"])?;
+        verify_registry_package(root, &registry, NPM_NAMES[index], version, &platform)?;
+        let current_launcher_sha = digest(&launcher)?;
+        if launcher_sha
+            .as_ref()
+            .is_some_and(|expected| expected != &current_launcher_sha)
+        {
+            return Err("registry_candidate_launcher_mismatch".into());
+        }
+        launcher_sha = Some(current_launcher_sha);
+        if index == 0 {
+            verify_registry_package(root, &registry, "tradeassembly", version, &launcher)?;
+        }
+    }
+    Ok(())
+}
+
+fn npm_json(arguments: &[&str]) -> Result<Value> {
+    let output = Command::new("npm")
+        .args(arguments)
+        .args(["--registry=https://registry.npmjs.org", "--json"])
+        .output()
+        .map_err(|_| "npm_registry_command_unavailable")?;
+    if !output.status.success() || output.stdout.len() > 4_194_304 {
+        return Err("npm_registry_command_failed".into());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "npm_registry_response_invalid".into())
+}
+
+fn capture_registry_package(
+    stage: &Path,
+    name: &str,
+    version: &str,
+    qualified_tarball: &Path,
+) -> Result<Value> {
+    let spec = format!("{name}@{version}");
+    let metadata = npm_json(&["view", &spec])?;
+    let beta = npm_json(&["view", &format!("{name}@beta"), "version"])?;
+    if beta != version {
+        return Err(format!("registry_beta_tag_mismatch:{name}"));
+    }
+    let packed = npm_json(&[
+        "pack",
+        &spec,
+        "--ignore-scripts",
+        "--pack-destination",
+        stage.to_str().ok_or("registry_stage_path_invalid")?,
+    ])?;
+    let entries = packed.as_array().ok_or("npm_pack_response_invalid")?;
+    if entries.len() != 1 {
+        return Err("npm_pack_response_invalid".into());
+    }
+    let filename = entries[0]["filename"]
+        .as_str()
+        .ok_or("npm_pack_response_invalid")?;
+    let expected_filename = format!("{name}-{version}.tgz");
+    if filename != expected_filename {
+        return Err("npm_pack_filename_invalid".into());
+    }
+    let downloaded = stage.join(filename);
+    if !downloaded.is_file() || digest(&downloaded)? != digest(qualified_tarball)? {
+        return Err(format!("registry_candidate_bytes_mismatch:{name}"));
+    }
+    let record = json!({
+        "tarball":{"artifact":filename,"sha256":digest(&downloaded)?},
+        "betaTagVersion":version,
+        "metadata":{"name":metadata["name"],"version":metadata["version"],
+                    "dist":{"tarball":metadata["dist"]["tarball"],
+                            "integrity":metadata["dist"]["integrity"]}}
+    });
+    // Validate the downloaded bytes against npm's own integrity metadata now;
+    // the final offline verifier repeats this against retained evidence.
+    let proof = &record["metadata"];
+    if proof["name"] != name
+        || proof["version"] != version
+        || proof["dist"]["integrity"] != sha512_integrity(&downloaded)?
+        || proof["dist"]["tarball"]
+            != format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz")
+    {
+        return Err(format!("registry_metadata_mismatch:{name}"));
+    }
+    Ok(record)
+}
+
+/// Read-only npm capture. Publication itself remains a separately authorized
+/// R5 action; this command never publishes or mutates the npm account.
+pub fn capture_registry(root: &Path) -> Result<Value> {
+    let matrix: Value = read_json(&root.join("matrix.json"))?;
+    if matrix["schemaVersion"] != 2 || !first_release_matrix_valid(&matrix) {
+        return Err("first_release_matrix_policy_invalid".into());
+    }
+    let version = matrix["version"]
+        .as_str()
+        .ok_or("distribution_version_missing")?;
+    verify_first_release_matrix(root, &matrix, version, false)?;
+    if root.join("registry").exists() {
+        return Err("registry_evidence_already_exists".into());
+    }
+    let stage = tempfile::Builder::new()
+        .prefix("registry-capture-")
+        .tempdir_in(root)
+        .map_err(|_| "registry_stage_failed")?;
+    let mut packages = serde_json::Map::new();
+    for index in FIRST_RELEASE_INDICES {
+        let target_root = root.join(TARGETS[index]);
+        let receipt: Value = read_json(&target_root.join("receipt.json"))?;
+        let platform = evidence_file(&target_root, &receipt["artifacts"]["npmPlatform"])?;
+        let launcher = evidence_file(&target_root, &receipt["artifacts"]["npmLauncher"])?;
+        packages.insert(
+            NPM_NAMES[index].into(),
+            capture_registry_package(stage.path(), NPM_NAMES[index], version, &platform)?,
+        );
+        if index == 0 {
+            packages.insert(
+                "tradeassembly".into(),
+                capture_registry_package(stage.path(), "tradeassembly", version, &launcher)?,
+            );
+        }
+    }
+    atomic_json(
+        &stage.path().join("registry.json"),
+        &json!({"schemaVersion":"tradeassembly.npm-registry.v1",
+                "registryBase":"https://registry.npmjs.org",
+                "version":version,"packages":packages}),
+    )?;
+    fs::rename(stage.path(), root.join("registry"))
+        .map_err(|_| "registry_capture_commit_failed")?;
+    verify_first_release_registry(root, version)?;
+    Ok(json!({"captured":true,"version":version,"packages":FIRST_RELEASE_INDICES.len()+1}))
+}
+
+fn verify_first_release_matrix(
+    root: &Path,
+    matrix: &Value,
+    version: &str,
+    published: bool,
+) -> Result<Value> {
+    if !first_release_matrix_valid(matrix) {
+        return Err("first_release_matrix_policy_invalid".into());
+    }
+    let qualified = verify_native_targets(root, &[TARGETS[0]], version, published)?;
+    let mut experimental = Vec::new();
+    for index in [2, 3, 4] {
+        let target = TARGETS[index];
+        verify_experimental_target(root, target, version)?;
+        experimental.push(target);
+    }
+    if published {
+        verify_first_release_registry(root, version)?;
+        let mac = root.join(TARGETS[0]);
+        let receipt: Value = read_json(&mac.join("receipt.json"))?;
+        let proof = &receipt["checks"]["registryUpgradeRollback"];
+        if proof["exitCode"] != 0 {
+            return Err("registry_mac_upgrade_rollback_missing".into());
+        }
+        evidence_file(&mac, proof)
+            .map_err(|code| format!("registry_mac_upgrade_rollback_invalid:{code}"))?;
+    }
+    Ok(json!({
+        "schemaVersion":2,"qualified":true,"phase":if published {"published"} else {"candidate"},
+        "releaseReady":published,
+        "commercialReleaseReady":false,"m7":false,"m8":false,"version":version,
+        "qualifiedTargets":qualified,"experimentalUnqualifiedTargets":experimental,
+        "npmTag":"beta","appleNotarized":false,"releasePolicy":FIRST_RELEASE_POLICY
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_tarball_requires_candidate_bytes_integrity_url_and_beta_tag() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("registry")).unwrap();
+        let candidate = root.path().join("qualified.tgz");
+        let published = root.path().join("registry/published.tgz");
+        fs::write(&candidate, b"qualified npm tarball fixture").unwrap();
+        fs::copy(&candidate, &published).unwrap();
+        let name = "tradeassembly-linux-x64";
+        let version = "0.1.0-beta.3";
+        let mut registry = json!({"packages":{name:{
+            "tarball":proof(&root.path().join("registry"),"published.tgz"),
+            "betaTagVersion":version,
+            "metadata":{"name":name,"version":version,"dist":{
+                "tarball":format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
+                "integrity":sha512_integrity(&published).unwrap()
+            }}
+        }}});
+        assert!(verify_registry_package(root.path(), &registry, name, version, &candidate).is_ok());
+        registry["packages"][name]["metadata"]["dist"]["integrity"] = json!("sha512-wrong");
+        assert_eq!(
+            verify_registry_package(root.path(), &registry, name, version, &candidate).unwrap_err(),
+            format!("registry_package_binding_failed:{name}")
+        );
+        registry["packages"][name]["metadata"]["dist"]["integrity"] =
+            json!(sha512_integrity(&published).unwrap());
+        registry["packages"][name]["betaTagVersion"] = json!("0.1.0-beta.2");
+        assert!(
+            verify_registry_package(root.path(), &registry, name, version, &candidate).is_err()
+        );
+        registry["packages"][name]["betaTagVersion"] = json!(version);
+        fs::write(&published, b"changed registry tarball fixture").unwrap();
+        registry["packages"][name]["tarball"] =
+            proof(&root.path().join("registry"), "published.tgz");
+        registry["packages"][name]["metadata"]["dist"]["integrity"] =
+            json!(sha512_integrity(&published).unwrap());
+        assert_eq!(
+            verify_registry_package(root.path(), &registry, name, version, &candidate).unwrap_err(),
+            format!("registry_package_binding_failed:{name}")
+        );
+    }
+
+    #[test]
+    fn first_release_policy_excludes_intel_mac_and_never_marks_experimental_qualified() {
+        let launcher = json!({
+            "version":"0.1.0-beta.3",
+            "tradeassemblyReleasePolicy":FIRST_RELEASE_POLICY,
+            "optionalDependencies":{
+                NPM_NAMES[0]:"0.1.0-beta.3",
+                NPM_NAMES[2]:"0.1.0-beta.3",
+                NPM_NAMES[3]:"0.1.0-beta.3",
+                NPM_NAMES[4]:"0.1.0-beta.3"
+            }
+        });
+        assert!(first_release_launcher_metadata_valid(&launcher));
+        let mut with_intel_mac = launcher.clone();
+        with_intel_mac["optionalDependencies"][NPM_NAMES[1]] = json!("0.1.0-beta.3");
+        assert!(!first_release_launcher_metadata_valid(&with_intel_mac));
+        let mut missing_linux = launcher.clone();
+        missing_linux["optionalDependencies"]
+            .as_object_mut()
+            .unwrap()
+            .remove(NPM_NAMES[2]);
+        assert!(!first_release_launcher_metadata_valid(&missing_linux));
+
+        for index in FIRST_RELEASE_INDICES {
+            let metadata = json!({
+                "tradeassemblyReleasePolicy":FIRST_RELEASE_POLICY,
+                "tradeassemblyPlatformQualification":platform_qualification(index)
+            });
+            assert!(first_release_platform_metadata_valid(&metadata, index));
+            if index != 0 {
+                let mut falsely_qualified = metadata;
+                falsely_qualified["tradeassemblyPlatformQualification"] = json!("required");
+                assert!(!first_release_platform_metadata_valid(
+                    &falsely_qualified,
+                    index
+                ));
+            }
+        }
+        assert!(!first_release_platform_metadata_valid(
+            &json!({"tradeassemblyReleasePolicy":FIRST_RELEASE_POLICY,
+                    "tradeassemblyPlatformQualification":"required"}),
+            1
+        ));
+    }
+
+    #[test]
+    fn first_release_matrix_requires_exact_statuses_and_mac_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let mut matrix = json!({
+            "schemaVersion":2,"parentLockSha256":PARENT_SHA,
+            "npmTag":"beta","version":"0.1.0-beta.3",
+            "releasePolicy":FIRST_RELEASE_POLICY,
+            "targetQualification":{
+                TARGETS[0]:"required",
+                TARGETS[2]:"deferred-experimental",
+                TARGETS[3]:"deferred-experimental",
+                TARGETS[4]:"deferred-experimental"
+            }
+        });
+        assert!(first_release_matrix_valid(&matrix));
+        atomic_json(&root.path().join("matrix.json"), &matrix).unwrap();
+        assert_eq!(
+            verify_matrix(root.path(), false).unwrap_err(),
+            format!("native_qualification_missing:{}", TARGETS[0])
+        );
+        assert_eq!(
+            capture_registry(root.path()).unwrap_err(),
+            format!("native_qualification_missing:{}", TARGETS[0])
+        );
+        assert!(!root.path().join("registry").exists());
+        matrix["targetQualification"][TARGETS[2]] = json!("required");
+        assert!(!first_release_matrix_valid(&matrix));
+        atomic_json(&root.path().join("matrix.json"), &matrix).unwrap();
+        assert_eq!(
+            verify_matrix(root.path(), false).unwrap_err(),
+            "first_release_matrix_policy_invalid"
+        );
+        matrix["targetQualification"][TARGETS[2]] = json!("deferred-experimental");
+        matrix["targetQualification"][TARGETS[1]] = json!("required");
+        assert!(!first_release_matrix_valid(&matrix));
+    }
+
+    #[test]
+    fn codebuild_readbacks_bind_all_three_producer_revisions_and_sanitize_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let mut receipt = json!({"sourceRevisions":{},"buildArns":{},"buildReadbacks":{}});
+        for (owner, revision) in [("core", "a"), ("warden", "b"), ("alpaca", "c")] {
+            let revision = revision.repeat(40);
+            let arn = format!("arn:aws:codebuild:us-east-1:123456789012:build/{owner}:fixture");
+            let file = format!("{owner}-readback.json");
+            atomic_json(
+                &root.path().join(&file),
+                &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v1",
+                    "builds":[{"arn":arn,"buildStatus":"SUCCEEDED",
+                               "resolvedSourceVersion":revision}]}),
+            )
+            .unwrap();
+            receipt["sourceRevisions"][owner] = json!(revision);
+            receipt["buildArns"][owner] = json!(arn);
+            receipt["buildReadbacks"][owner] = proof(root.path(), &file);
+        }
+        assert!(verify_codebuild_readbacks(root.path(), &receipt).is_ok());
+        receipt["sourceRevisions"]["warden"] = json!("d".repeat(40));
+        assert_eq!(
+            verify_codebuild_readbacks(root.path(), &receipt).unwrap_err(),
+            "experimental_codebuild_readback_invalid"
+        );
+        receipt["sourceRevisions"]["warden"] = json!("b".repeat(40));
+        let file = root.path().join("core-readback.json");
+        atomic_json(
+            &file,
+            &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v1",
+                "builds":[{"arn":receipt["buildArns"]["core"],"buildStatus":"SUCCEEDED",
+                           "resolvedSourceVersion":"a".repeat(40),"environment":{"secret":"must-reject"}}]}),
+        )
+        .unwrap();
+        receipt["buildReadbacks"]["core"] = proof(root.path(), "core-readback.json");
+        assert_eq!(
+            verify_codebuild_readbacks(root.path(), &receipt).unwrap_err(),
+            "experimental_codebuild_readback_invalid"
+        );
+    }
 
     #[test]
     fn windows_native_proof_rejects_missing_setup_behavior_and_rebound_logs() {

@@ -12,9 +12,16 @@ and parent lock; it never recompiles or signs that payload. The Rust
 `tradeassembly-distribution` crate owns verification and installation. The only
 additional executable JavaScript exemption is `packaging/npm/cli.cjs`, a thin
 exact-version native-package selector without lifecycle hooks or business logic.
-`cargo xtask distribution-verify --evidence DIRECTORY` requires native receipts
-for all five supported targets, including published npm/pnpm delivery and actual
-Warden/sandbox enforcement. Unit tests or local tarballs are not that evidence.
+`cargo xtask distribution-verify --evidence DIRECTORY` reads the versioned
+matrix. Historical schema-v1 requires five native receipts. The first-release
+schema-v2 policy requires full Mac arm64 native and published npm/pnpm evidence;
+Windows x64 and GNU Linux x64/arm64 require exact-target CodeBuild, source,
+artifact and registry-byte bindings but remain experimental and explicitly
+unqualified for runtime acceptance. Intel Mac is excluded. Unit tests or local
+tarballs are not publication evidence. `cargo xtask distribution-capture-registry
+--evidence DIRECTORY` fetches the five published beta package tarballs and
+metadata read-only from npm after candidate qualification, compares their bytes
+to qualified artifacts, and stores sanitized evidence. It does not publish.
 `cargo xtask distribution-qualify` is the native-host capture entrypoint for
 clean-source, exact-candidate installed-package, npm/pnpm, MCP and sandbox
 process evidence. It seals the actual tested tarballs, installer, descriptor,

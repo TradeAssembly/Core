@@ -6,6 +6,7 @@ publish = false
 license-file = "../LICENSE"
 
 [dependencies]
+base64 = "0.22"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 fs2 = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }

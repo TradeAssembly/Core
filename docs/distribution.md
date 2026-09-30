@@ -7,6 +7,350 @@ bounded runtime repairs required to qualify that distribution. The amendment
 below controls older packaging-only instructions. No Apple payment, notarization,
 broker orders, or trading activation is authorized by an install or upgrade.
 
+## Approved first-release scope — 2026-09-30
+
+The user selected **AWS CodeBuild** for Windows/Linux artifact production and
+explicitly deferred Windows/Linux platform acceptance testing until after the
+first release. This amendment controls older five-target completion language
+throughout this document and the saved goal objective. Intel Mac remains deferred.
+
+| First-release target | Required evidence and customer status |
+| --- | --- |
+| macOS arm64 | Full existing candidate and public-registry acceptance against exact artifacts; qualified beta platform. |
+| Windows x64 | Successful pinned build, target/architecture verification, complete artifact inventory, hashes, notices and published-byte verification; **experimental, platform acceptance not performed**. Intended client OS is current supported Windows 11; a Windows Server build host is acceptable. |
+| GNU Linux x64 / arm64 | Same build and artifact-integrity evidence; **experimental, platform acceptance not performed**. Ubuntu 24.04 LTS is the intended initial qualification baseline, not a claimed tested environment. |
+| Intel Mac / Windows arm64 | Deferred; no first-release package or support promise. |
+
+Windows/Linux source-free install, npm/pnpm execution, upgrade/rollback, recovery,
+controlled-order and OS sandbox/authority acceptance are follow-up release work.
+Existing passing component results remain recorded as component evidence. No
+missing receipt may be synthesized, marked passed, or borrowed from macOS.
+Runtime authority, account/ACL, sandbox, credential, idempotency and fail-closed
+checks stay enabled on every shipped platform. A failed runtime prerequisite
+must still prevent operation. This deferral does not authorize fixing failures
+by disabling enforcement. All actual known build/test failures remain explicit.
+
+Bounded implementation next:
+
+1. Update the release manifest/verifier and npm target mapping together: four
+   distributed targets, full acceptance required only for macOS arm64, explicit
+   experimental/unqualified status for Windows/Linux, Intel Mac excluded.
+   Validate the selected release policy rather than add a generic skip flag.
+   Test that missing Mac evidence fails, experimental status cannot claim full
+   qualification, and wrong/missing/tampered platform artifacts still fail.
+2. Configure short-lived CodeBuild jobs with pinned Core/Warden/Alpaca sources,
+   locked dependencies, target-specific artifacts and bounded build concurrency
+   and timeouts. Verify AWS credit eligibility and use the existing approved
+   operating budget; retain artifact hashes and sanitized logs. Avoid an idle
+   reserved fleet. Reuse valid immutable artifacts where source/input hashes
+   still match. The cross-repository coordination root owns private build-project
+   configuration and source pins; public Core retains provider-neutral
+   build/pack commands. Studio Cloud does not own OSS distribution builds.
+3. Publish under npm `beta` with visible platform status in package metadata,
+   installation output and release instructions. Verify registry package bytes
+   for every published target; run actual npm/pnpm install/upgrade acceptance on
+   macOS arm64. Do not report Windows/Linux installs as verified.
+4. Close only after the revised candidate and registry verifier modes pass,
+   applicable owning integration gates pass, scoped source is integrated/pushed,
+   and the deferred platform test matrix is linked from the release notes.
+
+The secret/history review below remains mandatory before making Warden or Alpaca
+public; CodeBuild can consume their private sources, so changing visibility is
+not a prerequisite for this release. Apple payment/signing/notarization and
+M7/M8 remain excluded. Original frozen artifacts and prior evidence stay intact.
+
+Current implementation status: **plan amended; candidate/registry verifier code
+in progress; CodeBuild configuration and live qualification still pending**.
+The saved goal is active and still
+contains its older five-target wording; that wording is superseded here, not
+fulfilled. No platform acceptance or release success is claimed by this edit.
+
+2026-09-30 local checkpoint: `cargo test --locked -p tradeassembly-distribution`
+passed (21 unit tests; the three native acceptance tests remained ignored).
+With `TRADEASSEMBLY_DISTRIBUTION_CANDIDATE` set to the existing
+`target/f2-npm-mac-package-beta2` directory, the explicit ignored
+`package_managers` test passed: npm and pnpm installed its local tarballs with
+lifecycle scripts disabled. This is local Mac package evidence for the existing
+beta.2 staging-profile candidate, **not** production Relay, registry, or the
+amended release-matrix qualification. Do not reuse this result for changed
+candidate bytes.
+
+First-release package-label slice (uncommitted, 2026-09-30): replacement
+candidate packaging now excludes Intel macOS from launcher dependencies, marks
+Mac arm64 qualification required and Windows/Linux acceptance deferred, and
+requires the same policy metadata at the package/launcher integrity boundary.
+The new launcher rejects policy mismatches and warns on experimental platforms;
+the npm README discloses this support status. Legacy schema-v1 dependency
+validation remains unchanged for frozen artifacts. `cargo test --locked -p
+tradeassembly-distribution` passed 24 unit tests after the verifier edit;
+targeted Clippy, formatting, `node --check packaging/npm/cli.cjs`, and
+`git diff --check` passed. The new schema-v2 candidate verifier requires an
+exact four-target policy, full Mac arm64 native receipt, and separate
+digest-bound experimental build receipts for Windows/Linux. Those receipts
+bind sanitized CodeBuild success readbacks and all five producer outputs to
+the candidate descriptor. The published verifier now requires downloaded npm
+tarballs matching the qualified SHA-256 bytes, npm SHA-512 integrity, fixed
+registry URLs, beta tags, Mac npm/pnpm install proofs, and a separate Mac
+registry upgrade/rollback proof. The read-only `cargo xtask
+distribution-capture-registry --evidence ABSOLUTE_DIR` command fetches the five
+package tarballs after candidate qualification; it does not publish. Schema-v1
+legacy verification remains unchanged. No schema-v2 candidate or public-registry
+receipt has been captured or passed.
+
+Registry-verifier checkpoint: `cargo test --locked -p
+tradeassembly-distribution` passed 25 unit tests after adding exact candidate
+tarball, SHA-512 integrity, URL and beta-tag checks; read-only npm capture
+fails before network access if candidate evidence is missing. The capture
+command is wired through Core `cargo xtask` but has not contacted npm or
+produced a real registry receipt. Published status also requires a separate
+Mac registry upgrade/rollback proof. Targeted Clippy passed and `cargo check
+--locked --manifest-path xtask/Cargo.toml` passed. The revised published
+verifier has not passed on actual artifacts.
+
+Frozen-scope proof matrix for this release gate:
+
+| Required behavior | Owner and targeted check | Evidence status |
+| --- | --- | --- |
+| Mac arm64 remains fully qualified; missing native receipt fails | Core `package::verify_native_targets`; schema-v2 negative unit test | Missing-receipt denial passes; real new-candidate receipt pending. |
+| Intel Mac excluded; Windows/Linux never reported runtime-qualified | Core pack/launcher and `first_release_matrix_valid`; policy tests | Static policy tests pass; new package and live install pending. |
+| Experimental artifacts bind target, version, source and build outputs | Core `verify_experimental_target`; CodeBuild readback tests | Readback negative tests pass; actual CodeBuild and candidate evidence pending. |
+| Published package bytes and installs match the candidate | Core `distribution-capture-registry`, published verifier and Mac install/upgrade probes | Offline byte/integrity negative test passes; actual registry capture and Mac probes pending. |
+
+Next action: implement the bounded CodeBuild capture/assembly, then run the new
+Mac candidate, experimental build matrix and read-only npm capture. Do not
+classify experimental evidence as native runtime acceptance.
+
+CodeBuild access checkpoint (2026-09-30): `tradeassembly-prod` AWS CLI is
+configured but its SSO token is expired and refresh failed. The listed AWS
+integration returned `Unknown tool` on a real STS/CodeBuild read attempt; the
+operations hook did not record that nested attempt, so browser fallback has not
+been cleared. No AWS projects or builds were created. First live gate is a
+successful authenticated `sts get-caller-identity`, CodeBuild project inventory,
+and credit/budget eligibility readback before creating or starting a project.
+The coordination-root build config must pin all three producer commits and
+emit real CodeBuild build IDs, status, artifact digests and sanitized logs for
+the Core experimental receipt verifier. Do not substitute local output or a
+synthetic readback for a CodeBuild artifact.
+
+### Relay production configuration and private staging — release gate
+
+User requirement (2026-09-30): the shipped Relay integration must use production
+services. Staging must permit David's identity and necessary scoped service
+identities only, not ordinary customer accounts. This gate is independent of the
+Windows/Linux acceptance deferral. Production deployment environment does not
+select an Alpaca Live account; Paper/Live remains an explicit user choice.
+
+Audit evidence captured 2026-09-30:
+
+- The existing `target/f2-npm-mac-frozen-beta2/bin/connection-profile.json` selects
+  `environment: staging`, `relayOrigins: [https://staging.tradeassembly.ai]` and
+  `hubBaseUrl: https://hub.tradeassembly.ai`. Preserve this candidate as evidence;
+  it must not be advertised as a production-configured Relay release.
+- An unauthenticated connection-start probe returned 401. The staging OAuth
+  callback returned the application's missing-code 400 without an edge access
+  challenge, both through its custom domain and its documented direct AWS API
+  Gateway origin. The production callback origin also returned 400. These prove
+  routing and anonymous rejection at start, not successful production OAuth or
+  owner-only staging access.
+- Reviewed Relay source in `f2-relay-reach-handoff`:
+  `apps/broker-oauth-relay/src/lib.rs` (`HubIdentityVerifier::verify`, `start`)
+  accepts a nonempty Hub tenant/subject with no owner allowlist in that path.
+  Both environment stacks configure the same Hub base in
+  `infra/aws/broker-oauth-relay/main.tf`. Paid Relay gateway IaC is tagged test,
+  names `tradeassembly-relay-gateway-f2`, and uses F2 conformance storage. This
+  source inspection is not a readback of the currently deployed Lambda version.
+- Live AWS configuration readback is incomplete: configured CLI sessions had
+  expired; an SSO refresh was attempted and cancelled after integration fallback
+  failed (`aws___run_script` unavailable) and the operations hook did not record
+  that integration attempt. No account configuration was changed. Resolve this
+  access/evidence issue before claiming deployed policy verification.
+
+#### Executable closure plan E0–E5
+
+This is an implementation plan, not completed evidence. Exact existing source
+owners were inspected on 2026-09-30. Continue in the existing Core worktree
+`/Users/davidjbeveridge/.codex/worktrees/f2-npm-distribution` and Relay worktree
+`/Users/davidjbeveridge/.codex/worktrees/f2-relay-reach-handoff`; check their current
+heads/dirty state before editing. Hub remains a dependency through its published
+identity/entitlement interfaces. No Hub code change is planned. A missing Hub
+contract must be recorded as an explicit dependency, not improvised in Core.
+
+Settled decisions:
+
+- Keep the existing Hub identity service. Sharing a verified identity issuer is
+  permissible; it does not grant staging access. Environment admission belongs
+  in Relay after identity verification and before enrollment, read/write, OAuth
+  provider exchange or node-command effects. Use exact `(tenant_id, subject_id)`
+  pairs for David, never caller-supplied email or an entire email-domain rule.
+- Add one small shared Rust policy in private Relay
+  `packages/relay-environment-policy/{Cargo.toml,src/lib.rs}`. Staging requires a
+  nonempty allowlist and fails startup on missing/invalid configuration. A
+  request from a valid non-owner receives a denial before side effects.
+  Production uses existing Hub entitlement/ownership rules. Existing node and
+  service credentials must resolve to an allowed owner and environment through
+  their existing verifier; no new universal bypass credential is introduced.
+- Apply the policy at the application boundary, including direct AWS origins.
+  Edge protection is supplementary. Minimal sign-in/health and OAuth callback
+  routes may remain reachable; callback state must reference an allowed owner,
+  the same environment and an unexpired transaction, rechecked before exchange.
+  Revoking an owner also blocks that owner's pending callback/status/ack flows.
+- A shared Hub user token is not inherently cross-environment invalid. Reject
+  wrong issuer/audience where configured and cross-environment transaction IDs,
+  handoffs, installation/node authority and data references. Do not introduce
+  a fake token rejection claim solely from the hostname used to obtain it.
+- Create separate production Relay storage and IAM scope from F2 conformance
+  resources: new production DSQL database/cluster resources, archive bucket and
+  environment-specific state/secret references. Preserve existing test data and
+  infrastructure. Reuse versioned schema initialization and adapters; no data
+  migration, new database technology or broker credential relocation.
+- Production deployment is independent of broker Paper/Live. Acceptance uses
+  Paper account discovery and disposable journal data, with no broker orders.
+
+**E0 — Resolve access and freeze the deployment inventory.**
+Outcome: one exact mapping from each user-facing route to deployed code, policy
+and data resources. Read AWS Lambda configuration/code hashes, API Gateway routes,
+IAM resource scopes, DSQL/S3 references and Cloudflare route/origin configuration;
+read production Hub issuer/client/capability and Alpaca redirect registration.
+Never dump secret environment values or SSM contents. Resolve the AWS CLI session
+through the existing SSO profile and operations route. If the recorder again
+rejects a completed integration assessment, diagnose that specific evidence
+failure; do not fabricate a tier result or restart the whole login repeatedly.
+Owning files: Relay `deployment-profiles/f2-relay-aws-dsql.yaml`,
+`infra/aws/{broker-oauth-relay,f2-relay-gateway,f2-relay-reach,f2-relay-watch}/`,
+`apps/broker-oauth-edge/wrangler.toml`; operator inventory under private
+`.operator/relay-environments/inventory.json` (new, excluded from Git).
+Exit: verified David tenant/subject, a separate non-owner test identity, actual
+environment endpoints/deployment hashes, and distinct production storage/secret
+references are recorded. Remaining *values* are discovery inputs, not unsettled
+architecture. Stop dependent deployment if any identity or resource is ambiguous.
+
+**E1 — Implement staging admission and deterministic environment checks.**
+Outcome: all staging operations reject valid non-owner identities before effects.
+Files: new policy package and Relay `Cargo.toml`; OAuth
+`apps/broker-oauth-relay/{Cargo.toml,src/lib.rs,src/main.rs,src/bin/broker-oauth-relay-lambda.rs}`;
+gateway `apps/studio-f2-gateway/{Cargo.toml,src/hosted_identity.rs,src/hosted_enrollment.rs,src/hosted_gateway.rs,src/hosted_reach.rs}`;
+node adapters only where necessary to preserve their verified owner/environment.
+Tests must cover missing/empty allowlist, valid owner, same-tenant different
+subject, different tenant, spoofed email/headers, invalid bearer, removed owner
+with pending OAuth state, and denied enrollment/data/node operations. A router
+inventory test must identify every public route and its policy/exception so a
+new route cannot silently bypass admission. Assert zero store/provider effects
+for denial cases. Production entitlement checks must remain enforced.
+Existing acceptance commands (run in Relay): `just relay-verify`,
+`just hosted-gateway-test`, `just hosted-hub-test`; use the smallest affected
+test filter during iteration and these complete targets at this checkpoint.
+Exit: actual tests pass, every exposed route is accounted for, and no authority
+or credential is supplied by a caller in place of verified identity.
+
+**E2 — Deploy isolated environments with a rollback boundary.**
+Outcome: staging enforces the owner policy; production Relay is deployed with
+its own resources and current production Hub/broker configuration.
+Files: Relay IaC modules listed in E0 (`main.tf`, `variables.tf`, `outputs.tf`),
+`apps/broker-oauth-edge/{wrangler.toml,src/lib.rs}` only if routing changes,
+`deployment-profiles/f2-relay-aws-dsql.yaml`, and owning `justfile`.
+Parameterize gateway/reach/watch environment and resource references, preserving
+existing F2 resource names and state addresses by default. Do not apply a rename
+that destroys test resources. Add explicit production inputs and module outputs
+for function/code/configuration digests and origins. No implicit test defaults
+may be used in a production plan. Staging policy must be mandatory in the plan.
+Use existing `just relay-build`, `just relay-infra-validate`,
+`just relay-infra-init ENV`, `just relay-infra-plan ENV ARTIFACT_ZIP`, and
+`just relay-infra-apply ENV` for OAuth. Add equivalent scoped gateway/reach/watch
+plan/apply recipes to the same owning `justfile` (these recipes do not exist yet).
+Run `just edge-verify` if edge changes. Inspect saved plans for resource isolation
+and unexpected replacement before applying. Deploy staging policy first, then
+production resources. Capture readback, not just a successful apply exit.
+Rollback: retain previous deployment artifacts/configuration; production traffic
+can return to its last verified version. Never roll staging back to unrestricted
+access: on failure, retain its policy or temporarily deny staging operations.
+No schema/data deletion is part of rollback. Exit: deployment readback matches
+the reviewed inputs and IAM limits access to the selected environment resources.
+
+**E3 — Produce the customer production profile and reject mixed bundles.**
+Outcome: clean customer installation selects production Relay without manual
+configuration, while local-only Core use remains available without Relay.
+Files: private Relay `deployment-profiles/relay-production-connection.json`
+(new public-data-only asset) and owning packaging assembly; Core
+`runtime-rs/src/connection_profile.rs`, `distribution/src/{candidate,native,package}.rs`,
+`distribution/tests/{packaged_install,package_managers}.rs`,
+`runtime-rs/tests/{browser_onboarding_stdio,local_binary_setup}.rs`, and
+`packaging/npm/README.md` only as needed. Bind a declared deployment environment
+and profile digest into release metadata. Core validates the generic contract;
+private production assembly validates the exact approved production endpoints.
+Reject production bundles containing staging origins, missing profile hashes,
+unexpected identity/callback configuration or mismatched profile/manifest mode.
+Preserve immutable baseline bytes. Build a new candidate with new configuration
+hashes, reusing unchanged executable bytes and their applicable test evidence.
+Commands: `cargo test --locked -p tradeassembly-distribution`,
+`cargo test --locked -p tradeassembly-runtime connection_profile`, and affected
+existing source-free installation/onboarding tests with the new candidate paths.
+Exit: negative cases fail deterministically and clean installation reports the
+production profile without changing the user's Paper/Live choice.
+
+**E4 — Exercise real production and staging boundaries.**
+Outcome: evidence covers actual deployments and real authenticated identities.
+Add one bounded driver under private Relay `xtask/src/relay_environment.rs`,
+register in `xtask/src/main.rs`, and expose owning `just` recipes. Planned
+commands (must be implemented, not claimed to exist):
+`just relay-environment-probe INVENTORY CANDIDATE EVIDENCE` and
+`just relay-environment-verify INVENTORY CANDIDATE EVIDENCE`.
+The probe performs the calls and captures sanitized responses, status codes,
+operation IDs, profile/deployment digests and hashed identity references. Tokens
+arrive from the established credential provider/private file descriptors, never
+CLI arguments or receipts. The verifier requires every named case, rejects
+missing/skipped/stale/mismatched evidence and exits nonzero on any unmet case.
+Finite live matrix:
+
+| Case | Required observation |
+| --- | --- |
+| Anonymous staging operation, custom and direct origin | Rejected; no enrollment, provider exchange or data effect. |
+| Real valid non-owner Hub account, custom and direct origin | Hub first verifies the identity; staging then denies it. A missing entitlement or invalid token alone is insufficient proof of the owner restriction. |
+| David on staging | Allowed sign-in, OAuth setup and scoped disposable read/write through CLI/MCP; necessary node operations preserve owner binding. |
+| Callback/state isolation | Expired, tampered, wrong-environment or revoked-owner transaction rejected before exchange; allowed owner's valid callback succeeds. |
+| Production onboarding from packaged Mac candidate | Real Hub sign-in, production Alpaca OAuth consent, Paper account read and status refresh succeed without copying keys. |
+| Production Relay access | Existing valid production entitlement allows enrollment and disposable journal ingest/read/export; denied entitlement fails; cross-workspace and cross-environment reads fail. |
+| Profile/local behavior | Default Relay setup uses production; local-only Core starts without signing in to Relay. |
+
+Create/reuse one controlled non-owner test account, using normal Hub identity
+flows. Do not alter a customer's account. For production Relay positive tests,
+use an existing valid entitlement or the existing authorized operator test-grant
+mechanism with its provenance recorded; never add an authorization bypass. Such
+a grant proves service behavior, not successful production billing. If no valid
+test identity/entitlement is available, the corresponding case stays incomplete.
+No real order or new charge is required. Dispose of diagnostic records according
+to retention policy; record intentionally retained records rather than bypass
+immutability. Exit: the live verifier passes the complete finite matrix.
+
+**E5 — Bind evidence to the release and integrate.**
+Outcome: a changed package/configuration/deployment cannot inherit the old pass.
+Files: Core `distribution/src/package.rs` and release tests for generic external
+evidence references; private Relay driver from E4 for deployment-specific proof;
+this plan and owning Product release-packet references only. Keep hosted policy
+code out of Core. Bind E4 evidence to the exact npm version, candidate/profile
+hashes, deployment code/configuration digests and environment policy revision.
+Require the private Relay verifier for Relay launch. Core distribution readiness
+must separately validate its declared profile; it must not imply Relay billing
+or production-service readiness merely because the OSS binary passed.
+Run `just verify` in each changed owning repo and Core `cargo xtask verify` at
+integration, plus revised candidate/registry distribution verification. Recapture
+only invalidated proofs; do not restart unchanged M0–M6 work. Merge/push under
+existing repo gates and retain rollback references. Done means actual verifier
+passes and integrated source, not merely implemented tests or planned commands.
+
+Execution stays on the selected root model; no automatic agent/reviewer chain.
+Dependencies are E0 -> E1 -> E2 -> E4 -> E5, with E3 after E0 and before E4.
+Stop at unresolved access, identity, mandatory human login handoff or provider
+configuration that prevents the next required observation; checkpoint the exact
+failed command and continue only independent in-scope work. No broad auth-tool
+rewrite, billing redesign, UI overhaul, Windows/Linux acceptance, broker orders,
+Apple signing or data migration is included. No new spending limit is implied.
+
+Exit: E0–E5 meet their stated acceptance and both environment verdicts derive
+from the actual bound evidence. Until then report
+`RELAY_PRODUCTION_CONFIG_VERIFIED=false` and `STAGING_OWNER_ONLY_VERIFIED=false`.
+The current audit has not established either condition or production paid-launch
+readiness. This work does not reopen Apple signing/notarization or unrelated UI.
+
 ## Frozen input and proof matrix
 
 The parent unsigned-cohort lock SHA-256 is
@@ -471,7 +815,73 @@ Commands: `cargo test --locked -p tradeassembly-distribution`, explicit ignored
 `packaged_install` and `package_managers` tests, plus candidate manifest/digest
 negative tests. Retain the existing no-running-rig and interruption cases.
 
-**R4 — Produce and qualify all five native targets (D2/D3).**
+**R4 planning refinement — platform scope and public producers (2026-09-30).**
+
+The approved first-release scope above supersedes this section's original
+proposal: CodeBuild is selected, Windows/Linux acceptance is deferred, and only
+macOS arm64 is qualified for the initial beta. Intended later qualification
+covers GNU Linux x64/arm64 on Ubuntu 24.04 LTS and current supported Windows
+11 x64. Windows x64 includes both Intel and AMD processors. Intel Mac is a future
+candidate; the user's home Intel Mac is not a pipeline dependency. Windows ARM,
+other Linux distributions and source installation remain separately qualified
+extensions. The executable verifier still requires five targets: implementing
+the revised matrix must update its target set, launcher metadata, workflow
+matrix, negative tests and current release claims together. This planning edit
+does not constitute a passing four-target release or invalidate saved evidence.
+
+Build method and runtime qualification are separate fields of the evidence.
+Cross-compilation and compilation under emulation are acceptable artifact
+production methods when toolchain, target, source and resulting hashes are
+recorded. Bare-metal ownership is not required for acceptance: a VM running the
+target OS/kernel can exercise real filesystem, account and network controls.
+Record guest OS/build, CPU architecture, translation/emulation and sandbox
+configuration. An ARM Linux VM is suitable for Linux arm64 proof. Windows ARM
+running translated x64 applications proves that configuration; it does not by
+itself prove Windows 11 x64. Windows Server builds can produce Windows 11
+executables, but client-OS qualification must also run on Windows 11. Retain all
+actual install, upgrade, recovery, authority and sandbox acceptance cases.
+
+Before making **either Warden or Alpaca public**, complete one bounded disclosure
+review per repository:
+
+- Inventory every intended public branch/tag and its reachable Git history,
+  submodules/LFS objects, tracked binaries/archives, and repository metadata and
+  release/Actions assets that would become public. Pin reviewed refs and hashes.
+- Run an existing deterministic history scanner such as Gitleaks with redacted
+  output over all intended refs, plus the owning current-tree secret/public
+  boundary gates. Inspect binary/archive contents and configuration/fixtures for
+  embedded credentials, personal/customer data and hosted-only implementation.
+- Verify license/notice coverage and that hosted OAuth client secrets, relay
+  operations and private infrastructure remain outside the public package.
+  Apache-2.0 declarations are useful evidence, not a completed disclosure audit.
+- Resolve every finding before visibility changes. If a real credential is
+  found, revoke/rotate it and remove the exposed material from the proposed
+  publication; do not print it in the report. History remediation requires its
+  own exact-ref checkpoint before destructive rewriting.
+- Exit evidence: reviewed ref/object inventory, scanner versions and commands,
+  redacted results, finding resolutions, boundary/license verdict and the final
+  audited commit. No unresolved secret or private-content finding may pass.
+
+The review is now required planning scope; it has not run. Repository visibility
+has not changed. AWS CodeBuild is the selected first-release build route.
+Public standard GitHub runners remain a future option if those repositories
+are published. Use eligible AWS credits for private producer builds; verify credit
+eligibility and bound compute before dispatch. AppVeyor is another hosted
+Windows builder. GitHub larger runners offer a Windows 11 Desktop image for
+client-OS qualification and are paid even for public repositories; check account
+eligibility and a finite budget before selecting that route. No home machine
+needs to become an always-on runner. Source builds on Linux remain feasible,
+but a supported source installer must resolve the pinned SDK dependency and
+run the same behavioral checks; compilation alone does not qualify support.
+
+Provider references checked 2026-09-30:
+[GitHub runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
+[Windows 11 larger runners](https://docs.github.com/en/actions/reference/runners/larger-runners),
+[Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions),
+[CodeBuild images](https://docs.aws.amazon.com/codebuild/latest/userguide/ec2-compute-images.html),
+[AppVeyor](https://www.appveyor.com/pricing/).
+
+**R4 — Produce and qualify the release targets (D2/D3; five-target implementation pending the refinement above).**
 Outcome: each required OS/architecture has genuine native build, installation,
 authority and sandbox evidence, bound to its exact candidate artifacts.
 Files/repos: existing Core `.github/workflows/native-core.yml`; owning Warden

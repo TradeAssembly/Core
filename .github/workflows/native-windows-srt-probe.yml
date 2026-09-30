@@ -1,6 +1,11 @@
 # Copyright (c) 2026 OptionLab LLC. All rights reserved.
 name: Native Windows SRT setup probe
 on:
+  push:
+    branches:
+      - codex/f2-npm-distribution
+    paths:
+      - .github/workflows/native-windows-srt-probe.yml
   workflow_dispatch:
 permissions:
   contents: read

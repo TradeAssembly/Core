@@ -1156,8 +1156,40 @@ Run `36669098721` confirms path parsing and canonical-parent metadata passed;
 the failing call is `private_parent` opening a verbatim Windows volume-root
 handle (`Incorrect function`). The candidate repair opens only that volume
 root through its equivalent ordinary drive spelling, retaining validated
-verbatim descendant paths and all private ACL/reparse checks. Native retest
-and the remaining local-install tests are still required.
+verbatim descendant paths and all private ACL/reparse checks. Core native
+Windows run `36669540407` on clean commit `643a933` passed the complete
+`native-core.yml` builder job in 15m44s: strict Windows Clippy, distribution
+and private-file tests, local-install/owner tests, release build, and artifact
+upload. The same commit passed local `just verify` (including `cargo xtask
+verify` and 1,320 nextest cases). This is a builder checkpoint, not a Windows
+qualification receipt: native SRT account/elevation/WFP, controlled
+install/upgrade evidence and private Warden/Alpaca binaries remain due.
+Parallel Core builder runs also passed for Mac x64 (`36670747388`), Linux x64
+(`36670759083`), and Linux arm64 (`36670768977`), all at `643a933`.
+The exact Core builder artifacts were downloaded into
+`target/native-core-builders/{windows-x64,macos-x64,linux-x64,linux-arm64}`;
+all four contain their native release executables and six proof logs. `file`
+identifies the main binaries as PE32+ x86-64, Mach-O x86_64, ELF x86-64, and
+ELF aarch64 respectively. Their main `tradeassembly` SHA-256 digests, in that
+order, are `aa0519a486dfcbbc4a18ffdb66fe95fa7d08d6b002b254e6aab35a5c9642505c`,
+`ac2217ba5e8e528e155015e384dd1d0221102fe348b6687ca2dc8275cf0574cb`,
+`499d6543ce1c26ff741bb9a701d005b8d00b385724b8c337bce61caff298b63a`,
+and `71f27b12b59c1570f3595819c62e95000c30ccc50c80c104fbf542ccc4212881`.
+These are Core-only builder outputs, not complete candidate bundles or native
+qualification receipts. The other producers and platform-specific SRT proofs
+remain mandatory.
+Windows setup gap found in source: `distribution/src/install.rs::install` stages
+the bundled SRT and configures `pluginSandboxCommand`, but never provisions
+SRT's machine-wide sandbox account or WFP filters. The pinned SRT alpha
+requires a one-time elevated `windows-install`; `initialize()` later checks
+account/WFP readiness behaviorally. R4 therefore also needs a fresh-user
+installer path that checks readiness, performs the bounded one-time elevated
+setup when absent, and fails closed without claiming installation success if
+it cannot complete. Qualification must run that path on native Windows and
+prove the sandbox child uses the dedicated account plus the existing positive-
+control filesystem/network denials. Do not rerun SRT provisioning on every
+upgrade: the vendor says it rotates the sandbox account password and that is
+a shared-machine side effect. No such implementation or proof exists yet.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

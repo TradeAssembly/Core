@@ -1,0 +1,18 @@
+{
+  "network": {
+    "allowedDomains": [],
+    "deniedDomains": [],
+    "strictAllowlist": true,
+    "allowUnixSockets": [],
+    "allowLocalBinding": false
+  },
+  "filesystem": {
+    "denyRead": [],
+    "allowRead": [],
+    "allowWrite": [],
+    "denyWrite": []
+  },
+  "enableWeakerNestedSandbox": false,
+  "enableWeakerNetworkIsolation": false,
+  "allowAppleEvents": false
+}

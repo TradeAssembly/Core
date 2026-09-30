@@ -1,0 +1,48 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+name: Native Windows SRT setup probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install pinned sandbox package and inspect native status
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/native-srt-proof | Out-Null
+          npm ci --prefix packaging/sandbox --ignore-scripts --no-audit --no-fund *> target/native-srt-proof/npm-install.log
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned SRT install failed' }
+          $helper = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
+          & $helper status *> target/native-srt-proof/status-before.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native SRT status failed before setup' }
+          $before = Get-Content target/native-srt-proof/status-before.json -Raw | ConvertFrom-Json
+          if ($before.user.user.exists -or $before.user.cred_present) { throw 'Probe runner is not a fresh SRT host' }
+      - name: Provision SRT once and prove behavioral Windows startup
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $node = (Get-Command node).Source
+          $cli = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js'
+          $helper = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
+          & $node $cli windows-install *> target/native-srt-proof/setup.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native SRT provisioning failed or UAC was cancelled' }
+          & $helper status *> target/native-srt-proof/status-after.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native SRT status failed after setup' }
+          $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
+          if (-not $status.user.user.exists -or -not $status.user.cred_present) { throw 'Sandbox account or credential absent' }
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior.log
+          if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox/WFP startup failed' }
+      - name: Preserve probe logs, not release qualification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-srt-probe-${{ github.sha }}
+          path: target/native-srt-proof/
+          if-no-files-found: error
+          retention-days: 14

@@ -282,11 +282,25 @@ Audit evidence captured 2026-09-30:
   `infra/aws/broker-oauth-relay/main.tf`. Paid Relay gateway IaC is tagged test,
   names `tradeassembly-relay-gateway-f2`, and uses F2 conformance storage. This
   source inspection is not a readback of the currently deployed Lambda version.
-- Live AWS configuration readback is incomplete: configured CLI sessions had
-  expired; an SSO refresh was attempted and cancelled after integration fallback
-  failed (`aws___run_script` unavailable) and the operations hook did not record
-  that integration attempt. No account configuration was changed. Resolve this
-  access/evidence issue before claiming deployed policy verification.
+- AWS CLI readback on 2026-09-30 resolved account `056319544861` in `us-east-1`.
+  Staging and production broker-OAuth Lambdas and API Gateway endpoints exist,
+  but both Lambdas reported the same deployed code hash. The enumerated API
+  Gateway routes use `AuthorizationType NONE`; application-level authorization
+  must protect both custom domains and direct AWS origins. This readback does
+  not prove the currently deployed application's owner policy.
+- The deployed Relay gateway/reach/watch functions are tagged F2 conformance
+  and reference the test DSQL cluster and test archive bucket. The DSQL
+  inventory showed that test Relay cluster and a separate production Hub
+  cluster, but no distinct production Relay cluster; no production Relay
+  archive bucket was identified. Do not relabel or reuse test resources as
+  production. Operator-only detail is in the ignored Relay
+  `.operator/relay-environments/inventory.json`.
+- Production Hub issuer, public dashboard client and Hub base were read from
+  deployed configuration. Cloudflare route ownership and the registered Alpaca
+  redirect were not established. Stored WorkOS sessions exist in Bitwarden,
+  but a sampled session's asserted identity had expired; it is not current
+  verification of David's `(tenant_id, subject_id)`. A separate valid
+  non-owner test identity has not been verified. E0 remains open.
 
 #### Executable closure plan E0–E5
 

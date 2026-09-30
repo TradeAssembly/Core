@@ -1246,10 +1246,17 @@ then built the Rust launcher natively but its bundled Node child failed with
 [`36692125087`](https://github.com/TradeAssembly/Core/actions/runs/36692125087)
 ran that same bundled Node through SRT directly from both workspace and bundle
 working directories (`workspace=0`, `bundle=0`), isolating the failure to the
-Rust launcher path. The next repair removes Windows verbatim-drive prefixes
+Rust launcher path. Commit `7dad7c6` removes Windows verbatim-drive prefixes
 from bundled Node/CLI argv paths only after canonical containment checks;
-its 7 launcher unit tests and strict targeted Clippy pass locally, but native
-behavior remains unproven. None of these probes is a release receipt. The partial candidate
+its 7 launcher unit tests, strict targeted Clippy, and full `just verify` pass
+locally. Native Windows component probe
+[`36693766675`](https://github.com/TradeAssembly/Core/actions/runs/36693766675)
+passed on commit `046cc1b`: SRT installation/account/WFP, direct and Rust
+launcher bundled-Node execution, exact argument-with-metacharacters echo, and
+sandbox child SID matching the installed account. Logs are retained at
+`target/native-srt-probe-36693766675/`. This closes the launcher-specific
+failure, but it is **not** a source-free installer/upgrade/rollback/security
+qualification receipt. The partial candidate
 matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.

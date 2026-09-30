@@ -5,9 +5,9 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -511,7 +511,7 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
         let proof = &receipt["buildReadbacks"][owner];
         let file = evidence_file(root, proof)?;
         let readback: Value = read_json(&file)?;
-        if readback["schemaVersion"] != "tradeassembly.codebuild-sanitized.v2"
+        if readback["schemaVersion"] != "tradeassembly.codebuild-sanitized.v3"
             || readback.as_object().is_none_or(|fields| fields.len() != 2)
         {
             return Err("experimental_codebuild_readback_invalid".into());
@@ -523,7 +523,7 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
             return Err("experimental_codebuild_readback_invalid".into());
         }
         let build = &builds[0];
-        let expected_fields = if owner == "alpaca" { 4 } else { 3 };
+        let expected_fields = if owner == "alpaca" { 6 } else { 5 };
         if build
             .as_object()
             .is_none_or(|fields| fields.len() != expected_fields)
@@ -539,6 +539,10 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
         let revision = receipt["sourceRevisions"][owner]
             .as_str()
             .ok_or("experimental_source_revision_missing")?;
+        let artifact_sha = build["artifactSha256"]
+            .as_str()
+            .ok_or("experimental_codebuild_artifact_missing")?;
+        let archive = evidence_file(root, &receipt["buildArchives"][owner])?;
         let arn = build["arn"]
             .as_str()
             .ok_or("experimental_codebuild_readback_invalid")?;
@@ -548,9 +552,90 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
             || build["buildStatus"] != "SUCCEEDED"
             || build["resolvedSourceVersion"] != revision
             || receipt["buildArns"][owner] != arn
+            || !build["artifactLocation"]
+                .as_str()
+                .is_some_and(|location| location.starts_with("arn:aws:s3:::"))
+            || artifact_sha.len() != 64
+            || !artifact_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || artifact_sha != artifact_sha.to_ascii_lowercase()
+            || digest(&archive)? != artifact_sha
         {
             return Err("experimental_codebuild_readback_invalid".into());
         }
+    }
+    Ok(())
+}
+
+fn verify_archive_member(archive: &Path, member: &str, output: &Path) -> Result<()> {
+    let file = File::open(archive).map_err(|_| "experimental_build_archive_unavailable")?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| "experimental_build_archive_invalid")?;
+    if zip.len() > 10_000 {
+        return Err("experimental_build_archive_invalid".into());
+    }
+    let mut seen = BTreeSet::new();
+    for index in 0..zip.len() {
+        let entry = zip
+            .by_index(index)
+            .map_err(|_| "experimental_build_archive_invalid")?;
+        let name = entry.name().trim_end_matches('/');
+        if name.is_empty()
+            || name.starts_with('/')
+            || name.contains('\\')
+            || name
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+            || !seen.insert(name.to_owned())
+        {
+            return Err("experimental_build_archive_invalid".into());
+        }
+    }
+    let mut entry = zip
+        .by_name(member)
+        .map_err(|_| "experimental_build_archive_member_missing")?;
+    if !entry.is_file() || entry.size() > 1_073_741_824 {
+        return Err("experimental_build_archive_member_invalid".into());
+    }
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let count = entry
+            .read(&mut buffer)
+            .map_err(|_| "experimental_build_archive_member_invalid")?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    if format!("{:x}", hash.finalize()) != digest(output)? {
+        return Err("experimental_build_archive_output_mismatch".into());
+    }
+    Ok(())
+}
+
+fn verify_build_archive_outputs(root: &Path, receipt: &Value, target: &str) -> Result<()> {
+    let windows = target == TARGETS[4];
+    let suffix = if windows { ".exe" } else { "" };
+    for (owner, member, output) in [
+        (
+            "core",
+            format!("target/release/tradeassembly{suffix}"),
+            "core",
+        ),
+        (
+            "core",
+            format!("target/release/tradeassembly-sandbox{suffix}"),
+            "sandbox",
+        ),
+        ("warden", format!("target/release/warden{suffix}"), "warden"),
+        (
+            "alpaca",
+            "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz".to_owned(),
+            "alpaca",
+        ),
+    ] {
+        let archive = evidence_file(root, &receipt["buildArchives"][owner])?;
+        let file = evidence_file(root, &receipt["buildOutputs"][output])?;
+        verify_archive_member(&archive, &member, &file)?;
     }
     Ok(())
 }
@@ -575,6 +660,8 @@ fn verify_experimental_target(root: &Path, target: &str, version: &str) -> Resul
     }
     verify_codebuild_readbacks(&target_root, &receipt)
         .map_err(|code| format!("experimental_build_provenance_failed:{target}:{code}"))?;
+    verify_build_archive_outputs(&target_root, &receipt, target)
+        .map_err(|code| format!("experimental_build_archive_failed:{target}:{code}"))?;
     verify_delivery_artifacts(&target_root, &receipt, &release)
         .map_err(|code| format!("experimental_delivery_binding_failed:{target}:{code}"))?;
     let platform = evidence_file(&target_root, &receipt["artifacts"]["npmPlatform"])?;
@@ -995,25 +1082,30 @@ mod tests {
     #[test]
     fn codebuild_readbacks_bind_all_three_producer_revisions_and_sanitize_fields() {
         let root = tempfile::tempdir().unwrap();
-        let mut receipt = json!({"sourceRevisions":{"coreSdk":"a".repeat(40)},"buildArns":{},"buildReadbacks":{}});
+        let mut receipt = json!({"sourceRevisions":{"coreSdk":"a".repeat(40)},"buildArns":{},"buildReadbacks":{},"buildArchives":{}});
         for (owner, revision) in [("core", "a"), ("warden", "b"), ("alpaca", "c")] {
             let revision = revision.repeat(40);
             let arn = format!("arn:aws:codebuild:us-east-1:123456789012:build/{owner}:fixture");
             let file = format!("{owner}-readback.json");
+            let archive = format!("{owner}-archive.zip");
+            fs::write(root.path().join(&archive), format!("{owner}-archive")).unwrap();
             let mut build = json!({"arn":arn,"buildStatus":"SUCCEEDED",
-                "resolvedSourceVersion":revision});
+                "resolvedSourceVersion":revision,
+                "artifactLocation":format!("arn:aws:s3:::fixture/{owner}/native.zip"),
+                "artifactSha256":digest(&root.path().join(&archive)).unwrap()});
             if owner == "alpaca" {
                 build["coreSdkRevision"] = json!("a".repeat(40));
             }
             atomic_json(
                 &root.path().join(&file),
-                &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v2",
+                &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v3",
                     "builds":[build]}),
             )
             .unwrap();
             receipt["sourceRevisions"][owner] = json!(revision);
             receipt["buildArns"][owner] = json!(arn);
             receipt["buildReadbacks"][owner] = proof(root.path(), &file);
+            receipt["buildArchives"][owner] = proof(root.path(), &archive);
         }
         assert!(verify_codebuild_readbacks(root.path(), &receipt).is_ok());
         receipt["sourceRevisions"]["warden"] = json!("d".repeat(40));
@@ -1028,10 +1120,22 @@ mod tests {
             "experimental_codebuild_sdk_binding_invalid"
         );
         receipt["sourceRevisions"]["coreSdk"] = json!("a".repeat(40));
+        fs::write(root.path().join("warden-archive.zip"), "tampered").unwrap();
+        assert!(verify_codebuild_readbacks(root.path(), &receipt).is_err());
+        fs::write(root.path().join("warden-archive.zip"), "warden-archive").unwrap();
+        let file = root.path().join("core-readback.json");
+        let mut changed: Value = read_json(&file).unwrap();
+        changed["builds"][0]["artifactSha256"] = json!("f".repeat(64));
+        atomic_json(&file, &changed).unwrap();
+        receipt["buildReadbacks"]["core"] = proof(root.path(), "core-readback.json");
+        assert_eq!(
+            verify_codebuild_readbacks(root.path(), &receipt).unwrap_err(),
+            "experimental_codebuild_readback_invalid"
+        );
         let file = root.path().join("core-readback.json");
         atomic_json(
             &file,
-            &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v2",
+            &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v3",
                 "builds":[{"arn":receipt["buildArns"]["core"],"buildStatus":"SUCCEEDED",
                            "resolvedSourceVersion":"a".repeat(40),"environment":{"secret":"must-reject"}}]}),
         )
@@ -1040,6 +1144,46 @@ mod tests {
         assert_eq!(
             verify_codebuild_readbacks(root.path(), &receipt).unwrap_err(),
             "experimental_codebuild_readback_invalid"
+        );
+    }
+
+    #[test]
+    fn codebuild_archive_member_must_match_output_bytes_and_have_safe_names() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("native.zip");
+        let output = root.path().join("tradeassembly");
+        fs::write(&output, b"native-binary").unwrap();
+        let file = File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file(
+            "target/release/tradeassembly",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"native-binary").unwrap();
+        zip.finish().unwrap();
+        assert!(verify_archive_member(&archive, "target/release/tradeassembly", &output).is_ok());
+        fs::write(&output, b"substituted-binary").unwrap();
+        assert_eq!(
+            verify_archive_member(&archive, "target/release/tradeassembly", &output).unwrap_err(),
+            "experimental_build_archive_output_mismatch"
+        );
+        assert_eq!(
+            verify_archive_member(&archive, "target/release/warden", &output).unwrap_err(),
+            "experimental_build_archive_member_missing"
+        );
+        let unsafe_archive = root.path().join("unsafe.zip");
+        let file = File::create(&unsafe_archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("../escape", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"not-allowed").unwrap();
+        zip.finish().unwrap();
+        assert_eq!(
+            verify_archive_member(&unsafe_archive, "../escape", &output).unwrap_err(),
+            "experimental_build_archive_invalid"
         );
     }
 

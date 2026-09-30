@@ -234,6 +234,19 @@ one pass before artifacts, logs or retries. The AWS Connector for GitHub
 authorization page is open in Chrome awaiting action-time confirmation before
 any app grant or repository selection. No source access is claimed.
 
+B3 artifact-provenance repair (2026-09-30, local only): the next capture schema
+is `tradeassembly.codebuild-sanitized.v3`. It binds CodeBuild's S3 ZIP location
+and reported SHA-256 to the pinned project, source and image. Experimental
+receipts now require `buildArchives` for Core, Warden and Alpaca. The Core
+verifier checks each downloaded ZIP digest against that readback and checks
+that the selected Core, sandbox, Warden and Alpaca output bytes actually occur
+inside the matching ZIP; Node remains a separate pinned upstream input. The
+private capture tool's eight tests and Core's 26 distribution unit tests,
+targeted Clippy, Cargo audit and Cargo deny passed locally. No ZIP was
+downloaded from AWS, and this does not qualify a platform. The current pinned
+Core source revision must be updated after this repair is committed, before
+any producer dispatch.
+
 ### Relay production configuration and private staging — release gate
 
 User requirement (2026-09-30): the shipped Relay integration must use production

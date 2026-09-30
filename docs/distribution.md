@@ -1061,6 +1061,15 @@ Next action: implement the deterministic `distribution-qualify` capture around
 these actual drivers and target-local sandbox probes, then use native hosts for
 the remaining four targets. Do not fabricate a matrix receipt from this note.
 
+GitHub runner budget check, 2026-09-29: the organization billing budgets API
+returns an Actions organization budget of **$0** with
+`prevent_further_usage=true`; the current usage API reports Actions net charges
+of $0, and the Core repository permits Actions. There are no self-hosted Core
+runners registered. This resolves the prior unknown-cap pre-dispatch question,
+but it does not guarantee that a new job can run inside included minutes or
+that GitHub's enforcement is instantaneous. Keep native jobs timed and do not
+silently raise the budget if a target is rejected.
+
 ### Historical execution checkpoint — before the amendment
 
 The records below preserve prior evidence and failures. Statements that the

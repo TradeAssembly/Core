@@ -1195,12 +1195,30 @@ receipts; no such receipt has been emitted. Core Windows builder run
 Clippy and native Core tests. A subsequent local change makes installation
 exercise SRT's behavioral WFP readiness check before the installed pointer
 is written and binds that outcome into the qualifier. Local distribution
-tests and strict Clippy pass; this still needs a committed native build and
-actual fresh-Windows qualification. Private Warden/Alpaca native jobs remain
+tests and strict Clippy passed, and clean commit `fe70cef` passed `just verify`
+(including 1,322 nextest cases). Native Core Windows builder run
+`36678558698` passed its strict Clippy, 25 distribution tests, private-file,
+owner, setup and release-build checks. Its exact PE x64 Core artifact is
+retained at `target/native-core-builders/windows-x64-fe70cef/` with main
+`tradeassembly.exe` SHA-256
+`aede410da6ca3eecab7255348afd32caf735fa6ee92458a7af271857340cab3d`.
+This is still **builder evidence, not fresh-Windows qualification**. The
+partial candidate matrix still accepts the sealed Mac arm64 receipt and
+fails precisely at `native_qualification_missing:x86_64-apple-darwin`.
+Private Warden/Alpaca native jobs remain
 runner-admission blocked by the organization's $0 Actions budget. The
-existing `zoidberg` Linux builder was probed without changing trust settings:
+existing `zoidberg` host was probed without changing trust settings:
 its known host key matches the saved fully qualified host, but SSH
-authentication is denied, so it cannot presently replace those jobs.
+authentication is denied and its operating system/architecture were not
+verified, so it cannot presently replace those jobs.
+An unauthenticated npm CLI probe on 2026-09-30 received 404/unavailable for
+`0.1.0-beta.2` on all six package names, but `npm whoami` has no session;
+ownership and version availability must be rechecked after authentication
+immediately before any publish. After the full local gate, `cargo clean
+--profile dev` removed this worktree's disposable debug build cache and
+restored about 41 GiB of disk availability; release binaries, frozen bundles,
+candidate data and native evidence under `target/` were preserved. Cargo can
+rebuild the debug cache when needed.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

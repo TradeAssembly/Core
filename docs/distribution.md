@@ -1139,6 +1139,13 @@ explicit write flag even when custom Windows access bits grant write access.
 The primitive now requests `.write(true)` before its owner-ACL protection and
 validation; this still needs an actual Windows retest. No native release
 receipt was emitted.
+Native run `36667206056` passed the distribution unit and Windows-private
+adapter tests, then failed six Core local-install tests at the protected state
+root (`local_install_state_insecure`). This may be a canonicalized Windows
+temporary-path or ACL traversal defect; the new narrow native test compares
+raw and canonicalized private temp roots and reports the underlying error
+before changing security behavior. The full Core `just verify` gate passed on
+clean commit `61dd2f4`. No Windows receipt exists yet.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

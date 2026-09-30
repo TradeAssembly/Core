@@ -419,6 +419,20 @@ mod tests {
     }
 
     #[test]
+    fn recursive_private_root_accepts_canonicalized_local_temp_path() {
+        let temporary = tempfile::tempdir().unwrap();
+        let raw = temporary.path().join("raw-state");
+        ensure_directory(&raw).expect("raw private root");
+        let canonical = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("canonical-state");
+        ensure_directory(&canonical).expect("canonical private root");
+        validate_directory(&canonical).expect("canonical private ACL");
+    }
+
+    #[test]
     fn private_files_are_atomic_reopenable_and_durably_removable() {
         let (_temporary, root) = root();
         let path = root.join("key");

@@ -75,25 +75,38 @@ jobs:
         timeout-minutes: 25
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo build --locked --release -p tradeassembly-runtime --bin tradeassembly-sandbox *> target/native-srt-proof/launcher-build.log
+          cargo build --locked -p tradeassembly-runtime --bin tradeassembly-sandbox *> target/native-srt-proof/launcher-build.log
           if ($LASTEXITCODE -ne 0) { throw 'Native Rust launcher build failed' }
           $bundle = Join-Path (Get-Location) 'target/native-srt-mini-bundle'
           New-Item -ItemType Directory -Force "$bundle/bin", "$bundle/runtime/node/bin" | Out-Null
-          Copy-Item target/release/tradeassembly-sandbox.exe "$bundle/bin/tradeassembly-sandbox.exe"
+          Copy-Item target/debug/tradeassembly-sandbox.exe "$bundle/bin/tradeassembly-sandbox.exe"
           Copy-Item (Get-Command node).Source "$bundle/runtime/node/bin/node.exe"
           Copy-Item packaging/sandbox/node_modules "$bundle/runtime/node_modules" -Recurse
           $settings = Get-Content packaging/sandbox/native-probe-settings.json -Raw | ConvertFrom-Json
           $settings.filesystem.allowRead = @($bundle)
           $settings | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 target/native-srt-proof/mini-settings.json
+          $settingsFile = (Resolve-Path target/native-srt-proof/mini-settings.json).Path
+          $cli = (Resolve-Path packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js).Path
           $launcher = "$bundle/bin/tradeassembly-sandbox.exe"
           $node = "$bundle/runtime/node/bin/node.exe"
-          & $launcher --settings target/native-srt-proof/mini-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/launcher-node.log
-          if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed Node child' }
-          & $launcher --settings target/native-srt-proof/mini-settings.json $node --eval 'process.stdout.write(process.argv[1])' 'argument with spaces & ; intact' *> target/native-srt-proof/launcher-args.log
-          if ($LASTEXITCODE -ne 0 -or (Get-Content target/native-srt-proof/launcher-args.log -Raw).Trim() -ne 'argument with spaces & ; intact') { throw 'Rust launcher changed child arguments' }
-          $whoami = "$env:SystemRoot/System32/whoami.exe"
-          & $launcher --settings target/native-srt-proof/mini-settings.json $whoami /user /fo csv /nh *> target/native-srt-proof/launcher-identity.log
-          if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed sandbox identity child' }
+          $directCommand = "`"$($node.Replace('\', '/'))`" --eval `"process.exit(0)`""
+          & (Get-Command node).Source $cli --settings $settingsFile -c $directCommand *> target/native-srt-proof/direct-from-workspace.log
+          "workspace=$LASTEXITCODE" | Out-File target/native-srt-proof/direct-exits.txt
+          $proofRoot = (Resolve-Path target/native-srt-proof).Path
+          Push-Location $bundle
+          try {
+            & (Get-Command node).Source $cli --settings $settingsFile -c $directCommand *> "$proofRoot/direct-from-bundle.log"
+            "bundle=$LASTEXITCODE" | Out-File "$proofRoot/direct-exits-bundle.txt"
+            & $launcher --settings $settingsFile $node --eval 'process.exit(0)' *> "$proofRoot/launcher-node.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed Node child' }
+            & $launcher --settings $settingsFile $node --eval 'process.stdout.write(process.argv[1])' 'argument with spaces & ; intact' *> "$proofRoot/launcher-args.log"
+            if ($LASTEXITCODE -ne 0 -or (Get-Content "$proofRoot/launcher-args.log" -Raw).Trim() -ne 'argument with spaces & ; intact') { throw 'Rust launcher changed child arguments' }
+            $whoami = "$env:SystemRoot/System32/whoami.exe"
+            & $launcher --settings $settingsFile $whoami /user /fo csv /nh *> "$proofRoot/launcher-identity.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed sandbox identity child' }
+          } finally {
+            Pop-Location
+          }
           $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
           $identity = Get-Content target/native-srt-proof/launcher-identity.log -Raw
           if (-not $identity.Contains($status.user.user.sid)) { throw 'Rust launcher child did not use sandbox SID' }

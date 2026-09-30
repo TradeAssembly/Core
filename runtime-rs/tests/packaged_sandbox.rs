@@ -153,11 +153,14 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     // Execute the real pinned plugin's local discovery operation through the
     // bundled sandbox. No broker credentials or network access are needed.
     use sha2::{Digest, Sha256};
-    let pin: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(bundle.join("plugins/alpaca.json")).unwrap())
-            .unwrap();
+    let pin_bytes = std::fs::read(bundle.join("plugins/alpaca.json")).unwrap();
+    let pin: serde_json::Value = serde_json::from_slice(&pin_bytes).unwrap();
     assert_eq!(pin["target"], target);
-    assert_eq!(manifest["alpaca"], pin, "bundle pin binding required");
+    assert_eq!(
+        manifest["files"]["plugins/alpaca.json"]["sha256"],
+        format!("{:x}", Sha256::digest(&pin_bytes)),
+        "bundle pin binding required"
+    );
     let package = std::fs::read(
         bundle
             .join("plugins")
@@ -167,6 +170,11 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     assert_eq!(
         format!("{:x}", Sha256::digest(&package)),
         pin["packageSha256"]
+    );
+    assert_eq!(
+        manifest["files"][format!("plugins/{}", pin["packageFile"].as_str().unwrap())]["sha256"],
+        pin["packageSha256"],
+        "bundle package binding required"
     );
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(package.as_slice()));
     let plugin = root.join(executable("tradeassembly-plugin-alpaca"));

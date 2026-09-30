@@ -1051,6 +1051,12 @@ the frozen baseline manifest remains SHA
 `6740c7d7f4e8a692ff005dd18b6dc2656883eb8e366253e4e8e6aa054108f5dc`.
 Mac arm64 R2/R3 behavior is evidenced, but R4's native capture/receipt and
 five-target matrix, R5 registry publication, and R6 integration are open.
+The `packaged_sandbox` test also passed 1/1 against this exact frozen
+replacement bundle: bundled Node and sandbox denied filesystem and loopback
+access while the outside controls succeeded, and the pinned Alpaca binary
+completed local capability discovery. Its manifest assertion now verifies the
+pin and plugin package through the candidate's inventory digests rather than
+an obsolete embedded `alpaca` object.
 Next action: implement the deterministic `distribution-qualify` capture around
 these actual drivers and target-local sandbox probes, then use native hosts for
 the remaining four targets. Do not fabricate a matrix receipt from this note.

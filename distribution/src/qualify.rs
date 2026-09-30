@@ -210,7 +210,9 @@ pub fn qualify(
         // elevated SRT provisioner. A pre-existing machine setup is useful to
         // customers but cannot qualify that release behavior.
         let installed: Value = read_json(&out.join("installed-package.log"))?;
-        if installed["windowsSandboxProvisionedNow"] != true {
+        if installed["windowsSandboxProvisionedNow"] != true
+            || installed["windowsSandboxBehavioralReady"] != true
+        {
             return Err("qualification_windows_fresh_sandbox_setup_required".into());
         }
         for directory in [&rig, &rig.join("state"), &rig.join("state/local")] {

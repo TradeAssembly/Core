@@ -1185,14 +1185,22 @@ pointer if UAC/setup fails. It does not rotate an already provisioned shared
 machine account on upgrade. Core Windows native builder run `36674209758`
 passed strict Clippy, owner/private-file tests, distribution tests and the
 release build on that exact revision. This is still **builder evidence only**.
-The next local batch adds the production Windows environment handoff to the
+That committed batch adds the production Windows environment handoff to the
 SRT launcher, dedicated-account identity and real installed-secret denial
 probes, Windows owner-ACL validation, a fresh-provisioning signal, and
-digest-bound Windows qualifier checks. These edits require a clean commit,
-owning gates, and a new native build. The qualified candidate still requires
+digest-bound Windows qualifier checks. The qualified candidate still requires
 real Windows account/elevation/WFP/ACL behavior and all five complete native
-receipts; no such receipt has been emitted. Private Warden/Alpaca native jobs
-remain runner-admission blocked by the organization's $0 Actions budget.
+receipts; no such receipt has been emitted. Core Windows builder run
+`36676382267` passed on clean commit `6eceeea`, including strict Windows
+Clippy and native Core tests. A subsequent local change makes installation
+exercise SRT's behavioral WFP readiness check before the installed pointer
+is written and binds that outcome into the qualifier. Local distribution
+tests and strict Clippy pass; this still needs a committed native build and
+actual fresh-Windows qualification. Private Warden/Alpaca native jobs remain
+runner-admission blocked by the organization's $0 Actions budget. The
+existing `zoidberg` Linux builder was probed without changing trust settings:
+its known host key matches the saved fully qualified host, but SSH
+authentication is denied, so it cannot presently replace those jobs.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

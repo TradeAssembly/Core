@@ -253,6 +253,33 @@ pub fn pack(
 
 /// Checks release evidence, never substitutes packaging tests for runtime gates.
 /// Each receipt references nonempty hashed artifacts produced on its own target.
+fn verify_windows_native_proof(root: &Path, receipt: &Value) -> Result<()> {
+    if receipt["checks"]["windowsSandboxElevation"]["artifact"] != "installed-package.log"
+        || receipt["checks"]["windowsPrivateAcl"]["artifact"] != "windows-private-acl.json"
+        || receipt["checks"]["windowsSandboxAccount"]["artifact"] != "sandbox.log"
+        || receipt["checks"]["windowsSandboxWfp"]["artifact"] != "sandbox.log"
+    {
+        return Err("native_windows_proof_source_invalid".into());
+    }
+    let installed: Value = read_json(&root.join("installed-package.log"))?;
+    let acl: Value = read_json(&root.join("windows-private-acl.json"))?;
+    let sandbox = fs::read_to_string(root.join("sandbox.log"))
+        .map_err(|_| "native_windows_sandbox_log_unavailable")?;
+    if installed["installed"] != true
+        || installed["windowsSandboxProvisionedNow"] != true
+        || installed["windowsSandboxBehavioralReady"] != true
+        || acl["schemaVersion"] != "tradeassembly.windows-private-acl.v1"
+        || acl["ownerOnlyState"] != true
+        || acl["ownerOnlyAuthorityFiles"] != true
+        || !sandbox
+            .contains("packaged_sandbox_runs_and_denies_files_and_network_without_host_node ... ok")
+        || !sandbox.contains("1 passed")
+    {
+        return Err("native_windows_proof_semantics_invalid".into());
+    }
+    Ok(())
+}
+
 pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
     let matrix: Value = read_json(&root.join("matrix.json"))?;
     if matrix["schemaVersion"] != 1
@@ -357,23 +384,7 @@ pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
             }
         }
         if target == TARGETS[4] {
-            if receipt["checks"]["windowsSandboxElevation"]["artifact"] != "installed-package.log"
-                || receipt["checks"]["windowsPrivateAcl"]["artifact"] != "windows-private-acl.json"
-                || receipt["checks"]["windowsSandboxAccount"]["artifact"] != "sandbox.log"
-                || receipt["checks"]["windowsSandboxWfp"]["artifact"] != "sandbox.log"
-            {
-                return Err("native_windows_proof_source_invalid".into());
-            }
-            let installed: Value = read_json(&root.join(target).join("installed-package.log"))?;
-            let acl: Value = read_json(&root.join(target).join("windows-private-acl.json"))?;
-            if installed["installed"] != true
-                || installed["windowsSandboxProvisionedNow"] != true
-                || acl["schemaVersion"] != "tradeassembly.windows-private-acl.v1"
-                || acl["ownerOnlyState"] != true
-                || acl["ownerOnlyAuthorityFiles"] != true
-            {
-                return Err("native_windows_proof_semantics_invalid".into());
-            }
+            verify_windows_native_proof(&root.join(target), &receipt)?;
         }
         qualified.push(target);
     }
@@ -385,6 +396,45 @@ pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_native_proof_rejects_missing_setup_behavior_and_rebound_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        atomic_json(
+            &root.join("installed-package.log"),
+            &json!({"installed":true,"windowsSandboxProvisionedNow":true,"windowsSandboxBehavioralReady":true}),
+        )
+        .unwrap();
+        atomic_json(
+            &root.join("windows-private-acl.json"),
+            &json!({"schemaVersion":"tradeassembly.windows-private-acl.v1","ownerOnlyState":true,"ownerOnlyAuthorityFiles":true}),
+        )
+        .unwrap();
+        fs::write(root.join("sandbox.log"), "test packaged_sandbox_runs_and_denies_files_and_network_without_host_node ... ok\ntest result: ok. 1 passed; 0 failed;").unwrap();
+        let receipt = json!({"checks":{
+            "windowsSandboxElevation":{"artifact":"installed-package.log"},
+            "windowsPrivateAcl":{"artifact":"windows-private-acl.json"},
+            "windowsSandboxAccount":{"artifact":"sandbox.log"},
+            "windowsSandboxWfp":{"artifact":"sandbox.log"}
+        }});
+        assert!(verify_windows_native_proof(root, &receipt).is_ok());
+        let mut wrong = receipt.clone();
+        wrong["checks"]["windowsSandboxWfp"]["artifact"] = json!("unrelated.log");
+        assert_eq!(
+            verify_windows_native_proof(root, &wrong).unwrap_err(),
+            "native_windows_proof_source_invalid"
+        );
+        atomic_json(
+            &root.join("installed-package.log"),
+            &json!({"installed":true,"windowsSandboxProvisionedNow":true,"windowsSandboxBehavioralReady":false}),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_windows_native_proof(root, &receipt).unwrap_err(),
+            "native_windows_proof_semantics_invalid"
+        );
+    }
 
     fn proof(root: &Path, name: &str) -> Value {
         json!({"artifact":name,"sha256":digest(&root.join(name)).unwrap()})

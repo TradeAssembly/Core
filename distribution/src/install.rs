@@ -120,7 +120,7 @@ fn windows_srt_install_needed(status: &Value) -> Result<bool> {
 }
 
 #[cfg(windows)]
-fn ensure_windows_srt(bundle: &Path) -> Result<bool> {
+fn ensure_windows_srt(bundle: &Path, root: &Path) -> Result<bool> {
     let srt = bundle
         .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe");
     let read_status = || -> Result<Value> {
@@ -144,6 +144,37 @@ fn ensure_windows_srt(bundle: &Path) -> Result<bool> {
         if windows_srt_install_needed(&read_status()?)? {
             return Err("windows_sandbox_setup_unverified".into());
         }
+    }
+    // A non-elevated status check may report WFP as `cannot-read`. SRT's
+    // initialize() makes a behavioral egress-fence probe, so exercise the
+    // actual bundled launcher before recording a runnable installation.
+    let mut settings = tempfile::NamedTempFile::new_in(root)
+        .map_err(|_| "windows_sandbox_probe_config_unavailable")?;
+    let config = json!({
+        "network":{"allowedDomains":[],"deniedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowLocalBinding":false},
+        "filesystem":{"denyRead":[],"allowRead":[bundle],"allowWrite":[],"denyWrite":[]},
+        "enableWeakerNestedSandbox":false,"enableWeakerNetworkIsolation":false,"allowAppleEvents":false
+    });
+    use std::io::Write;
+    settings
+        .write_all(
+            &serde_json::to_vec(&config).map_err(|_| "windows_sandbox_probe_config_invalid")?,
+        )
+        .and_then(|_| settings.flush())
+        .map_err(|_| "windows_sandbox_probe_config_unavailable")?;
+    let launcher = bundle.join(executable("bin/tradeassembly-sandbox"));
+    let node = bundle.join(executable("runtime/node/bin/node"));
+    let ready = bounded_status(
+        Command::new(launcher)
+            .current_dir(bundle)
+            .arg("--settings")
+            .arg(settings.path())
+            .arg(node)
+            .args(["--eval", "process.exit(0)"]),
+        std::time::Duration::from_secs(45),
+    )?;
+    if !ready {
+        return Err("windows_sandbox_readiness_failed".into());
     }
     Ok(provisioned_now)
 }
@@ -597,6 +628,8 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     if let Some(current) = &current {
         if current.current == release && !root.join("pending.json").exists() {
             verify_installed(&root, current)?;
+            #[cfg(windows)]
+            ensure_windows_srt(&root.join("versions").join(&release.archive_sha256), &root)?;
             return status(&root);
         }
     }
@@ -630,7 +663,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     // installed pointer can make this version runnable. A cancelled UAC
     // prompt leaves an inert staged payload and can be retried explicitly.
     #[cfg(windows)]
-    let windows_sandbox_provisioned_now = ensure_windows_srt(&destination)?;
+    let windows_sandbox_provisioned_now = ensure_windows_srt(&destination, &root)?;
     let authority = root.join(executable("authority/bin/warden"));
     if !authority.exists() {
         #[cfg(not(windows))]
@@ -676,6 +709,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     {
         let mut result = status(&root)?;
         result["windowsSandboxProvisionedNow"] = json!(windows_sandbox_provisioned_now);
+        result["windowsSandboxBehavioralReady"] = json!(true);
         Ok(result)
     }
 }

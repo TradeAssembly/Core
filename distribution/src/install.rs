@@ -68,6 +68,85 @@ fn bounded_output(command: &mut Command) -> Result<(bool, Value)> {
     Ok((status.success(), value))
 }
 
+#[cfg(windows)]
+fn bounded_status(command: &mut Command, timeout: std::time::Duration) -> Result<bool> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "windows_sandbox_setup_launch_failed")?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status.success()),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("windows_sandbox_setup_timeout_or_wait_failed".into());
+            }
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_srt_install_needed(status: &Value) -> Result<bool> {
+    let exists = status["user"]["user"]["exists"]
+        .as_bool()
+        .ok_or("windows_sandbox_status_invalid")?;
+    let credential = status["user"]["cred_present"]
+        .as_bool()
+        .ok_or("windows_sandbox_status_invalid")?;
+    let wfp = status["wfp"]["state"]
+        .as_str()
+        .ok_or("windows_sandbox_status_invalid")?;
+    if !exists {
+        // A non-elevated caller may not inspect WFP at all.
+        return if !credential && matches!(wfp, "absent" | "cannot-read") {
+            Ok(true)
+        } else {
+            Err("windows_sandbox_partial_install_requires_repair".into())
+        };
+    }
+    if credential && matches!(wfp, "installed" | "cannot-read") {
+        // A shared machine account already exists. Never rotate its password
+        // during an ordinary TradeAssembly install or upgrade.
+        return Ok(false);
+    }
+    Err("windows_sandbox_existing_install_requires_repair".into())
+}
+
+#[cfg(windows)]
+fn ensure_windows_srt(bundle: &Path) -> Result<()> {
+    let srt = bundle
+        .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe");
+    let read_status = || -> Result<Value> {
+        let (success, status) = bounded_output(Command::new(&srt).arg("status"))?;
+        if !success {
+            return Err("windows_sandbox_status_unavailable".into());
+        }
+        Ok(status)
+    };
+    if windows_srt_install_needed(&read_status()?)? {
+        let node = bundle.join(executable("runtime/node/bin/node"));
+        let cli = bundle.join("runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js");
+        let installed = bounded_status(
+            Command::new(node).arg(cli).arg("windows-install"),
+            std::time::Duration::from_secs(180),
+        )?;
+        if !installed {
+            return Err("windows_sandbox_setup_failed_or_cancelled".into());
+        }
+        if windows_srt_install_needed(&read_status()?)? {
+            return Err("windows_sandbox_setup_unverified".into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Installed {
@@ -546,6 +625,11 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     }
     verify_bundle(&destination, &release)?;
     crate::candidate::verify(package, &destination, &release)?;
+    // Native Windows SRT is machine-scoped. Provision once before any
+    // installed pointer can make this version runnable. A cancelled UAC
+    // prompt leaves an inert staged payload and can be retried explicitly.
+    #[cfg(windows)]
+    ensure_windows_srt(&destination)?;
     let authority = root.join(executable("authority/bin/warden"));
     if !authority.exists() {
         #[cfg(not(windows))]
@@ -733,6 +817,24 @@ pub fn run(root: &Path, args: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_srt_setup_is_one_time_and_partial_state_fails_closed() {
+        let status = |exists, credential, wfp| json!({"user":{"user":{"exists":exists},"cred_present":credential},"wfp":{"state":wfp}});
+        assert!(windows_srt_install_needed(&status(false, false, "absent")).unwrap());
+        assert!(windows_srt_install_needed(&status(false, false, "cannot-read")).unwrap());
+        for wfp in ["installed", "cannot-read"] {
+            assert!(!windows_srt_install_needed(&status(true, true, wfp)).unwrap());
+        }
+        for partial in [
+            status(true, false, "installed"),
+            status(true, true, "absent"),
+            status(false, true, "absent"),
+            status(false, false, "installed"),
+        ] {
+            assert!(windows_srt_install_needed(&partial).is_err());
+        }
+        assert!(windows_srt_install_needed(&json!({})).is_err());
+    }
     #[test]
     fn actual_sqlite_state_blocks_active_execution_and_lease() {
         let temp = tempfile::tempdir().unwrap();

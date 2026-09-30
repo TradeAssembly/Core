@@ -58,6 +58,20 @@ fn sandbox(bundle: &Path, settings: &Path) -> Command {
         .current_dir(bundle)
         .arg("--settings")
         .arg(settings);
+    #[cfg(windows)]
+    for name in [
+        "SystemRoot",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
+        "ProgramData",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
     command
 }
 
@@ -93,9 +107,17 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     let forbidden_write = root.join("forbidden-write");
     std::fs::write(&restricted, "private fixture, not a credential").unwrap();
     let settings = root.join("settings.json");
+    // SRT's Windows child is a different OS account. Grant it only the
+    // packaged runtime and isolated fixture root; the explicit deny below
+    // must still override the fixture-root read grant.
+    let allow_read: Vec<&Path> = if cfg!(windows) {
+        vec![bundle.as_path(), root.as_path()]
+    } else {
+        Vec::new()
+    };
     std::fs::write(&settings, serde_json::to_vec(&json!({
         "network":{"allowedDomains":[],"deniedDomains":[],"allowUnixSockets":[],"allowLocalBinding":false},
-        "filesystem":{"denyRead":[restricted],"allowRead":[],"allowWrite":[],"denyWrite":[forbidden_write]},
+        "filesystem":{"denyRead":[restricted],"allowRead":allow_read,"allowWrite":[],"denyWrite":[forbidden_write]},
         "enableWeakerNestedSandbox":false,"enableWeakerNetworkIsolation":false,"allowAppleEvents":false
     })).unwrap()).unwrap();
     let mut allowed = node_probe(&bundle, &settings, "process.stdout.write(process.argv[1])");
@@ -110,6 +132,58 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
         String::from_utf8(output.stdout).unwrap(),
         "argument with spaces & ; intact"
     );
+    #[cfg(windows)]
+    {
+        let helper = bundle.join(
+            "runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
+        );
+        let mut status = Command::new(helper);
+        status.arg("status");
+        let status = bounded(status);
+        assert!(status.status.success(), "native SRT status required");
+        let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        assert_eq!(
+            status["user"]["user"]["exists"], true,
+            "sandbox account required"
+        );
+        assert_eq!(
+            status["user"]["cred_present"], true,
+            "sandbox credential required"
+        );
+        let sid = status["user"]["user"]["sid"]
+            .as_str()
+            .expect("sandbox account SID");
+        assert!(sid.starts_with("S-1-5-21-"), "local sandbox account SID");
+        assert!(
+            matches!(
+                status["wfp"]["state"].as_str(),
+                Some("installed" | "cannot-read")
+            ),
+            "WFP status must not be absent"
+        );
+        let whoami =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/whoami.exe");
+        let mut inside = sandbox(&bundle, &settings);
+        inside.arg(&whoami).args(["/user", "/fo", "csv", "/nh"]);
+        let inside = bounded(inside);
+        assert!(inside.status.success(), "sandbox identity probe required");
+        assert!(
+            String::from_utf8_lossy(&inside.stdout)
+                .to_ascii_lowercase()
+                .contains(&sid.to_ascii_lowercase()),
+            "child must run under SRT sandbox SID"
+        );
+        let mut outside = Command::new(whoami);
+        outside.args(["/user", "/fo", "csv", "/nh"]);
+        let outside = bounded(outside);
+        assert!(outside.status.success(), "caller identity probe required");
+        assert!(
+            !String::from_utf8_lossy(&outside.stdout)
+                .to_ascii_lowercase()
+                .contains(&sid.to_ascii_lowercase()),
+            "sandbox identity must differ from caller"
+        );
+    }
     // The outside-sandbox control proves the target exists and is readable.
     // A missing executable/file or arbitrary failure cannot prove denial.
     let read_script = "try { process.stdout.write(require('fs').readFileSync(process.argv[1])); } catch (e) { process.exit(['EACCES','EPERM'].includes(e.code) ? 77 : 78); }";

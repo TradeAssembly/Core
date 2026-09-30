@@ -1023,8 +1023,11 @@ reachable commits) and Alpaca `7ee2842c4de9767e2556bbb873f66c65bd1552f8`
 --redact=100`; their exact tracked `git archive HEAD` trees were separately
 scanned with archive depth 2. Alpaca returned zero findings in both scans;
 Warden returned one `generic-api-key` match in the test fixture
-`warden-gateway/tests/gateway.rs`'s `authentication_ref`, in both history and
-current tree. This is not yet a cleared finding. Neither producer has submodule
+`warden-gateway/tests/gateway.rs`'s `idempotency_key`, in both history and
+current tree. Inspection of the exact historical/current lines shows a
+13-character fixture identifier inside `fn invocation()`, not an
+authentication secret or external credential; this specific finding is
+classified as a false positive. Neither producer has submodule
 or LFS entries at these heads. Alpaca has nine tracked historical distribution
 tarballs containing native executables; those archives still require an
 explicit binary-content and disclosure review before any public visibility

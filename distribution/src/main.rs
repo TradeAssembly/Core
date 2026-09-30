@@ -91,12 +91,21 @@ fn execute(args: &[String]) -> Result<i32> {
                 .map(Path::new),
             Path::new(&required(args, "--out")?),
         )?,
+        "qualify" => tradeassembly_distribution::qualify::qualify(
+            Path::new(&required(args, "--candidate")?),
+            option(args, "--baseline-package")?
+                .as_deref()
+                .map(Path::new),
+            Path::new(&required(args, "--controlled-broker")?),
+            Path::new(&required(args, "--source")?),
+            Path::new(&required(args, "--out")?),
+        )?,
         "verify" => package::verify_matrix(
             Path::new(&required(args, "--evidence")?),
             !args.iter().any(|arg| arg == "--candidate"),
         )?,
         "help" | "--help" => {
-            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-native-inputs --input STAGING --core-revision SHA --warden-revision SHA --out NEW_NATIVE_INPUTS_JSON; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; verify --evidence DIRECTORY [--candidate].");
+            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-native-inputs --input STAGING --core-revision SHA --warden-revision SHA --out NEW_NATIVE_INPUTS_JSON; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; qualify --candidate DIR --baseline-package MAC_BASELINE_DIR --controlled-broker BINARY --source CORE_CHECKOUT --out NEW_EVIDENCE_DIR; verify --evidence DIRECTORY [--candidate].");
             return Ok(0);
         }
         _ => return install::run(&root, args),

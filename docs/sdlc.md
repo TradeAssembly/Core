@@ -3,8 +3,12 @@
 Use `just` / `cargo xtask` for local Core commands. `scripts/sdlc/verify` is a thin
 wrapper; Product owns the top-level release/control-plane SDLC.
 
-Distribution work uses `cargo xtask distribution-pack` and
-`cargo xtask distribution-verify`. Targeted installer tests include real opt-in
+Distribution work uses `cargo xtask distribution-pack`, native-host
+`cargo xtask distribution-qualify`, and `cargo xtask distribution-verify`.
+Qualification requires a clean committed test harness, runs the actual installed
+package, npm/pnpm, MCP and sandbox drivers, and writes a receipt only after
+their nonzero executed-test gates pass. Windows additionally needs dedicated
+ACL/account/elevation/WFP proof before a receipt can exist. Targeted installer tests include real opt-in
 frozen-binary acceptance; its environment variable and exact command are in
 docs/distribution.md. Packaging a local npm tarball is not public registry delivery
 or another platform's runtime/sandbox evidence. Keep the parent lock unchanged.

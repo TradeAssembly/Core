@@ -16,6 +16,11 @@ docs/distribution.md for platform qualification and stopped-only upgrade limits.
 New native inputs are separately inventoried with `distribution-freeze-native`,
 binding binary digests, architecture headers and pinned Node/SRT versions.
 Freezing inputs neither grants authority nor supplies native qualification.
+Native qualification is a separate Rust command that runs the installed
+artifact against isolated local state and a controlled broker, binds the
+tested npm archives and test-harness revision, and emits a receipt only on
+passing target-local processes. The five-target aggregate verifier, not one
+native receipt, decides candidate and registry readiness.
 
 Native Windows distribution and local owner/setup storage share the Core-owned
 `platform/windows_private.rs` adapter. It validates owner-only DACLs and rejects

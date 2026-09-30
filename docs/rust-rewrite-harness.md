@@ -15,6 +15,12 @@ exact-version native-package selector without lifecycle hooks or business logic.
 `cargo xtask distribution-verify --evidence DIRECTORY` requires native receipts
 for all five supported targets, including published npm/pnpm delivery and actual
 Warden/sandbox enforcement. Unit tests or local tarballs are not that evidence.
+`cargo xtask distribution-qualify` is the native-host capture entrypoint for
+clean-source, exact-candidate installed-package, npm/pnpm, MCP and sandbox
+process evidence. It seals the actual tested tarballs, installer, descriptor,
+controlled broker and source revisions; an interrupted or failed run has no
+receipt. The current Windows implementation fails closed until native
+ACL/account/elevation/WFP checks are implemented and executed.
 
 `cargo xtask verify` (also `just verify`) runs the fixed fail-fast registry in
 xtask/src/core_verify.rs: formatting, strict workspace Clippy, pinned standalone

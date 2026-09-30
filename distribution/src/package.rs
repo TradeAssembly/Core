@@ -35,7 +35,11 @@ fn evidence_file(root: &Path, proof: &Value) -> Result<PathBuf> {
     Ok(file)
 }
 
-fn verify_delivery_artifacts(root: &Path, receipt: &Value, release: &Release) -> Result<()> {
+pub(crate) fn verify_delivery_artifacts(
+    root: &Path,
+    receipt: &Value,
+    release: &Release,
+) -> Result<()> {
     let descriptor = evidence_file(root, &receipt["artifacts"]["installerDescriptor"])?;
     let installer = evidence_file(root, &receipt["artifacts"]["installer"])?;
     let launcher = evidence_file(root, &receipt["artifacts"]["npmLauncher"])?;
@@ -72,6 +76,15 @@ fn verify_delivery_artifacts(root: &Path, receipt: &Value, release: &Release) ->
         let candidate_stage = tempfile::tempdir().map_err(|_| "qualification_stage_failed")?;
         crate::extract(&payload.join("bundle.tar.gz"), candidate_stage.path())?;
         crate::candidate::verify(&payload, candidate_stage.path(), release)?;
+        let candidate_descriptor = payload.join(crate::candidate::NAME);
+        let described: Value = read_json(&candidate_descriptor)?;
+        if receipt["candidateDescriptorSha256"] != digest(&candidate_descriptor)?
+            || receipt["sourceRevisions"]["core"] != described["nativeInputs"]["coreRevision"]
+            || receipt["sourceRevisions"]["warden"] != described["nativeInputs"]["wardenRevision"]
+            || receipt["sourceRevisions"]["alpaca"] != described["nativeInputs"]["alpacaRevision"]
+        {
+            return Err("qualified_candidate_source_binding_failed".into());
+        }
     } else {
         crate::candidate::verify(&payload, &payload, release)?;
     }
@@ -278,9 +291,16 @@ pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
             || receipt["realWarden"] != true
             || receipt["actualBrokerOrders"] != false
             || receipt["liveActivated"] != false
+            || receipt["qualificationSourceRevision"]
+                .as_str()
+                .is_none_or(|value| {
+                    value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
         {
             return Err(format!("native_qualification_binding_failed:{target}"));
         }
+        evidence_file(&root.join(target), &receipt["controlledBroker"])
+            .map_err(|code| format!("native_controlled_broker_binding_failed:{target}:{code}"))?;
         verify_delivery_artifacts(&root.join(target), &receipt, &release)
             .map_err(|code| format!("native_delivery_binding_failed:{target}:{code}"))?;
         let mut checks = vec![

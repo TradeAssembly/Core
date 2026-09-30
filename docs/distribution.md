@@ -1057,9 +1057,25 @@ access while the outside controls succeeded, and the pinned Alpaca binary
 completed local capability discovery. Its manifest assertion now verifies the
 pin and plugin package through the candidate's inventory digests rather than
 an obsolete embedded `alpaca` object.
-Next action: implement the deterministic `distribution-qualify` capture around
-these actual drivers and target-local sandbox probes, then use native hosts for
-the remaining four targets. Do not fabricate a matrix receipt from this note.
+R4 capture continuation: `cargo xtask distribution-qualify --candidate DIR
+--baseline-package DIR --controlled-broker BINARY --source CORE_CHECKOUT
+--out NEW_EVIDENCE_DIR` now runs the real package, baseline upgrade, npm/pnpm,
+MCP and sandbox acceptance drivers and retains their outputs. The first Mac
+arm64 execution completed with all drivers passing and produced a provisional
+receipt under `target/native-qualify-mac-arm64-beta2`, but it ran while the
+capture source was uncommitted. The command was subsequently tightened to
+require a clean source commit, bind the harness/source revisions and exact
+controlled-broker binary, and reverify the npm archives against the descriptor.
+That provisional receipt is **not** the release receipt; rerun into a new
+directory after committing the capture implementation. Windows currently fails
+closed before receipt generation until its native ACL/account/elevation/WFP
+drivers exist. The other four native hosts, five-target matrix, registry
+publication and R6 integration remain open. Do not fabricate a matrix receipt
+from this note.
+The clean-source negative probe returned `qualification_source_not_clean`
+before creating an evidence directory. This preserves the captured test
+harness revision as an actual committed input, rather than treating an
+uncommitted qualification script as release evidence.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

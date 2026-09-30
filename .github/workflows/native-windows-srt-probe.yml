@@ -28,6 +28,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native SRT status failed before setup' }
           $before = Get-Content target/native-srt-proof/status-before.json -Raw | ConvertFrom-Json
           if ($before.user.user.exists -or $before.user.cred_present) { throw 'Probe runner is not a fresh SRT host' }
+          netsh interface ipv4 show excludedportrange protocol=tcp *> target/native-srt-proof/excluded-ports.log
+          foreach ($port in 40080..40089) {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+            try { $listener.Start() } finally { $listener.Stop() }
+          }
       - name: Provision SRT once and prove behavioral Windows startup
         shell: pwsh
         timeout-minutes: 10
@@ -35,12 +40,13 @@ jobs:
           $node = (Get-Command node).Source
           $cli = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js'
           $helper = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
-          & $node $cli windows-install *> target/native-srt-proof/setup.log
+          & $node $cli windows-install --proxy-port-range 40080-40089 *> target/native-srt-proof/setup.log
           if ($LASTEXITCODE -ne 0) { throw 'Native SRT provisioning failed or UAC was cancelled' }
           & $helper status *> target/native-srt-proof/status-after.json
           if ($LASTEXITCODE -ne 0) { throw 'Native SRT status failed after setup' }
           $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
           if (-not $status.user.user.exists -or -not $status.user.cred_present) { throw 'Sandbox account or credential absent' }
+          if ($status.wfp.port_range[0] -ne 40080 -or $status.wfp.port_range[1] -ne 40089) { throw 'Installed WFP port range differs from probe config' }
           & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior.log
           if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox/WFP startup failed' }
       - name: Preserve probe logs, not release qualification

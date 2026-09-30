@@ -12,6 +12,9 @@
     "allowWrite": [],
     "denyWrite": []
   },
+  "windows": {
+    "proxyPortRange": [40080, 40089]
+  },
   "enableWeakerNestedSandbox": false,
   "enableWeakerNetworkIsolation": false,
   "allowAppleEvents": false

@@ -1203,7 +1203,17 @@ retained at `target/native-core-builders/windows-x64-fe70cef/` with main
 `tradeassembly.exe` SHA-256
 `aede410da6ca3eecab7255348afd32caf735fa6ee92458a7af271857340cab3d`.
 This is still **builder evidence, not fresh-Windows qualification**. The
-partial candidate matrix still accepts the sealed Mac arm64 receipt and
+separate fresh-host SRT component probe on Windows runner
+[`36682896292`](https://github.com/TradeAssembly/Core/actions/runs/36682896292)
+installed the sandbox account and four WFP filters, then failed behavioral
+startup with `listen EACCES 127.0.0.1:60080`. Its downloaded setup/status/
+behavior logs are retained at `target/native-srt-probe-36682896292/`.
+The probe is not a TradeAssembly installer receipt. A follow-up probe tests a
+pre-bindable nondefault port range and binds it to both SRT installation and
+runtime configuration. If that passes, Core installation must select/persist
+the same safe range before activation; do not simply change the probe and
+declare Windows fixed. The partial candidate matrix still accepts the sealed
+Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.
 Private Warden/Alpaca native jobs remain
 runner-admission blocked by the organization's $0 Actions budget. The

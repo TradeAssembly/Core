@@ -1277,7 +1277,19 @@ verified, so it cannot presently replace those jobs.
 An unauthenticated npm CLI probe on 2026-09-30 received 404/unavailable for
 `0.1.0-beta.2` on all six package names, but `npm whoami` has no session;
 ownership and version availability must be rechecked after authentication
-immediately before any publish. After the full local gate, `cargo clean
+immediately before any publish.
+
+On 2026-09-30 a bounded npm CLI sign-in using the existing vault credential
+and an isolated temporary npm config reached npm's one-time-code prompt.
+The vault item has no TOTP, and the connected mailbox had no fresh npm code.
+Chrome had no existing npm session; its extension UI then blocked further
+automation. The temporary config was removed and `npm whoami` still reports
+`ENEEDAUTH`. No token was retained and no package was published. Public
+registry metadata for the unscoped launcher returned 404; that does not
+establish namespace ownership. R5 still requires an authenticated ownership
+and unused-version check after R4 qualifies the candidate.
+
+After the full local gate, `cargo clean
 --profile dev` removed this worktree's disposable debug build cache and
 restored about 41 GiB of disk availability; release binaries, frozen bundles,
 candidate data and native evidence under `target/` were preserved. Cargo can

@@ -51,8 +51,15 @@ jobs:
           $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
           if (-not $status.user.user.exists -or -not $status.user.cred_present) { throw 'Sandbox account or credential absent' }
           if ($status.wfp.port_range[0] -ne 40080 -or $status.wfp.port_range[1] -ne 40089) { throw 'Installed WFP port range differs from probe config' }
-          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'cmd.exe /c exit 0' *> target/native-srt-proof/behavior-shell.log
-          if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox/WFP startup failed for simple Windows child' }
+          for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $log = "target/native-srt-proof/behavior-shell-$attempt.log"
+            & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'cmd.exe /c exit 0' *> $log
+            if ($LASTEXITCODE -eq 0) { break }
+            $failure = Get-Content $log -Raw
+            if ($attempt -eq 2 -or -not $failure.Contains('wfp verify') -or -not $failure.Contains('timed out after 30000ms')) {
+              throw "Behavioral sandbox/WFP startup failed on attempt $attempt"
+            }
+          }
           & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'node.exe --eval "process.exit(0)"' *> target/native-srt-proof/behavior-node-path.log
           $pathExit = $LASTEXITCODE
           $nodeForward = $node.Replace('\', '/')

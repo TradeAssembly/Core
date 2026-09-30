@@ -1256,7 +1256,15 @@ launcher bundled-Node execution, exact argument-with-metacharacters echo, and
 sandbox child SID matching the installed account. Logs are retained at
 `target/native-srt-probe-36693766675/`. This closes the launcher-specific
 failure, but it is **not** a source-free installer/upgrade/rollback/security
-qualification receipt. The partial candidate
+qualification receipt. The exact-source native Core builder
+[`36693766617`](https://github.com/TradeAssembly/Core/actions/runs/36693766617)
+also passed on `046cc1b`; its retained Windows x64 PE artifacts are under
+`target/native-core-builders/windows-x64-046cc1b/`. The main
+`tradeassembly.exe` SHA-256 is
+`16bf542dab764db6f76fe3be91d9018a05dcdc47391e8289e0ec62931452b533`,
+and `tradeassembly-sandbox.exe` SHA-256 is
+`179436520ff29952c1f66d932e7894499ee5c65d4f742ffd86f18199e4d9edaa`.
+These are builder bytes, not a complete private-producer candidate. The partial candidate
 matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.

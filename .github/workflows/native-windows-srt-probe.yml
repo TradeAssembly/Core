@@ -47,8 +47,10 @@ jobs:
           $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
           if (-not $status.user.user.exists -or -not $status.user.cred_present) { throw 'Sandbox account or credential absent' }
           if ($status.wfp.port_range[0] -ne 40080 -or $status.wfp.port_range[1] -ne 40089) { throw 'Installed WFP port range differs from probe config' }
-          & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior.log
-          if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox/WFP startup failed' }
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'cmd.exe /c exit 0' *> target/native-srt-proof/behavior-shell.log
+          if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox/WFP startup failed for simple Windows child' }
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior-node.log
+          if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox startup failed for quoted Node child' }
       - name: Preserve probe logs, not release qualification
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

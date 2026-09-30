@@ -1212,7 +1212,14 @@ The probe is not a TradeAssembly installer receipt. A follow-up probe tests a
 pre-bindable nondefault port range and binds it to both SRT installation and
 runtime configuration. If that passes, Core installation must select/persist
 the same safe range before activation; do not simply change the probe and
-declare Windows fixed. The partial candidate matrix still accepts the sealed
+declare Windows fixed. The follow-up run
+[`36683453953`](https://github.com/TradeAssembly/Core/actions/runs/36683453953)
+confirmed `40080–40089` was bindable and WFP installed for that exact range,
+but the quoted Node child failed with `The filename, directory name, or volume
+label syntax is incorrect`. Its logs are retained at
+`target/native-srt-probe-36683453953/`. A final bounded component probe is
+separating Windows CLI command quoting from sandbox startup with a simple
+`cmd.exe` child. The partial candidate matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.
 Private Warden/Alpaca native jobs remain

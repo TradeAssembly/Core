@@ -1013,8 +1013,24 @@ review per repository:
   redacted results, finding resolutions, boundary/license verdict and the final
   audited commit. No unresolved secret or private-content finding may pass.
 
-The review is now required planning scope; it has not run. Repository visibility
-has not changed. AWS CodeBuild is the selected first-release build route.
+The review is required planning scope; preliminary scanning has run, but the
+full disclosure verdict remains open. Repository visibility has not changed.
+AWS CodeBuild is the selected first-release build route.
+Preliminary disclosure scan (2026-09-30, Gitleaks 8.30.0): exact intended
+producer heads Warden `dade4e616656fa1a0e891ef06886838e913b532c` (82
+reachable commits) and Alpaca `7ee2842c4de9767e2556bbb873f66c65bd1552f8`
+(42 reachable commits) were scanned with `gitleaks git --log-opts=HEAD
+--redact=100`; their exact tracked `git archive HEAD` trees were separately
+scanned with archive depth 2. Alpaca returned zero findings in both scans;
+Warden returned one `generic-api-key` match in the test fixture
+`warden-gateway/tests/gateway.rs`'s `authentication_ref`, in both history and
+current tree. This is not yet a cleared finding. Neither producer has submodule
+or LFS entries at these heads. Alpaca has nine tracked historical distribution
+tarballs containing native executables; those archives still require an
+explicit binary-content and disclosure review before any public visibility
+change. No publication approval or public-repository verdict follows from this
+preliminary scan. A first worktree-directory scan was contaminated by ignored
+`target/` build outputs and is not used as evidence.
 Public standard GitHub runners remain a future option if those repositories
 are published. Use eligible AWS credits for private producer builds; verify credit
 eligibility and bound compute before dispatch. AppVeyor is another hosted

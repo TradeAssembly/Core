@@ -511,7 +511,7 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
         let proof = &receipt["buildReadbacks"][owner];
         let file = evidence_file(root, proof)?;
         let readback: Value = read_json(&file)?;
-        if readback["schemaVersion"] != "tradeassembly.codebuild-sanitized.v1"
+        if readback["schemaVersion"] != "tradeassembly.codebuild-sanitized.v2"
             || readback.as_object().is_none_or(|fields| fields.len() != 2)
         {
             return Err("experimental_codebuild_readback_invalid".into());
@@ -523,8 +523,18 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
             return Err("experimental_codebuild_readback_invalid".into());
         }
         let build = &builds[0];
-        if build.as_object().is_none_or(|fields| fields.len() != 3) {
+        let expected_fields = if owner == "alpaca" { 4 } else { 3 };
+        if build
+            .as_object()
+            .is_none_or(|fields| fields.len() != expected_fields)
+        {
             return Err("experimental_codebuild_readback_invalid".into());
+        }
+        if owner == "alpaca"
+            && (receipt["sourceRevisions"]["coreSdk"] != receipt["sourceRevisions"]["core"]
+                || build["coreSdkRevision"] != receipt["sourceRevisions"]["core"])
+        {
+            return Err("experimental_codebuild_sdk_binding_invalid".into());
         }
         let revision = receipt["sourceRevisions"][owner]
             .as_str()
@@ -985,16 +995,20 @@ mod tests {
     #[test]
     fn codebuild_readbacks_bind_all_three_producer_revisions_and_sanitize_fields() {
         let root = tempfile::tempdir().unwrap();
-        let mut receipt = json!({"sourceRevisions":{},"buildArns":{},"buildReadbacks":{}});
+        let mut receipt = json!({"sourceRevisions":{"coreSdk":"a".repeat(40)},"buildArns":{},"buildReadbacks":{}});
         for (owner, revision) in [("core", "a"), ("warden", "b"), ("alpaca", "c")] {
             let revision = revision.repeat(40);
             let arn = format!("arn:aws:codebuild:us-east-1:123456789012:build/{owner}:fixture");
             let file = format!("{owner}-readback.json");
+            let mut build = json!({"arn":arn,"buildStatus":"SUCCEEDED",
+                "resolvedSourceVersion":revision});
+            if owner == "alpaca" {
+                build["coreSdkRevision"] = json!("a".repeat(40));
+            }
             atomic_json(
                 &root.path().join(&file),
-                &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v1",
-                    "builds":[{"arn":arn,"buildStatus":"SUCCEEDED",
-                               "resolvedSourceVersion":revision}]}),
+                &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v2",
+                    "builds":[build]}),
             )
             .unwrap();
             receipt["sourceRevisions"][owner] = json!(revision);
@@ -1008,10 +1022,16 @@ mod tests {
             "experimental_codebuild_readback_invalid"
         );
         receipt["sourceRevisions"]["warden"] = json!("b".repeat(40));
+        receipt["sourceRevisions"]["coreSdk"] = json!("d".repeat(40));
+        assert_eq!(
+            verify_codebuild_readbacks(root.path(), &receipt).unwrap_err(),
+            "experimental_codebuild_sdk_binding_invalid"
+        );
+        receipt["sourceRevisions"]["coreSdk"] = json!("a".repeat(40));
         let file = root.path().join("core-readback.json");
         atomic_json(
             &file,
-            &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v1",
+            &json!({"schemaVersion":"tradeassembly.codebuild-sanitized.v2",
                 "builds":[{"arn":receipt["buildArns"]["core"],"buildStatus":"SUCCEEDED",
                            "resolvedSourceVersion":"a".repeat(40),"environment":{"secret":"must-reject"}}]}),
         )

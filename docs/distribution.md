@@ -138,17 +138,94 @@ Next action: implement the bounded CodeBuild capture/assembly, then run the new
 Mac candidate, experimental build matrix and read-only npm capture. Do not
 classify experimental evidence as native runtime acceptance.
 
-CodeBuild access checkpoint (2026-09-30): `tradeassembly-prod` AWS CLI is
-configured but its SSO token is expired and refresh failed. The listed AWS
-integration returned `Unknown tool` on a real STS/CodeBuild read attempt; the
-operations hook did not record that nested attempt, so browser fallback has not
-been cleared. No AWS projects or builds were created. First live gate is a
-successful authenticated `sts get-caller-identity`, CodeBuild project inventory,
-and credit/budget eligibility readback before creating or starting a project.
-The coordination-root build config must pin all three producer commits and
-emit real CodeBuild build IDs, status, artifact digests and sanitized logs for
-the Core experimental receipt verifier. Do not substitute local output or a
-synthetic readback for a CodeBuild artifact.
+CodeBuild access checkpoint (2026-09-30): the `tradeassembly-prod` SSO profile
+was refreshed, but its only assigned role (`HubProductionDeploy`) cannot list
+CodeBuild projects. The separate `default` AWS CLI profile was authenticated
+and `sts get-caller-identity` verified account `056319544861`; its read-only
+inventory found zero CodeBuild projects and zero CodeConnections connections.
+Existing budgets cover Hub production, broker OAuth and Relay, not distribution
+builds. The September Cost Explorer result shows applied credits, **not** the
+remaining credit balance or CodeBuild credit eligibility. No project, build or
+connection was created. Do not dispatch a paid build until its finite maximum
+compute exposure and applicable credit/budget headroom are verified.
+
+#### CodeBuild execution contract B0–B5
+
+This closes the source/provenance design; the steps below are not completed
+evidence. Private coordination root owns build configuration and capture;
+Core owns provider-neutral package verification. Use the existing branch and
+producer worktrees. Do not broaden the four-target release policy.
+
+**B0 — Freeze inputs and economics.** Record the three committed producer SHAs,
+Core SDK SHA used by Alpaca, exact target/image map, Rust and Node versions,
+lockfile hashes, and five expected output roles (Core CLI/runner, Warden,
+sandbox, Node runtime, Alpaca plugin). Verify GitHub has each source SHA before
+dispatch. Read AWS credit applicability and a budget/cost bound; configure
+on-demand builds with no reserved fleet, no webhook, one concurrent build per
+project, a finite timeout and queued timeout. Exit: a reviewed private input
+manifest and finite maximum build-cost estimate. Stop before dispatch if either
+the sources or spending bound cannot be proven.
+
+**B1 — Establish least-privilege source access.** Use one AWS CodeConnections
+GitHub App connection restricted to `TradeAssembly/Core`, `TradeAssembly/Warden`
+and `TradeAssembly/Alpaca`; authorize read-only repository contents and no
+webhook/status-write permissions. CodeBuild projects use that connection as a
+source-level credential, an IAM role scoped to the connection and their own
+artifact/log resources, and `source.type=GITHUB`. Do not put a personal token
+in a project, environment variable, buildspec or release receipt. Exit:
+CodeConnections reports `AVAILABLE`, the project role can fetch each exact
+private commit, and a wrong-repository probe is denied. An uncompleted GitHub
+App authorization is a real handoff, not a reason to invent a source receipt.
+
+**B2 — Create bounded producer projects.** For each of Windows x64, GNU Linux
+x64 and GNU Linux arm64, create Core, Warden and Alpaca builds (nine jobs total)
+using pinned, target-appropriate CodeBuild images and explicit release build
+commands. Alpaca additionally fetches the same Core producer commit as a
+`CORE_SDK` GitHub secondary source; the sanitized build readback and Core
+candidate verifier must both bind that exact SHA.
+Each job uses `cargo --locked`, retains sanitized command logs and emits only
+its intended native outputs. Node and the sandbox runtime are separately
+inventoried and hash-bound in the assembled target even when sourced from a
+pinned upstream package rather than a Rust producer. Exit: project readback
+matches the reviewed manifest; dry validation of buildspecs and output paths
+passes. Do not call a project definition a successful build.
+
+**B3 — Run and capture genuine builds.** Start builds against exact source
+SHAs, one target at a time; stop on failure rather than fan out nine retries.
+For every success, run the private `f2-codebuild capture` against the actual
+CodeBuild ID. Its sanitized receipt must bind project, image, GitHub repo,
+resolved commit, completion and status; extend it to bind the Alpaca secondary
+SDK before Alpaca dispatch. Download each immutable artifact, inspect binary
+format/architecture, inventory files and notices, and calculate SHA-256 from
+the downloaded bytes. Exit: three real producer receipts and all five output
+hashes per experimental target. Missing, failed or ambiguous output is a fail.
+
+**B4 — Assemble and verify the new candidate.** Preserve frozen beta.2 bytes.
+Assemble a new four-target candidate with production Relay profile binding,
+full Mac arm64 acceptance evidence and Windows/Linux experimental receipts.
+Run `cargo xtask distribution-verify --candidate --evidence ABSOLUTE_DIR` in
+Core. Any missing platform, wrong SHA, stale build, SDK mismatch, artifact
+tamper or Mac acceptance gap must exit nonzero. Successful compilation alone
+never becomes Windows/Linux runtime qualification.
+
+**B5 — Publish only the qualified bytes.** After owning Core/Warden/Alpaca
+gates and the candidate verifier pass, publish exact tarballs under npm `beta`.
+Capture real registry bytes and Mac npm/pnpm install and upgrade/rollback
+evidence; run `cargo xtask distribution-verify --evidence ABSOLUTE_DIR`.
+Integrate and push scoped source under repository gates. Exit: both verifiers
+pass on genuine receipts and the public status remains Mac-qualified,
+Windows/Linux experimental, Intel Mac deferred. No Apple payment/signing or
+Windows/Linux platform acceptance is part of this gate.
+
+B1/B3 contract checkpoint (2026-09-30): the private capture tool emits
+`tradeassembly.codebuild-sanitized.v2`, requires an exact `CORE_SDK` secondary
+source and revision for Alpaca, and rejects unrequested secondary sources for
+Core/Warden. Core's verifier requires the Alpaca SDK SHA to equal its Core
+producer SHA. `just f2-codebuild-test` passed three tests; Core
+`cargo test --locked -p tradeassembly-distribution` passed 25 unit tests and
+`cargo clippy --locked -p tradeassembly-distribution --all-targets -- -D warnings`
+passed. This is contract evidence only: there is still no connection, project,
+real build, candidate or registry receipt.
 
 ### Relay production configuration and private staging — release gate
 

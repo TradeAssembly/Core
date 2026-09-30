@@ -19,6 +19,7 @@ pub struct SandboxRuntimePluginSandbox {
     command: PathBuf,
     settings_root: PathBuf,
     allow_local_egress: bool,
+    windows_proxy_port_range: Option<[u16; 2]>,
 }
 
 impl SandboxRuntimePluginSandbox {
@@ -26,7 +27,13 @@ impl SandboxRuntimePluginSandbox {
         command: impl Into<PathBuf>,
         settings_root: impl Into<PathBuf>,
         allow_local_egress: bool,
+        windows_proxy_port_range: Option<[u16; 2]>,
     ) -> Result<Self, String> {
+        if let Some([lo, hi]) = windows_proxy_port_range {
+            if lo == 0 || hi < lo || hi - lo > 64 {
+                return Err("plugin_sandbox_windows_port_range_invalid".to_string());
+            }
+        }
         let settings_root = settings_root.into();
         std::fs::create_dir_all(&settings_root)
             .map_err(|_| "plugin_sandbox_settings_unavailable".to_string())?;
@@ -36,6 +43,7 @@ impl SandboxRuntimePluginSandbox {
             command: command.into(),
             settings_root,
             allow_local_egress,
+            windows_proxy_port_range,
         })
     }
 
@@ -70,6 +78,16 @@ impl SandboxRuntimePluginSandbox {
             "enableWeakerNetworkIsolation": false,
             "allowAppleEvents": false
         });
+        #[cfg(windows)]
+        let settings = if let Some(range) = self.windows_proxy_port_range {
+            let mut settings = settings;
+            settings["windows"] = json!({"proxyPortRange": range});
+            settings
+        } else {
+            settings
+        };
+        #[cfg(not(windows))]
+        let _ = self.windows_proxy_port_range;
         let bytes = serde_json::to_vec(&settings)
             .map_err(|_| "plugin_sandbox_policy_invalid".to_string())?;
         let path = self.settings_path();
@@ -339,6 +357,7 @@ mod tests {
             directory.path().join("unused-srt"),
             directory.path().join("settings"),
             true,
+            None,
         )
         .expect("sandbox adapter");
 
@@ -400,6 +419,7 @@ mod tests {
             directory.path().join("missing-srt"),
             directory.path().join("settings"),
             false,
+            None,
         )
         .expect("sandbox adapter");
         assert!(matches!(
@@ -431,6 +451,7 @@ mod tests {
             resolve_sandbox_command("srt"),
             directory.path().join("settings"),
             false,
+            None,
         )
         .expect("sandbox adapter");
         let mut child = sandbox
@@ -462,6 +483,7 @@ mod tests {
             resolve_sandbox_command("srt"),
             directory.path().join("settings"),
             false,
+            None,
         )
         .expect("sandbox adapter");
         let mut child = sandbox

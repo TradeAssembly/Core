@@ -1226,8 +1226,15 @@ startup. Follow-up run
 [`36684724250`](https://github.com/TradeAssembly/Core/actions/runs/36684724250)
 passed `node.exe` via PATH, but an unquoted absolute path under `C:/Program
 Files` was split and the default argv path still failed. Logs are retained at
-`target/native-srt-probe-36684724250/`. One explicit Windows-quoted absolute
-path probe remains before changing the Core installer/launcher. The partial candidate
+`target/native-srt-probe-36684724250/`. Explicit quoted-path run
+[`36685026656`](https://github.com/TradeAssembly/Core/actions/runs/36685026656)
+reported `path=0 forward=0 argv=1`: the pinned SRT backend and a Windows-quoted
+absolute Node path work, but its default POSIX-quoted argv path does not.
+The current unqualified Core repair uses the tested raw-command interface from
+the Rust launcher with fail-closed argument validation. Its Windows installer
+chooses a bindable proxy range, verifies SRT uses that exact range, and records
+it in local runtime configuration; a native mini-bundle probe and complete
+source-free candidate qualification remain required. The partial candidate
 matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.

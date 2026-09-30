@@ -54,6 +54,52 @@ fn forwarded_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     args.into_iter().collect()
 }
 
+// SRT 0.0.67's CLI quotes argv for a POSIX shell even on Windows. Its
+// Windows backend executes that string through cmd.exe, where single quotes
+// do not protect an absolute path. Use its raw -c form with a deliberately
+// small, fail-closed cmd.exe encoder until the pinned dependency fixes this.
+#[cfg(any(windows, test))]
+fn windows_cmd_argument(value: &str) -> Result<String, ()> {
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '%' | '!' | '^'))
+    {
+        return Err(());
+    }
+    if value
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || b"-_./:".contains(&c))
+    {
+        Ok(value.to_owned())
+    } else {
+        Ok(format!("\"{value}\""))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_srt_command(executable: &str, args: &[&str]) -> Result<String, ()> {
+    let ordinary = executable.strip_prefix(r"\\?\").unwrap_or(executable);
+    let bytes = ordinary.as_bytes();
+    if bytes.len() < 4
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || !matches!(bytes[2], b'\\' | b'/')
+    {
+        return Err(());
+    }
+    let executable = ordinary.replace('\\', "/");
+    windows_cmd_argument(&executable)?;
+    // The executable must be quoted even without spaces. Never interpolate
+    // an unvalidated argument into the inner shell command.
+    let mut command = format!("\"{executable}\"");
+    for arg in args {
+        command.push(' ');
+        command.push_str(&windows_cmd_argument(arg)?);
+    }
+    Ok(command)
+}
+
 fn scrubbed_environment(command: &mut Command) -> Result<(), ()> {
     command.env_clear();
     for name in [
@@ -112,7 +158,29 @@ fn bundled_command(args: Vec<OsString>) -> Result<Command, ()> {
     let paths = resolve_bundle_paths(&root)?;
     let mut command = Command::new(paths.node);
     command.arg(paths.cli);
-    command.args(forwarded_args(args.into_iter().skip(1)));
+    let forwarded = forwarded_args(args.into_iter().skip(1));
+    #[cfg(windows)]
+    {
+        if forwarded.len() < 3 || forwarded[0].as_os_str() != OsStr::new("--settings") {
+            return Err(());
+        }
+        let executable = PathBuf::from(&forwarded[2]);
+        if !executable.is_absolute() || !executable.is_file() {
+            return Err(());
+        }
+        let executable = executable.to_str().ok_or(())?;
+        let arguments = forwarded[3..]
+            .iter()
+            .map(|argument| argument.to_str().ok_or(()))
+            .collect::<Result<Vec<_>, _>>()?;
+        command
+            .arg("--settings")
+            .arg(&forwarded[1])
+            .arg("-c")
+            .arg(windows_srt_command(executable, &arguments)?);
+    }
+    #[cfg(not(windows))]
+    command.args(forwarded);
     scrubbed_environment(&mut command)?;
     Ok(command)
 }
@@ -215,6 +283,25 @@ mod tests {
             OsString::from("quotes='\" and \\slashes"),
         ];
         assert_eq!(forwarded_args(args.clone()), args);
+    }
+
+    #[test]
+    fn windows_srt_command_quotes_absolute_path_and_shell_arguments() {
+        assert_eq!(
+            windows_srt_command(
+                r"\\?\C:\Program Files\TradeAssembly\node.exe",
+                &["--eval", "process.exit(0)", "argument with spaces & ; intact"],
+            ),
+            Ok("\"C:/Program Files/TradeAssembly/node.exe\" --eval \"process.exit(0)\" \"argument with spaces & ; intact\"".into())
+        );
+        for unsafe_value in ["x%PATH%", "x!var!", "x^&", "x\"&exit", "x\nexit"] {
+            assert!(windows_srt_command(
+                r"C:\Program Files\TradeAssembly\node.exe",
+                &[unsafe_value]
+            )
+            .is_err());
+        }
+        assert!(windows_srt_command(r"\\server\share\node.exe", &[]).is_err());
     }
 
     #[test]

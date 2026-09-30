@@ -12,7 +12,11 @@ permissions:
 jobs:
   probe:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 35
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -58,6 +62,33 @@ jobs:
           $argvExit = $LASTEXITCODE
           "path=$pathExit forward=$forwardExit argv=$argvExit" | Out-File target/native-srt-proof/child-exits.txt
           if ($pathExit -ne 0 -or $forwardExit -ne 0) { throw 'Windows SRT Node child still lacks a working launch form' }
+      - name: Build and exercise actual bundled Rust launcher
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --locked --release -p tradeassembly-runtime --bin tradeassembly-sandbox *> target/native-srt-proof/launcher-build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native Rust launcher build failed' }
+          $bundle = Join-Path (Get-Location) 'target/native-srt-mini-bundle'
+          New-Item -ItemType Directory -Force "$bundle/bin", "$bundle/runtime/node/bin" | Out-Null
+          Copy-Item target/release/tradeassembly-sandbox.exe "$bundle/bin/tradeassembly-sandbox.exe"
+          Copy-Item (Get-Command node).Source "$bundle/runtime/node/bin/node.exe"
+          Copy-Item packaging/sandbox/node_modules "$bundle/runtime/node_modules" -Recurse
+          $settings = Get-Content packaging/sandbox/native-probe-settings.json -Raw | ConvertFrom-Json
+          $settings.filesystem.allowRead = @($bundle)
+          $settings | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 target/native-srt-proof/mini-settings.json
+          $launcher = "$bundle/bin/tradeassembly-sandbox.exe"
+          $node = "$bundle/runtime/node/bin/node.exe"
+          & $launcher --settings target/native-srt-proof/mini-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/launcher-node.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed Node child' }
+          & $launcher --settings target/native-srt-proof/mini-settings.json $node --eval 'process.stdout.write(process.argv[1])' 'argument with spaces & ; intact' *> target/native-srt-proof/launcher-args.log
+          if ($LASTEXITCODE -ne 0 -or (Get-Content target/native-srt-proof/launcher-args.log -Raw).Trim() -ne 'argument with spaces & ; intact') { throw 'Rust launcher changed child arguments' }
+          $whoami = "$env:SystemRoot/System32/whoami.exe"
+          & $launcher --settings target/native-srt-proof/mini-settings.json $whoami /user /fo csv /nh *> target/native-srt-proof/launcher-identity.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed sandbox identity child' }
+          $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
+          $identity = Get-Content target/native-srt-proof/launcher-identity.log -Raw
+          if (-not $identity.Contains($status.user.user.sid)) { throw 'Rust launcher child did not use sandbox SID' }
       - name: Preserve probe logs, not release qualification
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -119,8 +119,99 @@ fn windows_srt_install_needed(status: &Value) -> Result<bool> {
     Err("windows_sandbox_existing_install_requires_repair".into())
 }
 
+#[cfg(any(windows, test))]
+fn windows_srt_port_range(status: &Value) -> Result<Option<[u16; 2]>> {
+    let raw = &status["wfp"]["port_range"];
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let ports = raw.as_array().ok_or("windows_sandbox_port_range_invalid")?;
+    if ports.len() != 2 {
+        return Err("windows_sandbox_port_range_invalid".into());
+    }
+    let lo = u16::try_from(
+        ports[0]
+            .as_u64()
+            .ok_or("windows_sandbox_port_range_invalid")?,
+    )
+    .map_err(|_| "windows_sandbox_port_range_invalid")?;
+    let hi = u16::try_from(
+        ports[1]
+            .as_u64()
+            .ok_or("windows_sandbox_port_range_invalid")?,
+    )
+    .map_err(|_| "windows_sandbox_port_range_invalid")?;
+    if lo == 0 || hi < lo || hi - lo > 64 {
+        return Err("windows_sandbox_port_range_invalid".into());
+    }
+    Ok(Some([lo, hi]))
+}
+
 #[cfg(windows)]
-fn ensure_windows_srt(bundle: &Path, root: &Path) -> Result<bool> {
+fn windows_srt_range_bindable(range: [u16; 2]) -> bool {
+    let mut reserved = Vec::new();
+    for port in range[0]..=range[1] {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => reserved.push(listener),
+            Err(_) => return false,
+        }
+    }
+    reserved.len() == usize::from(range[1] - range[0] + 1)
+}
+
+#[cfg(windows)]
+fn choose_windows_srt_port_range() -> Result<[u16; 2]> {
+    for range in [
+        [60080, 60089],
+        [40080, 40089],
+        [40090, 40099],
+        [40100, 40109],
+    ] {
+        if windows_srt_range_bindable(range) {
+            return Ok(range);
+        }
+    }
+    Err("windows_sandbox_no_available_proxy_port_range".into())
+}
+
+#[cfg(any(windows, test))]
+fn stored_windows_srt_port_range(root: &Path) -> Result<Option<[u16; 2]>> {
+    let record_path = root.join("windows-srt.json");
+    let record = if record_path.exists() {
+        let record: Value = read_json(&record_path)?;
+        if record["schemaVersion"] != 1 {
+            return Err("windows_sandbox_port_range_record_invalid".into());
+        }
+        Some(
+            windows_srt_port_range(&json!({"wfp":{"port_range":record["portRange"]}}))?
+                .ok_or("windows_sandbox_port_range_record_invalid")?,
+        )
+    } else {
+        None
+    };
+    let config_path = root.join("state/local/runtime.json");
+    let config = if config_path.exists() {
+        let config: Value = read_json(&config_path)?;
+        windows_srt_port_range(
+            &json!({"wfp":{"port_range":config["pluginSandboxWindowsProxyPortRange"]}}),
+        )?
+    } else {
+        None
+    };
+    if record.is_some() && config.is_some() && record != config {
+        return Err("windows_sandbox_port_range_changed".into());
+    }
+    Ok(record.or(config))
+}
+
+#[cfg(windows)]
+struct WindowsSrtReady {
+    provisioned_now: bool,
+    port_range: [u16; 2],
+}
+
+#[cfg(windows)]
+fn ensure_windows_srt(bundle: &Path, root: &Path) -> Result<WindowsSrtReady> {
     let srt = bundle
         .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe");
     let read_status = || -> Result<Value> {
@@ -130,19 +221,55 @@ fn ensure_windows_srt(bundle: &Path, root: &Path) -> Result<bool> {
         }
         Ok(status)
     };
-    let provisioned_now = windows_srt_install_needed(&read_status()?)?;
+    let before = read_status()?;
+    let provisioned_now = windows_srt_install_needed(&before)?;
+    let stored = stored_windows_srt_port_range(root)?;
+    let observed = windows_srt_port_range(&before)?;
+    if stored.is_some() && observed.is_some() && stored != observed {
+        return Err("windows_sandbox_port_range_changed".into());
+    }
+    let port_range = if provisioned_now {
+        if let Some(stored) = stored {
+            if !windows_srt_range_bindable(stored) {
+                return Err("windows_sandbox_recorded_proxy_range_unavailable".into());
+            }
+            stored
+        } else {
+            choose_windows_srt_port_range()?
+        }
+    } else {
+        observed.or(stored).unwrap_or([60080, 60089])
+    };
     if provisioned_now {
+        // Persist before UAC: retry after cancellation or a process crash
+        // cannot silently select another machine-level WFP range.
+        if stored.is_none() {
+            atomic_json(
+                &root.join("windows-srt.json"),
+                &json!({"schemaVersion":1,"portRange":port_range}),
+            )?;
+        }
         let node = bundle.join(executable("runtime/node/bin/node"));
         let cli = bundle.join("runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js");
         let installed = bounded_status(
-            Command::new(node).arg(cli).arg("windows-install"),
+            Command::new(node)
+                .arg(cli)
+                .arg("windows-install")
+                .arg("--proxy-port-range")
+                .arg(format!("{}-{}", port_range[0], port_range[1])),
             std::time::Duration::from_secs(180),
         )?;
         if !installed {
             return Err("windows_sandbox_setup_failed_or_cancelled".into());
         }
-        if windows_srt_install_needed(&read_status()?)? {
-            return Err("windows_sandbox_setup_unverified".into());
+    }
+    let after = read_status()?;
+    if windows_srt_install_needed(&after)? {
+        return Err("windows_sandbox_setup_unverified".into());
+    }
+    if let Some(actual) = windows_srt_port_range(&after)? {
+        if actual != port_range {
+            return Err("windows_sandbox_port_range_changed".into());
         }
     }
     // A non-elevated status check may report WFP as `cannot-read`. SRT's
@@ -153,6 +280,7 @@ fn ensure_windows_srt(bundle: &Path, root: &Path) -> Result<bool> {
     let config = json!({
         "network":{"allowedDomains":[],"deniedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowLocalBinding":false},
         "filesystem":{"denyRead":[],"allowRead":[bundle],"allowWrite":[],"denyWrite":[]},
+        "windows":{"proxyPortRange":port_range},
         "enableWeakerNestedSandbox":false,"enableWeakerNetworkIsolation":false,"allowAppleEvents":false
     });
     use std::io::Write;
@@ -176,7 +304,16 @@ fn ensure_windows_srt(bundle: &Path, root: &Path) -> Result<bool> {
     if !ready {
         return Err("windows_sandbox_readiness_failed".into());
     }
-    Ok(provisioned_now)
+    if stored.is_none() && !provisioned_now {
+        atomic_json(
+            &root.join("windows-srt.json"),
+            &json!({"schemaVersion":1,"portRange":port_range}),
+        )?;
+    }
+    Ok(WindowsSrtReady {
+        provisioned_now,
+        port_range,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -493,13 +630,29 @@ fn compatible(old: &Release, new: &Release) -> Result<()> {
     Ok(())
 }
 
-fn prepare(root: &Path, release: &Release, port: u16) -> Result<()> {
+fn prepare(
+    root: &Path,
+    release: &Release,
+    port: u16,
+    windows_range: Option<[u16; 2]>,
+) -> Result<()> {
     let payload = root.join("versions").join(&release.archive_sha256);
     let runtime = payload.join(executable("bin/tradeassembly"));
     let state = root.join("state/local");
     let config_path = state.join("runtime.json");
     let authority = root.join(executable("authority/bin/warden"));
     let port = port.to_string();
+    #[cfg(windows)]
+    if config_path.exists() {
+        let existing: Value = read_json(&config_path)?;
+        if let Some(range) = existing.get("pluginSandboxWindowsProxyPortRange") {
+            if range != &json!(windows_range.ok_or("windows_sandbox_port_range_missing")?) {
+                return Err("windows_sandbox_port_range_changed".into());
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = windows_range;
     if config_path.exists() {
         // Frozen Core setup verifies its original bootstrap JSON byte-for-byte;
         // it is not a user-config migration API. Validate existing bindings and
@@ -541,6 +694,13 @@ fn prepare(root: &Path, release: &Release, port: u16) -> Result<()> {
         {
             return Err("runtime_setup_result_invalid".into());
         }
+    }
+    #[cfg(windows)]
+    {
+        let mut config: Value = read_json(&config_path)?;
+        config["pluginSandboxWindowsProxyPortRange"] =
+            json!(windows_range.ok_or("windows_sandbox_port_range_missing")?);
+        atomic_json(&config_path, &config)?;
     }
     // Offline plugin registration is protected by real Warden. Run only the
     // freshly prepared, digest-bound local authority for this operation. It
@@ -663,7 +823,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     // installed pointer can make this version runnable. A cancelled UAC
     // prompt leaves an inert staged payload and can be retried explicitly.
     #[cfg(windows)]
-    let windows_sandbox_provisioned_now = ensure_windows_srt(&destination, &root)?;
+    let windows_sandbox = ensure_windows_srt(&destination, &root)?;
     let authority = root.join(executable("authority/bin/warden"));
     if !authority.exists() {
         #[cfg(not(windows))]
@@ -687,7 +847,11 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
         warden_port: port,
     };
     atomic_json(&root.join("pending.json"), &next)?;
-    prepare(&root, &next.current, port)?;
+    #[cfg(windows)]
+    let windows_range = Some(windows_sandbox.port_range);
+    #[cfg(not(windows))]
+    let windows_range = None;
+    prepare(&root, &next.current, port, windows_range)?;
     // Stable launcher copied outside npm cache. It finds its installation from
     // its own executable location, not caller-controlled runtime configuration.
     let facade = root.join(executable("bin/tradeassembly"));
@@ -708,8 +872,9 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     #[cfg(windows)]
     {
         let mut result = status(&root)?;
-        result["windowsSandboxProvisionedNow"] = json!(windows_sandbox_provisioned_now);
+        result["windowsSandboxProvisionedNow"] = json!(windows_sandbox.provisioned_now);
         result["windowsSandboxBehavioralReady"] = json!(true);
+        result["windowsSandboxProxyPortRange"] = json!(windows_sandbox.port_range);
         Ok(result)
     }
 }
@@ -811,7 +976,17 @@ pub fn rollback(root: &Path) -> Result<Value> {
         return Err("installed_authority_changed".into());
     }
     atomic_json(&root.join("pending.json"), &next)?;
-    prepare(&root, &next.current, next.warden_port)?;
+    #[cfg(windows)]
+    let windows_range = Some(
+        ensure_windows_srt(
+            &root.join("versions").join(&next.current.archive_sha256),
+            &root,
+        )?
+        .port_range,
+    );
+    #[cfg(not(windows))]
+    let windows_range = None;
+    prepare(&root, &next.current, next.warden_port, windows_range)?;
     atomic_json(&root.join("installed.json"), &next)?;
     remove_pending(&root)?;
     status(&root)
@@ -876,6 +1051,46 @@ mod tests {
             assert!(windows_srt_install_needed(&partial).is_err());
         }
         assert!(windows_srt_install_needed(&json!({})).is_err());
+    }
+    #[test]
+    fn windows_srt_range_requires_a_bounded_observed_binding() {
+        assert_eq!(
+            windows_srt_port_range(&json!({"wfp":{"port_range":[40080,40089]}})).unwrap(),
+            Some([40080, 40089])
+        );
+        assert_eq!(windows_srt_port_range(&json!({"wfp":{}})).unwrap(), None);
+        for invalid in [
+            json!([0, 9]),
+            json!([40089, 40080]),
+            json!([40080, 40180]),
+            json!([40080]),
+            json!([40080, 70000]),
+        ] {
+            assert!(windows_srt_port_range(&json!({"wfp":{"port_range":invalid}})).is_err());
+        }
+    }
+    #[test]
+    fn windows_srt_retry_range_record_is_stable_and_rejects_config_drift() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("windows-srt.json"),
+            r#"{"schemaVersion":1,"portRange":[40080,40089]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            stored_windows_srt_port_range(root.path()).unwrap(),
+            Some([40080, 40089])
+        );
+        fs::create_dir_all(root.path().join("state/local")).unwrap();
+        fs::write(
+            root.path().join("state/local/runtime.json"),
+            r#"{"pluginSandboxWindowsProxyPortRange":[60080,60089]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            stored_windows_srt_port_range(root.path()).unwrap_err(),
+            "windows_sandbox_port_range_changed"
+        );
     }
     #[test]
     fn actual_sqlite_state_blocks_active_execution_and_lease() {

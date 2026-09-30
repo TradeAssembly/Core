@@ -115,11 +115,28 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     } else {
         Vec::new()
     };
-    std::fs::write(&settings, serde_json::to_vec(&json!({
+    let settings_json = json!({
         "network":{"allowedDomains":[],"deniedDomains":[],"allowUnixSockets":[],"allowLocalBinding":false},
         "filesystem":{"denyRead":[restricted],"allowRead":allow_read,"allowWrite":[],"denyWrite":[forbidden_write]},
         "enableWeakerNestedSandbox":false,"enableWeakerNetworkIsolation":false,"allowAppleEvents":false
-    })).unwrap()).unwrap();
+    });
+    #[cfg(windows)]
+    let settings_json = {
+        let helper = bundle.join(
+            "runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
+        );
+        let mut command = Command::new(helper);
+        command.arg("status");
+        let status = bounded(command);
+        assert!(status.status.success(), "native SRT status required");
+        let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        let range = status["wfp"]["port_range"].as_array().expect("WFP range");
+        assert_eq!(range.len(), 2, "WFP range endpoints");
+        let mut settings_json = settings_json;
+        settings_json["windows"] = json!({"proxyPortRange":range});
+        settings_json
+    };
+    std::fs::write(&settings, serde_json::to_vec(&settings_json).unwrap()).unwrap();
     let mut allowed = node_probe(&bundle, &settings, "process.stdout.write(process.argv[1])");
     allowed.arg("argument with spaces & ; intact");
     let output = bounded(allowed);

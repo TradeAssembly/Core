@@ -134,9 +134,11 @@ Frozen-scope proof matrix for this release gate:
 | Experimental artifacts bind target, version, source and build outputs | Core `verify_experimental_target`; CodeBuild readback tests | Readback negative tests pass; actual CodeBuild and candidate evidence pending. |
 | Published package bytes and installs match the candidate | Core `distribution-capture-registry`, published verifier and Mac install/upgrade probes | Offline byte/integrity negative test passes; actual registry capture and Mac probes pending. |
 
-Next action: implement the bounded CodeBuild capture/assembly, then run the new
-Mac candidate, experimental build matrix and read-only npm capture. Do not
-classify experimental evidence as native runtime acceptance.
+Next action: resolve B0/B1 source availability, provision the reviewed
+CodeBuild resources, run and capture real native builds, then assemble the new
+Mac candidate and experimental matrix. Read-only npm capture follows candidate
+qualification. Do not classify experimental evidence as native runtime
+acceptance.
 
 CodeBuild access checkpoint (2026-09-30): the `tradeassembly-prod` SSO profile
 was refreshed, but its only assigned role (`HubProductionDeploy`) cannot list
@@ -234,7 +236,7 @@ one pass before artifacts, logs or retries. The AWS Connector for GitHub
 authorization page is open in Chrome awaiting action-time confirmation before
 any app grant or repository selection. No source access is claimed.
 
-B3 artifact-provenance repair (2026-09-30, local only): the next capture schema
+B3 artifact-provenance repair (2026-09-30, local only): the capture schema
 is `tradeassembly.codebuild-sanitized.v3`. It binds CodeBuild's S3 ZIP location
 and reported SHA-256 to the pinned project, source and image. Experimental
 receipts now require `buildArchives` for Core, Warden and Alpaca. The Core
@@ -242,10 +244,16 @@ verifier checks each downloaded ZIP digest against that readback and checks
 that the selected Core, sandbox, Warden and Alpaca output bytes actually occur
 inside the matching ZIP; Node remains a separate pinned upstream input. The
 private capture tool's eight tests and Core's 26 distribution unit tests,
-targeted Clippy, Cargo audit and Cargo deny passed locally. No ZIP was
-downloaded from AWS, and this does not qualify a platform. The current pinned
-Core source revision must be updated after this repair is committed, before
-any producer dispatch.
+targeted Clippy, Cargo audit and Cargo deny passed locally. The clean Core
+repair commit `641c9d37107a46f1fee6c379410b866dcf42a6fc` also passed
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 just verify`, including 1,332
+nextest cases. Private CodeBuild inputs were pinned to that revision and lock
+digest at this checkpoint; recheck them against the current Core HEAD before
+dispatch. The private `capture` command now fetches
+the exact S3 ZIP and verifies its checksum before persisting the readback. No
+ZIP has been downloaded from AWS, and this does not qualify a platform. The
+connection remains `PENDING`, and authenticated GitHub commit lookups still
+cannot find the pinned Core, Warden or Alpaca commits as of 2026-09-30.
 
 ### Relay production configuration and private staging — release gate
 

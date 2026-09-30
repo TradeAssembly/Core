@@ -1077,6 +1077,24 @@ before creating an evidence directory. This preserves the captured test
 harness revision as an actual committed input, rather than treating an
 uncommitted qualification script as release evidence.
 
+Clean Mac arm64 native capture passed from committed qualification source
+`444a7959784348cf2afb2051ddd7e1138bc574e3`. The sealed receipt at
+`target/native-qualify-mac-arm64-beta2-committed/receipt.json` has SHA-256
+`223e82b65ac82093bdc464b091f2c8bb3f2c18ac50f7e67c1392592816071f42`;
+it binds the candidate descriptor SHA
+`3a737ac17bbd0938bee0a76d9995a46136502c3a69eb6316cbbee5702a8f1ee5`,
+controlled broker SHA
+`9e53ac690f841ccf4fe8c9e7288ada3afe8174af417226829ccf132ded373508`,
+exact installer and npm tarballs, source revisions, and passing real-process
+logs. A partial five-target matrix probe accepted this Mac receipt and failed
+at the next target with the exact expected code
+`native_qualification_missing:x86_64-apple-darwin`. That is **not** a passing
+`distribution-verify --candidate` gate. The original parent lock and frozen
+baseline manifest still hash to their recorded values. Next: complete the
+owning Core gate before publishing the branch, then stage native producer/Core
+artifacts for Mac x64, Linux x64/arm64 and Windows x64. Windows still needs its
+specific security drivers before capture can emit a receipt.
+
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with
 `prevent_further_usage=true`; the current usage API reports Actions net charges

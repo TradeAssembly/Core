@@ -1235,6 +1235,21 @@ the Rust launcher with fail-closed argument validation. Its Windows installer
 chooses a bindable proxy range, verifies SRT uses that exact range, and records
 it in local runtime configuration; a native mini-bundle probe and complete
 source-free candidate qualification remain required. The partial candidate
+repair at `4e05566` passed `just verify` locally and the native Windows Core
+builder [`36689234686`](https://github.com/TradeAssembly/Core/actions/runs/36689234686).
+The component probe initially encountered SRT's 30-second WFP verification
+timeout twice after account/filter installation; a bounded same-host retry is
+retained, with either failure logged. Probe
+[`36690353541`](https://github.com/TradeAssembly/Core/actions/runs/36690353541)
+then built the Rust launcher natively but its bundled Node child failed with
+`EISDIR ... lstat 'D:'`. Diagnostic probe
+[`36692125087`](https://github.com/TradeAssembly/Core/actions/runs/36692125087)
+ran that same bundled Node through SRT directly from both workspace and bundle
+working directories (`workspace=0`, `bundle=0`), isolating the failure to the
+Rust launcher path. The next repair removes Windows verbatim-drive prefixes
+from bundled Node/CLI argv paths only after canonical containment checks;
+its 7 launcher unit tests and strict targeted Clippy pass locally, but native
+behavior remains unproven. None of these probes is a release receipt. The partial candidate
 matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.

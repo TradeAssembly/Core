@@ -38,7 +38,28 @@ fn contained_file(root: &Path, candidate: &Path) -> Result<PathBuf, ()> {
     if !resolved.is_file() {
         return Err(());
     }
+    #[cfg(windows)]
+    return windows_ordinary_path(&resolved);
+    #[cfg(not(windows))]
     Ok(resolved)
+}
+
+// Windows canonicalize() yields a verbatim drive path. It is useful for
+// containment checks, but Node cannot load it as a CLI script argument.
+// Convert only after the containment check above.
+#[cfg(any(windows, test))]
+fn windows_ordinary_path(path: &Path) -> Result<PathBuf, ()> {
+    let value = path.to_str().ok_or(())?;
+    let ordinary = value.strip_prefix(r"\\?\").unwrap_or(value);
+    let bytes = ordinary.as_bytes();
+    if bytes.len() < 4
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || !matches!(bytes[2], b'\\' | b'/')
+    {
+        return Err(());
+    }
+    Ok(PathBuf::from(ordinary))
 }
 
 fn bundle_root(executable: &Path) -> Result<PathBuf, ()> {
@@ -302,6 +323,15 @@ mod tests {
             .is_err());
         }
         assert!(windows_srt_command(r"\\server\share\node.exe", &[]).is_err());
+    }
+
+    #[test]
+    fn windows_verbatim_bundle_path_is_only_used_for_containment() {
+        assert_eq!(
+            windows_ordinary_path(Path::new(r"\\?\D:\bundle\runtime\node\bin\node.exe")),
+            Ok(PathBuf::from(r"D:\bundle\runtime\node\bin\node.exe"))
+        );
+        assert!(windows_ordinary_path(Path::new(r"\\?\UNC\server\bundle\node.exe")).is_err());
     }
 
     #[test]

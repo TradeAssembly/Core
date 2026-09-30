@@ -1090,10 +1090,21 @@ logs. A partial five-target matrix probe accepted this Mac receipt and failed
 at the next target with the exact expected code
 `native_qualification_missing:x86_64-apple-darwin`. That is **not** a passing
 `distribution-verify --candidate` gate. The original parent lock and frozen
-baseline manifest still hash to their recorded values. Next: complete the
-owning Core gate before publishing the branch, then stage native producer/Core
-artifacts for Mac x64, Linux x64/arm64 and Windows x64. Windows still needs its
-specific security drivers before capture can emit a receipt.
+baseline manifest still hash to their recorded values. Next: publish the
+locally gated Core branch, then stage native producer/Core artifacts for Mac x64,
+Linux x64/arm64 and Windows x64. Windows still needs its specific security
+drivers before capture can emit a receipt.
+
+Core gate checkpoint, 2026-09-29: committed source `8ac76d9` passed
+`just verify` (which runs `cargo xtask verify`), including workspace tests,
+1,319 nextest tests, dependency/audit checks, the clean-tree language
+whitelist, plugin contract, architecture, public scan, and FOSS boundary.
+The first parallel nextest attempt had one intermittent failure in the
+virtual-time soak; it passed in isolation and on the next two full nextest
+runs. The MCP parity fixture now includes the three registered order tools,
+and the controlled-Warden test helper asserts readiness and health. This
+local gate does not establish the other four native receipts, five-target
+matrix, registry publication, or Relay integration.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

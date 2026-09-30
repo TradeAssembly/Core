@@ -59,6 +59,13 @@ public; CodeBuild can consume their private sources, so changing visibility is
 not a prerequisite for this release. Apple payment/signing/notarization and
 M7/M8 remain excluded. Original frozen artifacts and prior evidence stay intact.
 
+The Core, Warden and Alpaca native GitHub workflows are opt-in diagnostics, not
+release producers or qualification gates. Their branch-push triggers were removed
+to avoid unplanned native builds while the CodeBuild path is prepared. Manual
+dispatch is not assumed available from an unmerged branch; no native artifact
+receipt may be inferred from these workflows. CodeBuild configuration, real
+builds, artifact capture and the separate Mac qualification remain required.
+
 Current implementation status: **plan amended; candidate/registry verifier code
 in progress; CodeBuild configuration and live qualification still pending**.
 The saved goal is active and still

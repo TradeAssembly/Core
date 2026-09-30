@@ -52,7 +52,7 @@ jobs:
           & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'node.exe --eval "process.exit(0)"' *> target/native-srt-proof/behavior-node-path.log
           $pathExit = $LASTEXITCODE
           $nodeForward = $node.Replace('\', '/')
-          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c "$nodeForward --eval `"process.exit(0)`"" *> target/native-srt-proof/behavior-node-forward.log
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c "`"$nodeForward`" --eval `"process.exit(0)`"" *> target/native-srt-proof/behavior-node-forward.log
           $forwardExit = $LASTEXITCODE
           & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior-node.log
           $argvExit = $LASTEXITCODE

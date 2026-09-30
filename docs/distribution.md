@@ -1222,8 +1222,12 @@ label syntax is incorrect`. Its logs are retained at
 passed a real sandboxed `cmd.exe` child with the same WFP configuration, then
 failed only for the quoted absolute Node path. That localizes the remaining
 behavioral issue to the SRT CLI's argv-to-Windows-shell boundary, not WFP
-startup. A bounded follow-up compares `-c` launch via PATH and a normalized
-absolute path before changing the Core installer/launcher. The partial candidate
+startup. Follow-up run
+[`36684724250`](https://github.com/TradeAssembly/Core/actions/runs/36684724250)
+passed `node.exe` via PATH, but an unquoted absolute path under `C:/Program
+Files` was split and the default argv path still failed. Logs are retained at
+`target/native-srt-probe-36684724250/`. One explicit Windows-quoted absolute
+path probe remains before changing the Core installer/launcher. The partial candidate
 matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.

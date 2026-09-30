@@ -145,7 +145,27 @@ fn private_parent(path: &Path) -> io::Result<Parents> {
     for component in parent.components() {
         current.push(component.as_os_str());
         if current.has_root() {
-            handles.push(directory_handle(&current, false)?);
+            // Windows rejects OPEN_REPARSE_POINT on a verbatim volume root
+            // (\\?\C:\), although the same volume's ordinary root opens.
+            // Only that trusted root handle uses the ordinary spelling;
+            // every descendant remains on the validated verbatim path.
+            let ordinary_root = if handles.is_empty() {
+                match current.components().next() {
+                    Some(Component::Prefix(prefix)) => match prefix.kind() {
+                        Prefix::VerbatimDisk(drive) => {
+                            Some(PathBuf::from(format!("{}:\\", char::from(drive))))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            handles.push(directory_handle(
+                ordinary_root.as_deref().unwrap_or(&current),
+                false,
+            )?);
         }
     }
     let last = handles.last().ok_or_else(denied)?;

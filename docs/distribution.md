@@ -1152,6 +1152,12 @@ path failed with OS code 1 (`Incorrect function`) before the local-install
 tests ran. The follow-up native diagnostic separates local path parsing,
 canonical-parent metadata, parent-handle traversal, and directory creation.
 Do not loosen owner/DACL or reparse-point validation to make this pass.
+Run `36669098721` confirms path parsing and canonical-parent metadata passed;
+the failing call is `private_parent` opening a verbatim Windows volume-root
+handle (`Incorrect function`). The candidate repair opens only that volume
+root through its equivalent ordinary drive spelling, retaining validated
+verbatim descendant paths and all private ACL/reparse checks. Native retest
+and the remaining local-install tests are still required.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

@@ -1178,18 +1178,21 @@ and `71f27b12b59c1570f3595819c62e95000c30ccc50c80c104fbf542ccc4212881`.
 These are Core-only builder outputs, not complete candidate bundles or native
 qualification receipts. The other producers and platform-specific SRT proofs
 remain mandatory.
-Windows setup gap found in source: `distribution/src/install.rs::install` stages
-the bundled SRT and configures `pluginSandboxCommand`, but never provisions
-SRT's machine-wide sandbox account or WFP filters. The pinned SRT alpha
-requires a one-time elevated `windows-install`; `initialize()` later checks
-account/WFP readiness behaviorally. R4 therefore also needs a fresh-user
-installer path that checks readiness, performs the bounded one-time elevated
-setup when absent, and fails closed without claiming installation success if
-it cannot complete. Qualification must run that path on native Windows and
-prove the sandbox child uses the dedicated account plus the existing positive-
-control filesystem/network denials. Do not rerun SRT provisioning on every
-upgrade: the vendor says it rotates the sandbox account password and that is
-a shared-machine side effect. No such implementation or proof exists yet.
+Windows SRT setup repair: pushed commit `fe2701a` probes the bundled native
+helper before activation, runs a bounded one-time `windows-install` only for
+absent account state, rechecks readiness, and fails before the installed
+pointer if UAC/setup fails. It does not rotate an already provisioned shared
+machine account on upgrade. Core Windows native builder run `36674209758`
+passed strict Clippy, owner/private-file tests, distribution tests and the
+release build on that exact revision. This is still **builder evidence only**.
+The next local batch adds the production Windows environment handoff to the
+SRT launcher, dedicated-account identity and real installed-secret denial
+probes, Windows owner-ACL validation, a fresh-provisioning signal, and
+digest-bound Windows qualifier checks. These edits require a clean commit,
+owning gates, and a new native build. The qualified candidate still requires
+real Windows account/elevation/WFP/ACL behavior and all five complete native
+receipts; no such receipt has been emitted. Private Warden/Alpaca native jobs
+remain runner-admission blocked by the organization's $0 Actions budget.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

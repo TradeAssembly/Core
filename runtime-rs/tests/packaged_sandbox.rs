@@ -154,6 +154,10 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
             .as_str()
             .expect("sandbox account SID");
         assert!(sid.starts_with("S-1-5-21-"), "local sandbox account SID");
+        assert_eq!(
+            status["user"]["user"]["in_sandbox_group"], true,
+            "sandbox account must have the dedicated group"
+        );
         assert!(
             matches!(
                 status["wfp"]["state"].as_str(),
@@ -161,6 +165,12 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
             ),
             "WFP status must not be absent"
         );
+        if status["wfp"]["state"] == "installed" {
+            assert!(
+                status["wfp"]["filters"].as_u64().unwrap_or(0) >= 2,
+                "installed WFP fence needs its actual filters"
+            );
+        }
         let whoami =
             PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/whoami.exe");
         let mut inside = sandbox(&bundle, &settings);
@@ -198,6 +208,23 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     let output = bounded(read);
     assert_eq!(output.status.code(), Some(77), "OS read denial required");
     assert!(!String::from_utf8_lossy(&output.stdout).contains("private fixture"));
+    #[cfg(windows)]
+    if let Some(state) = std::env::var_os("F2_TEST_PRIVATE_STATE_ROOT") {
+        let owner_secret = PathBuf::from(state).join("signing.seed");
+        assert!(std::fs::read(&owner_secret).is_ok(), "owner read control");
+        let mut sandbox_read = node_probe(&bundle, &settings, read_script);
+        sandbox_read.arg(owner_secret);
+        let output = bounded(sandbox_read);
+        assert_eq!(
+            output.status.code(),
+            Some(77),
+            "dedicated sandbox account must not read installed owner secret"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "owner secret must not reach output"
+        );
+    }
     let mut write = node_probe(&bundle, &settings, "try { require('fs').writeFileSync(process.argv[1], 'fixture'); } catch (e) { process.exit(['EACCES','EPERM'].includes(e.code) ? 77 : 78); }");
     write.arg(&forbidden_write);
     assert_eq!(

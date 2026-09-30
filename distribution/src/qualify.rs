@@ -133,11 +133,6 @@ pub fn qualify(
     if release.target != host || release.schema_version != 2 || metadata["publishable"] != false {
         return Err("qualification_native_candidate_required".into());
     }
-    if host == TARGETS[4] {
-        // This is intentionally not a partial Windows receipt. The native
-        // account/elevation/WFP/ACL driver must exist before qualification.
-        return Err("windows_native_security_proof_missing".into());
-    }
     let index = TARGETS
         .iter()
         .position(|target| *target == host)
@@ -209,6 +204,28 @@ pub fn qualify(
         &out.join("installed-package.log"),
         "\"installed\": true",
     )?;
+    #[cfg(windows)]
+    {
+        // This target must prove a fresh one-command install, including the
+        // elevated SRT provisioner. A pre-existing machine setup is useful to
+        // customers but cannot qualify that release behavior.
+        let installed: Value = read_json(&out.join("installed-package.log"))?;
+        if installed["windowsSandboxProvisionedNow"] != true {
+            return Err("qualification_windows_fresh_sandbox_setup_required".into());
+        }
+        for directory in [&rig, &rig.join("state"), &rig.join("state/local")] {
+            crate::windows_private::validate_directory(directory)
+                .map_err(|_| "qualification_windows_private_acl_failed")?;
+        }
+        for name in ["signing.seed", "warden.token"] {
+            crate::windows_private::open_read(&rig.join("state/local").join(name))
+                .map_err(|_| "qualification_windows_private_acl_failed")?;
+        }
+        atomic_json(
+            &out.join("windows-private-acl.json"),
+            &json!({"schemaVersion":"tradeassembly.windows-private-acl.v1","ownerOnlyState":true,"ownerOnlyAuthorityFiles":true}),
+        )?;
+    }
     let payload = rig.join("versions").join(&release.archive_sha256);
     if digest(&rig.join(executable("authority/bin/warden")))? != release.warden_sha256 {
         return Err("qualification_real_warden_binding_failed".into());
@@ -262,6 +279,11 @@ pub fn qualify(
     )?;
     env.clear();
     env.insert("F2_TEST_BUNDLE_PATH", payload.display().to_string());
+    #[cfg(windows)]
+    env.insert(
+        "F2_TEST_PRIVATE_STATE_ROOT",
+        rig.join("state/local").display().to_string(),
+    );
     cargo_test(
         &source,
         "tradeassembly-runtime",
@@ -318,6 +340,7 @@ pub fn qualify(
         "x86_64-apple-darwin" => ("macos", "x86_64"),
         "x86_64-unknown-linux-gnu" => ("linux", "x86_64"),
         "aarch64-unknown-linux-gnu" => ("linux", "aarch64"),
+        "x86_64-pc-windows-msvc" => ("windows", "x86_64"),
         _ => return Err("qualification_host_unsupported".into()),
     };
     let mut checks = serde_json::Map::new();
@@ -350,6 +373,18 @@ pub fn qualify(
         ("wardenControlledSink", "agent-order-mcp.log"),
         ("sandboxDeniedEgress", "sandbox.log"),
         ("sandboxDeniedFilesystem", "sandbox.log"),
+    ] {
+        let mut value = proof(out, log)?;
+        value["exitCode"] = json!(0);
+        checks.insert(name.into(), value);
+    }
+    #[cfg(windows)]
+    for (name, log) in [
+        ("windowsPrivateAcl", "windows-private-acl.json"),
+        ("windowsSandboxAccount", "sandbox.log"),
+        ("windowsSandboxElevation", "installed-package.log"),
+        ("windowsSandboxWfp", "sandbox.log"),
+        ("windowsSandboxDeniedOwnerSecret", "sandbox.log"),
     ] {
         let mut value = proof(out, log)?;
         value["exitCode"] = json!(0);

@@ -120,7 +120,7 @@ fn windows_srt_install_needed(status: &Value) -> Result<bool> {
 }
 
 #[cfg(windows)]
-fn ensure_windows_srt(bundle: &Path) -> Result<()> {
+fn ensure_windows_srt(bundle: &Path) -> Result<bool> {
     let srt = bundle
         .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe");
     let read_status = || -> Result<Value> {
@@ -130,7 +130,8 @@ fn ensure_windows_srt(bundle: &Path) -> Result<()> {
         }
         Ok(status)
     };
-    if windows_srt_install_needed(&read_status()?)? {
+    let provisioned_now = windows_srt_install_needed(&read_status()?)?;
+    if provisioned_now {
         let node = bundle.join(executable("runtime/node/bin/node"));
         let cli = bundle.join("runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js");
         let installed = bounded_status(
@@ -144,7 +145,7 @@ fn ensure_windows_srt(bundle: &Path) -> Result<()> {
             return Err("windows_sandbox_setup_unverified".into());
         }
     }
-    Ok(())
+    Ok(provisioned_now)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -629,7 +630,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     // installed pointer can make this version runnable. A cancelled UAC
     // prompt leaves an inert staged payload and can be retried explicitly.
     #[cfg(windows)]
-    ensure_windows_srt(&destination)?;
+    let windows_sandbox_provisioned_now = ensure_windows_srt(&destination)?;
     let authority = root.join(executable("authority/bin/warden"));
     if !authority.exists() {
         #[cfg(not(windows))]
@@ -669,7 +670,14 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
         .map_err(|_| "facade_install_failed")?;
     atomic_json(&root.join("installed.json"), &next)?;
     remove_pending(&root)?;
-    status(&root)
+    #[cfg(not(windows))]
+    return status(&root);
+    #[cfg(windows)]
+    {
+        let mut result = status(&root)?;
+        result["windowsSandboxProvisionedNow"] = json!(windows_sandbox_provisioned_now);
+        Ok(result)
+    }
 }
 
 fn verify_installed(root: &Path, record: &Installed) -> Result<()> {

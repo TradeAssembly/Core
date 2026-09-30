@@ -356,6 +356,25 @@ pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
                 return Err(format!("native_check_failed:{target}:{check}"));
             }
         }
+        if target == TARGETS[4] {
+            if receipt["checks"]["windowsSandboxElevation"]["artifact"] != "installed-package.log"
+                || receipt["checks"]["windowsPrivateAcl"]["artifact"] != "windows-private-acl.json"
+                || receipt["checks"]["windowsSandboxAccount"]["artifact"] != "sandbox.log"
+                || receipt["checks"]["windowsSandboxWfp"]["artifact"] != "sandbox.log"
+            {
+                return Err("native_windows_proof_source_invalid".into());
+            }
+            let installed: Value = read_json(&root.join(target).join("installed-package.log"))?;
+            let acl: Value = read_json(&root.join(target).join("windows-private-acl.json"))?;
+            if installed["installed"] != true
+                || installed["windowsSandboxProvisionedNow"] != true
+                || acl["schemaVersion"] != "tradeassembly.windows-private-acl.v1"
+                || acl["ownerOnlyState"] != true
+                || acl["ownerOnlyAuthorityFiles"] != true
+            {
+                return Err("native_windows_proof_semantics_invalid".into());
+            }
+        }
         qualified.push(target);
     }
     Ok(

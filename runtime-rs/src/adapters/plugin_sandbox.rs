@@ -120,21 +120,40 @@ impl PluginProcessSandboxPort for SandboxRuntimePluginSandbox {
             .arg(&settings_path)
             .arg(executable)
             .current_dir(install_root)
-            .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        for name in ["HOME", "PATH", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+        configure_sandbox_environment(&mut command);
         match command.spawn() {
             Ok(child) => Ok(SandboxedPluginProcess::new(child, Some(settings_path))),
             Err(_) => {
                 let _ = std::fs::remove_file(settings_path);
                 Err("plugin_sandbox_unavailable".to_string())
             }
+        }
+    }
+}
+
+fn configure_sandbox_environment(command: &mut Command) {
+    command.env_clear();
+    for name in ["HOME", "PATH", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    #[cfg(windows)]
+    for name in [
+        "SystemRoot",
+        "WINDIR",
+        "ProgramData",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
         }
     }
 }
@@ -235,6 +254,8 @@ pub fn resolve_sandbox_command(configured: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::configure_sandbox_environment;
     #[cfg(unix)]
     use super::PluginProcessSandboxPort;
     use super::{
@@ -247,8 +268,28 @@ mod tests {
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(windows)]
+    use std::process::Command;
     #[cfg(unix)]
     use std::time::Duration;
+
+    #[cfg(windows)]
+    #[test]
+    fn native_sandbox_launcher_receives_system_paths_without_node_injection() {
+        let mut command = Command::new("unused-sandbox-launcher");
+        configure_sandbox_environment(&mut command);
+        let supplied: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        let system_root = std::env::var_os("SystemRoot").expect("Windows system root");
+        assert_eq!(
+            supplied
+                .get(std::ffi::OsStr::new("SystemRoot"))
+                .copied()
+                .flatten(),
+            Some(system_root.as_os_str())
+        );
+        assert!(!supplied.contains_key(std::ffi::OsStr::new("NODE_OPTIONS")));
+        assert!(!supplied.contains_key(std::ffi::OsStr::new("NODE_PATH")));
+    }
 
     #[test]
     fn domain_policy_is_exact_and_local_is_host_owned() {

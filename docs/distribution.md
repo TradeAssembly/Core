@@ -1115,7 +1115,23 @@ runner. Warden run `36663034275` and Alpaca run `36663412517` did not start:
 GitHub reported account-payment or spending-limit admission rejection. Neither
 is native qualification evidence. Do not raise the recorded $0 Actions cap
 without an explicit finite budget decision; use another approved native host
-if GitHub remains unavailable.
+if GitHub remains unavailable. The CLI confirms Core is public and its native
+Windows job did start, while Warden and Alpaca are private repositories and
+their jobs received no runner steps. The organization Actions budget remains
+$0 with `prevent_further_usage=true` and alerts enabled. A change to repo
+visibility is a separate publication/security decision, not a CI workaround.
+Core rerun `36665473745` reached native compilation but caught a Windows-only
+result-expression semicolon and unused import. Commit `274260e` corrected those
+two lines; native run `36665941341` then passed that compile stage but found
+an unguarded Unix symlink test in `agent_launchd`. The corresponding
+`warden_launchd` symlink tests are likewise Unix-only and now carry explicit
+gates. The previous full Core gate passed on `1f58f73`; targeted format,
+distribution unit, launchd test and strict Clippy checks passed for the
+follow-ups. Run the full gate again before any integration or release claim.
+The pinned SRT Windows alpha requires a one-time elevated `windows-install`
+that provisions its sandbox account and machine WFP filters. A native test must
+observe that setup plus restricted account, elevation, ACL and WFP behavior;
+mere compilation or a mock receipt cannot open the Windows qualification gate.
 
 GitHub runner budget check, 2026-09-29: the organization billing budgets API
 returns an Actions organization budget of **$0** with

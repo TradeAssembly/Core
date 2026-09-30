@@ -3,10 +3,10 @@
 
 use crate::{
     atomic_json, digest, executable, portable_name, read_json, verify_bundle, Release, Result,
-    PARENT_SHA,
+    PARENT_SHA, TARGETS,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, io::Read, path::Path};
 
 const NODE_VERSION: &str = "v22.23.2";
@@ -27,6 +27,60 @@ pub struct NativeInputs {
     pub alpaca_package: String,
     pub alpaca_package_sha256: String,
     pub alpaca_manifest_sha256: String,
+}
+
+pub fn describe_inputs(
+    input: &Path,
+    core_revision: &str,
+    warden_revision: &str,
+    out: &Path,
+) -> Result<Value> {
+    if out.exists() || input.join("bundle.json").exists() {
+        return Err("native_inputs_output_or_staging_invalid".into());
+    }
+    for revision in [core_revision, warden_revision] {
+        if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("native_source_revision_invalid".into());
+        }
+    }
+    let target = crate::install::host_target()?;
+    let alpaca: Value = read_json(&input.join("plugins/alpaca.json"))?;
+    let alpaca_revision = alpaca["sourceRevision"]
+        .as_str()
+        .ok_or("native_plugin_metadata_invalid")?;
+    let alpaca_package = alpaca["packageFile"]
+        .as_str()
+        .ok_or("native_plugin_metadata_invalid")?;
+    let alpaca_manifest_sha256 = alpaca["manifestSha256"]
+        .as_str()
+        .ok_or("native_plugin_metadata_invalid")?;
+    let node = if target == TARGETS[4] {
+        "runtime/node/bin/node.exe"
+    } else {
+        "runtime/node/bin/node"
+    };
+    let spec = NativeInputs {
+        schema_version: 1,
+        target: target.into(),
+        core_revision: core_revision.into(),
+        warden_revision: warden_revision.into(),
+        alpaca_revision: alpaca_revision.into(),
+        core_sha256: digest(&input.join(executable("bin/tradeassembly")))?,
+        warden_sha256: digest(&input.join(executable("bin/warden")))?,
+        launcher_sha256: digest(&input.join(executable("bin/tradeassembly-sandbox")))?,
+        node_sha256: digest(&input.join(node))?,
+        alpaca_package: alpaca_package.into(),
+        alpaca_package_sha256: digest(&input.join("plugins").join(alpaca_package))?,
+        alpaca_manifest_sha256: alpaca_manifest_sha256.into(),
+    };
+    plugin_pin(input, &spec)?;
+    let parent = out.parent().ok_or("native_inputs_output_invalid")?;
+    fs::create_dir_all(parent).map_err(|_| "native_inputs_output_invalid")?;
+    let stage = tempfile::tempdir_in(parent).map_err(|_| "native_inputs_output_invalid")?;
+    let staged = stage.path().join("native-inputs.json");
+    atomic_json(&staged, &spec)?;
+    fs::hard_link(&staged, out).map_err(|_| "native_inputs_commit_failed")?;
+    Ok(json!({"metadata":out,"sha256":digest(out)?,"target":target,"qualified":false}))
 }
 
 fn binary_target(path: &Path, target: &str) -> Result<()> {
@@ -299,7 +353,6 @@ pub fn freeze(input: &Path, metadata: &Path, parent: &Path, out: &Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TARGETS;
 
     #[test]
     fn native_plugin_lock_must_bind_every_input_not_a_copied_mac_lock() {

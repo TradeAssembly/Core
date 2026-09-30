@@ -210,3 +210,91 @@ fn frozen_package_setup_reinstall_upgrade_rollback_and_running_denial() {
     );
     assert!(!root.join("pending.json").exists());
 }
+
+#[test]
+#[ignore = "requires explicit frozen baseline and replacement Mac packages"]
+fn frozen_baseline_upgrades_to_replacement_and_rolls_back_without_state_loss() {
+    let baseline = std::env::var_os("TRADEASSEMBLY_DISTRIBUTION_BASELINE_PACKAGE")
+        .expect("explicit frozen baseline package required");
+    let replacement = std::env::var_os("TRADEASSEMBLY_DISTRIBUTION_REPLACEMENT_PACKAGE")
+        .expect("explicit replacement package required");
+    let baseline = Path::new(&baseline);
+    let replacement = Path::new(&replacement);
+    let old: Release = read_json(&baseline.join("release.json")).unwrap();
+    let new: Release = read_json(&replacement.join("release.json")).unwrap();
+    assert_eq!(old.schema_version, 1);
+    assert_eq!(new.schema_version, 2);
+    assert_ne!(old.archive_sha256, new.archive_sha256);
+    assert_eq!(old.warden_sha256, new.warden_sha256);
+    assert_eq!(old.parent_lock_sha256, new.parent_lock_sha256);
+
+    let temp = tempfile::Builder::new()
+        .prefix("tradeassembly-baseline-upgrade-")
+        .tempdir()
+        .unwrap();
+    let root = temp.path().join("rig with spaces");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let (success, result) = invoke(baseline, &root, "install", port);
+    assert!(success, "baseline install: {result}");
+    let state = root.join("state/local");
+    let secrets = ["signing.seed", "warden.token", "runtime.db.local-owner"];
+    let fingerprints: Vec<_> = secrets
+        .iter()
+        .filter_map(|name| {
+            let path = state.join(name);
+            path.is_file().then(|| (name, digest(&path).unwrap()))
+        })
+        .collect();
+    assert!(fingerprints.len() >= 2);
+    let config_path = state.join("runtime.json");
+    let mut config: Value = read_json(&config_path).unwrap();
+    config["oidcScopes"] = json!("openid profile cohort_scope");
+    atomic_json(&config_path, &config).unwrap();
+    let db = rusqlite::Connection::open(state.join("runtime.db")).unwrap();
+    db.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES('distribution_upgrade_probe','preserved',?1,'upgrade-probe','local-user',1)", [json!({"value":"retained"}).to_string()]).unwrap();
+
+    let (success, result) = invoke(replacement, &root, "upgrade", port);
+    assert!(success, "replacement upgrade: {result}");
+    assert_eq!(result["version"], new.version);
+    assert_eq!(result["payloadSha256"], new.archive_sha256);
+    assert_eq!(
+        read_json::<Value>(&config_path).unwrap()["oidcScopes"],
+        config["oidcScopes"]
+    );
+    assert!(Command::new(root.join(executable("bin/tradeassembly")))
+        .arg("--help")
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let (success, result) = invoke(replacement, &root, "rollback", port);
+    assert!(success, "baseline rollback: {result}");
+    assert_eq!(result["version"], old.version);
+    assert_eq!(result["payloadSha256"], old.archive_sha256);
+    assert_eq!(
+        read_json::<Value>(&config_path).unwrap()["oidcScopes"],
+        config["oidcScopes"]
+    );
+    for (name, fingerprint) in fingerprints {
+        assert_eq!(
+            digest(&state.join(name)).unwrap(),
+            fingerprint,
+            "{name} changed"
+        );
+    }
+    assert_eq!(
+        digest(&root.join(executable("authority/bin/warden"))).unwrap(),
+        old.warden_sha256
+    );
+    assert_eq!(db.query_row("SELECT value_json FROM tradeassembly_kv WHERE namespace='distribution_upgrade_probe' AND item_key='preserved'", [], |row| row.get::<_, String>(0)).unwrap(), json!({"value":"retained"}).to_string());
+    assert!(Command::new(root.join(executable("bin/tradeassembly")))
+        .arg("--help")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(!root.join("pending.json").exists());
+}

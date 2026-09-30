@@ -788,9 +788,12 @@ fn installed_stdio_paper_order_recovers_ambiguous_crash_once() {
         "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
             "timeInForce":"gtc","clientOrderId":"stdio-after-absent-order","quantity":"1"},
         "idempotency_key":"stdio-after-absent-order"});
+    // Absence fences replay of the original key, not independent future
+    // orders. Deny this distinct order explicitly at the controlled sink.
+    sink.reject_next_submit();
     let blocked = after_crash.tool("tradeassembly.order.submit", blocked_after_absence);
     assert_eq!(
-        blocked["structuredContent"]["error"]["code"], "agent_order_submission_denied",
+        blocked["structuredContent"]["error"]["code"], "agent_order_reconciliation_required",
         "{blocked:#?}"
     );
     let evidence =

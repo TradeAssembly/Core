@@ -1010,12 +1010,50 @@ overwrite an existing output. `distribution-pack` takes that exact file with
 and content. The old schema-1 Mac bundle is still accepted only at its frozen
 manifest hash. Targeted descriptor tamper and baseline-receipt reuse tests,
 the distribution crate suite (17/17), strict distribution Clippy and xtask
-check passed. The ignored real packaged-install/npm/pnpm tests have **not**
-run against a new candidate. Registry CLI returned 404 for five names; a
+check passed. Registry CLI returned 404 for five names; a
 bounded curl retry confirmed 404 for the sixth Windows package after the npm
 request timed out. `0.1.0-beta.2` is provisionally unused, subject to a fresh
-pre-publish ownership/version check. R3 and R2 packaged-artifact proof are
-not closed; neither the five-target qualification nor npm publication exists.
+pre-publish ownership/version check.
+
+2026-09-29 Mac arm64 replacement checkpoint: the
+`e72cf9519e9a4498b08b201adfea64b450ffcf27` Core source was built as a
+native release binary and staged beside the unchanged frozen Warden
+(`84738d401b7442c743de7fe736d61199a82fe1f89c405a0e0135cc1bd915acce`),
+Alpaca plugin, Node and SRT. `distribution-describe-native-inputs` generated
+metadata SHA `a8a0acbf5b5f0f7731d0e37555cf2c1985bf25a6d1082c34127404b72c9cd79a`;
+`distribution-freeze-native` generated a separate Mac arm64 bundle;
+`distribution-describe-candidate` generated descriptor SHA
+`3a737ac17bbd0938bee0a76d9995a46136502c3a69eb6316cbbee5702a8f1ee5`;
+`distribution-pack` produced schema-2 `0.1.0-beta.2` with manifest SHA
+`1ece8ec55b12b8739fa4afd858ced688ef649beb6cea9585b24f9ea1d3ce679f`
+and archive SHA `ad4edfdb3fe2d60e802ee23e60774e04bef98beb48becf70790deea7073b9ec1`.
+This version remains provisional until a fresh registry ownership/version check.
+All outputs live only under this worktree's ignored `target/`; no source-free
+receipt or public registry package has been emitted.
+
+The actual candidate's ignored `packaged_install` and `package_managers`
+tests each passed 1/1. A separately repacked **unmodified frozen baseline**
+(`0.1.0-beta.1`, archive SHA
+`7c0a4d6b55555a4a0e0a39bd9b65621879c0240e8b6ca663411973fb2dbdd8a4`)
+passed the new explicit baseline → replacement → rollback test 1/1, retaining
+database row, owner configuration, identity/credential file hashes, the stable
+command and the original Warden digest. The installed replacement's immutable
+Core binary, packaged Warden/Node/SRT, and controlled broker passed the four
+ignored real-stdio MCP tests 4/4: Paper crash and ambiguous recovery, unknown
+lookup fail-closed, isolated Live C5 submission, and shipping Live denial.
+The Paper fixture now explicitly rejects a **distinct** post-absence order;
+absence itself fences the original key only, and the broker's rejected response
+is correctly classified as reconciliation-required, not a terminal admission
+denial. No actual broker order was placed. Distribution unit tests 17/17 and
+strict distribution Clippy passed. The immutable parent lock remains SHA
+`222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`;
+the frozen baseline manifest remains SHA
+`6740c7d7f4e8a692ff005dd18b6dc2656883eb8e366253e4e8e6aa054108f5dc`.
+Mac arm64 R2/R3 behavior is evidenced, but R4's native capture/receipt and
+five-target matrix, R5 registry publication, and R6 integration are open.
+Next action: implement the deterministic `distribution-qualify` capture around
+these actual drivers and target-local sandbox probes, then use native hosts for
+the remaining four targets. Do not fabricate a matrix receipt from this note.
 
 ### Historical execution checkpoint — before the amendment
 

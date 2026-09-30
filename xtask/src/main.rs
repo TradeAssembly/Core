@@ -22,10 +22,12 @@ fn main() {
         "distribution-pack"
         | "distribution-verify"
         | "distribution-freeze-native"
+        | "distribution-describe-native-inputs"
         | "distribution-describe-candidate" => {
             let subcommand = match args[0].as_str() {
                 "distribution-pack" => "pack",
                 "distribution-freeze-native" => "freeze-native",
+                "distribution-describe-native-inputs" => "describe-native-inputs",
                 "distribution-describe-candidate" => "describe-candidate",
                 _ => "verify",
             };
@@ -48,7 +50,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-freeze-native, distribution-describe-candidate, distribution-verify");
+            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-verify");
             0
         }
         _ => {

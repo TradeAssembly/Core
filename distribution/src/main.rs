@@ -69,6 +69,12 @@ fn execute(args: &[String]) -> Result<i32> {
             )?;
             serde_json::json!({"frozen":true,"qualified":false})
         }
+        "describe-native-inputs" => tradeassembly_distribution::native::describe_inputs(
+            Path::new(&required(args, "--input")?),
+            &required(args, "--core-revision")?,
+            &required(args, "--warden-revision")?,
+            Path::new(&required(args, "--out")?),
+        )?,
         "describe-candidate" => tradeassembly_distribution::candidate::describe(
             Path::new(&required(args, "--bundle")?),
             Path::new(&required(args, "--parent")?),
@@ -90,7 +96,7 @@ fn execute(args: &[String]) -> Result<i32> {
             !args.iter().any(|arg| arg == "--candidate"),
         )?,
         "help" | "--help" => {
-            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); verify --evidence DIRECTORY [--candidate].");
+            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-native-inputs --input STAGING --core-revision SHA --warden-revision SHA --out NEW_NATIVE_INPUTS_JSON; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; verify --evidence DIRECTORY [--candidate].");
             return Ok(0);
         }
         _ => return install::run(&root, args),

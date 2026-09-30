@@ -65,6 +65,7 @@ impl ControlledWarden {
             authority,
         };
         owned.wait_ready();
+        owned.assert_healthy();
         owned
     }
 

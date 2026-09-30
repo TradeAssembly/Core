@@ -3,6 +3,10 @@ name: Native Core candidate
 on:
   push:
     branches: [codex/f2-npm-distribution]
+    paths-ignore:
+      - .github/workflows/native-windows-srt-probe.yml
+      - packaging/sandbox/native-probe-settings.json
+      - docs/distribution.md
   workflow_dispatch:
     inputs:
       runner:

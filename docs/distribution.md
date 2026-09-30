@@ -1217,9 +1217,14 @@ declare Windows fixed. The follow-up run
 confirmed `40080–40089` was bindable and WFP installed for that exact range,
 but the quoted Node child failed with `The filename, directory name, or volume
 label syntax is incorrect`. Its logs are retained at
-`target/native-srt-probe-36683453953/`. A final bounded component probe is
-separating Windows CLI command quoting from sandbox startup with a simple
-`cmd.exe` child. The partial candidate matrix still accepts the sealed
+`target/native-srt-probe-36683453953/`. The next component run
+[`36684073949`](https://github.com/TradeAssembly/Core/actions/runs/36684073949)
+passed a real sandboxed `cmd.exe` child with the same WFP configuration, then
+failed only for the quoted absolute Node path. That localizes the remaining
+behavioral issue to the SRT CLI's argv-to-Windows-shell boundary, not WFP
+startup. A bounded follow-up compares `-c` launch via PATH and a normalized
+absolute path before changing the Core installer/launcher. The partial candidate
+matrix still accepts the sealed
 Mac arm64 receipt and
 fails precisely at `native_qualification_missing:x86_64-apple-darwin`.
 Private Warden/Alpaca native jobs remain

@@ -49,8 +49,15 @@ jobs:
           if ($status.wfp.port_range[0] -ne 40080 -or $status.wfp.port_range[1] -ne 40089) { throw 'Installed WFP port range differs from probe config' }
           & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'cmd.exe /c exit 0' *> target/native-srt-proof/behavior-shell.log
           if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox/WFP startup failed for simple Windows child' }
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'node.exe --eval "process.exit(0)"' *> target/native-srt-proof/behavior-node-path.log
+          $pathExit = $LASTEXITCODE
+          $nodeForward = $node.Replace('\', '/')
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c "$nodeForward --eval `"process.exit(0)`"" *> target/native-srt-proof/behavior-node-forward.log
+          $forwardExit = $LASTEXITCODE
           & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior-node.log
-          if ($LASTEXITCODE -ne 0) { throw 'Behavioral sandbox startup failed for quoted Node child' }
+          $argvExit = $LASTEXITCODE
+          "path=$pathExit forward=$forwardExit argv=$argvExit" | Out-File target/native-srt-proof/child-exits.txt
+          if ($pathExit -ne 0 -or $forwardExit -ne 0) { throw 'Windows SRT Node child still lacks a working launch form' }
       - name: Preserve probe logs, not release qualification
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

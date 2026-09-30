@@ -387,8 +387,9 @@ The Mac arm64 bundle manifest SHA-256 is
 `6740c7d7f4e8a692ff005dd18b6dc2656883eb8e366253e4e8e6aa054108f5dc`.
 Preserve these baseline artifacts and their 846 payload files unchanged. A new
 candidate may be built in a separate directory under the amendment below; it
-receives its own hashes and qualification. All five targets, including the new
-Mac arm64 candidate, require evidence for their actual bytes.
+receives its own hashes and qualification. The first-release four-target matrix
+requires evidence for each target's actual bytes, with full native acceptance
+only on Mac arm64 and explicit build-only evidence on Windows/Linux.
 
 | Requirement | Owner / deterministic acceptance | Evidence |
 | --- | --- | --- |
@@ -399,11 +400,11 @@ Mac arm64 candidate, require evidence for their actual bytes.
 | Reinstall, compatible update and rollback | actual versioned installer, preserved state and authority | installation receipt |
 | Reject running/incompatible rigs | real SQLite state and native process inspection | negative acceptance |
 | Platform enforcement | real Warden and controlled broker sink per new target | native target qualification |
-| Five-target public prerelease | exact npm versions and all target receipts | distribution matrix gate |
+| Four-target first-release beta | exact npm versions, Mac qualification and three experimental build receipts | schema-v2 distribution matrix gate |
 
-Supported targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
-`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
-`x86_64-pc-windows-msvc`. Windows ARM and musl are excluded. Platform dependencies
+First-release targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`. Intel Mac, Windows ARM
+and musl are excluded. Platform dependencies
 and any elevation must be explicit; no global security downgrade or unsandboxed
 fallback. No target is publishable merely because it cross-compiles.
 
@@ -435,15 +436,17 @@ checks. No rollback is represented as reversal of a database migration.
 ## Completion boundary
 
 `cargo xtask distribution-verify` must fail until published npm/pnpm installation
-and native enforcement evidence is present for all five targets. Package tests,
-builds and a Mac-only installer are not whole-plan completion. The original
+and native enforcement evidence are present on Mac arm64, registry bytes match
+on all four targets, and three CodeBuild experimental receipts pass. Package
+tests, builds and a Mac-only installer are not whole-plan completion. The original
 M0–M6 lock and false M7/M8 verdicts remain unchanged. Run owning Core gates before
 any merge; publish only a `beta` tag after authenticated namespace ownership and
 native qualification. Ad-hoc signing and npm provenance are not notarization.
 
 Publication has two gates, not a circular pre-publication registry requirement:
-`distribution-verify --candidate --evidence DIRECTORY` requires all five native
-targets and local npm/pnpm tarball tests before publishing. Default
+`distribution-verify --candidate --evidence DIRECTORY` requires Mac native
+qualification, three experimental build receipts and local Mac npm/pnpm tests
+before publishing. Default
 `distribution-verify --evidence DIRECTORY` additionally requires installs from
 the actual public registry. Candidate qualification is never customer-release
 completion. Matrix receipts use `tradeassembly.distribution-native.v2`, bind the
@@ -852,10 +855,11 @@ covers GNU Linux x64/arm64 on Ubuntu 24.04 LTS and current supported Windows
 11 x64. Windows x64 includes both Intel and AMD processors. Intel Mac is a future
 candidate; the user's home Intel Mac is not a pipeline dependency. Windows ARM,
 other Linux distributions and source installation remain separately qualified
-extensions. The executable verifier still requires five targets: implementing
-the revised matrix must update its target set, launcher metadata, workflow
-matrix, negative tests and current release claims together. This planning edit
-does not constitute a passing four-target release or invalidate saved evidence.
+extensions. The schema-v2 executable verifier now requires four targets with
+distinct Mac qualification and Windows/Linux experimental evidence. Schema-v1
+retains the old five-target contract only for the frozen baseline. Launcher
+metadata and negative tests must remain aligned with schema-v2. This does not
+constitute a passing four-target release or invalidate saved evidence.
 
 Build method and runtime qualification are separate fields of the evidence.
 Cross-compilation and compilation under emulation are acceptable artifact
@@ -909,34 +913,35 @@ Provider references checked 2026-09-30:
 [CodeBuild images](https://docs.aws.amazon.com/codebuild/latest/userguide/ec2-compute-images.html),
 [AppVeyor](https://www.appveyor.com/pricing/).
 
-**R4 — Produce and qualify the release targets (D2/D3; five-target implementation pending the refinement above).**
-Outcome: each required OS/architecture has genuine native build, installation,
-authority and sandbox evidence, bound to its exact candidate artifacts.
-Files/repos: existing Core `.github/workflows/native-core.yml`; owning Warden
-worktree `f2-warden-native-distribution`, its native-authority workflow and
-private-files adapter; owning Alpaca worktree `f2-alpaca-native-distribution`
-and its native-plugin workflow. Preserve the D1 ACL/reparse/locking contract.
-Implement `cargo xtask distribution-qualify --candidate DIR --out DIR` in the
-existing Core distribution command plane. It runs the real acceptance drivers
-and hashes artifacts/results; it cannot accept a caller's success booleans.
-Complete native Windows account/elevation/WFP/ACL proof and all installation,
-recovery and sandbox cases already enumerated in D3. Use target-local positive
-controls for denial tests; unavailable/skipped tests fail qualification.
-Before dispatch, resolve GitHub's actual $0 cap: use an already authorized
-explicit spending limit if found, otherwise obtain a finite cap or use an
-available native host within an established budget. Do not spend merely because
-an option was preselected. AWS credits do not establish GitHub spending approval.
-Keep timed jobs and bounded parallelism; reuse successful immutable artifacts.
-Native macOS, Linux and Windows evidence must come from their actual hosts.
-Run producer owning gates, Core `just verify` (which invokes full
-`cargo xtask verify`), and required archive qualification once at the coherent
-integration checkpoint. Confirm every mandated gate actually ran.
+**R4 — Produce the four-target candidate and qualify macOS arm64 (D2/D3).**
+Outcome: the exact macOS arm64 candidate has genuine source-free installation,
+authority, recovery and sandbox evidence; Windows x64 and GNU Linux x64/arm64
+have successful pinned CodeBuild artifacts and integrity evidence, explicitly
+marked experimental and not platform-qualified.
+Files/repos: Core distribution verifier, candidate/installer and npm packages;
+the existing Core, Warden and Alpaca producer worktrees; private coordination
+CodeBuild configuration and readback capture. The GitHub native workflows are
+manual diagnostics only, not this release's producer or acceptance gate.
+Before dispatch, read AWS identity, credit/budget applicability and project
+configuration; pin producer commits and build images, bound build timeout and
+concurrency, and preserve sanitized build IDs/logs. Inspect each artifact's
+target, architecture, complete inventory, notices and hashes. Missing, failed,
+wrong-source or tampered output fails the experimental receipt; compilation
+must never be described as Windows/Linux runtime acceptance. Build and run the
+real macOS arm64 acceptance drivers against the new candidate; unavailable or
+skipped Mac cases fail qualification. Preserve the D1 authority contract and
+the baseline bytes. Run owning producer gates, Core `just verify` and archive
+qualification once at the coherent integration checkpoint.
 Exit: `cargo xtask distribution-verify --candidate --evidence ABSOLUTE_DIR`
-returns 0 with all five targets and R2 proof. No target exclusions/WSL substitute.
+returns 0 for the four-target policy with full Mac evidence, three bound
+experimental build receipts and R2 proof. Windows/Linux native acceptance and
+Intel Mac remain follow-up work, not implied passes.
 
 **R5 — Publish and verify the npm beta (D4).**
-Outcome: the documented one-command install works from the actual registry,
-and a compatible next packaging version demonstrates the upgrade path.
+Outcome: the documented one-command install works from the actual registry on
+macOS arm64, and a compatible next packaging version demonstrates the Mac
+upgrade path. Windows/Linux packages are published with experimental status,
+verified bytes, and no claim of tested installation.
 Files: existing distribution launcher/package metadata, registry acceptance
 driver and this document's install/update/rollback instructions.
 Resolve npm authentication through CLI first, Bitwarden and the supported
@@ -948,16 +953,18 @@ Publish only the R4-qualified bytes under `beta`, with supported provenance and
 integrity evidence; never claim provenance exists if only checksums exist.
 If a trusted CI publication path requires additional configuration, make it
 explicit and complete it before publishing, without exposing producer secrets.
-Run actual npm and pnpm registry installation with scripts disabled on each
-target, compare registry tarballs to qualified bytes, then exercise compatible
-upgrade/rollback. No rebuild between qualification and publication. A second
+Run actual npm and pnpm registry installation with scripts disabled on macOS
+arm64, compare all four platform registry tarballs and launcher bytes to the
+candidate, then exercise Mac compatible upgrade/rollback. No rebuild between
+qualification and publication. A second
 packaging version must receive changed-input qualification before publication;
 unchanged runtime artifacts may retain valid evidence, but package receipts
 must bind the new package version/bytes. If a platform fails, preserve the beta
 failure record, remediate and publish a new immutable version; do not overwrite
 or report matrix completion from partial success.
 Exit: `cargo xtask distribution-verify --evidence ABSOLUTE_DIR` returns 0 from
-genuine registry evidence for all five targets.
+genuine four-target registry-byte evidence and Mac install/upgrade proof;
+Windows/Linux remain explicitly experimental.
 
 **R6 — Integrate and hand off (D5).**
 Outcome: scoped changes are committed, merged and pushed under owning repo
@@ -1007,6 +1014,12 @@ M7/M8 and public/paid Product readiness verdicts stay false.
   re-ask the frozen-candidate question as routine permission.
 
 #### Updated goal text — activated 2026-09-29
+
+Historical record only: the saved goal objective below still names five fully
+qualified targets. The approved 2026-09-30 first-release amendment and the
+R4/R5 exit criteria above supersede that platform count and acceptance level.
+The goal API has not rewritten its objective; do not report the old text as a
+passing release gate or claim it has been fulfilled.
 
 ```text
 Complete the amended D1–D5 F2 npm beta distribution plan in

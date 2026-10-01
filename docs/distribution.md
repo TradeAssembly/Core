@@ -9,10 +9,42 @@ broker orders, or trading activation is authorized by an install or upgrade.
 
 ## Approved first-release scope — 2026-09-30
 
-The user selected **AWS CodeBuild** for Windows/Linux artifact production and
-explicitly deferred Windows/Linux platform acceptance testing until after the
-first release. This amendment controls older five-target completion language
-throughout this document and the saved goal objective. Intel Mac remains deferred.
+### Build-provider amendment — 2026-10-01
+
+The user selected **builds on GitHub**. Native producer builds and release
+artifacts must be produced by GitHub Actions workflows; the AWS CodeBuild
+project/source-archive path below is historical planning, not the execution
+route. This amendment does not change the four-target acceptance matrix or
+authorize making private producer repositories public. Build receipts must bind
+the exact Core/Warden/Alpaca commits, GitHub run and attempt, native runner,
+artifact identity and digest, downloaded archive bytes, and extracted binary
+inventory; the existing CodeBuild-only receipt schema is not acceptable as a
+substitute. No release gate may be marked passed by merely dispatching a run.
+
+Core is public and its standard GitHub-hosted runners are free. Warden and
+Alpaca are private, and the organization has a $0 Actions overage budget with
+`prevent_further_usage=true`. Preserve that cap. The September private jobs
+failed before a runner started, but an October 1 Warden job reached a real
+GitHub-hosted runner after the monthly allowance reset. Use standard
+GitHub-hosted runners within the included allowance for this release. Stop
+before any overage; do not silently raise the cap. If included minutes run out,
+the alternate is GitHub Actions using ephemeral AWS CodeBuild-hosted runners
+under the existing AWS budget, selected and proven separately. It is not the
+old direct CodeBuild path. Public visibility is only possible after the
+mandatory secret/history and binary/license/hosted-boundary review below.
+Record real runner and billing readbacks before claiming a producer build.
+
+The next bounded step is to prove the pinned Core, Warden and Alpaca workflows
+on standard GitHub-hosted runners, repair producer provenance, and replace the
+CodeBuild-specific verifier/readback contract with a GitHub-run/artifact
+contract and negative tests. Then produce and verify the actual three native
+target bundles. Until that happens, candidate and registry gates remain red.
+
+The September 30 scope amendment deferred Windows/Linux platform acceptance
+testing until after the first release. Its former AWS CodeBuild producer choice
+is superseded by the GitHub build-provider amendment above. The four-target
+scope controls older five-target completion language throughout this document
+and the saved goal objective. Intel Mac remains deferred.
 
 | First-release target | Required evidence and customer status |
 | --- | --- |
@@ -30,7 +62,8 @@ checks stay enabled on every shipped platform. A failed runtime prerequisite
 must still prevent operation. This deferral does not authorize fixing failures
 by disabling enforcement. All actual known build/test failures remain explicit.
 
-Bounded implementation next:
+Original September 30 implementation sequence (CodeBuild steps superseded by
+the GitHub amendment above):
 
 1. Update the release manifest/verifier and npm target mapping together: four
    distributed targets, full acceptance required only for macOS arm64, explicit

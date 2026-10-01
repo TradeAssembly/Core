@@ -667,6 +667,96 @@ pub fn verify_github_builds(
     Ok(json!({"verified":true,"target":target,"sourceRevisions":receipt["sourceRevisions"]}))
 }
 
+/// Materialize only the pinned producer outputs after validating the complete
+/// GitHub run, artifact and archive chain. This is build evidence, not a
+/// qualified or installable candidate.
+pub fn extract_github_builds(
+    root: &Path,
+    target: &str,
+    core: &str,
+    warden: &str,
+    alpaca: &str,
+    out: &Path,
+) -> Result<Value> {
+    verify_github_builds(root, target, core, warden, alpaca)?;
+    if out.exists() {
+        return Err("github_build_output_exists".into());
+    }
+    let parent = out.parent().ok_or("github_build_output_invalid")?;
+    fs::create_dir_all(parent).map_err(|_| "github_build_output_invalid")?;
+    let stage = tempfile::tempdir_in(parent).map_err(|_| "github_build_output_invalid")?;
+    let suffix = if target == TARGETS[4] { ".exe" } else { "" };
+    let mut outputs = serde_json::Map::new();
+    for (owner, member, name) in [
+        (
+            "core",
+            format!("release/tradeassembly{suffix}"),
+            format!("tradeassembly{suffix}"),
+        ),
+        (
+            "core",
+            format!("release/tradeassembly-sandbox{suffix}"),
+            format!("tradeassembly-sandbox{suffix}"),
+        ),
+        (
+            "core",
+            format!("release/tradeassembly-distribution{suffix}"),
+            format!("tradeassembly-distribution{suffix}"),
+        ),
+        (
+            "warden",
+            format!("release/warden{suffix}"),
+            format!("warden{suffix}"),
+        ),
+        (
+            "alpaca",
+            "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz".into(),
+            "tradeassembly-plugin-alpaca-0.1.17.tar.gz".into(),
+        ),
+    ] {
+        let archive = root.join(format!("{owner}.zip"));
+        let mut zip = zip::ZipArchive::new(
+            File::open(&archive).map_err(|_| "github_build_archive_unavailable")?,
+        )
+        .map_err(|_| "github_build_archive_invalid")?;
+        let mut entry = zip
+            .by_name(&member)
+            .map_err(|_| "github_build_member_missing")?;
+        if !entry.is_file() || entry.size() > 268_435_456 {
+            return Err("github_build_member_invalid".into());
+        }
+        let output = stage.path().join(&name);
+        let mut file = File::create_new(&output).map_err(|_| "github_build_output_invalid")?;
+        std::io::copy(&mut entry, &mut file).map_err(|_| "github_build_extract_failed")?;
+        file.sync_all().map_err(|_| "github_build_extract_failed")?;
+        if owner != "alpaca" {
+            crate::native::binary_target(&output, target)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&output, fs::Permissions::from_mode(0o755))
+                    .map_err(|_| "github_build_output_permissions_failed")?;
+            }
+        }
+        outputs.insert(
+            name,
+            json!({"sha256":digest(&output)?,"source":owner,"member":member}),
+        );
+    }
+    atomic_json(
+        &stage.path().join("build-outputs.json"),
+        &json!({
+            "schemaVersion":"tradeassembly.github-build-outputs.v1",
+            "target":target,
+            "sourceRevisions":{"core":core,"warden":warden,"alpaca":alpaca},
+            "outputs":outputs,
+            "qualified":false
+        }),
+    )?;
+    fs::rename(stage.path(), out).map_err(|_| "github_build_output_commit_failed")?;
+    Ok(json!({"extracted":true,"target":target,"qualified":false,"out":out}))
+}
+
 fn verify_archive_member(archive: &Path, member: &str, output: &Path) -> Result<()> {
     let file = File::open(archive).map_err(|_| "experimental_build_archive_unavailable")?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| "experimental_build_archive_invalid")?;
@@ -1312,6 +1402,103 @@ mod tests {
             verify_github_readbacks(root.path(), &receipt, target).unwrap_err(),
             "experimental_github_sdk_binding_invalid"
         );
+    }
+
+    #[test]
+    fn github_output_transport_extracts_only_pinned_target_binaries() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let mut elf = [0_u8; 64];
+        elf[..6].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1]);
+        elf[18..20].copy_from_slice(&62_u16.to_le_bytes());
+        for (owner, repository, workflow, letter, members) in [
+            (
+                "core",
+                "TradeAssembly/Core",
+                ".github/workflows/native-core.yml",
+                "a",
+                vec![
+                    "release/tradeassembly",
+                    "release/tradeassembly-sandbox",
+                    "release/tradeassembly-distribution",
+                ],
+            ),
+            (
+                "warden",
+                "TradeAssembly/Warden",
+                ".github/workflows/native-authority.yml",
+                "b",
+                vec!["release/warden"],
+            ),
+            (
+                "alpaca",
+                "TradeAssembly/Alpaca",
+                ".github/workflows/native-plugin.yml",
+                "c",
+                vec!["dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz"],
+            ),
+        ] {
+            let archive = root.path().join(format!("{owner}.zip"));
+            let mut zip = zip::ZipWriter::new(File::create(&archive).unwrap());
+            for member in members {
+                zip.start_file(member, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(if owner == "alpaca" { b"plugin" } else { &elf })
+                    .unwrap();
+            }
+            zip.finish().unwrap();
+            let revision = letter.repeat(40);
+            let mut readback = json!({
+                "schemaVersion":"tradeassembly.github-actions-sanitized.v1",
+                "run":{"repository":repository,"workflowPath":workflow,"headSha":revision,
+                    "event":"workflow_dispatch","status":"completed","conclusion":"success",
+                    "runner":"ubuntu-22.04","runnerName":"GitHub Actions 1","jobId":44,
+                    "id":42,"attempt":1},
+                "artifact":{"id":43,"name":format!("{owner}-ubuntu-22.04-{revision}"),
+                    "expired":false,"digest":format!("sha256:{}",digest(&archive).unwrap())}
+            });
+            if owner == "alpaca" {
+                readback["coreSdkRevision"] = json!("a".repeat(40));
+            }
+            atomic_json(&root.path().join(format!("{owner}.json")), &readback).unwrap();
+        }
+        let out = root.path().join("outputs");
+        assert!(extract_github_builds(
+            root.path(),
+            "x86_64-unknown-linux-gnu",
+            &"d".repeat(40),
+            &"b".repeat(40),
+            &"c".repeat(40),
+            &out
+        )
+        .is_err());
+        assert!(!out.exists());
+        assert!(extract_github_builds(
+            root.path(),
+            "x86_64-unknown-linux-gnu",
+            &"a".repeat(40),
+            &"b".repeat(40),
+            &"c".repeat(40),
+            &out
+        )
+        .is_ok());
+        assert_eq!(fs::read(out.join("tradeassembly")).unwrap(), elf);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(out.join("tradeassembly"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0o111
+            );
+        }
+        let inventory: Value = read_json(&out.join("build-outputs.json")).unwrap();
+        assert_eq!(inventory["qualified"], false);
+        assert_eq!(inventory["outputs"].as_object().unwrap().len(), 5);
     }
 
     #[test]

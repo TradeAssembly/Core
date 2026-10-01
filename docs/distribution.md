@@ -58,6 +58,14 @@ readback showed $0 net charges; the $0 overage stop remains in force.
 This is **native producer build provenance only**. It does not qualify a
 source-free installation, Windows/Linux runtime behavior, the assembled
 candidate, Mac arm64 acceptance, npm registry bytes, or a customer release.
+The new `cargo xtask distribution-extract-github-builds` path was run against
+all three recorded experimental target archives. It validated pinned run and
+archive provenance, extracted only five named outputs per target, checked
+executable architecture, and wrote hash inventories under ignored
+`target/github-build-outputs-{linux-x64,linux-arm64,windows-x64}`. A wrong-Core
+revision exited 1 without creating an output directory. These are unqualified
+build inputs, not package or install evidence. The original frozen Mac payload
+and parent lock were not changed.
 Next: assemble the versioned four-target candidate from these exact outputs,
 check each binary architecture/inventory and notices, run the Mac acceptance,
 then satisfy candidate and registry verifiers. Do not mark those gates passed

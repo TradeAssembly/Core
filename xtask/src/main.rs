@@ -25,13 +25,15 @@ fn main() {
         | "distribution-freeze-native"
         | "distribution-describe-native-inputs"
         | "distribution-qualify"
-        | "distribution-describe-candidate" => {
+        | "distribution-describe-candidate"
+        | "distribution-extract-github-builds" => {
             let subcommand = match args[0].as_str() {
                 "distribution-pack" => "pack",
                 "distribution-freeze-native" => "freeze-native",
                 "distribution-describe-native-inputs" => "describe-native-inputs",
                 "distribution-qualify" => "qualify",
                 "distribution-describe-candidate" => "describe-candidate",
+                "distribution-extract-github-builds" => "extract-github-builds",
                 "distribution-capture-registry" => "capture-registry",
                 _ => "verify",
             };
@@ -54,7 +56,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-qualify, distribution-verify, distribution-capture-registry");
+            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-extract-github-builds, distribution-qualify, distribution-verify, distribution-capture-registry");
             0
         }
         _ => {

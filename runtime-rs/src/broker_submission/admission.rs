@@ -19,6 +19,24 @@ use std::sync::Arc;
 
 const INTENTS_NS: &str = "broker_order_intents";
 
+// Renewal extends liveness, not the identity or lifetime of a signed intent.
+// Keep the original deadline; every other authority/input field stays exact.
+fn same_authority_during_renewal(bound: &Value, current: &Value, now_ms: i64) -> bool {
+    let Some(deadline) = bound["leaseExpiresAtMs"].as_i64() else {
+        return false;
+    };
+    if deadline <= now_ms
+        || current["leaseExpiresAtMs"]
+            .as_i64()
+            .is_none_or(|renewed| renewed < deadline)
+    {
+        return false;
+    }
+    let mut normalized = current.clone();
+    normalized["leaseExpiresAtMs"] = bound["leaseExpiresAtMs"].clone();
+    normalized == *bound
+}
+
 pub struct LocalBrokerSubmissionBoundary {
     deps: BrokerSubmissionDependencies,
     authority: Arc<dyn FinanceAuthorityPort>,
@@ -125,7 +143,11 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         // or configuration change during that work invalidates this attempt.
         let current = load_current_state(&self.deps, request, context)?;
         let (fresh_base, _) = build_order_intent(&current, request, context, prepared)?;
-        if fresh_base != base_intent {
+        if !same_authority_during_renewal(
+            &base_intent,
+            &fresh_base,
+            self.deps.clock.trusted_now_ms()?,
+        ) {
             return Err("broker_submission_state_changed".into());
         }
         let fresh_price = prices::load_price_evidence(&self.deps, &current, symbol, &receipt_id)?;
@@ -174,7 +196,11 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         // mandate, configuration, and price before handing out the permit.
         let post_c5 = load_current_state(&self.deps, request, context)?;
         let (post_c5_base, _) = build_order_intent(&post_c5, request, context, prepared)?;
-        if post_c5_base != base_intent {
+        if !same_authority_during_renewal(
+            &base_intent,
+            &post_c5_base,
+            self.deps.clock.trusted_now_ms()?,
+        ) {
             return Err("broker_submission_state_changed_after_authorization".into());
         }
         let post_c5_price = prices::load_price_evidence(&self.deps, &post_c5, symbol, &receipt_id)?;
@@ -218,4 +244,47 @@ fn hash_text(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_authority_during_renewal;
+    use serde_json::json;
+
+    #[test]
+    fn renewal_preserves_authority_but_cannot_extend_signed_deadline() {
+        let bound = json!({"leaseExpiresAtMs":100, "leaseOwner":"owner",
+            "leaseFence":7, "leaseResource":"rig", "configDigest":"config",
+            "mandateDigest":"mandate", "packageSha256":"package",
+            "order":{"quantityMicros":1}});
+        assert!(same_authority_during_renewal(&bound, &bound, 99));
+        let mut renewed = bound.clone();
+        renewed["leaseExpiresAtMs"] = json!(200);
+        assert!(same_authority_during_renewal(&bound, &renewed, 99));
+        assert!(!same_authority_during_renewal(&bound, &renewed, 100));
+        assert!(!same_authority_during_renewal(&bound, &renewed, 101));
+        renewed["leaseExpiresAtMs"] = json!(99);
+        assert!(!same_authority_during_renewal(&bound, &renewed, 90));
+        for field in [
+            "leaseOwner",
+            "leaseFence",
+            "leaseResource",
+            "configDigest",
+            "mandateDigest",
+            "packageSha256",
+            "order",
+        ] {
+            let mut changed = bound.clone();
+            changed["leaseExpiresAtMs"] = json!(200);
+            changed[field] = json!("different");
+            assert!(
+                !same_authority_during_renewal(&bound, &changed, 90),
+                "{field}"
+            );
+        }
+        let mut malformed = bound.clone();
+        malformed["leaseExpiresAtMs"] = json!("100");
+        assert!(!same_authority_during_renewal(&bound, &malformed, 90));
+        assert!(!same_authority_during_renewal(&malformed, &bound, 90));
+    }
 }

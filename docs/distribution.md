@@ -196,13 +196,51 @@ The default gate reports `archiveSmoke: not_requested`; the separate
 compilation and runtime MCP discovery. Log:
 `target/github-compatible-archive-smoke.log`, SHA-256
 `b82cc57d1929f30091c84b605b75139303974c9f424fd2798f694a9bb3e53c8f`.
-GitHub native Mac Core run `36932664901` is building this exact source
-(watch handle `68854`, log `target/gh-native-core-6b0aa2e.log`). The private
-capture tool is checkpointed at `8e8b321` with this exact Mac Core pin; 2/2
-capture tests pass. Next: reuse these live processes, verify the successful
-Core artifact, assemble a new package with its GitHub installer, then run the
-complete native qualifier against those exact bytes. Do not reuse the local
-installer diagnostic as customer provenance. Production Relay isolation,
+GitHub native Mac Core run `36932664901` passed. Capture verified artifact
+`11196253815`, ZIP SHA-256
+`e1e61625c877fa4d4998be18975f227222a3bb1f98cda48f636224e7bd608d91`;
+Core extraction and SDK-tree checks passed. Installer SHA-256 is
+`8e710d33a2b693776fab5190e262e866763935e4da4f94ddea2eff3f0a07904e`.
+The private capture tool is checkpointed at `8e8b321` with this exact source pin;
+2/2 capture tests pass. The fresh local-profile beta.3 package is
+`target/f2-npm-mac-package-github-installer`; manifest
+`d1bbac6831464b4a26bcd08d5c7fdce1188f81d3058c9bb782f5b4c5254f4b6b`,
+archive `cda53e873b5ab6354ab1e8c7865c9f804ad8cc9257879c17f541b9421583d2ad`,
+descriptor `8db8d8881ea1e55ecf57597ccef69be60df5ee4e3b51403a5754db3e3ad6dc8e`.
+Its complete native qualifier failed the Paper ambiguous-outcome case (3/4
+order cases passed); no qualification receipt was created. Setup, baseline
+upgrade/rollback, npm/pnpm and sandbox checks passed. Failed evidence is retained
+under `target/f2-npm-github-mac-evidence/aarch64-apple-darwin` and
+`target/github-mac-qualification.log`. This package is **not qualified**.
+
+Bounded diagnosis reproduced the final distinct-order denial against those
+same GitHub runtime/authority bytes. Its durable intent and C5 allow decision
+exist, but post-C5 admission rejects a same-owner, same-fence lease renewal:
+intent expiry `1790893681127`, current expiry `1790893682488`. The isolated
+diagnostic database remains at the path recorded in
+`target/github-mac-paper-diagnostic.log`; no customer state was used.
+Decision: renewal may extend the live lease, never the lifetime of the signed
+intent. Compare every intent field exactly except normalize a same-generation
+renewed expiry to the original; reject shortened leases, changed owner/fence/
+resource, expired original deadline, or any other configuration/risk/mandate/
+package/order change. Both pre-C5 and post-C5 rechecks use this rule. The new
+focused negative-matrix unit test passes. The corrected local runtime also
+passes the formerly failing actual Paper stdio MCP/real Warden/controlled-sink
+case (1/1 in 111.34 seconds), with duplicate, crash, absent-outcome and durable
+receipt assertions unchanged. Log: `target/github-mac-paper-renewal-fix.log`,
+SHA-256 `f9b477d8d2214ea19da756e7d78d7441bb980169d1f9396c288e7d9198c78b71`.
+Strict runtime all-targets Clippy, `cargo xtask scan-public` and
+`git diff --check` exit 0. This local diagnostic does not qualify the previous
+GitHub package or any changed shipping bytes.
+Only `runtime-rs/src/broker_submission/admission.rs` is changed; the temporary
+test-state retention edit was removed. Next: checkpoint this coherent repair,
+run the clean owning gate and separate source-archive smoke, then push and
+rebuild on GitHub, assemble a separate package and rerun full qualification.
+Do not reuse the failed package's component logs to qualify changed bytes.
+The npm access preflight is unauthenticated; `tradeassembly` returns registry
+404, which does not prove namespace ownership. The account credential is
+available in Bitwarden; authenticated namespace verification remains required.
+Nothing was published. Production Relay isolation,
 experimental package assembly, candidate/registry verification, publication
 and final integration remain open.
 

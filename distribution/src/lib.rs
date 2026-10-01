@@ -272,7 +272,9 @@ pub fn verify_bundle(root: &Path, release: &Release) -> Result<()> {
             return Err("release_connection_profile_mismatch".into());
         }
     }
-    if digest(&root.join(executable("bin/warden")))? != release.warden_sha256 {
+    if digest(&root.join(payload_executable("bin/warden", &release.target)))?
+        != release.warden_sha256
+    {
         return Err("authority_digest_mismatch".into());
     }
     for name in [
@@ -280,7 +282,7 @@ pub fn verify_bundle(root: &Path, release: &Release) -> Result<()> {
         "bin/warden",
         "bin/tradeassembly-sandbox",
     ] {
-        executable_file(&root.join(executable(name)))?;
+        executable_file(&root.join(payload_executable(name, &release.target)))?;
     }
     Ok(())
 }
@@ -302,6 +304,16 @@ pub fn connection_profile_binding(root: &Path) -> Result<(String, Option<String>
 
 pub fn executable(name: &str) -> String {
     if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    }
+}
+
+// Integrity verification reads foreign payloads; never infer their paths from
+// this verifier's OS. Native packing and installation keep their host gates.
+fn payload_executable(name: &str, target: &str) -> String {
+    if target == TARGETS[4] {
         format!("{name}.exe")
     } else {
         name.to_owned()
@@ -564,6 +576,95 @@ mod tests {
             extract(&archive_path, &output).unwrap_err(),
             "archive_duplicate_or_limit"
         );
+    }
+
+    #[test]
+    fn foreign_payload_inventory_uses_declared_target_and_rejects_tampering() {
+        // Parser/integrity evidence only: these bytes are not native binaries.
+        for target in TARGETS {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            fs::create_dir(root.join("bin")).unwrap();
+            let mut files = BTreeMap::new();
+            for name in [
+                "bin/tradeassembly",
+                "bin/warden",
+                "bin/tradeassembly-sandbox",
+            ] {
+                let name = payload_executable(name, target);
+                fs::write(root.join(&name), b"synthetic integrity fixture").unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(root.join(&name), fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
+                files.insert(
+                    name.clone(),
+                    serde_json::json!({"sha256":digest(&root.join(name)).unwrap()}),
+                );
+            }
+            atomic_json(
+                &root.join("bundle.json"),
+                &serde_json::json!({"target":target,"files":files}),
+            )
+            .unwrap();
+            let mut release = Release {
+                schema_version: 2,
+                version: "0.1.0-beta.3".into(),
+                target: target.into(),
+                parent_lock_sha256: PARENT_SHA.into(),
+                bundle_manifest_sha256: digest(&root.join("bundle.json")).unwrap(),
+                archive_sha256: "0".repeat(64),
+                warden_sha256: digest(&root.join(payload_executable("bin/warden", target)))
+                    .unwrap(),
+                state_compatibility: "f2-local-v1".into(),
+                candidate_descriptor_sha256: Some("d".repeat(64)),
+                deployment_environment: Some("local".into()),
+                connection_profile_sha256: None,
+            };
+            verify_bundle(root, &release).unwrap();
+            release.warden_sha256 = "1".repeat(64);
+            assert_eq!(
+                verify_bundle(root, &release).unwrap_err(),
+                "authority_digest_mismatch"
+            );
+            fs::write(
+                root.join(payload_executable("bin/warden", target)),
+                b"tampered",
+            )
+            .unwrap();
+            assert_eq!(
+                verify_bundle(root, &release).unwrap_err(),
+                "payload_digest_or_containment_failed"
+            );
+            if target == TARGETS[4] {
+                // A self-consistent manifest cannot substitute Unix paths for
+                // the Windows executable contract.
+                fs::rename(root.join("bin/warden.exe"), root.join("bin/warden")).unwrap();
+                let mut manifest: serde_json::Value = read_json(&root.join("bundle.json")).unwrap();
+                let entry = manifest["files"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("bin/warden.exe")
+                    .unwrap();
+                manifest["files"]["bin/warden"] = entry;
+                manifest["files"]["bin/warden"]["sha256"] =
+                    serde_json::json!(digest(&root.join("bin/warden")).unwrap());
+                atomic_json(&root.join("bundle.json"), &manifest).unwrap();
+                release.bundle_manifest_sha256 = digest(&root.join("bundle.json")).unwrap();
+                release.warden_sha256 = digest(&root.join("bin/warden")).unwrap();
+                assert_eq!(
+                    verify_bundle(root, &release).unwrap_err(),
+                    "file_unavailable"
+                );
+            }
+        }
+        assert_eq!(
+            payload_executable("bin/warden", TARGETS[4]),
+            "bin/warden.exe"
+        );
+        assert_eq!(payload_executable("bin/warden", TARGETS[0]), "bin/warden");
     }
 
     #[test]

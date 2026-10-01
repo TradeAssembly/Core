@@ -265,7 +265,14 @@ currently calls host-dependent `executable()` for Warden and other binaries,
 so Mac verification of a real Windows package would fail. Add a target-path
 helper for that pure verifier, with actual Windows-path inventory/tamper
 regression coverage; do not use it to bypass installation or packing host
-gates. Acceptance remains the full four-target candidate matrix, with native
+gates. The read-only helper is now implemented in `distribution/src/lib.rs`:
+all 31 distribution unit tests and strict all-targets distribution Clippy pass,
+including five-target file inventory, hash tampering, wrong authority digest,
+and a self-consistent Windows manifest with missing `.exe` paths. These are
+parser/integrity tests, not Windows/Linux runtime qualification. They do not
+change the existing GitHub run's source pin or qualify new installer bytes.
+The next full owning gate remains required at the integration checkpoint.
+Acceptance remains the full four-target candidate matrix, with native
 package bytes and receipts, not extracted build ZIP inventories alone.
 The npm access preflight is unauthenticated; `tradeassembly` returns registry
 404, which does not prove namespace ownership. The account credential is

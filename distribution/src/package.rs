@@ -506,6 +506,7 @@ fn first_release_matrix_valid(matrix: &Value) -> bool {
         })
 }
 
+#[cfg(test)]
 fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
     for owner in ["core", "warden", "alpaca"] {
         let proof = &receipt["buildReadbacks"][owner];
@@ -566,6 +567,106 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
     Ok(())
 }
 
+fn verify_github_readbacks(root: &Path, receipt: &Value, target: &str) -> Result<()> {
+    let runner = match target {
+        "x86_64-unknown-linux-gnu" => "ubuntu-22.04",
+        "aarch64-unknown-linux-gnu" => "ubuntu-22.04-arm",
+        "x86_64-pc-windows-msvc" => "windows-2022",
+        _ => return Err("experimental_github_target_invalid".into()),
+    };
+    if receipt["sourceRevisions"]["coreSdk"] != receipt["sourceRevisions"]["core"] {
+        return Err("experimental_github_sdk_binding_invalid".into());
+    }
+    for (owner, repository, workflow, prefix) in [
+        (
+            "core",
+            "TradeAssembly/Core",
+            ".github/workflows/native-core.yml",
+            "core",
+        ),
+        (
+            "warden",
+            "TradeAssembly/Warden",
+            ".github/workflows/native-authority.yml",
+            "warden",
+        ),
+        (
+            "alpaca",
+            "TradeAssembly/Alpaca",
+            ".github/workflows/native-plugin.yml",
+            "alpaca",
+        ),
+    ] {
+        let revision = receipt["sourceRevisions"][owner]
+            .as_str()
+            .ok_or("experimental_source_revision_missing")?;
+        if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("experimental_source_revision_invalid".into());
+        }
+        let readback = evidence_file(root, &receipt["buildReadbacks"][owner])?;
+        let readback: Value = read_json(&readback)?;
+        let run = &readback["run"];
+        let artifact = &readback["artifact"];
+        if readback["schemaVersion"] != "tradeassembly.github-actions-sanitized.v1"
+            || readback
+                .as_object()
+                .is_none_or(|fields| fields.len() != if owner == "alpaca" { 4 } else { 3 })
+            || run.as_object().is_none_or(|fields| fields.len() != 11)
+            || artifact.as_object().is_none_or(|fields| fields.len() != 4)
+            || run["repository"] != repository
+            || run["workflowPath"] != workflow
+            || run["headSha"] != revision
+            || run["event"] != "workflow_dispatch"
+            || run["status"] != "completed"
+            || run["conclusion"] != "success"
+            || run["runner"] != runner
+            || run["runnerName"].as_str().is_none_or(str::is_empty)
+            || run["jobId"].as_u64().is_none_or(|id| id == 0)
+            || run["id"].as_u64().is_none_or(|id| id == 0)
+            || run["attempt"].as_u64().is_none_or(|attempt| attempt == 0)
+            || artifact["id"].as_u64().is_none_or(|id| id == 0)
+            || artifact["name"] != format!("{prefix}-{runner}-{revision}")
+            || artifact["expired"] != false
+        {
+            return Err("experimental_github_readback_invalid".into());
+        }
+        let archive = evidence_file(root, &receipt["buildArchives"][owner])?;
+        let sha = digest(&archive)?;
+        if artifact["digest"] != format!("sha256:{sha}") {
+            return Err("experimental_github_artifact_digest_invalid".into());
+        }
+        if owner == "alpaca" && readback["coreSdkRevision"] != receipt["sourceRevisions"]["core"] {
+            return Err("experimental_github_sdk_binding_invalid".into());
+        }
+        if owner != "alpaca" && readback.get("coreSdkRevision").is_some() {
+            return Err("experimental_github_readback_invalid".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn verify_github_builds(
+    root: &Path,
+    target: &str,
+    core: &str,
+    warden: &str,
+    alpaca: &str,
+) -> Result<Value> {
+    let mut receipt = json!({
+        "sourceRevisions":{"core":core,"warden":warden,"alpaca":alpaca,"coreSdk":core},
+        "buildReadbacks":{},"buildArchives":{}
+    });
+    for owner in ["core", "warden", "alpaca"] {
+        for (field, extension) in [("buildReadbacks", "json"), ("buildArchives", "zip")] {
+            let name = format!("{owner}.{extension}");
+            let file = root.join(&name);
+            receipt[field][owner] = json!({"artifact":name,"sha256":digest(&file)?});
+        }
+    }
+    verify_github_readbacks(root, &receipt, target)?;
+    Ok(json!({"verified":true,"target":target,"sourceRevisions":receipt["sourceRevisions"]}))
+}
+
 fn verify_archive_member(archive: &Path, member: &str, output: &Path) -> Result<()> {
     let file = File::open(archive).map_err(|_| "experimental_build_archive_unavailable")?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| "experimental_build_archive_invalid")?;
@@ -616,17 +717,13 @@ fn verify_build_archive_outputs(root: &Path, receipt: &Value, target: &str) -> R
     let windows = target == TARGETS[4];
     let suffix = if windows { ".exe" } else { "" };
     for (owner, member, output) in [
+        ("core", format!("release/tradeassembly{suffix}"), "core"),
         (
             "core",
-            format!("target/release/tradeassembly{suffix}"),
-            "core",
-        ),
-        (
-            "core",
-            format!("target/release/tradeassembly-sandbox{suffix}"),
+            format!("release/tradeassembly-sandbox{suffix}"),
             "sandbox",
         ),
-        ("warden", format!("target/release/warden{suffix}"), "warden"),
+        ("warden", format!("release/warden{suffix}"), "warden"),
         (
             "alpaca",
             "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz".to_owned(),
@@ -658,7 +755,10 @@ fn verify_experimental_target(root: &Path, target: &str, version: &str) -> Resul
     {
         return Err(format!("experimental_build_binding_failed:{target}"));
     }
-    verify_codebuild_readbacks(&target_root, &receipt)
+    if receipt["buildProvider"] != "github-actions" {
+        return Err(format!("experimental_build_provider_invalid:{target}"));
+    }
+    verify_github_readbacks(&target_root, &receipt, target)
         .map_err(|code| format!("experimental_build_provenance_failed:{target}:{code}"))?;
     verify_build_archive_outputs(&target_root, &receipt, target)
         .map_err(|code| format!("experimental_build_archive_failed:{target}:{code}"))?;
@@ -1144,6 +1244,73 @@ mod tests {
         assert_eq!(
             verify_codebuild_readbacks(root.path(), &receipt).unwrap_err(),
             "experimental_codebuild_readback_invalid"
+        );
+    }
+
+    #[test]
+    fn github_readbacks_bind_pinned_runs_and_downloaded_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = "ubuntu-22.04";
+        let mut receipt = json!({"sourceRevisions":{"coreSdk":"a".repeat(40)},
+            "buildReadbacks":{},"buildArchives":{}});
+        for (owner, repo, workflow, letter) in [
+            (
+                "core",
+                "TradeAssembly/Core",
+                ".github/workflows/native-core.yml",
+                "a",
+            ),
+            (
+                "warden",
+                "TradeAssembly/Warden",
+                ".github/workflows/native-authority.yml",
+                "b",
+            ),
+            (
+                "alpaca",
+                "TradeAssembly/Alpaca",
+                ".github/workflows/native-plugin.yml",
+                "c",
+            ),
+        ] {
+            let revision = letter.repeat(40);
+            let archive = format!("{owner}.zip");
+            fs::write(root.path().join(&archive), format!("{owner}-archive")).unwrap();
+            let mut readback = json!({
+                "schemaVersion":"tradeassembly.github-actions-sanitized.v1",
+                "run":{"repository":repo,"workflowPath":workflow,"headSha":revision,
+                    "event":"workflow_dispatch","status":"completed","conclusion":"success",
+                    "runner":runner,"runnerName":"GitHub Actions 1","jobId":44,
+                    "id":42,"attempt":1},
+                "artifact":{"id":43,"name":format!("{owner}-{runner}-{revision}"),
+                    "expired":false,
+                    "digest":format!("sha256:{}",digest(&root.path().join(&archive)).unwrap())}
+            });
+            if owner == "alpaca" {
+                readback["coreSdkRevision"] = json!("a".repeat(40));
+            }
+            let file = format!("{owner}.json");
+            atomic_json(&root.path().join(&file), &readback).unwrap();
+            receipt["sourceRevisions"][owner] = json!(revision);
+            receipt["buildReadbacks"][owner] = proof(root.path(), &file);
+            receipt["buildArchives"][owner] = proof(root.path(), &archive);
+        }
+        let target = "x86_64-unknown-linux-gnu";
+        assert!(verify_github_readbacks(root.path(), &receipt, target).is_ok());
+        receipt["sourceRevisions"]["warden"] = json!("d".repeat(40));
+        assert!(verify_github_readbacks(root.path(), &receipt, target).is_err());
+        receipt["sourceRevisions"]["warden"] = json!("b".repeat(40));
+        fs::write(root.path().join("alpaca.zip"), "tampered").unwrap();
+        assert!(verify_github_readbacks(root.path(), &receipt, target).is_err());
+        fs::write(root.path().join("alpaca.zip"), "alpaca-archive").unwrap();
+        let readback_path = root.path().join("alpaca.json");
+        let mut readback: Value = read_json(&readback_path).unwrap();
+        readback["coreSdkRevision"] = json!("d".repeat(40));
+        atomic_json(&readback_path, &readback).unwrap();
+        receipt["buildReadbacks"]["alpaca"] = proof(root.path(), "alpaca.json");
+        assert_eq!(
+            verify_github_readbacks(root.path(), &receipt, target).unwrap_err(),
+            "experimental_github_sdk_binding_invalid"
         );
     }
 

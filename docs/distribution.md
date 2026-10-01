@@ -40,6 +40,18 @@ CodeBuild-specific verifier/readback contract with a GitHub-run/artifact
 contract and negative tests. Then produce and verify the actual three native
 target bundles. Until that happens, candidate and registry gates remain red.
 
+October 1 checkpoint: all three pinned Linux x64 workflows passed on actual
+GitHub-hosted runners (Core `36907697699` at `6637e6f`, Warden `36907884275`
+at `dade4e6`, Alpaca `36907966575` at `908b5e3`). The private Rust capture
+tool verified GitHub run/job/artifact records and downloaded ZIP digests, and
+preserved sanitized readbacks and archives outside Git. Core's new
+GitHub-receipt validator and negative tests pass targeted distribution tests
+and Clippy locally. This is component build evidence, not candidate or registry
+qualification. Windows x64 and Linux arm64 builds are in progress. The frozen
+Core producer commit is available on the build-only GitHub branch
+`codex/f2-native-build-input-6637e6f`; do not use subsequent release-tool
+commits as its native source revision.
+
 The September 30 scope amendment deferred Windows/Linux platform acceptance
 testing until after the first release. Its former AWS CodeBuild producer choice
 is superseded by the GitHub build-provider amendment above. The four-target

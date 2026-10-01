@@ -104,9 +104,16 @@ fn execute(args: &[String]) -> Result<i32> {
             Path::new(&required(args, "--evidence")?),
             !args.iter().any(|arg| arg == "--candidate"),
         )?,
+        "verify-github-builds" => package::verify_github_builds(
+            Path::new(&required(args, "--evidence")?),
+            &required(args, "--target")?,
+            &required(args, "--core-revision")?,
+            &required(args, "--warden-revision")?,
+            &required(args, "--alpaca-revision")?,
+        )?,
         "capture-registry" => package::capture_registry(Path::new(&required(args, "--evidence")?))?,
         "help" | "--help" => {
-            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-native-inputs --input STAGING --core-revision SHA --warden-revision SHA --out NEW_NATIVE_INPUTS_JSON; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; qualify --candidate DIR --baseline-package MAC_BASELINE_DIR --controlled-broker BINARY --source CORE_CHECKOUT --out NEW_EVIDENCE_DIR; verify --evidence DIRECTORY [--candidate]; capture-registry --evidence DIRECTORY (read-only npm capture after candidate qualification).");
+            println!("TradeAssembly distribution: install [--root ABSOLUTE_PATH] [--warden-port PORT], upgrade, status, rollback, run CORE_ARGS. No strategy is created or activated. Maintainers: describe-native-inputs --input STAGING --core-revision SHA --warden-revision SHA --out NEW_NATIVE_INPUTS_JSON; freeze-native --input STAGING --metadata JSON --parent LOCK --out NEW_PATH (native host required; not qualification); describe-candidate --bundle FROZEN --parent LOCK --version PRERELEASE --out NEW_DIRECTORY/candidate-descriptor.json; pack --bundle PATH --parent LOCK --version PRERELEASE --installer BINARY [--candidate-descriptor FILE] --out NEW_PATH; qualify --candidate DIR --baseline-package MAC_BASELINE_DIR --controlled-broker BINARY --source CORE_CHECKOUT --out NEW_EVIDENCE_DIR; verify-github-builds --evidence DIRECTORY --target TRIPLE --core-revision SHA --warden-revision SHA --alpaca-revision SHA (native build provenance only); verify --evidence DIRECTORY [--candidate]; capture-registry --evidence DIRECTORY (read-only npm capture after candidate qualification).");
             return Ok(0);
         }
         _ => return install::run(&root, args),

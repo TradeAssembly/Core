@@ -253,6 +253,20 @@ checkpointed at `322e7de` with the exact revision pin; its two tests pass.
 Next: capture the successful run's real bytes, extract and assemble a new
 candidate without overwriting prior outputs, then run the complete native
 qualifier. Preserve the compatible authority and frozen parent lock.
+Experimental packaging follow-up is separate from that Mac qualification.
+Use native GitHub runners for staged-input freezing and package production;
+retain `native::freeze`'s `native_host_required` and `package::pack`'s
+`pack_on_native_target_required` checks. The present assembler
+`xtask/src/bundle_local.rs` only supports Mac arm64; native Windows/Linux
+staging still needs target-bound Node/plugin pins, runtime dependencies and
+notices. Cross-target **read-only verification**, however, must select paths
+from the declared release target: `distribution/src/lib.rs::verify_bundle`
+currently calls host-dependent `executable()` for Warden and other binaries,
+so Mac verification of a real Windows package would fail. Add a target-path
+helper for that pure verifier, with actual Windows-path inventory/tamper
+regression coverage; do not use it to bypass installation or packing host
+gates. Acceptance remains the full four-target candidate matrix, with native
+package bytes and receipts, not extracted build ZIP inventories alone.
 The npm access preflight is unauthenticated; `tradeassembly` returns registry
 404, which does not prove namespace ownership. The account credential is
 available in Bitwarden; authenticated namespace verification remains required.

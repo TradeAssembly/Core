@@ -182,11 +182,27 @@ authority. Install/reinstall, packaging-version upgrade/rollback and running-rig
 denial also pass (1/1 in 9.02 seconds), recorded in
 `target/github-compatible-install.log` (SHA-256
 `99f53bd64666a0f3faa433a19ae371717b958e91df0a1ff32977bf27eef3f429`).
-Next: checkpoint the coherent repair after source/boundary checks, run Core's
-full clean gate, and build that installer on GitHub. The first full-gate preflight
-hit local compiler-cache disk exhaustion, not a failing assertion. Only disposable
-compiler outputs were removed; the retry uses `CARGO_INCREMENTAL=0`. Do not
-claim the full gate passed until its command exits 0.
+The repair is committed and pushed at
+`6b0aa2e37a722f1db861b2725567961cf4de01f0`. The owning full clean gate
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 just verify`
+exited 0, including all 1,336 Nextest tests. Log:
+`target/github-compatible-core-verify-lowdisk.log`, SHA-256
+`45119f0fe6c2dc6a4c4fcb6bb2d26ab934e0bdfbb192a1214d0be47a94dd5a59`.
+Earlier attempts exhausted local compiler-cache disk space; only reproducible
+Cargo debug outputs were removed. Frozen payloads and evidence were preserved.
+The default gate reports `archiveSmoke: not_requested`; therefore a separate
+`cargo xtask foss-core-boundary --archive-smoke` is running against the clean
+`6b0aa2e` archive (local process handle `7652`, log
+`target/github-compatible-archive-smoke.log`). Do not claim it passed yet.
+GitHub native Mac Core run `36932664901` is building this exact source
+(watch handle `68854`, log `target/gh-native-core-6b0aa2e.log`). The private
+capture tool is checkpointed at `8e8b321` with this exact Mac Core pin; 2/2
+capture tests pass. Next: reuse these live processes, verify the successful
+Core artifact, assemble a new package with its GitHub installer, then run the
+complete native qualifier against those exact bytes. Do not reuse the local
+installer diagnostic as customer provenance. Production Relay isolation,
+experimental package assembly, candidate/registry verification, publication
+and final integration remain open.
 
 The October 1 AWS CLI readback still lists only the test Relay DSQL cluster and
 the separate production Hub cluster, with the F2 conformance Relay Lambdas and
@@ -251,14 +267,15 @@ public; CodeBuild can consume their private sources, so changing visibility is
 not a prerequisite for this release. Apple payment/signing/notarization and
 M7/M8 remain excluded. Original frozen artifacts and prior evidence stay intact.
 
-The Core, Warden and Alpaca native GitHub workflows are opt-in diagnostics, not
+Historical September 30 checkpoint (superseded by the October 1 GitHub amendment):
+the Core, Warden and Alpaca native GitHub workflows are opt-in diagnostics, not
 release producers or qualification gates. Their branch-push triggers were removed
 to avoid unplanned native builds while the CodeBuild path is prepared. Manual
 dispatch is not assumed available from an unmerged branch; no native artifact
 receipt may be inferred from these workflows. CodeBuild configuration, real
 builds, artifact capture and the separate Mac qualification remain required.
 
-Current implementation status: **plan amended; candidate/registry verifier code
+Historical September 30 implementation status: **plan amended; candidate/registry verifier code
 in progress; CodeBuild configuration and live qualification still pending**.
 The saved goal is active and still
 contains its older five-target wording; that wording is superseded here, not

@@ -34,23 +34,34 @@ old direct CodeBuild path. Public visibility is only possible after the
 mandatory secret/history and binary/license/hosted-boundary review below.
 Record real runner and billing readbacks before claiming a producer build.
 
-The next bounded step is to prove the pinned Core, Warden and Alpaca workflows
-on standard GitHub-hosted runners, repair producer provenance, and replace the
-CodeBuild-specific verifier/readback contract with a GitHub-run/artifact
-contract and negative tests. Then produce and verify the actual three native
-target bundles. Until that happens, candidate and registry gates remain red.
+October 1 checkpoint: pinned GitHub Actions native builds passed on actual
+GitHub-hosted runners for all three experimental first-release targets and
+all three producers:
 
-October 1 checkpoint: all three pinned Linux x64 workflows passed on actual
-GitHub-hosted runners (Core `36907697699` at `6637e6f`, Warden `36907884275`
-at `dade4e6`, Alpaca `36907966575` at `908b5e3`). The private Rust capture
-tool verified GitHub run/job/artifact records and downloaded ZIP digests, and
-preserved sanitized readbacks and archives outside Git. Core's new
-GitHub-receipt validator and negative tests pass targeted distribution tests
-and Clippy locally. This is component build evidence, not candidate or registry
-qualification. Windows x64 and Linux arm64 builds are in progress. The frozen
-Core producer commit is available on the build-only GitHub branch
-`codex/f2-native-build-input-6637e6f`; do not use subsequent release-tool
-commits as its native source revision.
+| Target | Core run | Warden run | Alpaca run |
+| --- | --- | --- | --- |
+| GNU Linux x64 | `36907697699` | `36907884275` | `36907966575` |
+| GNU Linux arm64 | `36909322770` | `36909194724` | `36909194587` |
+| Windows x64 | `36909322597` | `36914759668` | `36909194467` |
+
+Core source is `6637e6f7ebe21189bbde090f66d83ad8e6ed70a1` on build-only
+branch `codex/f2-native-build-input-6637e6f`; Alpaca source is `908b5e3` and
+pins that exact Core SDK. Warden source is `dade4e6` on Linux and `0b75f20`
+on Windows after native Windows private-file and export-path repairs. The
+private Rust capture tool validated GitHub run/job/artifact records and actual
+downloaded ZIP digests. Core's deterministic `verify-github-builds` passed
+against the captured readbacks and archives for all three targets, including
+a wrong-source negative check. Core `just verify` and Warden's owning local
+gate passed at their current source heads. GitHub's October Actions usage
+readback showed $0 net charges; the $0 overage stop remains in force.
+
+This is **native producer build provenance only**. It does not qualify a
+source-free installation, Windows/Linux runtime behavior, the assembled
+candidate, Mac arm64 acceptance, npm registry bytes, or a customer release.
+Next: assemble the versioned four-target candidate from these exact outputs,
+check each binary architecture/inventory and notices, run the Mac acceptance,
+then satisfy candidate and registry verifiers. Do not mark those gates passed
+from green GitHub jobs alone.
 
 The September 30 scope amendment deferred Windows/Linux platform acceptance
 testing until after the first release. Its former AWS CodeBuild producer choice

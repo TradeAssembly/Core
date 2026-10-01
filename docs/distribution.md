@@ -190,10 +190,12 @@ exited 0, including all 1,336 Nextest tests. Log:
 `45119f0fe6c2dc6a4c4fcb6bb2d26ab934e0bdfbb192a1214d0be47a94dd5a59`.
 Earlier attempts exhausted local compiler-cache disk space; only reproducible
 Cargo debug outputs were removed. Frozen payloads and evidence were preserved.
-The default gate reports `archiveSmoke: not_requested`; therefore a separate
-`cargo xtask foss-core-boundary --archive-smoke` is running against the clean
-`6b0aa2e` archive (local process handle `7652`, log
-`target/github-compatible-archive-smoke.log`). Do not claim it passed yet.
+The default gate reports `archiveSmoke: not_requested`; the separate
+`cargo xtask foss-core-boundary --archive-smoke` exited 0 against the clean
+`6b0aa2e` archive, reporting `archiveSmoke: passed`, including isolated archive
+compilation and runtime MCP discovery. Log:
+`target/github-compatible-archive-smoke.log`, SHA-256
+`b82cc57d1929f30091c84b605b75139303974c9f424fd2798f694a9bb3e53c8f`.
 GitHub native Mac Core run `36932664901` is building this exact source
 (watch handle `68854`, log `target/gh-native-core-6b0aa2e.log`). The private
 capture tool is checkpointed at `8e8b321` with this exact Mac Core pin; 2/2

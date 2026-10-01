@@ -237,6 +237,22 @@ test-state retention edit was removed. Next: checkpoint this coherent repair,
 run the clean owning gate and separate source-archive smoke, then push and
 rebuild on GitHub, assemble a separate package and rerun full qualification.
 Do not reuse the failed package's component logs to qualify changed bytes.
+The repair is committed and pushed at
+`ee33757f98a9781cf18c6fc36037dccecda549b3`. Clean `just verify` exited 0
+(1,337/1,337 Nextest tests), followed by a separate successful isolated
+`cargo xtask foss-core-boundary --archive-smoke`. Logs and SHA-256:
+`target/github-lease-renewal-core-verify.log` =
+`b99f993cf7718a2dd859c0ae8c08d65b00201641b8c7d5cecd951d0b7f2414c7`;
+`target/github-lease-renewal-archive-smoke.log` =
+`99e8e699d44520cf477eb0ca9a8d585bd69c519c0ff03c2abe85b8342c6a0f45`.
+GitHub native Mac build `36937535332` was dispatched against this revision;
+it is not yet build or qualification evidence. The live CLI watch is exec
+session `14798`, logging to `target/github-lease-renewal-build-watch.log`;
+reuse it rather than dispatching another run. The private capture tool is
+checkpointed at `322e7de` with the exact revision pin; its two tests pass.
+Next: capture the successful run's real bytes, extract and assemble a new
+candidate without overwriting prior outputs, then run the complete native
+qualifier. Preserve the compatible authority and frozen parent lock.
 The npm access preflight is unauthenticated; `tradeassembly` returns registry
 404, which does not prove namespace ownership. The account credential is
 available in Bitwarden; authenticated namespace verification remains required.

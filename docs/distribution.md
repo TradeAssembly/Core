@@ -67,21 +67,27 @@ revision exited 1 without creating an output directory. These are unqualified
 build inputs, not package or install evidence. The original frozen Mac payload
 and parent lock were not changed.
 The three opt-in producer workflows now offer the standard `macos-15` arm64
-GitHub runner. Warden run `36918705772` and Alpaca run `36918717106` passed
-and their actual archives were captured with digests; Core run `36918694751`
-is still compiling at the October 1 checkpoint. Alpaca's GitHub package hash
+GitHub runner. Warden run `36918705772`, Alpaca run `36918717106`, and
+corrected Core run `36921808794` passed. Their actual archives were captured
+with GitHub run/job/artifact readbacks and matching ZIP digests. Alpaca's package hash
 is `828a71a4c563650da4312799cb3b8ee8adf1a26ed4c846429754b0167ff53d27`.
-The first Core run predates this pin and is diagnostic only: its embedded
-default-plugin hash cannot install that Alpaca package. A subsequent Core
-build must contain the new pin. The Alpaca workflow uses Core SDK commit
-`d3e536f`, and the subsequent Core commit may differ; the GitHub build verifier
-requires identical `plugin-sdk` Git tree IDs from both commits, plus exact
-run and archive bindings. A Mac GitHub build, once captured, will be distinct from the
+The first Core run `36918694751` predates this pin and is diagnostic only:
+its embedded default-plugin hash cannot install that Alpaca package. The
+corrected Core commit `a274deeae4426b6c1cb4a33849aa458da7da0b24` embeds
+the matching pin and passed clean-worktree `just verify` before GitHub build.
+The Alpaca workflow uses Core SDK commit `d3e536f`; the verifier established
+both commits have the identical `plugin-sdk` tree
+`1e97d7e09ff4c20bc8c099474dfd5dbdcddd72b7`.
+`cargo xtask distribution-extract-github-builds` passed for arm64 Mac and
+materialized seven named, hash-inventoried outputs under ignored
+`target/github-build-outputs-macos-arm64`; native binaries were identified as
+arm64 Mach-O. This is binary transport with `qualified: false`. The Mac GitHub
+build inputs are distinct from the
 existing locally built and qualified `0.1.0-beta.2` Mac candidate; changing
 the Mac binary inputs requires a fresh native Mac candidate and qualification.
 The GitHub receipt verifier accepts `macos-15` only for arm64 Mac and rejects
-that runner for Linux. No replacement qualification is claimed by adding the
-workflow option or completing producer builds.
+that runner for Linux. No replacement qualification is claimed by completing
+producer builds.
 Next: assemble the versioned four-target candidate from these exact outputs,
 check each binary architecture/inventory and notices, run the Mac acceptance,
 then satisfy candidate and registry verifiers. Do not mark those gates passed

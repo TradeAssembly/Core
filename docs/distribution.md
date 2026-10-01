@@ -245,14 +245,42 @@ The repair is committed and pushed at
 `b99f993cf7718a2dd859c0ae8c08d65b00201641b8c7d5cecd951d0b7f2414c7`;
 `target/github-lease-renewal-archive-smoke.log` =
 `99e8e699d44520cf477eb0ca9a8d585bd69c519c0ff03c2abe85b8342c6a0f45`.
-GitHub native Mac build `36937535332` was dispatched against this revision;
-it is not yet build or qualification evidence. The live CLI watch is exec
-session `14798`, logging to `target/github-lease-renewal-build-watch.log`;
-reuse it rather than dispatching another run. The private capture tool is
-checkpointed at `322e7de` with the exact revision pin; its two tests pass.
-Next: capture the successful run's real bytes, extract and assemble a new
-candidate without overwriting prior outputs, then run the complete native
-qualifier. Preserve the compatible authority and frozen parent lock.
+GitHub native Mac build `36937535332` passed against this revision. Capture
+verified artifact `11198879853`, ZIP SHA-256
+`b862f25d10205cc40498d5e515bf13380cbd38f1da0e0ac002d9feb0ae41023b`.
+The private capture tool is checkpointed at `322e7de`; its two tests pass.
+Core extraction and SDK binding passed under
+`target/github-build-outputs-macos-lease-renewal`: Core SHA-256
+`38915b9a372b8eb5da92d64cc1966802717ba575517b3cb47d26d0752c107d34`;
+installer, sandbox, compatible Warden and Alpaca bytes match the prior verified
+inputs. The separate `target/f2-npm-mac-package-lease-renewal` local-profile
+beta.3 has manifest `1afedb0ee042d1866d17b706ff3d40eece1f8a2bbd7d1beacdd6a83333118023`,
+archive `885115fec2d4f605ca460b90c770adc627b9ee5e3b5da1826cdebc728434ce41`,
+descriptor `cb41d41897477b2a48961006559e4aee8460278f580739eb0250a570b8699422`.
+Its **complete native Mac qualifier passes**, including the four real stdio
+MCP/Warden/controlled-sink cases (4/4 in 132.86 seconds), source-free setup,
+scripts-disabled npm/pnpm, baseline upgrade/rollback, state preservation,
+interruption/active-rig denial and sandbox checks. No actual broker orders or
+shipping Live activation occurred. Receipt:
+`target/f2-npm-evidence-lease-renewal/aarch64-apple-darwin/receipt.json`, SHA-256
+`fc3c410069666e863c04749385738ec72b8dc298570ea94506393e612f5961ab`;
+qualifier log `target/github-lease-renewal-qualification.log`, SHA-256
+`4eeeb9d76df2333e11f19158d052d94bdac2e9af9a37929e0d7a0e5288f14690`.
+Qualification source is committed `2370ea11a6f89f0734f6e199bc84872a97c05755`.
+The native evidence was moved without modification into the matrix's actual
+target directory; its receipt hash is unchanged. Watches/tests/extraction are
+terminal; do not rerun them without changed inputs. The original frozen parent
+lock remains unchanged.
+
+The actual `cargo xtask distribution-verify --candidate --evidence
+/Users/davidjbeveridge/.codex/worktrees/f2-npm-distribution/target/f2-npm-evidence-lease-renewal`
+exits 1 with
+`first_release_production_profile_required:aarch64-apple-darwin`, recorded in
+`target/github-lease-renewal-candidate-matrix-gate.log`. This is Mac component
+qualification, **not customer release qualification**. Next: E0–E5 real
+production/staging isolation and the customer profile, then bind that profile
+to a separate bundle using these verified binaries and qualify those exact
+bytes. Complete experimental native packages/receipts before the full matrix.
 Experimental packaging follow-up is separate from that Mac qualification.
 Use native GitHub runners for staged-input freezing and package production;
 retain `native::freeze`'s `native_host_required` and `package::pack`'s
@@ -260,12 +288,10 @@ retain `native::freeze`'s `native_host_required` and `package::pack`'s
 `xtask/src/bundle_local.rs` only supports Mac arm64; native Windows/Linux
 staging still needs target-bound Node/plugin pins, runtime dependencies and
 notices. Cross-target **read-only verification**, however, must select paths
-from the declared release target: `distribution/src/lib.rs::verify_bundle`
-currently calls host-dependent `executable()` for Warden and other binaries,
-so Mac verification of a real Windows package would fail. Add a target-path
-helper for that pure verifier, with actual Windows-path inventory/tamper
-regression coverage; do not use it to bypass installation or packing host
-gates. The read-only helper is now implemented in `distribution/src/lib.rs`:
+from the declared release target. The former host-dependent paths would reject
+Windows payloads on a Mac verifier. The target-path helper is implemented in
+`distribution/src/lib.rs` at local commit `2370ea1`; it does not bypass
+installation or packing host gates:
 all 31 distribution unit tests and strict all-targets distribution Clippy pass,
 including five-target file inventory, hash tampering, wrong authority digest,
 and a self-consistent Windows manifest with missing `.exe` paths. These are
@@ -274,9 +300,17 @@ change the existing GitHub run's source pin or qualify new installer bytes.
 The next full owning gate remains required at the integration checkpoint.
 Acceptance remains the full four-target candidate matrix, with native
 package bytes and receipts, not extracted build ZIP inventories alone.
-The npm access preflight is unauthenticated; `tradeassembly` returns registry
-404, which does not prove namespace ownership. The account credential is
-available in Bitwarden; authenticated namespace verification remains required.
+The npm access preflight remains unauthenticated; registry 404 does not prove
+namespace ownership. Bitwarden credential use reached actual npm browser MFA:
+the page requests a six-digit **authenticator device** code. Its Bitwarden item
+has no TOTP/custom fields; authorized Gmail has no recent npm verification mail.
+The Chrome Bitwarden overlay was handled once through bounded native controls;
+no reset/recovery/security weakening was attempted. User input was requested
+once and the MFA tab was marked for handoff. npm CLI web session `98779` is
+terminal (exit 1); the browser sign-in can still establish its normal session,
+after which a new CLI authorization must be verified. No npm token was
+obtained or saved. Isolated temporary userconfig directory is
+`/private/tmp/tradeassembly-npm-auth.qJw5BG`. Namespace verification remains open.
 Nothing was published. Production Relay isolation,
 experimental package assembly, candidate/registry verification, publication
 and final integration remain open.
@@ -286,9 +320,9 @@ the separate production Hub cluster, with the F2 conformance Relay Lambdas and
 test archive bucket; it did not establish production Relay storage. The E0–E5
 production/staging isolation gate below remains open. Do not freeze a
 customer-facing Relay profile from the diagnostic bundle.
-Next: qualify the frozen-compatible Mac authority output, then assemble the
-versioned four-target candidate from the selected outputs,
-check each binary architecture/inventory and notices, run the Mac acceptance,
+Next: close the production profile/isolation gate, assemble the versioned
+four-target candidate from the selected outputs, check binary
+architecture/inventory and notices, qualify the exact customer Mac bundle,
 then satisfy candidate and registry verifiers. Do not mark those gates passed
 from green GitHub jobs alone.
 

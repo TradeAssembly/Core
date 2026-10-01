@@ -66,6 +66,13 @@ executable architecture, and wrote hash inventories under ignored
 revision exited 1 without creating an output directory. These are unqualified
 build inputs, not package or install evidence. The original frozen Mac payload
 and parent lock were not changed.
+The three opt-in producer workflows now offer the standard `macos-15` arm64
+GitHub runner. A Mac GitHub build, once captured, will be distinct from the
+existing locally built and qualified `0.1.0-beta.2` Mac candidate; changing
+the Mac binary inputs requires a fresh native Mac candidate and qualification.
+The GitHub receipt verifier accepts `macos-15` only for arm64 Mac and rejects
+that runner for Linux. No Mac GitHub build or replacement qualification is
+claimed by adding the workflow option.
 Next: assemble the versioned four-target candidate from these exact outputs,
 check each binary architecture/inventory and notices, run the Mac acceptance,
 then satisfy candidate and registry verifiers. Do not mark those gates passed

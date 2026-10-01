@@ -569,6 +569,7 @@ fn verify_codebuild_readbacks(root: &Path, receipt: &Value) -> Result<()> {
 
 fn verify_github_readbacks(root: &Path, receipt: &Value, target: &str) -> Result<()> {
     let runner = match target {
+        "aarch64-apple-darwin" => "macos-15",
         "x86_64-unknown-linux-gnu" => "ubuntu-22.04",
         "aarch64-unknown-linux-gnu" => "ubuntu-22.04-arm",
         "x86_64-pc-windows-msvc" => "windows-2022",
@@ -1402,6 +1403,21 @@ mod tests {
             verify_github_readbacks(root.path(), &receipt, target).unwrap_err(),
             "experimental_github_sdk_binding_invalid"
         );
+        for (owner, revision) in [("core", "a"), ("warden", "b"), ("alpaca", "c")] {
+            let file = format!("{owner}.json");
+            let path = root.path().join(&file);
+            let mut readback: Value = read_json(&path).unwrap();
+            readback["run"]["runner"] = json!("macos-15");
+            readback["artifact"]["name"] =
+                json!(format!("{owner}-macos-15-{}", revision.repeat(40)));
+            if owner == "alpaca" {
+                readback["coreSdkRevision"] = json!("a".repeat(40));
+            }
+            atomic_json(&path, &readback).unwrap();
+            receipt["buildReadbacks"][owner] = proof(root.path(), &file);
+        }
+        assert!(verify_github_readbacks(root.path(), &receipt, "aarch64-apple-darwin").is_ok());
+        assert!(verify_github_readbacks(root.path(), &receipt, target).is_err());
     }
 
     #[test]

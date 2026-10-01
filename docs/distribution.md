@@ -28,9 +28,9 @@ failed before a runner started, but an October 1 Warden job reached a real
 GitHub-hosted runner after the monthly allowance reset. Use standard
 GitHub-hosted runners within the included allowance for this release. Stop
 before any overage; do not silently raise the cap. If included minutes run out,
-the alternate is GitHub Actions using ephemeral AWS CodeBuild-hosted runners
-under the existing AWS budget, selected and proven separately. It is not the
-old direct CodeBuild path. Public visibility is only possible after the
+stop and make a separate, explicit build-runner decision. Do not silently
+switch to CodeBuild or raise the Actions cap. Public visibility is only possible
+after the
 mandatory secret/history and binary/license/hosted-boundary review below.
 Record real runner and billing readbacks before claiming a producer build.
 
@@ -101,12 +101,42 @@ The Mac upgrade path is not qualified yet. The baseline Warden digest is
 `84738d401b7442c743de7fe736d61199a82fe1f89c405a0e0135cc1bd915acce`;
 the GitHub-built Warden digest is
 `3717756a40393f88c2cb7c5edd64d5f30747bf56befb4d53340f97d85cf789de`.
-`distribution/src/install.rs::compatible` intentionally rejects different
-authority bytes. R3 needs an exact-pair, stopped-rig, resumable authority
-transition with real state/rollback proof. The selected release route ships the
-GitHub-built Warden; retaining the old binary would defeat the native-producer
-decision. Permit only this exact old/new digest pair on Mac arm64, in either
-direction, after stopped-rig checks and full verification of both immutable
+The attempted transition to `3717756a...` is **not compatible**: the actual
+GitHub authority exits with `database_integrity_witness_missing` on the frozen
+state. The frozen binary predates that external witness/key-head format. The
+previous claim that its source was `e5b926c` was incorrect; the Core source lock
+pins `ffa6889b141f881fb594c1c46e3c83180c2998ef`. Do not synthesize a witness,
+reset policy state, relax the new storage checks, or qualify that failed pair.
+
+For this bounded packaging release, build the locked Mac authority on GitHub,
+with only four iterator-style Clippy repairs in its storage source, preserving
+its schema and integrity formats. The build-only producer branch is
+`codex/f2-mac-frozen-authority`; its first native run `36928230162` failed on
+those four Clippy diagnostics and is terminal. The amended workflow binds the
+storage file SHA `1899cf62b7d77f0061937fe4fc68dd371842dd1a474e59412bb12e601f7b97cd`,
+rejects other source differences from the lock, and runs the owning full gate.
+The existing experimental Linux/Windows outputs remain separately pinned.
+Adopting the newer authority storage format needs its own migration and is not
+required to recreate the frozen Mac contract in a GitHub build.
+The amended source is `be9ac371e1e27d04ef08169ec6eef49e2bafd521`.
+Its local `cargo --locked xtask verify` exited 0, including 115 Rust tests,
+22 SDK tests, strict Clippy, dependency advisories/licenses and the public
+boundary gate; full output is `target/warden-frozen-authority-verify.log` in
+this Core worktree. GitHub run `36928911139` completed successfully. The private
+capture tool verified its source, native runner and artifact `11194953937`;
+the downloaded ZIP SHA-256 is
+`7750f77a9d3d232da2314b51cc1dc045782785325c982570c586d51cffa9c6ae`.
+Core's `distribution-extract-github-builds` passed and identified the extracted
+authority as arm64 Mach-O with SHA-256
+`1fb42d13f2ef46f3232daddfa6358553218978832501df9c8299aa3ee02878f8`.
+Its hash inventory is `target/github-build-outputs-macos-compatible/build-outputs.json`.
+This is verified build provenance, not upgrade qualification.
+
+R3 still needs an exact-pair, stopped-rig, resumable binary transition with real
+state/rollback proof. The source now pins the retrieved `1fb42d13...` digest;
+`3717756a...` is not an enabled release pair. Admit
+only the frozen and qualified replacement digest, in either direction, after
+stopped-rig checks and full verification of both immutable
 payloads. Journal the target in `pending.json` before changing the stable
 authority binary; on retry accept only the pinned old or new digest and complete
 the same transaction. Update the local installation hash and sandbox binding
@@ -115,15 +145,56 @@ Warden -> new Warden -> old Warden against the same disposable state, including
 interrupted swap/retry and active-rig denial, before enabling the pair in a
 candidate. No cross-platform authority migration is implied. Do not weaken the
 general digest gate or call a fresh install an upgrade. The Warden source delta
-is primarily Windows storage/ACL work; that observation alone is not migration
-acceptance.
+is insufficient evidence of compatibility. The real test also exposed a
+macOS `/var` versus `/private/var` executable-path alias: process inspection now
+resolves both sides before comparing them. Recovery after the pointer commit
+and before pending-journal cleanup must retain the previous slot; both upgrade
+and rollback have explicit acceptance for that crash boundary. These installer
+changes remain unqualified until the real tests pass with bound package bytes.
+Current installer-development evidence: both ignored `packaged_install`
+drivers pass against the separately repacked `target/f2-npm-mac-recovery-diagnostic`
+fixture, with unchanged frozen Warden bytes. They preserve Core state,
+credential fingerprints and original signed Warden receipts, including the
+post-pointer crash cleanup. All 30 distribution unit tests and strict
+distribution Clippy pass. This is recovery evidence, not acceptance of the new
+authority digest or a customer candidate. The coherent Core repair is in
+`distribution/src/install.rs`, `distribution/tests/packaged_install.rs` and
+this document. The exact-pair real-binary test now passes against
+`target/f2-npm-mac-package-github-compatible/tradeassembly-darwin-arm64`:
+baseline install, running-policy/active-execution denial, interrupted authority
+and metadata writes, retry, upgrade, rollback, post-pointer cleanup, retained
+Core row, owner configuration, credential fingerprints and original signed
+Warden receipts. `target/github-compatible-upgrade.log` records 1/1 passing in
+19.95 seconds (SHA-256
+`28c669b7c7dec9f66f78d1d8e6d3ae48c4c2742fd7013379769230508dbc55f2`).
+The package is local diagnostic beta.3: manifest
+`4650620f56bb3b0cf2272773c997fd95d3eaa5c84a9bcb4d163ae0315e77aacd`,
+archive `7df3c8adaa44d8bb732df681ae3910ee37afdf451cf468785a5f407e2bb11264`,
+descriptor `001defa070027526f815d704ce67a3f72c75f803ee1fea1b7c8e941ad709c61f`,
+locally built installer
+`ef14241cf6b978af78461b367d210a32380cf9315ad63b8031ae5bb789e71c3b`.
+The runtime, authority and Alpaca bytes are GitHub-built, but this local installer
+does not satisfy customer build provenance. The final package must bind the
+GitHub-built committed installer and rerun qualification. The frozen parent
+lock remains `222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
+All 30 distribution unit tests and strict Clippy pass after pinning the verified
+authority. Install/reinstall, packaging-version upgrade/rollback and running-rig
+denial also pass (1/1 in 9.02 seconds), recorded in
+`target/github-compatible-install.log` (SHA-256
+`99f53bd64666a0f3faa433a19ae371717b958e91df0a1ff32977bf27eef3f429`).
+Next: checkpoint the coherent repair after source/boundary checks, run Core's
+full clean gate, and build that installer on GitHub. The first full-gate preflight
+hit local compiler-cache disk exhaustion, not a failing assertion. Only disposable
+compiler outputs were removed; the retry uses `CARGO_INCREMENTAL=0`. Do not
+claim the full gate passed until its command exits 0.
 
 The October 1 AWS CLI readback still lists only the test Relay DSQL cluster and
 the separate production Hub cluster, with the F2 conformance Relay Lambdas and
 test archive bucket; it did not establish production Relay storage. The E0–E5
 production/staging isolation gate below remains open. Do not freeze a
 customer-facing Relay profile from the diagnostic bundle.
-Next: assemble the versioned four-target candidate from these exact outputs,
+Next: qualify the frozen-compatible Mac authority output, then assemble the
+versioned four-target candidate from the selected outputs,
 check each binary architecture/inventory and notices, run the Mac acceptance,
 then satisfy candidate and registry verifiers. Do not mark those gates passed
 from green GitHub jobs alone.
@@ -621,7 +692,9 @@ readiness. This work does not reopen Apple signing/notarization or unrelated UI.
 
 ## Frozen input and proof matrix
 
-The parent unsigned-cohort lock SHA-256 is
+The preserved parent lock is available at
+`target/f2-unsigned-cohort-release-lock.json` in this worktree, copied unchanged
+from `/private/tmp/f2-unsigned-cohort-release-lock.json`. Its SHA-256 is
 `222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
 The Mac arm64 bundle manifest SHA-256 is
 `6740c7d7f4e8a692ff005dd18b6dc2656883eb8e366253e4e8e6aa054108f5dc`.
@@ -677,7 +750,7 @@ checks. No rollback is represented as reversal of a database migration.
 
 `cargo xtask distribution-verify` must fail until published npm/pnpm installation
 and native enforcement evidence are present on Mac arm64, registry bytes match
-on all four targets, and three CodeBuild experimental receipts pass. Package
+on all four targets, and three GitHub Actions experimental receipts pass. Package
 tests, builds and a Mac-only installer are not whole-plan completion. The original
 M0–M6 lock and false M7/M8 verdicts remain unchanged. Run owning Core gates before
 any merge; publish only a `beta` tag after authenticated namespace ownership and
@@ -881,7 +954,9 @@ Source pointers: pinned Warden `warden-storage-sqlite/src/lib.rs`
 (`IntegrityLock`, private read/write/remove) and `warden-service/src/main.rs`
 (private seed/token/export files); Core `runtime-rs/src/local_install.rs`,
 `runtime-rs/src/local_owner_identity.rs`, `distribution/src/install.rs` and
-`distribution/src/lib.rs`. Frozen Warden source is `e5b926c`; changes use a new
+`distribution/src/lib.rs`. The frozen Mac Warden source lock is `ffa6889b`
+(the older `e5b926c` claim was disproved by the real storage transition test);
+changes use a new
 producer branch, not the modern detached checkout or frozen release copies.
 Alpaca changes branch from `e4ea4c`, limited initially to
 `xtask/src/main.rs`: native `.exe` selection, matching descriptor paths and
@@ -1088,8 +1163,9 @@ negative tests. Retain the existing no-running-rig and interruption cases.
 
 **R4 planning refinement — platform scope and public producers (2026-09-30).**
 
-The approved first-release scope above supersedes this section's original
-proposal: CodeBuild is selected, Windows/Linux acceptance is deferred, and only
+The approved first-release scope and October 1 build-provider amendment above
+supersede this section's original proposal: GitHub Actions native builds are
+selected, Windows/Linux acceptance is deferred, and only
 macOS arm64 is qualified for the initial beta. Intended later qualification
 covers GNU Linux x64/arm64 on Ubuntu 24.04 LTS and current supported Windows
 11 x64. Windows x64 includes both Intel and AMD processors. Intel Mac is a future
@@ -1136,7 +1212,9 @@ review per repository:
 
 The review is required planning scope; preliminary scanning has run, but the
 full disclosure verdict remains open. Repository visibility has not changed.
-AWS CodeBuild is the selected first-release build route.
+GitHub Actions on standard GitHub-hosted runners is the selected first-release
+build route. The CodeBuild discussion below is historical analysis, not an
+implementation instruction.
 Preliminary disclosure scan (2026-09-30, Gitleaks 8.30.0): exact intended
 producer heads Warden `dade4e616656fa1a0e891ef06886838e913b532c` (82
 reachable commits) and Alpaca `7ee2842c4de9767e2556bbb873f66c65bd1552f8`
@@ -1157,9 +1235,8 @@ boundaries; those checks remain open before any public visibility change. No
 publication approval or public-repository verdict follows from this
 preliminary scan. A first worktree-directory scan was contaminated by ignored
 `target/` build outputs and is not used as evidence.
-Public standard GitHub runners remain a future option if those repositories
-are published. Use eligible AWS credits for private producer builds; verify credit
-eligibility and bound compute before dispatch. AppVeyor is another hosted
+The private producers already use standard GitHub-hosted runners; keep the $0
+overage cap and verify included minutes before new runs. AppVeyor is another hosted
 Windows builder. GitHub larger runners offer a Windows 11 Desktop image for
 client-OS qualification and are paid even for public repositories; check account
 eligibility and a finite budget before selecting that route. No home machine
@@ -1177,15 +1254,16 @@ Provider references checked 2026-09-30:
 **R4 — Produce the four-target candidate and qualify macOS arm64 (D2/D3).**
 Outcome: the exact macOS arm64 candidate has genuine source-free installation,
 authority, recovery and sandbox evidence; Windows x64 and GNU Linux x64/arm64
-have successful pinned CodeBuild artifacts and integrity evidence, explicitly
+have successful pinned GitHub Actions artifacts and integrity evidence, explicitly
 marked experimental and not platform-qualified.
 Files/repos: Core distribution verifier, candidate/installer and npm packages;
-the existing Core, Warden and Alpaca producer worktrees; private coordination
-CodeBuild configuration and readback capture. The GitHub native workflows are
-manual diagnostics only, not this release's producer or acceptance gate.
-Before dispatch, read AWS identity, credit/budget applicability and project
-configuration; pin producer commits and build images, bound build timeout and
-concurrency, and preserve sanitized build IDs/logs. Inspect each artifact's
+the existing Core, Warden and Alpaca producer worktrees; GitHub native workflow
+definitions and digest-bound run/artifact readbacks. Those workflows supply
+build inputs, not by themselves a release acceptance result.
+Before dispatch, verify the Actions usage cap and runner availability; pin
+producer commits and native runner labels, bound job timeout and concurrency,
+and preserve GitHub run IDs, attempts, job IDs, artifact IDs and ZIP digests.
+Inspect each artifact's
 target, architecture, complete inventory, notices and hashes. Missing, failed,
 wrong-source or tampered output fails the experimental receipt; compilation
 must never be described as Windows/Linux runtime acceptance. Build and run the

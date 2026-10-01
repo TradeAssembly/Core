@@ -225,7 +225,7 @@ fn frozen_baseline_upgrades_to_replacement_and_rolls_back_without_state_loss() {
     assert_eq!(old.schema_version, 1);
     assert_eq!(new.schema_version, 2);
     assert_ne!(old.archive_sha256, new.archive_sha256);
-    assert_eq!(old.warden_sha256, new.warden_sha256);
+    let changes_authority = old.warden_sha256 != new.warden_sha256;
     assert_eq!(old.parent_lock_sha256, new.parent_lock_sha256);
 
     let temp = tempfile::Builder::new()
@@ -255,10 +255,125 @@ fn frozen_baseline_upgrades_to_replacement_and_rolls_back_without_state_loss() {
     let db = rusqlite::Connection::open(state.join("runtime.db")).unwrap();
     db.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES('distribution_upgrade_probe','preserved',?1,'upgrade-probe','local-user',1)", [json!({"value":"retained"}).to_string()]).unwrap();
 
+    let warden_db = rusqlite::Connection::open(state.join("warden.sqlite")).unwrap();
+    let receipts: Vec<(String, String)> = warden_db
+        .prepare("SELECT receipt_id, receipt_hash FROM signed_receipts ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(!receipts.is_empty(), "baseline has real Warden receipts");
+
+    if changes_authority {
+        let mut policy = Policy(
+            Command::new(root.join(executable("authority/bin/warden")))
+                .arg("--database")
+                .arg(state.join("warden.sqlite"))
+                .arg("--key-file")
+                .arg(state.join("signing.seed"))
+                .args(["--key-id", "tradeassembly-local-key"])
+                .arg("--peps")
+                .arg(state.join("peps.json"))
+                .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+                .arg("--token-file")
+                .arg(state.join("warden.token"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(policy.0.try_wait().unwrap().is_none());
+            assert!(Instant::now() < deadline, "baseline policy startup");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let (success, result) = invoke(replacement, &root, "upgrade", port);
+        assert!(!success);
+        assert_eq!(
+            result["code"],
+            "rig_process_running_stop_owned_services_first"
+        );
+        assert!(!root.join("pending.json").exists());
+        drop(policy);
+
+        db.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES('execution_activations','authority-transition-probe',?1,'authority-transition-probe','local-user',1)", [json!({"state":"active"}).to_string()]).unwrap();
+        let (success, result) = invoke(replacement, &root, "upgrade", port);
+        assert!(!success);
+        assert_eq!(result["code"], "rig_has_active_or_unknown_execution_state");
+        assert!(!root.join("pending.json").exists());
+        db.execute(
+            "UPDATE tradeassembly_kv SET value_json=?1 WHERE item_key='authority-transition-probe'",
+            [json!({"state":"stopped"}).to_string()],
+        )
+        .unwrap();
+
+        // The real installer swaps authority, then fails registration because
+        // the selected port is occupied. Its current pointer must stay old.
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let (success, result) = invoke(replacement, &root, "upgrade", port);
+        assert!(!success);
+        assert_eq!(result["code"], "warden_port_in_use");
+        assert_eq!(
+            read_json::<Value>(&root.join("installed.json")).unwrap()["current"]["version"],
+            old.version
+        );
+        assert!(root.join("pending.json").exists());
+        assert_eq!(
+            digest(&root.join(executable("authority/bin/warden"))).unwrap(),
+            new.warden_sha256
+        );
+        assert!(!Command::new(root.join(executable("bin/tradeassembly")))
+            .arg("--help")
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        // Recreate the two intermediate durable-write boundaries after an
+        // authority swap. Retry the actual transaction against actual binaries.
+        for metadata_is_new in [false, true] {
+            let local_path = state.join("installation.json");
+            let mut local: Value = read_json(&local_path).unwrap();
+            local["sha256"] = json!(if metadata_is_new {
+                &new.warden_sha256
+            } else {
+                &old.warden_sha256
+            });
+            atomic_json(&local_path, &local).unwrap();
+            atomic_json(&config_path, &config).unwrap();
+            let (success, result) = invoke(replacement, &root, "upgrade", port);
+            assert!(!success);
+            assert_eq!(result["code"], "warden_port_in_use");
+            assert_eq!(
+                read_json::<Value>(&local_path).unwrap()["sha256"],
+                new.warden_sha256
+            );
+        }
+        drop(occupied);
+    }
+
     let (success, result) = invoke(replacement, &root, "upgrade", port);
     assert!(success, "replacement upgrade: {result}");
     assert_eq!(result["version"], new.version);
     assert_eq!(result["payloadSha256"], new.archive_sha256);
+    assert_eq!(
+        digest(&root.join(executable("authority/bin/warden"))).unwrap(),
+        new.warden_sha256
+    );
+    // Crash after committing the pointer but before removing the journal.
+    // Retrying must complete cleanup without replacing the previous version.
+    let committed: Value = read_json(&root.join("installed.json")).unwrap();
+    atomic_json(&root.join("pending.json"), &committed).unwrap();
+    let (success, result) = invoke(replacement, &root, "upgrade", port);
+    assert!(success, "committed upgrade recovery: {result}");
+    assert_eq!(
+        read_json::<Value>(&root.join("installed.json")).unwrap(),
+        committed
+    );
+    assert!(!root.join("pending.json").exists());
     assert_eq!(
         read_json::<Value>(&config_path).unwrap()["oidcScopes"],
         config["oidcScopes"]
@@ -270,10 +385,32 @@ fn frozen_baseline_upgrades_to_replacement_and_rolls_back_without_state_loss() {
         .status
         .success());
 
+    if changes_authority {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let (success, result) = invoke(replacement, &root, "rollback", port);
+        assert!(!success);
+        assert_eq!(result["code"], "warden_port_in_use");
+        assert_eq!(
+            digest(&root.join(executable("authority/bin/warden"))).unwrap(),
+            old.warden_sha256
+        );
+        assert!(root.join("pending.json").exists());
+        drop(occupied);
+    }
     let (success, result) = invoke(replacement, &root, "rollback", port);
     assert!(success, "baseline rollback: {result}");
     assert_eq!(result["version"], old.version);
     assert_eq!(result["payloadSha256"], old.archive_sha256);
+    let committed: Value = read_json(&root.join("installed.json")).unwrap();
+    atomic_json(&root.join("pending.json"), &committed).unwrap();
+    let (success, result) = invoke(replacement, &root, "rollback", port);
+    assert!(success, "committed rollback recovery: {result}");
+    assert_eq!(result["version"], old.version);
+    assert_eq!(
+        read_json::<Value>(&root.join("installed.json")).unwrap(),
+        committed
+    );
+    assert!(!root.join("pending.json").exists());
     assert_eq!(
         read_json::<Value>(&config_path).unwrap()["oidcScopes"],
         config["oidcScopes"]
@@ -290,6 +427,19 @@ fn frozen_baseline_upgrades_to_replacement_and_rolls_back_without_state_loss() {
         old.warden_sha256
     );
     assert_eq!(db.query_row("SELECT value_json FROM tradeassembly_kv WHERE namespace='distribution_upgrade_probe' AND item_key='preserved'", [], |row| row.get::<_, String>(0)).unwrap(), json!({"value":"retained"}).to_string());
+    for (receipt_id, receipt_hash) in receipts {
+        assert_eq!(
+            warden_db
+                .query_row(
+                    "SELECT receipt_hash FROM signed_receipts WHERE receipt_id=?1",
+                    [receipt_id],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            receipt_hash,
+            "Warden receipt retained across upgrade and rollback"
+        );
+    }
     assert!(Command::new(root.join(executable("bin/tradeassembly")))
         .arg("--help")
         .output()

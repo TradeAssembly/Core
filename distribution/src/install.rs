@@ -550,13 +550,18 @@ fn stopped(root: &Path) -> Result<()> {
         }
     }
     // Inspect only executable paths. Never read/emit command lines or environments.
+    // macOS /var and /private/var (and Windows canonical path prefixes) may
+    // describe the same installation. Compare resolved paths on both sides.
+    let canonical_root = root.canonicalize().map_err(|_| "state_inspection_failed")?;
     let system = sysinfo::System::new_all();
     if system
         .processes()
         .values()
         .filter_map(|p| p.exe())
+        .filter_map(|path| path.canonicalize().ok())
         .any(|path| {
-            path.starts_with(root.join("versions")) || path.starts_with(root.join("authority"))
+            path.starts_with(canonical_root.join("versions"))
+                || path.starts_with(canonical_root.join("authority"))
         })
     {
         return Err("rig_process_running_stop_owned_services_first".into());
@@ -622,12 +627,147 @@ fn installed(root: &Path) -> Result<Option<Installed>> {
 
 fn compatible(old: &Release, new: &Release) -> Result<()> {
     if old.target != new.target
-        || old.warden_sha256 != new.warden_sha256
         || old.state_compatibility != new.state_compatibility
+        || (old.warden_sha256 != new.warden_sha256 && !f2_mac_authority_transition(old, new))
     {
         return Err("upgrade_requires_qualified_authority_or_state_migration".into());
     }
     Ok(())
+}
+
+const F2_MAC_BASELINE_WARDEN: &str =
+    "84738d401b7442c743de7fe736d61199a82fe1f89c405a0e0135cc1bd915acce";
+const F2_MAC_GITHUB_WARDEN: &str =
+    "1fb42d13f2ef46f3232daddfa6358553218978832501df9c8299aa3ee02878f8";
+
+fn f2_mac_authority_transition(old: &Release, new: &Release) -> bool {
+    old.target == "aarch64-apple-darwin"
+        && new.target == old.target
+        && [
+            (F2_MAC_BASELINE_WARDEN, F2_MAC_GITHUB_WARDEN),
+            (F2_MAC_GITHUB_WARDEN, F2_MAC_BASELINE_WARDEN),
+        ]
+        .contains(&(old.warden_sha256.as_str(), new.warden_sha256.as_str()))
+}
+
+fn pending_transition(root: &Path, next: &Installed) -> Result<()> {
+    let path = root.join("pending.json");
+    if path.exists() {
+        let pending: Installed = read_json(&path)?;
+        if pending != *next {
+            return Err("different_installation_transaction_pending".into());
+        }
+    } else {
+        atomic_json(&path, next)?;
+    }
+    Ok(())
+}
+
+fn recover_committed_transition(root: &Path, current: &Installed) -> Result<bool> {
+    let path = root.join("pending.json");
+    if !path.exists() || read_json::<Installed>(&path)? != *current {
+        return Ok(false);
+    }
+    // The pointer is committed only after preparation succeeds. A crash
+    // between that write and journal cleanup must preserve its previous slot.
+    verify_installed(root, current)?;
+    remove_pending(root)?;
+    Ok(true)
+}
+
+/// Retry a single, fully pinned authority transition after the stopped-rig
+/// check. The pending record is durable before this is called; no runtime may
+/// launch until the new installation pointer is committed.
+fn transition_mac_authority(root: &Path, old: &Release, new: &Release, port: u16) -> Result<()> {
+    if !f2_mac_authority_transition(old, new) {
+        return Err("upgrade_requires_qualified_authority_or_state_migration".into());
+    }
+    let old_payload = root.join("versions").join(&old.archive_sha256);
+    let new_payload = root.join("versions").join(&new.archive_sha256);
+    verify_bundle(&old_payload, old)?;
+    verify_bundle(&new_payload, new)?;
+    let authority = root.join(executable("authority/bin/warden"));
+    let metadata = fs::symlink_metadata(&authority).map_err(|_| "installed_authority_changed")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("installed_authority_changed".into());
+    }
+    let observed = digest(&authority)?;
+    if observed != old.warden_sha256 && observed != new.warden_sha256 {
+        return Err("installed_authority_changed".into());
+    }
+    // The previous attempt may have stopped after any one atomic write.
+    // Accept only the old/new authority and sandbox bindings, never a third
+    // path, digest, port, or altered secret material.
+    let mut binding_valid = false;
+    for sandbox_release in [old, new] {
+        for authority_release in [old, new] {
+            let mut record = Installed {
+                schema_version: 1,
+                current: sandbox_release.clone(),
+                previous: None,
+                warden_port: port,
+            };
+            record.current.warden_sha256 = authority_release.warden_sha256.clone();
+            if verify_prepared(root, &record).is_ok() {
+                binding_valid = true;
+            }
+        }
+    }
+    if !binding_valid {
+        return Err("local_authority_binding_changed".into());
+    }
+    if observed == old.warden_sha256 {
+        #[cfg(not(target_os = "macos"))]
+        return Err("authority_transition_host_unsupported".into());
+        #[cfg(target_os = "macos")]
+        {
+            let replacement = new_payload.join(executable("bin/warden"));
+            if digest(&replacement)? != new.warden_sha256 {
+                return Err("authority_transition_payload_changed".into());
+            }
+            let parent = authority.parent().ok_or("authority_install_failed")?;
+            let staged =
+                tempfile::NamedTempFile::new_in(parent).map_err(|_| "authority_install_failed")?;
+            fs::copy(&replacement, staged.path()).map_err(|_| "authority_install_failed")?;
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o700))
+                .map_err(|_| "authority_install_failed")?;
+            staged
+                .as_file()
+                .sync_all()
+                .map_err(|_| "authority_install_failed")?;
+            staged
+                .persist(&authority)
+                .map_err(|_| "authority_install_failed")?;
+            File::open(parent)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|_| "authority_install_failed")?;
+        }
+    }
+    if digest(&authority)? != new.warden_sha256 {
+        return Err("installed_authority_changed".into());
+    }
+    let state = root.join("state/local");
+    let local_path = state.join("installation.json");
+    let mut local: Value = read_json(&local_path)?;
+    local["sha256"] = json!(new.warden_sha256);
+    atomic_json(&local_path, &local)?;
+    let config_path = state.join("runtime.json");
+    let mut config: Value = read_json(&config_path)?;
+    config["pluginSandboxCommand"] = json!(new_payload
+        .join(executable("bin/tradeassembly-sandbox"))
+        .to_str()
+        .ok_or("installation_path_invalid")?);
+    atomic_json(&config_path, &config)?;
+    verify_prepared(
+        root,
+        &Installed {
+            schema_version: 1,
+            current: new.clone(),
+            previous: Some(old.clone()),
+            warden_port: port,
+        },
+    )
 }
 
 fn prepare(
@@ -786,7 +926,10 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
         return Err("unrecognized_existing_state".into());
     }
     if let Some(current) = &current {
-        if current.current == release && !root.join("pending.json").exists() {
+        if current.current == release
+            && (!root.join("pending.json").exists()
+                || recover_committed_transition(&root, current)?)
+        {
             verify_installed(&root, current)?;
             #[cfg(windows)]
             ensure_windows_srt(&root.join("versions").join(&release.archive_sha256), &root)?;
@@ -825,7 +968,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     #[cfg(windows)]
     let windows_sandbox = ensure_windows_srt(&destination, &root)?;
     let authority = root.join(executable("authority/bin/warden"));
-    if !authority.exists() {
+    if current.is_none() && !authority.exists() {
         #[cfg(not(windows))]
         fs::copy(destination.join(executable("bin/warden")), &authority)
             .map_err(|_| "authority_install_failed")?;
@@ -837,16 +980,21 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
         )
         .map_err(|_| "authority_install_failed")?;
     }
-    if digest(&authority)? != release.warden_sha256 {
-        return Err("installed_authority_changed".into());
-    }
     let next = Installed {
         schema_version: 1,
-        current: release,
+        current: release.clone(),
         previous: current.as_ref().map(|s| s.current.clone()),
         warden_port: port,
     };
-    atomic_json(&root.join("pending.json"), &next)?;
+    pending_transition(&root, &next)?;
+    if let Some(old) = &current {
+        if old.current.warden_sha256 != release.warden_sha256 {
+            transition_mac_authority(&root, &old.current, &release, port)?;
+        }
+    }
+    if digest(&authority)? != release.warden_sha256 {
+        return Err("installed_authority_changed".into());
+    }
     #[cfg(windows)]
     let windows_range = Some(windows_sandbox.port_range);
     #[cfg(not(windows))]
@@ -953,13 +1101,16 @@ pub fn rollback(root: &Path) -> Result<Value> {
     let root = root_path(root)?;
     let _lock = lock(&root, true)?;
     let state = installed(&root)?.ok_or("installation_not_prepared")?;
+    if recover_committed_transition(&root, &state)? {
+        return status(&root);
+    }
     let previous = state.previous.clone().ok_or("rollback_unavailable")?;
     compatible(&state.current, &previous)?;
     stopped(&root)?;
     let next = Installed {
         schema_version: 1,
         current: previous,
-        previous: Some(state.current),
+        previous: Some(state.current.clone()),
         warden_port: state.warden_port,
     };
     if root.join("pending.json").exists() {
@@ -972,10 +1123,13 @@ pub fn rollback(root: &Path) -> Result<Value> {
         &root.join("versions").join(&next.current.archive_sha256),
         &next.current,
     )?;
+    pending_transition(&root, &next)?;
+    if state.current.warden_sha256 != next.current.warden_sha256 {
+        transition_mac_authority(&root, &state.current, &next.current, next.warden_port)?;
+    }
     if digest(&root.join(executable("authority/bin/warden")))? != next.current.warden_sha256 {
         return Err("installed_authority_changed".into());
     }
-    atomic_json(&root.join("pending.json"), &next)?;
     #[cfg(windows)]
     let windows_range = Some(
         ensure_windows_srt(
@@ -1034,6 +1188,69 @@ pub fn run(root: &Path, args: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn f2_mac_authority_transition_is_exact_pair_only() {
+        let mut old = Release {
+            schema_version: 1,
+            version: "0.1.0-beta.1".into(),
+            target: "aarch64-apple-darwin".into(),
+            parent_lock_sha256: crate::PARENT_SHA.into(),
+            bundle_manifest_sha256: crate::FROZEN_MAC_SHA.into(),
+            archive_sha256: "a".repeat(64),
+            warden_sha256: F2_MAC_BASELINE_WARDEN.into(),
+            state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: None,
+            deployment_environment: None,
+            connection_profile_sha256: None,
+        };
+        let mut new = old.clone();
+        new.schema_version = 2;
+        new.version = "0.1.0-beta.3".into();
+        new.warden_sha256 = F2_MAC_GITHUB_WARDEN.into();
+        assert!(compatible(&old, &new).is_ok());
+        assert!(compatible(&new, &old).is_ok());
+        new.warden_sha256 = "b".repeat(64);
+        assert!(compatible(&old, &new).is_err());
+        new.warden_sha256 = F2_MAC_GITHUB_WARDEN.into();
+        old.target = "x86_64-unknown-linux-gnu".into();
+        new.target = old.target.clone();
+        assert!(compatible(&old, &new).is_err());
+        old.target = "aarch64-apple-darwin".into();
+        new.target = old.target.clone();
+        new.state_compatibility = "unqualified".into();
+        assert!(compatible(&old, &new).is_err());
+    }
+
+    #[test]
+    fn pending_authority_transition_rejects_another_target() {
+        let root = tempfile::tempdir().unwrap();
+        let release = Release {
+            schema_version: 1,
+            version: "0.1.0-beta.1".into(),
+            target: "aarch64-apple-darwin".into(),
+            parent_lock_sha256: crate::PARENT_SHA.into(),
+            bundle_manifest_sha256: crate::FROZEN_MAC_SHA.into(),
+            archive_sha256: "a".repeat(64),
+            warden_sha256: F2_MAC_BASELINE_WARDEN.into(),
+            state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: None,
+            deployment_environment: None,
+            connection_profile_sha256: None,
+        };
+        let mut pending = Installed {
+            schema_version: 1,
+            current: release,
+            previous: None,
+            warden_port: 8181,
+        };
+        pending_transition(root.path(), &pending).unwrap();
+        pending_transition(root.path(), &pending).unwrap();
+        pending.warden_port = 8182;
+        assert_eq!(
+            pending_transition(root.path(), &pending).unwrap_err(),
+            "different_installation_transaction_pending"
+        );
+    }
     #[test]
     fn windows_srt_setup_is_one_time_and_partial_state_fails_closed() {
         let status = |exists, credential, wfp| json!({"user":{"user":{"exists":exists},"cred_present":credential},"wfp":{"state":wfp}});

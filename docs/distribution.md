@@ -88,6 +88,41 @@ the Mac binary inputs requires a fresh native Mac candidate and qualification.
 The GitHub receipt verifier accepts `macos-15` only for arm64 Mac and rejects
 that runner for Linux. No replacement qualification is claimed by completing
 producer builds.
+October 1 source-free diagnostic: `cargo xtask bundle-local` assembled a
+separate unsigned Mac bundle from the verified GitHub Core, Warden and Alpaca
+outputs plus the SHA-pinned Node archive. With no connection profile it is a
+**local diagnostic**, not the production Relay candidate. The explicit ignored
+`real_binary_setup_and_policy_service_work_without_source_or_path` test passed
+against its actual bundled Core and Warden binaries: local setup, real policy
+service, offline Alpaca installation and stdio MCP tool inventory succeeded.
+No broker order was sent. The frozen baseline was not modified.
+
+The Mac upgrade path is not qualified yet. The baseline Warden digest is
+`84738d401b7442c743de7fe736d61199a82fe1f89c405a0e0135cc1bd915acce`;
+the GitHub-built Warden digest is
+`3717756a40393f88c2cb7c5edd64d5f30747bf56befb4d53340f97d85cf789de`.
+`distribution/src/install.rs::compatible` intentionally rejects different
+authority bytes. R3 needs an exact-pair, stopped-rig, resumable authority
+transition with real state/rollback proof. The selected release route ships the
+GitHub-built Warden; retaining the old binary would defeat the native-producer
+decision. Permit only this exact old/new digest pair on Mac arm64, in either
+direction, after stopped-rig checks and full verification of both immutable
+payloads. Journal the target in `pending.json` before changing the stable
+authority binary; on retry accept only the pinned old or new digest and complete
+the same transaction. Update the local installation hash and sandbox binding
+without resetting identity, keys, journal or Warden SQLite state. Verify old
+Warden -> new Warden -> old Warden against the same disposable state, including
+interrupted swap/retry and active-rig denial, before enabling the pair in a
+candidate. No cross-platform authority migration is implied. Do not weaken the
+general digest gate or call a fresh install an upgrade. The Warden source delta
+is primarily Windows storage/ACL work; that observation alone is not migration
+acceptance.
+
+The October 1 AWS CLI readback still lists only the test Relay DSQL cluster and
+the separate production Hub cluster, with the F2 conformance Relay Lambdas and
+test archive bucket; it did not establish production Relay storage. The E0–E5
+production/staging isolation gate below remains open. Do not freeze a
+customer-facing Relay profile from the diagnostic bundle.
 Next: assemble the versioned four-target candidate from these exact outputs,
 check each binary architecture/inventory and notices, run the Mac acceptance,
 then satisfy candidate and registry verifiers. Do not mark those gates passed

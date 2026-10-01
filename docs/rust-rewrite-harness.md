@@ -23,8 +23,10 @@ tarballs are not publication evidence. `cargo xtask distribution-capture-registr
 metadata read-only from npm after candidate qualification, compares their bytes
 to qualified artifacts, and stores sanitized evidence. It does not publish.
 `cargo xtask distribution-extract-github-builds` verifies pinned GitHub run,
-artifact and archive digests before materializing only named Core, Warden and
-Alpaca outputs into a new directory. Its output is binary transport marked
+artifact and archive digests, plus equal Core `plugin-sdk` Git tree IDs at the
+runtime and Alpaca SDK revisions in the explicit `--source` checkout, before
+materializing only named Core, Warden and Alpaca outputs into a new directory.
+Its output is binary transport marked
 `qualified: false`; it does not produce a platform package or receipt.
 `cargo xtask distribution-qualify` is the native-host capture entrypoint for
 clean-source, exact-candidate installed-package, npm/pnpm, MCP and sandbox

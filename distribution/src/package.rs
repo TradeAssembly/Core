@@ -575,9 +575,6 @@ fn verify_github_readbacks(root: &Path, receipt: &Value, target: &str) -> Result
         "x86_64-pc-windows-msvc" => "windows-2022",
         _ => return Err("experimental_github_target_invalid".into()),
     };
-    if receipt["sourceRevisions"]["coreSdk"] != receipt["sourceRevisions"]["core"] {
-        return Err("experimental_github_sdk_binding_invalid".into());
-    }
     for (owner, repository, workflow, prefix) in [
         (
             "core",
@@ -636,7 +633,8 @@ fn verify_github_readbacks(root: &Path, receipt: &Value, target: &str) -> Result
         if artifact["digest"] != format!("sha256:{sha}") {
             return Err("experimental_github_artifact_digest_invalid".into());
         }
-        if owner == "alpaca" && readback["coreSdkRevision"] != receipt["sourceRevisions"]["core"] {
+        if owner == "alpaca" && readback["coreSdkRevision"] != receipt["sourceRevisions"]["coreSdk"]
+        {
             return Err("experimental_github_sdk_binding_invalid".into());
         }
         if owner != "alpaca" && readback.get("coreSdkRevision").is_some() {
@@ -652,9 +650,14 @@ pub fn verify_github_builds(
     core: &str,
     warden: &str,
     alpaca: &str,
+    source: &Path,
 ) -> Result<Value> {
+    let alpaca_readback: Value = read_json(&root.join("alpaca.json"))?;
+    let sdk = alpaca_readback["coreSdkRevision"]
+        .as_str()
+        .ok_or("experimental_github_sdk_binding_invalid")?;
     let mut receipt = json!({
-        "sourceRevisions":{"core":core,"warden":warden,"alpaca":alpaca,"coreSdk":core},
+        "sourceRevisions":{"core":core,"warden":warden,"alpaca":alpaca,"coreSdk":sdk},
         "buildReadbacks":{},"buildArchives":{}
     });
     for owner in ["core", "warden", "alpaca"] {
@@ -665,7 +668,40 @@ pub fn verify_github_builds(
         }
     }
     verify_github_readbacks(root, &receipt, target)?;
-    Ok(json!({"verified":true,"target":target,"sourceRevisions":receipt["sourceRevisions"]}))
+    let core_sdk_tree = git_sdk_tree(source, core)?;
+    let alpaca_sdk_tree = git_sdk_tree(source, sdk)?;
+    if core_sdk_tree != alpaca_sdk_tree {
+        return Err("experimental_github_sdk_tree_mismatch".into());
+    }
+    Ok(
+        json!({"verified":true,"target":target,"sourceRevisions":receipt["sourceRevisions"],"coreSdkTree":core_sdk_tree}),
+    )
+}
+
+fn git_sdk_tree(source: &Path, revision: &str) -> Result<String> {
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("experimental_github_sdk_binding_invalid".into());
+    }
+    let output = Command::new("git")
+        .args([
+            "-C",
+            source.to_str().ok_or("github_source_invalid")?,
+            "rev-parse",
+            "--verify",
+            &format!("{revision}:plugin-sdk"),
+        ])
+        .output()
+        .map_err(|_| "github_source_unavailable")?;
+    if !output.status.success() {
+        return Err("experimental_github_sdk_tree_unavailable".into());
+    }
+    let tree =
+        String::from_utf8(output.stdout).map_err(|_| "experimental_github_sdk_tree_invalid")?;
+    let tree = tree.trim();
+    if tree.len() != 40 || !tree.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("experimental_github_sdk_tree_invalid".into());
+    }
+    Ok(tree.to_owned())
 }
 
 /// Materialize only the pinned producer outputs after validating the complete
@@ -677,9 +713,10 @@ pub fn extract_github_builds(
     core: &str,
     warden: &str,
     alpaca: &str,
+    source: &Path,
     out: &Path,
 ) -> Result<Value> {
-    verify_github_builds(root, target, core, warden, alpaca)?;
+    verify_github_builds(root, target, core, warden, alpaca, source)?;
     if out.exists() {
         return Err("github_build_output_exists".into());
     }
@@ -714,6 +751,16 @@ pub fn extract_github_builds(
             "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz".into(),
             "tradeassembly-plugin-alpaca-0.1.17.tar.gz".into(),
         ),
+        (
+            "alpaca",
+            "dist/tradeassembly-plugin-lock.json".into(),
+            "alpaca-package-lock.json".into(),
+        ),
+        (
+            "alpaca",
+            "dist/tradeassembly-plugin.json".into(),
+            "alpaca-manifest.json".into(),
+        ),
     ] {
         let archive = root.join(format!("{owner}.zip"));
         let mut zip = zip::ZipArchive::new(
@@ -743,6 +790,21 @@ pub fn extract_github_builds(
             name,
             json!({"sha256":digest(&output)?,"source":owner,"member":member}),
         );
+    }
+    let alpaca_lock: Value = read_json(&stage.path().join("alpaca-package-lock.json"))?;
+    let package = stage
+        .path()
+        .join("tradeassembly-plugin-alpaca-0.1.17.tar.gz");
+    if alpaca_lock["schemaVersion"] != "tradeassembly.plugin-lock.v1"
+        || alpaca_lock["target"] != target
+        || alpaca_lock["version"] != "0.1.17"
+        || alpaca_lock["packageFile"] != "tradeassembly-plugin-alpaca-0.1.17.tar.gz"
+        || alpaca_lock["packageSha256"] != digest(&package)?
+        || alpaca_lock["manifestSha256"]
+            .as_str()
+            .is_none_or(|sha| !crate::is_digest(sha))
+    {
+        return Err("github_plugin_lock_invalid".into());
     }
     atomic_json(
         &stage.path().join("build-outputs.json"),
@@ -1423,6 +1485,17 @@ mod tests {
     #[test]
     fn github_output_transport_extracts_only_pinned_target_binaries() {
         use std::io::Write;
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let core_revision = String::from_utf8(
+            Command::new("git")
+                .args(["-C", source.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
 
         let root = tempfile::tempdir().unwrap();
         let mut elf = [0_u8; 64];
@@ -1452,7 +1525,11 @@ mod tests {
                 "TradeAssembly/Alpaca",
                 ".github/workflows/native-plugin.yml",
                 "c",
-                vec!["dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz"],
+                vec![
+                    "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz",
+                    "dist/tradeassembly-plugin-lock.json",
+                    "dist/tradeassembly-plugin.json",
+                ],
             ),
         ] {
             let archive = root.path().join(format!("{owner}.zip"));
@@ -1460,11 +1537,28 @@ mod tests {
             for member in members {
                 zip.start_file(member, zip::write::SimpleFileOptions::default())
                     .unwrap();
-                zip.write_all(if owner == "alpaca" { b"plugin" } else { &elf })
-                    .unwrap();
+                if member == "dist/tradeassembly-plugin-lock.json" {
+                    let lock = json!({
+                        "schemaVersion":"tradeassembly.plugin-lock.v1",
+                        "target":"x86_64-unknown-linux-gnu","version":"0.1.17",
+                        "packageFile":"tradeassembly-plugin-alpaca-0.1.17.tar.gz",
+                        "packageSha256":format!("{:x}",Sha256::digest(b"plugin")),
+                        "manifestSha256":"a".repeat(64)
+                    });
+                    zip.write_all(lock.to_string().as_bytes()).unwrap();
+                } else if member == "dist/tradeassembly-plugin.json" {
+                    zip.write_all(b"{}").unwrap();
+                } else {
+                    zip.write_all(if owner == "alpaca" { b"plugin" } else { &elf })
+                        .unwrap();
+                }
             }
             zip.finish().unwrap();
-            let revision = letter.repeat(40);
+            let revision = if owner == "core" {
+                core_revision.clone()
+            } else {
+                letter.repeat(40)
+            };
             let mut readback = json!({
                 "schemaVersion":"tradeassembly.github-actions-sanitized.v1",
                 "run":{"repository":repository,"workflowPath":workflow,"headSha":revision,
@@ -1475,7 +1569,7 @@ mod tests {
                     "expired":false,"digest":format!("sha256:{}",digest(&archive).unwrap())}
             });
             if owner == "alpaca" {
-                readback["coreSdkRevision"] = json!("a".repeat(40));
+                readback["coreSdkRevision"] = json!(core_revision);
             }
             atomic_json(&root.path().join(format!("{owner}.json")), &readback).unwrap();
         }
@@ -1486,6 +1580,7 @@ mod tests {
             &"d".repeat(40),
             &"b".repeat(40),
             &"c".repeat(40),
+            source,
             &out
         )
         .is_err());
@@ -1493,9 +1588,10 @@ mod tests {
         assert!(extract_github_builds(
             root.path(),
             "x86_64-unknown-linux-gnu",
-            &"a".repeat(40),
+            &core_revision,
             &"b".repeat(40),
             &"c".repeat(40),
+            source,
             &out
         )
         .is_ok());
@@ -1514,7 +1610,7 @@ mod tests {
         }
         let inventory: Value = read_json(&out.join("build-outputs.json")).unwrap();
         assert_eq!(inventory["qualified"], false);
-        assert_eq!(inventory["outputs"].as_object().unwrap().len(), 5);
+        assert_eq!(inventory["outputs"].as_object().unwrap().len(), 7);
     }
 
     #[test]

@@ -67,6 +67,7 @@ atomicwrites = "0.4.4"
 getrandom = "0.3"
 hex = "0.4"
 windows-permissions = "0.2.4"
+winapi-util = "0.1.11"
 
 [target.'cfg(windows)'.dev-dependencies]
 fs2 = "0.4"

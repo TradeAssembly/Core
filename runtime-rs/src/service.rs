@@ -368,7 +368,7 @@ impl TradeAssemblyService {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let identity = test_database_identity(&metadata);
+        let identity = test_database_identity(&metadata, &path);
         if registry.get(&path) != Some(&identity) {
             return Err("test_database_handoff_requires_owned_fixture".to_string());
         }
@@ -426,7 +426,7 @@ impl TradeAssemblyService {
         let expected = format!("sha256:{:x}", Sha256::digest(token.as_ref().as_bytes()));
         if record["dbPath"] != path.to_string_lossy().to_string()
             || record["tokenHash"] != expected
-            || record["identity"] != json!(test_database_identity(&metadata))
+            || record["identity"] != json!(test_database_identity(&metadata, &path))
         {
             return Err("test_database_handoff_invalid".to_string());
         }
@@ -434,7 +434,8 @@ impl TradeAssemblyService {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        registry.insert(path, test_database_identity(&metadata));
+        let identity = test_database_identity(&metadata, &path);
+        registry.insert(path, identity);
         drop(registry);
         Ok(Self::test_local(db))
     }
@@ -4180,9 +4181,7 @@ fn validate_studio_origin(origin: &str) -> Result<(), String> {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 struct TestDatabaseIdentity {
-    #[cfg(unix)]
     device: u64,
-    #[cfg(unix)]
     inode: u64,
 }
 
@@ -4258,7 +4257,7 @@ fn assert_test_database_is_owned(db: &str) {
         panic!("test database factory refuses an existing unregistered database");
     }
 
-    let identity = test_database_identity(&metadata);
+    let identity = test_database_identity(&metadata, &path);
     match registry.get(&path) {
         Some(expected) if expected == &identity => {}
         Some(_) => panic!("test database fixture identity changed"),
@@ -4269,7 +4268,7 @@ fn assert_test_database_is_owned(db: &str) {
 }
 
 #[cfg(unix)]
-fn test_database_identity(metadata: &std::fs::Metadata) -> TestDatabaseIdentity {
+fn test_database_identity(metadata: &std::fs::Metadata, _path: &Path) -> TestDatabaseIdentity {
     use std::os::unix::fs::MetadataExt;
     TestDatabaseIdentity {
         device: metadata.dev(),
@@ -4277,8 +4276,19 @@ fn test_database_identity(metadata: &std::fs::Metadata) -> TestDatabaseIdentity 
     }
 }
 
-#[cfg(not(unix))]
-fn test_database_identity(_metadata: &std::fs::Metadata) -> TestDatabaseIdentity {
+#[cfg(windows)]
+fn test_database_identity(_metadata: &std::fs::Metadata, path: &Path) -> TestDatabaseIdentity {
+    let file = std::fs::File::open(path).expect("test database identity requires an existing file");
+    let identity =
+        winapi_util::file::information(&file).expect("test database identity cannot be inspected");
+    TestDatabaseIdentity {
+        device: identity.volume_serial_number(),
+        inode: identity.file_index(),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn test_database_identity(_metadata: &std::fs::Metadata, _path: &Path) -> TestDatabaseIdentity {
     panic!("file-backed test database ownership is unsupported on this platform; use :memory:")
 }
 
@@ -6253,6 +6263,26 @@ mod test_database_factory_safety_tests {
     use super::assert_test_database_is_owned;
     use std::fs;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[cfg(windows)]
+    #[test]
+    fn replaced_windows_file_does_not_gain_fixture_authority() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("fixture.db");
+        assert_test_database_is_owned(path.to_str().expect("utf8 path"));
+        let replacement = directory.path().join("replacement.db");
+        fs::write(&replacement, b"replacement sentinel").expect("write replacement");
+        fs::remove_file(&path).expect("remove owned fixture");
+        fs::rename(&replacement, &path).expect("replace fixture");
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            assert_test_database_is_owned(path.to_str().expect("utf8 path"));
+        }))
+        .is_err());
+        assert_eq!(
+            fs::read(&path).expect("read replacement"),
+            b"replacement sentinel"
+        );
+    }
 
     #[test]
     fn fresh_fixture_can_reopen_but_unregistered_populated_file_is_untouched() {

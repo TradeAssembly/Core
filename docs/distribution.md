@@ -7,6 +7,11 @@ and the frozen baseline remain unchanged provenance, not this unsigned launch's
 completion definition. Source pointers, hashes and prior evidence remain in
 [distribution-history-2026-10-02.md](distribution-history-2026-10-02.md).
 
+Standing authorization: David reapproved necessary in-scope technical, legal and
+financial operations on 2026-10-02. Do not ask for routine authorization again.
+This does not expand L1–L4, establish an arbitrary purchase price or spending
+limit, authorize Apple payment, or replace mandatory platform confirmations.
+
 ## Frozen scope
 
 - One version-pinned unsigned/ad-hoc-signed npm beta on macOS ARM64, Windows
@@ -63,7 +68,14 @@ that OS-owned variable while leaving auth/broker/project configuration absent.
 Local stdio/HTTP/restart tests pass (2/2), log
 `/tmp/tradeassembly-onboarding-windows-env-fixture.log` SHA-256
 `d2819d18c4aabaa7199a5dd7579cfbb33c88bad6a3b5bbacf7810c33ecf1c6d7`.
-Windows-native confirmation is still required; this is not a claimed Windows fix.
+Windows retry `37030939714` at `296d603` passed both real stdio onboarding tests;
+it then failed the unit fixture's intentional non-Unix database-ownership panic.
+Its failed log is `/tmp/tradeassembly-core-296-windows-failure.log`. The repair
+uses the existing locked `winapi-util` safe file-information API for Windows
+volume/file identity, preserving rejection of foreign/replaced fixtures. Native
+CI also runs the database-ownership tests; no test is skipped or weakened.
+Local ownership tests (2/2), onboarding unit tests (5/5), and public scan pass.
+Windows-native confirmation of this second repair remains required.
 Mac watch `71877` is terminal success. Private coordinator
 `35bbfda` pins all four Core targets; capture tests (2/2)/strict Clippy passed.
 Producer and SDK pins are unchanged. Captured Core ZIPs under coordinator
@@ -71,10 +83,17 @@ Producer and SDK pins are unchanged. Captured Core ZIPs under coordinator
 Mac `f42cddd7e34213aa4b60ea455a01033261edebc2c90a1a1d978609c4a2da5210`,
 Linux x64 `1d730670ff5c24e1fcfff9092036fae1f6a15819ac0edb639039a8d0c458a750`,
 Linux ARM `e1cd0338c8624e9766a7dd5ffcd75eeeb04a5081e642c5ca303d1e8f1ac38854`.
-Their Core extraction processes `96791`/`80776`/`43637` are running. Public scan
-`90034` is running. Do not duplicate them or redownload unchanged producers.
-Next: finish extraction/source scan, checkpoint the test repair, rerun only
-Windows, and use the new Mac bytes for production packaged onboarding.
+Their extraction processes and public scan are terminal success. Do not
+redownload unchanged producers. Clean full Core gate `34942` passed at `296d603`
+(1341 nextest passed, 61 explicit skips), log
+`/tmp/tradeassembly-296d603-core-verify.log`, SHA-256
+`e76b797a1866bbe2a36d811c9051c575358b5586ac05e777dea69cb2de8ebc84`.
+Mac package `target/f2-npm-mac-package-production-customer` is now packed as
+`0.1.0-beta.3`, binding the exact captured `3abf3e0` Core bytes and private
+production profile SHA-256
+`1beb89e9afd501697470ca21d824e28050e117153305b57175c9e7322a4511f1`.
+Packing is not qualification. Next: checkpoint and gate the Windows fixture
+repair, rerun only Windows, and qualify/test the production Mac package.
 
 Private Relay worktree `/Users/davidjbeveridge/.codex/worktrees/f2-relay-watch-remember`:
 real staging OAuth setup/restart, both-origin journal proof, 19 OAuth negatives,
@@ -88,6 +107,11 @@ The private production profile validator passes, but real packaged production
 onboarding and aggregate service acceptance do not. Its `checkoutUrl:null` is
 an open purchasable-onboarding gap: use the actual existing Hub catalog path,
 not a new billing system, test tenant, invented price or entitlement bypass.
+Actual Chrome production Hub sign-in succeeded, but the current account lacks
+operator catalog authority. Repair the intended account/role mapping through
+normal WorkOS administration; do not bypass Hub through DSQL or fabricate a
+paid entitlement. Stored WorkOS CLI configuration has only a staging environment;
+verify production credential/environment mapping before using it.
 
 An earlier Mac candidate passed native qualification; later source/profile bytes
 cannot inherit that pass. Reuse unaffected GitHub producer outputs/evidence.

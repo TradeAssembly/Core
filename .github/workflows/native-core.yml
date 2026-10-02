@@ -41,6 +41,7 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | tee target/native-proof/clippy.log
           cargo test --locked -p tradeassembly-distribution --lib 2>&1 | tee target/native-proof/distribution.log
           cargo test --locked -p tradeassembly-runtime --lib windows_private::tests 2>&1 | tee target/native-proof/private-files.log
+          cargo test --locked -p tradeassembly-runtime --lib test_database_factory_safety_tests 2>&1 | tee target/native-proof/test-database-ownership.log
           cargo test --locked -p tradeassembly-runtime --lib local_install::tests 2>&1 | tee target/native-proof/setup.log
           cargo test --locked -p tradeassembly-runtime --test local_owner_identity 2>&1 | tee target/native-proof/owner.log
           cargo test --locked -p tradeassembly-runtime --test browser_onboarding_stdio 2>&1 | tee target/native-proof/browser-onboarding.log

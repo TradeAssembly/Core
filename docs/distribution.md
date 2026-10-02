@@ -165,9 +165,17 @@ precondition. Readback confirms the existing confirmed SNS subscriber and $25
 Hub budget. Final plan `54589` also preserves the existing enabled recovery
 timer. Reviewed plan `dist/hub-release-evidence/20261002T172002Z-38417/hub.plan`
 has no deletions/replacements: four package/alias updates and Stripe-webhook
-outbox-wake permission/configuration. Guarded apply `55336` is running; log
-`/tmp/tradeassembly-hub-manifest-runtime-apply.log`. Next: verify that apply,
-deploy the AWS-origin Worker, then review the actual registry
+outbox-wake permission/configuration. Guarded apply `55336` exited 0;
+`/tmp/tradeassembly-hub-manifest-runtime-apply.log` SHA-256
+`dffa68933b3fca5c27716b29d95e4406bcaf8dc7858b56ac5550a9585d880202`.
+DSQL/KMS positive and negative authorization checks passed; API live alias is
+version `42`. Worker deploy `59489` failed before upload because Wrangler was
+signed into a different account. Scoped refresh `98563` succeeded for the
+existing Hub owner, account `2e778d60d9f80f40c6af6f499c52acc8`, with no all-account
+or unrelated AI/email/container access. Retry deploy `37739` exited 0; Worker
+version `51a5e5f8-a5fb-43f6-b3b0-b3dc421a0f7b` serves the existing custom domain; log
+`/tmp/tradeassembly-hub-cloudflare-dashboard-deploy-correct-account.log`.
+Next: verify Worker deployment, then review the actual registry
 revision and update Relay's production manifest. No paid grant is fabricated.
 Temporary CLI credential files are removed
 after each run; refreshed credentials return to Bitwarden.

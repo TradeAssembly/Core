@@ -326,6 +326,710 @@ architecture/inventory and notices, qualify the exact customer Mac bundle,
 then satisfy candidate and registry verifiers. Do not mark those gates passed
 from green GitHub jobs alone.
 
+E0/E1 continuation, October 1: the current AWS CLI inventory confirms the
+gateway points at the `test`/`f2-conformance` DSQL cluster and archive bucket;
+the only other DSQL cluster belongs to production Hub. The staging OAuth
+Lambda has no owner-policy configuration. `tradeassembly-prod` and
+`tradeassembly-f2-conformance` SSO sessions are expired; existing `default`
+credentials successfully completed the bounded read-only inventory, without
+an auth restart. Partial sanitized inventory is excluded from Git under
+`f2-relay-watch-remember/.operator/relay-environments/inventory.json`;
+**E0 is not complete** (verified owner/nonowner identities, edge/IAM readbacks
+and production resource/profile references remain).
+
+The existing private `codex/f2-relay-watch-remember` worktree has committed
+E1 changes at `841c0bd` in `packages/relay-environment-admission`, workspace/package locks,
+OAuth library and both entrypoints, Gateway identity/enrollment/configuration,
+Reach configuration/node authority, route-inventory/executable tests, OAuth
+and conformance Gateway/Reach IaC, and owning `justfile`. Settled
+decision: exact Hub-verified tenant/subject pairs, mandatory nonempty staging
+allowlist, no caller email/header authority, no production owner list, and
+callback recheck against the current deployed policy before claim/exchange.
+Start/status/ack apply admission after identity verification but before store
+access. The staging IaC plan and application startup fail on missing/empty
+owner configuration; deployment requires an explicit private operator var-file.
+`just relay-admission-test` exits 0: policy 4/4, OAuth 9/9, strict targeted
+Clippy. Its actual router/SQLite regression observes no state creation for a
+denied identity and no claim/delete/provider exchange after owner revocation.
+Log `target/relay-environment-admission.log` SHA-256:
+`a368a63c790cb916a88d6e79f948f5f05c4919bd34b99c2706be8f05439f63d9`.
+OAuth/OpenTofu format, validation and `git diff --check` pass after installing
+the already locked provider. These are local policy tests, not live deployment
+proof. Gateway/Reach hosted configurations now require explicit
+`environment_admission`; absent or empty staging configuration fails before
+provider initialization. Verified Hub identity is checked before bindings,
+commercial admission, enrollment and quota effects. Reach's node-authority
+wrapper first verifies the existing Hub installation signature/owner binding,
+then checks the bound canonical Hub principal before nonce/command mutation.
+No caller-supplied principal is accepted in place of that proof. Existing
+conformance IaC explicitly selects `test`; this does not qualify staging or
+production deployment. Watch remains a separately configured operator-secret
+surface with issued browser-ack proofs, not a newly added Hub-token surface.
+The route inventory accounts for all 35 existing routes and their exact
+handlers/boundaries or no-effect public exceptions; new/unclassified routes and
+handler swaps fail its deterministic test. This source inventory does not
+replace actual authentication/effect tests.
+
+Local `aws-gateway,aws-reach` library suite passes 16/16, including isolated
+real PostgreSQL enrollment/auth tests observing zero enrollment/quota effects
+for valid same-tenant and different-tenant nonowners despite spoofed headers.
+The node policy unit test observes zero Reach store mutations on denied
+claim/accept/finish; its identity verifier is explicitly a fixture, not claimed
+live or cryptographic acceptance. Route inventory 3/3, Reach suite 5/5 and
+existing Reach package tests 2/2, policy 4/4 and strict combined-feature Clippy
+pass. Required `just hosted-gateway-test hosted-hub-test relay-verify` exited 0;
+OAuth all-feature tests pass 10/10 (two DynamoDB Local tests remain explicitly
+ignored, not claimed passed). Logs and SHA-256:
+`target/relay-environment-hosted-tests.log` =
+`7ecfd68a46b7d334334f9fce8116c09ad5f84c19eaa6fd4e83e25398128d0c25`;
+`target/relay-environment-route-inventory.log` =
+`ec6509b1e1acbc01de658f76f14a96e8c3fb7d903247ab3bea530bd3522e802e`;
+`target/relay-environment-owning-gates.log` =
+`d3ed40d267f9c5fb2e80d578d816e7e0eeeca6f98d63220bc2f28c1a5e432814`;
+`target/relay-environment-reach-gate.log` =
+`9d01b562b8910de40ed4c682f4a34cfa9b22c3fd903586da5c546430dda06f7e`.
+The first full `just verify` process `52310` is terminal exit 1: its preceding
+checks passed, then the existing language gate rejected the uncommitted source.
+No language gate was weakened. Failed log SHA-256:
+`target/relay-environment-full-verify.log` =
+`a9247481d86d4546d32adcdefd42dc76542bdf4ba9e27318e0c60199d96c116a`.
+The coherent batch is now committed locally at `841c0bd`, and the worktree is
+clean. Full `just verify` process `37106` is now terminal exit 1. Workspace
+Clippy and tests passed; `dependency-smoke` rejected the pre-existing mismatch
+between the declared Core pin `30ac3ff33e68da7aca9e666cbf1b8e59de411d64`
+and the actual Cargo dependency/lock revision
+`a16d4a769258fb7354d9102017533850020f8f2c`. The gate is not weakened or
+skipped. Log `target/relay-environment-clean-verify.log` SHA-256:
+`2b78076208fa61a1864c873c1a70d56306677b4f1715d9db812b1aafa032348e`.
+The mismatch is repaired at local Relay commits `67ac02c` (manifest) and
+`99d8a99` (the exact-pin regression assertion). These preserve the existing
+qualified Cargo revision; no runtime dependency was upgraded. The actual
+`just dependency-smoke` against a detached checkout of that exact Core commit,
+all eight dependency-smoke tests and targeted Clippy passed. Log
+`target/relay-pin-smoke.log` SHA-256:
+`10bebf00f0fcf1e2c353197e92192b7f6e6ab932175237d527583f2859e094dd`.
+The intermediate full gate `18440` is terminal exit 1, with 140 xtask tests
+passing and the old exact-pin assertion failing; its log hash is
+`6ffba5b1c9923114e4df5aee1e19b0ecc796a7926476183a72a44ccac8cfa02c`.
+That assertion now passes without relaxing equality. Full `just verify`
+process `81835` is terminal exit 0 at runtime revision `99d8a99`, log
+`target/relay-environment-pin-verify.log` SHA-256:
+`06a46f63e487da5247d8fe003c08f5ae9f4a006a10949480f8228129cfbffe95`.
+This closes the E1 owning runtime gate. The standard full gate reports its
+optional Core checkout smoke as skipped; the separate actual exact-checkout
+smoke above passed and supplies that evidence. Do not claim a skipped check
+as passed or restart the terminal process.
+
+E2 configuration slice is committed locally at `5f0fe6b`: new pure
+`infra/aws/relay-environment` module, Gateway/Reach/Watch IaC and owning
+`just relay-component-infra-{init,plan,apply}` commands. Existing test resource
+names and addresses remain unchanged; actual AWS state-key inventory confirmed
+`f2/relay-{gateway,reach,watch}/terraform.tfstate`, which the recipes preserve.
+Staging/production use separate state keys and names. Guards require staging
+owners; reject production conformance/Hub databases, default test roles and
+archives; bind endpoint to scoped cluster ARN; prevent granting hosted inventory
+access to the test role; and require environment-specific Watch secret/owner
+scope. Apply requires the reviewed saved-plan digest and refuses deletion or
+replacement. All three roots pass locked-provider initialization, formatting
+and validation. Seven provider-free positive/negative module tests pass under
+the new owning test target, which is included in `just verify`. Log
+`target/relay-environment-iac-tests.log` SHA-256:
+`dab44b99fddb53a8fd43e62f09f3e496e469fa87e3855944d757fcf39c87b631`.
+Recipe syntax checks passed; invalid component and relative artifact/file paths
+exit 2 before cloud work. These are configuration tests, not live IAM or E4
+acceptance. No saved real deployment plan or apply has run. The E1 runtime
+gate predates this IaC-only commit; the complete owning gate is still required
+at the next integration/deployment checkpoint, alongside real resource plans,
+readbacks, database-role grants and rollback bindings.
+Additional E0 readbacks confirmed Reach's 13 and Watch's 8 direct-origin routes
+use application authorization, and the Gateway IAM role is scoped to the test
+cluster/archive prefix and its own logs. A real POST to Hub identity with the
+sampled stored session returned `unauthorized`; all six WorkOS session records
+have expired access claims. Do not treat their stored tenant/subject as verified
+owners. Use supported refresh or fresh sign-in before deployment. Details are
+in the existing ignored operator inventory. No apply, resource creation, broker
+order, source push or deployment proof occurred. Next after owning verification:
+resolve exact owner/nonowner identities and remaining E0 route/IAM/profile
+readbacks before staging deployment. The operator identity is now verified:
+the existing source-free Core MCP process `73016` returned authenticated from
+`tradeassembly.auth.status`, and a direct production Hub
+`POST /v1/identity/session` returned HTTP 200 with its tenant/subject. Exact
+principal identifiers remain in the existing ignored operator inventory,
+not this public document. New session material is stored in Bitwarden, not
+Keychain. No broker credential, broker order or Live activation was involved.
+The first bootstrap attempt reached a confirmed callback timeout; the retry
+reused the same MCP process and authenticated browser session and its bootstrap
+record is `succeeded`. The browser callback subsequently displayed a refused
+connection after the one-shot listener closed; persisted bootstrap and the
+independent Hub response, not that browser error, prove authentication. Returning
+to the same onboarding page visibly shows `Signed in. Connect your broker to
+continue.` Screenshot evidence is the ignored Relay operator artifact
+`.operator/relay-environments/operator-auth/authenticated-page.png`.
+A separate CLI initialization failure (`file-backed secret is unavailable`)
+was traced to the default relative Warden token reference: the working MCP
+uses the Studio directory, while the isolated CLI uses the Relay directory.
+Both isolated operator/nonowner configurations now explicitly reference the
+same existing mode-0600 Studio Warden token file, without copying its secret
+or changing authority. Fresh standalone CLI `auth status` handle `3959`
+exited 0 and returned the authenticated owner. Independent valid nonowner
+verification remains open. The original nonowner attempt's callback port
+8977 was rejected by the actual WorkOS error URL `redirect-uri-invalid`.
+That MCP `61054` was gracefully stopped (handle now absent); the isolated
+configuration now uses the already-registered callback on port 8976.
+Replacement MCP `44286` initializes and authenticates successfully, but
+WorkOS reused the existing owner browser SSO: the returned stable identity
+is the same owner, so this is explicitly **not** nonowner acceptance evidence.
+Current live handle: MCP `73016`, isolated config
+`.operator/relay-environments/operator-auth/runtime.json` in the Relay worktree.
+Independent nonowner identity is now verified: isolated browser email login
+completed with stable identity `oidc:XCeRD2Wu_MKIivtlCHO_BVuXICIhxgFBxNd-ZvXJtyQ`.
+Actual production Hub POST `/v1/identity/session` returned HTTP 200, tenant
+`org_01M1DJ93D2WZMB65VRCAS17GJ9`, subject
+`user_01M1DHVPNM3XYWX3TKV95W0V76`, distinct from the owner subject above.
+Fresh standalone CLI `24077` exited 0 with `authenticated: true` for this
+second identity. Sanitized readback is in the ignored inventory, observed
+2026-10-02T01:13:53Z. This proves identity only, not deployed staging denial.
+Next: finish E0 Cloudflare route/origin and production profile readbacks before
+deployment, then use this real nonowner in E4. The normal
+Hub dashboard sign-out in Chrome tab `1003168191` currently displays
+`ERR_BLOCKED_BY_CLIENT` at `/auth/sign-out`; preserve the page, do not disable
+browser protections. Screenshot is the ignored nonowner operator artifact
+`browser-account-switch-blocked.png`. Source pointers: Hub
+`apps/hub-edge/src/index.ts` POST `/auth/sign-out` and
+`apps/hub-edge/src/dashboard-auth.ts::endDashboardSession` (302 to WorkOS);
+actual Hub response headers include `form-action 'self'`. A cross-origin form
+redirect/CSP conflict is a hypothesis to verify, not yet a proven cause.
+Account switching succeeded using WorkOS's documented session logout URL
+with the isolated session's `sid`, then Core CLI logout of only that isolated
+local session. WorkOS reported an unset app homepage after logout, but the
+next normal login did show the email screen and accepted the second identity.
+No browser protection or authority policy was weakened, and the dirty Hub
+checkout was not modified. The successful callback still displayed Chrome
+`ERR_BLOCKED_BY_CLIENT`; the persisted bootstrap reports `succeeded`, and
+actual Hub plus fresh CLI evidence prove authentication despite that UI error.
+Keep this user-facing sign-out/callback friction open for diagnosis rather
+than claiming browser onboarding is clean. MCP `44286` retains its previous
+owner binding and reports unauthenticated for the changed account; use a fresh
+process if needed for the nonowner, not a bypass of identity binding.
+Original operator MCP `73016` and its local session were not modified.
+E0 Cloudflare readback: installed Wrangler 4.125.0 and the Cloudflare connector
+currently authenticate only the older OptionLab identity/accounts. Explicit
+Worker queries in account `efdb13d2d6f8a0124f0ec3d27cdd3aab` return 10007
+(Worker absent); inherited target account `2e778d60d9f80f40c6af6f499c52acc8`
+returns 10000 with those credentials. Connector account/domain/zone readbacks
+confirm the same visibility mismatch, not absence of the deployed service.
+Existing Hub `docs/operations/deployment-access.md` and Relay
+`infra/aws/broker-oauth-relay/deployment-2026-09-09.md` identify the personal
+operator identity as the correct existing account. Do not move infrastructure
+to a legacy account or overwrite the current default Wrangler profile.
+Cloudflare access repair is complete, observed 2026-10-02T01:33Z. After the
+user confirmed the final consent, fresh no-browser authentication `18412`
+exited 0 and created `tradeassembly-release`. Earlier `34927` and `5244`
+expired; they are not live processes. The profile is bound only to the Relay
+worktree, leaving the default profile unchanged. `whoami --json` exited 0
+and verified the exact target account `2e778d60d9f80f40c6af6f499c52acc8`.
+Wrangler 4.125.0 rejects `whoami --profile`; use the directory binding for
+that command. Scopes omit unneeded KV/Pages/AI access and select only the
+existing target account, not all future accounts. Browser success screenshot
+`cloudflare-auth-success.png` is ignored operator evidence.
+Actual deployment-list and version-view commands exited 0 for both workers:
+staging version `832ef9b8-29fb-4b21-8489-7e7edf2bf56d` at 100%, with
+`PUBLIC_HOST=staging.tradeassembly.ai` and origin
+`https://6ve4rs0fda.execute-api.us-east-1.amazonaws.com`; production version
+`5503bc2d-5469-4e61-bef4-f5606577f327` at 100%, with
+`PUBLIC_HOST=connect.tradeassembly.ai` and origin
+`https://2q1d6wr0f8.execute-api.us-east-1.amazonaws.com`.
+This is current deployed-binding evidence, not staging isolation acceptance.
+Actual supported Worker Domains GET returned HTTP 200 / success for both exact
+hostnames, bound to those worker names in zone `67d9ad08d4969496fab457fed5d84bf4`.
+Domain IDs and public mappings are recorded in the ignored inventory. Connector
+credentials remain the older account; bounded API readback captured the official
+CLI token in process memory only, never logs or repository files.
+Actual authenticated Alpaca dashboard readback verifies production app
+`TradeAssembly` is Published, website `https://tradeassembly.ai`, and exactly
+one redirect `https://connect.tradeassembly.ai/oauth/alpaca/callback`. Its public
+client ID matches deployed `591d18539bcf3d8e37b3560d5c95a100`. Existing Terms and
+Privacy URL fields are empty; no form was submitted or secret regenerated.
+Ignored screenshot `alpaca-production-registration.png` captures the public
+form, not the credential modal. Existing password/authenticator login completed
+through Bitwarden; MFA required native paste because segmented DOM fill did not
+advance correctly. Staging registration readback remains separate.
+Next: separate Relay storage deployment and the remaining E1–E5 gates.
+No Cloudflare Worker, route, deployment, or infrastructure policy was changed.
+E0 AWS readback is refreshed: actual STS account is `056319544861`; complete
+DSQL/S3 listings contain only Hub and conformance DSQL plus the test/archive
+and existing state buckets. There is no separate production Relay DSQL/archive
+or production Watch SSM parameter. Do not relabel the conformance resources as
+production. Actual gateway/Reach/Watch configurations all select
+`relay_conformance` on `bnucpdh6dc6o4nutdrgu2eq464`; deployment hashes and
+sanitized mappings are recorded in the ignored inventory.
+Production OAuth selects `https://connect.tradeassembly.ai`, its own DynamoDB
+table and `/tradeassembly/broker-oauth/production`; its client ID is public
+metadata, not proof of current Alpaca redirect registration. Both OAuth roles
+are scoped to their own tables, parameters and logs; KMS decrypt requires their
+exact parameter encryption context and SSM service. Reach/Watch roles select
+only the test DSQL cluster and their own logs; Watch's secret is the acceptance
+parameter, and its SES wildcard is constrained by the sender condition.
+All five HTTP APIs' actual routes and Lambda proxy bindings were inspected:
+OAuth staging/production 4 each, gateway 10, Reach 13, Watch 8; each uses
+application authorization (`NONE` at API Gateway) and `$default` auto-deploy.
+These readbacks close route/IAM discovery, not application-boundary acceptance.
+Next after Cloudflare readback: freeze those origin bindings and current Alpaca
+registration, then provision the separate staging/production storage and
+verification-role boundaries through reviewed IaC. Existing pure environment
+validation creates no database, archive or verification role; do not confuse its
+passing tests with deployed resources. No secret values were retrieved.
+E2 storage bootstrap is now implemented locally in private Relay
+`infra/aws/relay-storage/` and its owning `justfile` recipes. It creates new
+environment-named DSQL/archive resources, explicitly rejecting test/unknown
+environments. DSQL deletion protection and both resources' `prevent_destroy`
+retain data during code rollback. Archive configuration enables versioning,
+Object Lock, KMS encryption, owner-enforced ACLs, blocked public access and TLS.
+No test lifecycle expiry is copied. State keys are distinct
+`ENV/relay-storage/terraform.tfstate`; apply requires the exact saved-plan digest
+and rejects any delete/replacement action. Committed locally at Relay `5eadefa`.
+Mocked OpenTofu checks pass 4/4;
+these are configuration evidence only. No storage apply, SQL role/schema/grant,
+verification IAM role or Watch secret has been created. Initial full gate
+`99721` exited 1 solely because the language scanner requires committed source;
+the actual report lists the new files/justfile as uncommitted, not a language
+violation. After committing, full `just verify` `72489` exited 1 due to local
+disk exhaustion during compilation (`No space left on device`), log
+`target/relay-storage-integration-verify-committed.log`. This is not a passing
+integration gate. Disk readback showed 152 MiB free and 43 GiB in this Relay
+worktree's regenerable `target/debug`; no process executes a binary there.
+Scoped `cargo clean --profile dev` `37756` exited 0, removing 45.4 GiB of
+regenerable build data while preserving `target/release`, top-level evidence,
+Core frozen bundles and other worktrees. Disk readback now shows 42 GiB free.
+The Core frozen lock digest remains
+`222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
+The same full `just verify` is now live as `83875`, with
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0` to
+bound cache growth; log `target/relay-storage-integration-verify-compact.log`.
+These flags change debug/cache size, not acceptance behavior. Reuse the live
+handle. Next: its terminal result, then inspected live storage plans and
+remaining E2 schema/role/Watch boundaries. Overall release remains incomplete.
+Both live storage plans are prepared and inspected: each has exactly eight
+create actions, zero changes/deletes/replacements, account `056319544861` and
+region `us-east-1`. Staging saved-plan SHA-256 is
+`4652e39947f5d8a1e36b57088a9814627c10fcd20ba08273ed9d442d1de422f4`;
+production is `cca7219b271f1cc194cf914d515b19b69106f84d310433ce062f7039faf5e430`.
+Plans select their own `relay_ENV` database role, `ENV/gateway` prefix and
+`tradeassembly-relay-ENV-056319544861-use1` bucket. Full gate `83875` is terminal
+exit 0, log SHA-256
+`ba66dbbfc608a9993d3928b96b6fddfb5d2e384f8bdb94f4d6dd89438272c8e3`.
+Its optional Core checkout smoke is skipped, not a new pass.
+Staging apply `71278` and production apply `74516` both exited 0: eight added,
+zero changed/destroyed each. Actual AWS readbacks verify distinct ACTIVE DSQL
+clusters (`xnud5czqxjrmah57yldkinncem` staging,
+`xjud5dniplgc6e6varrnvvrxze` production), deletion protection and enabled
+AWS-owned KMS encryption. Both actual archive buckets have KMS encryption,
+versioning, Object Lock, BucketOwnerEnforced, all four public-access blocks and
+the TLS-only deny policy. The ignored inventory records this separately from
+application admission. SQL schema/grants, verification roles, Watch secrets
+and component deployment remain next; storage alone is not E2 completion.
+These processes are terminal. Do not restart or reapply unchanged plans.
+Deterministic live storage boundary gate `49002` also exited 0. It captures
+actual AWS readbacks for each environment under ignored
+`.operator/relay-environments/ENV/*-readback.json`, checks all nine required
+boundary predicates with `jq -e`, and emits `storage-boundary.json`; all are
+true in both environments. This is deployed storage evidence, not mocks or
+application E4 proof. Frozen Core lock hash was reverified unchanged afterward.
+Next action: provision the versioned SQL schemas/grants and environment-specific
+verification IAM roles using existing adapter schema constants and exact
+storage outputs. The existing conformance role trusts only its bootstrap user
+and HubProductionDeploy SSO role; do not grant it customer-environment access
+or copy its test permissions. Then finish Watch secret references and deploy
+the environment-specific components through their owning plan/apply recipes.
+E2 schema bootstrap is committed locally at Relay `f095e5b`: private
+`packages/hosted-adapters/aws-dsql/src/bin/relay-schema-bootstrap.rs`, owning
+`just relay-schema-{plan,apply,test}` and storage README. It consumes the five
+existing adapter SCHEMA arrays (37 statements), validates actual AWS account,
+cluster environment/protection/encryption, and binds environment/endpoint/DDL/
+role grants into a required apply digest. SQL values in catalog reads use
+driver parameter bindings; all executable DDL/grants are checked-in static
+Rust strings. No caller-supplied SQL, DDL in runtime startup, automatic write
+retry, schema repair/delete or application admin role is introduced.
+Resumption reads the actual catalog and requires all existing schema validators
+to pass after async index creation. Grants provide only private-schema USAGE
+and table DML. IAM mappings remain explicitly absent from its receipt.
+Targeted tests pass 4/4 and strict Clippy; actual invalid-digest CLI exits 1
+before AWS/SQL. Full owning integration gate `73316` is live, log
+`target/relay-schema-integration-verify.log`; do not restart it. Staging plan
+`17365` is terminal exit 0, digest
+`86b726ca7028e8617fc76248b990621f3df00cd6a8eaca85ec77efb56ef7b1ee`;
+production plan digest
+`a85a50eabc39c1de5f5a139d33d16b6873157509b7cb2bc37a3d09dace748c7c`.
+Both plans select exact newly deployed endpoints and only their own database
+role. Full integration gate `73316` is terminal exit 0, log SHA-256
+`0989e8120a21ca7292762451003f9e46b396c6b34b7e22045b97b55a2a460c4e`;
+optional Core checkout smoke remains skipped, not a new pass. Staging read-only
+IAM/admin preflight `47480` exited 0 with full TLS verification; actual
+`to_regclass` read also returned absent before bootstrap. Staging SQL apply
+`47469`, staging resumption `11181` and production SQL apply `19164` all exited
+0. Both receipts report actual schema verification and the exact environment
+application role; IAM mappings are explicitly false. Staging resumption finds
+37 existing objects, zero created objects. Actual catalog readbacks for both
+roles report LOGIN true, SUPERUSER/CREATEROLE/CREATEDB false. A fail-fast shell
+gate rechecks both receipts, all resumption steps and both role readbacks.
+Ignored evidence log SHA-256s:
+staging apply `4e853cb73cf27015a3daa7150e4f4a7405a822f57f9f809707508b494c69ad35`,
+staging resume `9d7d5ea42ceea4e14bb8539be9053cfabc8ebc7c4745dacc37210a39ef14ed3d`,
+production apply `14d78f127918d0f55d387016e7115468c8bc9388f97f2d46474d210758d91fa9`.
+These handles are terminal. Do not restart full gates or recreate storage/schema.
+Next: environment-specific verification IAM roles and runtime IAM/DB mappings,
+then the already-specified component deployment and E4 customer authorization
+acceptance. No customer data or broker orders were created by this bootstrap.
+Deployment caution from targeted source inspection: existing
+`apps/studio-f2-gateway/src/hosted_watch.rs` identifies itself as an acceptance
+surface with a fixed configured owner/workspace/node and private acceptance
+bearer; `infra/aws/f2-relay-watch/main.tf` does not include environment admission
+in that configuration. Do not equate this test surface with customer-bound
+production Watch or deploy it as a universal customer authorization bypass.
+Resolve its actual customer/node authority binding under the existing E1/E2
+requirements before claiming production Watch availability.
+E2 verification authority checkpoint: Relay commits `ba93813`, `13e507e`
+and `1c57a8f` add isolated read-only verification roles, fix the KMS encryption
+context condition to StringLike, and pin trust only to the existing
+HubProductionDeploy SSO role. Targeted infrastructure tests pass 3/3 and both
+actual AWS policy validations return zero findings. Full owning gate `57025`
+exited 0 (log `target/relay-verification-integration-verify.log`, SHA-256
+`99133f3c6550410aca592a46b3ef3e4899aca88255471e49d386f1e04dcbb21f`);
+it began before the later Terraform-only corrections, which have targeted
+validation, not a claimed fresh full release qualification.
+Both roles were created with two additions each. Root cannot AssumeRole;
+the existing `tradeassembly-prod` SSO profile was refreshed successfully and
+actual caller identity confirms account `056319544861` and the intended SSO
+role. No new password, recovery path, long-term key or default profile change.
+The reviewed trust-only update plans were applied successfully: staging
+`5ec2ac7319436eec2b84ed46423a5e75beeded32dd17c6a57afcf6bc6de347d0`,
+production `fc3f2d95bc7e46b366d9e6cec501abb158e1cb6ce24a79d883700cb3f66bca8e`.
+Each changes exactly one trust policy with no delete/replacement; actual IAM
+readback confirms only the exact SSO principal. Live boundary gate `29836`
+exited 0: both actual assumed verification roles can read only their own
+cluster, bucket encryption and archive-prefix listing. Cross-environment
+cluster/bucket reads and out-of-prefix lists all fail with AccessDenied.
+Ignored evidence is under `.operator/relay-environments/ENV/verification-*`.
+This proves IAM readback isolation, not SQL access, application admission or
+customer release readiness. No broker orders or Live activation occurred.
+Next: create read-only SQL verification roles and exact IAM/SQL mappings;
+runtime component IAM/DB authority and customer-bound Watch deployment remain
+in scope. Reuse the completed storage/schema/build evidence; do not rerun
+those gates merely to refresh authentication.
+SQL authority follow-up extends the existing private Rust schema-bootstrap
+utility with `authority-plan`/`authority-apply` and owning
+`just relay-authority-{plan,apply}`. Closed checked-in staging/production
+bindings select only verification/gateway/reach/watch IAM names. All grants
+are literal SQL accepted by SQLx's static SQL guard; catalog values remain
+parameter-bound. Exact live IAM ARN/environment tags and existing cluster
+boundaries are verified before grants. Existing conflicting mappings or
+elevated/inherited/write authority stop the apply, without automatic repair.
+Verification gets its own read-only SQL role, never the frozen `relay_ENV`
+runtime role. Original schema-bootstrap digest is unchanged. Targeted gate
+`81783` exited 0: six tests and strict Clippy pass.
+Actual staging apply and resume, then production apply (`2826`, exit 0)
+confirm exact verifier mappings, with resume reporting `existing`. Plans:
+staging `c58c93a0337839ab7cfd5e3f7a6d4a63e7540c5e7e6256da46c8f686795bd3fb`,
+production `cf6e89f8be5f5fec4ce8cbdf647203fbf90f3e3e71cca3f003df255c270c4e27`.
+Live non-admin SQL gate `67708` exited 0: both actual assumed IAM verifier
+roles connect as their own SQL role with verified TLS, read tables in all five
+private schemas, have SELECT on all private tables, no DML or schema-CREATE
+privilege, and are denied a connection as the runtime role with actual
+`FATAL: unable to accept connection, access denied`. Evidence remains ignored
+under each environment's `authority-verification-*`,
+`verification-sql-privileges.json` and `verification-runtime-role-denial.txt`.
+Initial full owning `just verify` `8643` exited 1 at the repository-clean
+language invariant, after its preceding leaf gates passed. Relay `a770cfb`
+now commits the existing bootstrap Rust file, justfile and storage README;
+no gate was bypassed. The committed full rerun `21056` is terminal exit 0,
+log `target/relay-sql-authority-integration-verify-committed.log`, SHA-256
+`aa1c5d6d0ff7ad71d24b9c0fc834d417d441ecef7a44043066a6bfd1a67e1508`.
+Its optional Core dependency smoke is explicitly skipped; no new claim of
+cross-repository or customer release qualification follows from that skip.
+Relay `acd86bf` adds owning `just relay-component-build` with closed component
+selection, locked dependencies and ARM64 Lambda ZIP output. Invalid component
+selection is rejected. Fresh Gateway build `66222` and Reach build `54908`
+exited 0. Archive digests: Gateway
+`559803ce4668abedc1f410bd3076b420eb5a1cb7fc74d0142704b316792814b5`, Reach
+`f3c18f98c4342f1b9ad5be5d61d64b6b4e9db3d0a232b9e4a734ad08de60af35`.
+Staging Gateway's initial SSO plan `1747` exited 1 on S3 state access;
+the existing deploy profile works without expanding Hub SSO permissions.
+Reviewed staging plans (Gateway `1b9c9430e5609382e57c67ccd81eb1f37302c5ddc99d33c2b8a9ed377317c54c`,
+Reach `c5621e370808271093849d4c8668c32756d5cff49581e434a99eea469bc4bf60`)
+and production plans (Gateway `b4a351cb18aa7b8189c65c1aa0f7872aab4cad906d835695ad77f57c7c203f36`,
+Reach `9b3943fcf637d06a44dcffda6178e1e249e7fe37ed48121853f453377f2cb33e`)
+create only isolated resources, no replacements/deletes. Applies `95700`,
+`29379`, `63597`, `52961` all exited 0. Actual AWS code/configuration readbacks
+`33148` and `40668` exited 0 and match exact built ZIPs and reviewed config
+digests. Staging origins: Gateway `https://9l27k1uz14.execute-api.us-east-1.amazonaws.com`,
+Reach `https://0bxei6rn16.execute-api.us-east-1.amazonaws.com`.
+Production origins: Gateway `https://22msecn6h1.execute-api.us-east-1.amazonaws.com`,
+Reach `https://v7bqv2qykb.execute-api.us-east-1.amazonaws.com`.
+Exact Gateway/Reach runtime IAM→SQL role mappings are verified in both
+environments (`3694` and `45351`, exit 0), without admin runtime access.
+Actual assumed verifier boundary `43300` exited 0: each can read both own
+Lambda configurations and is denied both cross-environment configurations.
+Endpoint gates `71335` and `75249` exit 0: both Gateway health endpoints 200,
+both Reach anonymous scopes 401. Fresh browser token gate `27483` exits 0:
+Hub verifies the distinct same-tenant nonowner (200), then staging Gateway
+`/v1/access` and Reach `/v1/reach/scope` both deny it (401). Public `/v1/setup`
+returns generic instructions by design and is not a protected admission test.
+No zero-side-effect or all-route E4 proof is claimed by these narrow checks.
+Evidence is ignored under `.operator/relay-environments/ENV/{gateway,reach}-*`
+and `authority-{gateway,reach}-*`. All listed build/deployment/readback gates
+are terminal. Reuse them; do not restart or rebuild unchanged artifacts.
+Owner-positive verification initially stalled because isolated owner refresh
+expired and Chrome reused the nonowner AuthKit session; actual subject
+inspection caught that mismatch. This is now resolved as recorded below:
+`operator-auth` belongs to the exact Hub-verified owner. Keep independent
+nonowner state isolated; authenticated status alone is still not owner proof.
+Existing owner MCP `73016` remains live. Watch customer contract is now settled:
+`customer_watch.rs` owns hosted configuration v2 and protected HTTP routes;
+legacy `hosted_watch.rs` v1 is test-only. Use existing HubWorkspaceAuthenticator
+(identity, current environment admission, stored workspace binding), fresh
+`tradeassembly-relay`/`relay.use` entitlement and Reach HubNodeAuthority over
+the same durable installations. Callers select a node, never an owner/workspace.
+Heartbeat signatures bind the verified scope, timestamp and local cursor;
+reject stale/future/revoked proofs before mutation. DSQL monotonic heartbeats
+provide duplicate/ambiguous-commit recovery without a separate nonce write.
+Loss detection must never manufacture a heartbeat. Remote archive cursor is
+conservatively zero until verified archive integration; do not claim catch-up.
+Store authenticated customer notification preferences in existing subscription
+JSON (backward compatible, no DDL). Browser ACK is a delivery-specific signed,
+expiring capability binding environment/tenant/workspace/principal/node, with
+current admission and installation ownership rechecked. No universal customer
+token, fixed operator recipient, browser fragment login, or new runner/GUI.
+Proof matrix: source route inventory and unit negatives/signature binding;
+owning Watch compile/clippy/tests; real isolated DSQL duplicate/recovery and
+zero-effect denial; deployed owner/nonowner/anonymous and email/push receipts.
+Local checks alone do not close E2/E4. Relay `e7910a2` commits this customer
+Watch contract and preserves the old test deployment. Targeted gates are
+terminal green: `just hosted-watch-test` (2 binding tests, 3 route inventory
+tests, executable startup boundary, clippy and OpenTofu validation),
+`just customer-watch-local-test` (actual HTTP handlers + real SQL adapters +
+explicit local Hub fixture, zero Watch/installation effects on denials),
+local-feature clippy, and all six `just dsql-local-test` tests. These are not
+actual production Hub/DSQL/provider evidence. Heartbeat duplicate read-back,
+cross-node delivery denials and pre-outage replay recovery are covered. Logs:
+`target/customer-watch-focused.log` SHA-256
+`9e062375b8c3bb4531b53edff8e8952d5fffb6973b4bf8f5aefefd5469955a8a`,
+`target/customer-watch-boundary.log` SHA-256
+`b5278ccd66e519dc1dbb6b73e14b72298cef06dfbca800014326325b66a0185a`.
+Committed `just verify` integration `98667` is terminal exit 0, log
+`target/customer-watch-integration.log`, SHA-256
+`076d174f8a048d04501fb5869365ecef706481201f54ffa22866ef922a874054`.
+Its optional Core dependency smoke is explicitly skipped, not new Core proof.
+Legacy Watch's three regression tests and all six local SQL tests also pass.
+Independent staging/production Watch credentials are now saved in Bitwarden
+and environment-specific Standard SSM SecureStrings (AWS-managed key).
+No raw secret value entered a command argument, local file, log or receipt.
+The deploy sender `alerts@tradeassembly.ai` is actually verified in SES.
+Watch is deployed in staging and production using exact ARM64 ZIP readback,
+without changing the test deployment. IaC follow-up `4c0654a` fixes the
+environment JSON type mismatch exposed by the real staging plan and adds
+exact own-environment Watch configuration read access for verification roles.
+Staging plan SHA-256 `3091ea5a49f7fb8944e565f70e3400f2d9c06f215ffb0d6ff757ef8514a91545`;
+production `008d146efecbbad64ca53e34f174f62b4844bb7135ae6012e9a5ac2b26e5936b`.
+Both reviewed plans create 17 resources, no replacement/deletion. Applies
+`90330`/`61042` are terminal exit 0. Origins: staging
+`https://cvpv36l9e1.execute-api.us-east-1.amazonaws.com`; production
+`https://mubijupjx2.execute-api.us-east-1.amazonaws.com`.
+Actual code/configuration readbacks match v2, exact DSQL/SQL role, distinct
+SSM namespace and staging owner/production empty override. Config digests:
+staging `2bc210c4cb09f6d3292590248b9a07d8bf4374331f1022ec7d571688355d0ba8`,
+production `072af0a412114db1a9444d984c47d94eac8c3cb3ea124cb7db1e4f35c3593cbc`.
+Exact Watch runtime IAM→SQL mappings `9597`/`58208` verify non-admin runtime
+roles in their own clusters. Actual assumed verifier gate `84555` exits 0:
+own Watch configuration readable, cross-environment denied, both environments.
+Both actual anonymous node-status endpoints return 401, proving successful
+startup through SSM/DSQL. Fresh Hub nonowner identity gate `67910` returns 200
+for the independently verified nonowner and staging Watch node-status 401.
+Neither narrow check proves all-route zero effects or owner-positive access.
+Vault/SSM parity is verified in both environments. Post-IaC owning focused
+gate `38111` exits 0; environment infra tests pass. Reuse these receipts and
+ignored `.operator/relay-environments/ENV/watch-*`, `authority-watch-*` evidence.
+ARM64 Watch build `90457` is terminal exit 0; the new ZIP SHA-256 is
+`b58a8d7adbd292466452ab50f56634efee9e9d047cd85800354a598ea7d25ab7`.
+Old test ZIP is preserved as `target/relay-watch-test-baseline-20261001.zip`,
+SHA-256 `2a961bc5c58f53c7407802dd77828a3ba1c8940387b3bb1821c43adfc973ab86`.
+The build's deprecated linker optimization warning is nonfatal; no gate was
+weakened. Customer browser onboarding and
+automatic loss scheduling are not implemented by this API and remain explicit
+integration gaps; conservative remote cursor zero is not archive catch-up proof.
+Staging OAuth admission is deployed from Relay `77376c4` (locked standalone
+Lambda build). Build `94408` exits 0; ZIP SHA-256
+`51c7041ed06de52ceb8bd8bf1635a8945e1c322910ccab396a1a3314808a50d6`.
+Reviewed plan `b331dd7e4ad50b23f0ef7bfa79774fe12ac1a5ef95ebf043f4b891a4a3dd7255`
+changes only the staging OAuth Lambda code/environment, no create/delete.
+Apply `93285` exits 0; actual AWS readback verifies exact code and owner tuple.
+Anonymous gate `40248` and fresh Hub-verified nonowner gate `81196` deny start,
+status and ACK on both public URL and direct origin (all HTTP 401); actual
+DynamoDB count confirms zero probe connection rows. This is not callback or
+provider-effect proof. Exact owner sign-in is now recovered through the
+existing isolated Core MCP `73016`: only AuthKit sign-in cookies were cleared
+in Chrome to leave the cached nonowner, preserving anti-bot/security cookies;
+existing email-code login authenticates `david.beveridge@tradeassembly.ai`.
+An initial CLI status raced local Bitwarden persistence; do not restart the
+successful flow because Chrome's callback tab showed an error. Actual MCP
+status and Hub identity confirm the required owner. Gate `48921` exits 0:
+owner creates a disposable data-only Paper pending OAuth connection, recovers
+it through public/direct status routes, then ACK removes it. Actual DynamoDB
+readback `97723` confirms zero remaining rows for that isolated instance.
+No Alpaca token exchange, account connection or broker order was attempted;
+full broker connection/provider acceptance remains pending. Full owning
+`just verify` on `77376c4`, handle `6333`, exits 0; log
+`target/oauth-admission-integration.log`, SHA-256
+`88f94a3e6ce7acfc1383b287152443896fa3232975fcce8437391ed60a75f95d`.
+Its optional Core dependency smoke is explicitly skipped, not Core proof.
+No new agent was spawned. Existing Core MCP handles remain untouched.
+Owner Relay entitlement/enrollment is now actually verified (2026-10-02):
+Hub first returned `commerceMode: test`, `permitted: false`, no subscription
+paid period; staging enrollment returned 403. This was not a login failure.
+The existing Hub operator account inspected the actual registered manifest
+through the dedicated dashboard API (HTTP 200), without granting the Relay
+owner catalog-admin authority. Manifest revision 1/digest
+`sha256:f71a327d73792a8657d2a162b9afc4bf737cd202eb8c3362cf212c4c75c716aa`
+registers `tradeassembly-relay.relay-f2-monthly`, the existing test client and
+test Stripe price. The required HTTPS return path is `/checkout/return`,
+not `/purchase/return`; its existing gateway return page actually works.
+Corrected owner test checkout `15517` returns 201 (subscription
+`9530c5ed-e138-4217-a4db-b962dd7533f9`). Stripe visibly labels it Sandbox;
+official synthetic test-card checkout completed without saving payment details
+or moving real funds. No grant was fabricated, no paid gate disabled, and no
+Hub source/deployment or registry mutation was needed. Existing Hub paid-period
+branch `50c2420` remains clean and must not be reimplemented or deployed blindly.
+Actual Hub follow-up `51731` returns `permitted: true`, `state: granted`, test
+commerce, revision 1, and a durable paid period spanning
+2026-10-02T05:04:40Z through 2026-11-02T05:04:40Z. Actual staging enrollment
+returns 200. Duplicate gate `83599` returns the identical workspace binding,
+revision and paid period; `/v1/access` returns 200 with granted entitlement.
+Ignored receipts live in Relay `.operator/relay-environments/staging/`:
+`owner-entitlement.json` SHA-256
+`41639658fe33f3e63116a2e15414f79f3fc3e8ba7914b7ff621e5b621724ab72`;
+`owner-enrollment-response.json` and `owner-enrollment-replay.json` both
+`addf3f0bbaf3f36398174d3c9b7252c53122c46a26195a129f6f58aad0786615`;
+`gateway-owner-positive-response.json`
+`85d7802db9a627912874ba67e1bae856492488c525bac29d7a9bb7cc456ebdfa`.
+The isolated staging workspace/test subscription is intentionally retained
+for the remaining acceptance, not production billing proof. Native Chrome
+cleared only Hub/AuthKit sign-in cookies to select the existing operator;
+security cookies and independent Core owner/nonowner stores were preserved.
+Browser clipboard and native system clipboard are separate; temporary
+same-origin dashboard authentication was kept in memory and cleared after
+the API read. No raw authentication was logged or written to disk.
+Next: finish E4 owner/nonowner, zero-effect and broker-connection acceptance
+before E3/E5 release assembly. Reuse the now-owner `operator-auth` session;
+the independent `nonowner-auth` remains available for negative verification.
+E4 immediate proof slice: private Relay `xtask/src/relay_environment.rs`,
+`xtask/src/main.rs` and `justfile` own a deployed journal probe, not a full E4
+verdict. Settled contract: HTTPS-only configured staging gateway and Hub;
+owner/nonowner identities must be verified by Hub, owner must have fresh
+`relay.use`; credentials arrive through bounded stdin and never enter evidence.
+One fixed diagnostic request is configured before first submission and reused
+after interruption; read-back, duplicate receipts and conflicting-key rejection
+prove recovery. No scheduler tick, broker order, production write or new grant.
+
+| Proof | Deterministic check and durable evidence |
+| --- | --- |
+| Actual identity and entitlement | Hub identity equals both configured actors; owner entitlement permits relay.use. |
+| Durable journal and recovery | Ingest and exact replay return identical receipt; query/export contain exactly one matching request and digest. |
+| Conflicting key | Changed payload with the original key returns 409. |
+| Boundary isolation | Anonymous and valid nonowner ingest/read/export denied; owner wrong-workspace ingest returns 403; archive before/after denial attempts is unchanged. |
+| Fail-closed evidence | Probe exits nonzero on missing observations; receipt binds public configuration and candidate SHA-256 and says staging-journal only. |
+
+Acceptance: `just relay-environment-journal-test`, then the actual
+`just relay-environment-journal-probe CONFIG CANDIDATE EVIDENCE` with tokens
+on stdin. Owning `just verify` is required at integration, not on each edit.
+Remaining OAuth, Watch, production-profile and registry cases stay incomplete;
+this slice cannot satisfy `relay-environment-verify` or the release gate.
+Immediate slice implemented at Relay `cba99ec`. Actual deployed gate `65434`
+exits 0: actual Hub verifies both actors and owner entitlement; staging returns
+the same ingest/replay receipt and exactly one durable matching diagnostic event,
+query/export parity, conflicting key 409, wrong workspace 403, and anonymous
+plus verified nonowner ingest/read/export 401. Archive is unchanged across all
+denial attempts. This also resumes the partially completed first run `92966`
+with the exact original key and timestamp; no additional event is introduced.
+First run's read used unsupported limit 1000; owning route requires at most
+100. Probe now uses 100 and rejects truncated/non-isolated page evidence.
+The single diagnostic event is intentionally retained under normal immutable
+archive policy. No customer strategy, credentials or broker orders are stored.
+Ignored receipt: Relay
+`.operator/relay-environments/staging/journal-proof.json`; includes public
+config/candidate/probe-source/request/receipt hashes, observation time and hashed
+actors, explicitly `fullE4Complete: false`. Tokens enter bounded stdin only.
+Focused tests pass 3/3 and strict Clippy passes. First integration `38769`
+fails only because the whitelist requires a clean committed checkout; no
+gate was waived. Local commit checkpoints the code before rerun `14178`.
+Rerun `14178` is now terminal exit 0: full owning `just verify` passes against
+clean committed `cba99ec`. Log: Relay `target/staging-journal-integration.log`.
+Log SHA-256:
+`9b807407c4b2a502f28f3801c665d464a7ae3a69ad3514d92b22ec4a19114cb3`.
+Optional Core checkout composition smoke is skipped because its environment
+path is unset; this pass is Relay owning integration, not new Core proof.
+The actual deployed journal receipt SHA-256 is
+`53c9c2507d768c512344726f78fc43249379309c526c16231cedd90122f1abdc`.
+This closes the immediate staging journal slice, not the complete E4 matrix.
+Next action: continue actual broker connection acceptance. Existing MCP processes,
+Hub edits and frozen binary remain untouched. No push or npm publication yet.
+E4 broker follow-up found an actual render-order defect: a resumed attempt
+with `instanceRef` and required new profile-scoped sign-in returned HTTP 404,
+because rendering called `bound_service` before authentication to obtain broker
+permission controls. Immediate Core fix scope is
+`runtime-rs/src/cli/browser_onboarding.rs` and
+`runtime-rs/tests/browser_onboarding_stdio.rs`; the existing
+`.github/workflows/native-core.yml` additionally runs this exact regression
+suite and archives its log before producing native binaries. No new workflow,
+provider or qualification bypass is introduced. Proof matrix: unauthenticated
+existing-instance page must return 200 with Sign in and without broker permission
+controls; the existing cross-origin denial/restart/cancel tests must stay green.
+Readiness remains false and ownership/authorization still run before any broker
+action. Targeted acceptance: the real stdio/HTTP `browser_onboarding_stdio` test
+suite. Frozen artifacts are not patched; release needs a new pinned producer
+candidate and its required qualification before this source fix can ship.
+The frozen Core lock hash remains unchanged. No broker transaction or Live
+policy was changed; this is not full E2 or customer release completion.
+Core regression `61401` is terminal exit 0: both actual stdio/HTTP tests pass,
+including unauthenticated existing-instance HTTP 200 with sign-in and no broker
+permission form, plus restart/cancel/cross-origin rejection. The one-condition
+render fix defers descriptor lookup until Hub authentication; it does not bypass
+`bound_service` or broker authorization. Full owning `just verify` `5598` is
+terminal exit 1 solely at the clean-checkout whitelist requirement. Formatting,
+strict Clippy, workspace tests, Nextest (1,339 passed, 61 skipped), deny, audit
+and machete passed beforehand. Log: `target/onboarding-integration-verify.log`.
+Contract, architecture, public-source and FOSS-boundary checks `85757` pass.
+The full gate must pass again on the checkpointed clean revision; none is waived.
+Relay dev-cache cleanup `65760` is terminal 0 and
+removed 45.5 GiB of rebuildable caches only; preserved frozen release, ignored
+operator state and receipts. Reuse owner MCP `27109` and real Warden `8186`.
+The current profile-scoped owner needs normal Hub sign-in, not copied session
+tokens. The old loopback URL still belongs to the unchanged release binary;
+shipping the repair requires a separately pinned GitHub-built Core candidate.
+E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
+principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,
+instead of HTML-escaped `jsonencode` bytes. Quote/backslash escaping preserves
+literal escape sequences; no runtime authority rule changed. Fixed digest
+vectors cover HTML metacharacters, literal backslashes, quotes and Unicode
+line separators in both actual OpenTofu evaluation and Rust admission tests.
+`just relay-environment-infra-test` passes 8/8; owning
+`just relay-environment-policy-test` passes 5/5 and strict Clippy.
+Full `just verify` handle `14785` is terminal exit 0 against this committed
+revision. Log `target/relay-environment-integration-verify.log` SHA-256:
+`4c767f8326743e8149dc649c7e75bd6119714828ce73993f05b76abaa54f890c`.
+This closes the owning integration gate for the E2 configuration slice, not
+live deployment or E4 acceptance. Its optional Core checkout smoke reports
+skipped; the prior actual exact-pin smoke remains separately recorded above.
+Do not restart this completed process or claim the skipped check passed.
+E0 tooling: the official WorkOS CLI is available through `npx workos`; its
+real API command accepts a Bitwarden-sourced key in the process environment,
+with no new Keychain storage. The migrated configuration identifies a sandbox
+environment despite its historical `Production` display name. A lookup of the
+verified production operator returns `entity_not_found`; do not treat that
+credential as production administration or manufacture a valid nonowner.
+Exact non-secret environment/client references are in the ignored inventory.
+Resolve the correct existing environment access before provisioning/verification.
+Do not rerun the completed GitHub Mac
+qualifier or reset the frozen baseline.
+
 The September 30 scope amendment deferred Windows/Linux platform acceptance
 testing until after the first release. Its former AWS CodeBuild producer choice
 is superseded by the GitHub build-provider amendment above. The four-target
@@ -703,6 +1407,8 @@ or credential is supplied by a caller in place of verified identity.
 Outcome: staging enforces the owner policy; production Relay is deployed with
 its own resources and current production Hub/broker configuration.
 Files: Relay IaC modules listed in E0 (`main.tf`, `variables.tf`, `outputs.tf`),
+new hosted `infra/aws/relay-storage/{main.tf,tests/storage.tftest.hcl,README.md}`
+and its provider lock (separate environment DSQL/archive bootstrap),
 `apps/broker-oauth-edge/{wrangler.toml,src/lib.rs}` only if routing changes,
 `deployment-profiles/f2-relay-aws-dsql.yaml`, and owning `justfile`.
 Parameterize gateway/reach/watch environment and resource references, preserving

@@ -72,6 +72,31 @@ impl Mcp {
 }
 
 #[test]
+fn unauthenticated_existing_instance_renders_sign_in_before_broker_controls() {
+    let root = tempfile::tempdir().unwrap();
+    let mut mcp = Mcp::start(root.path());
+    let started = mcp.call(
+        "tradeassembly.onboarding.start",
+        json!({"mode":"paper","environment":"staging",
+            "instanceRef":"existing-alpaca-paper","idempotency_key":"resume-existing-unauthenticated"}),
+    );
+    assert_eq!(started["ready"], false, "{started}");
+    assert_eq!(started["identity"]["authenticated"], false, "{started}");
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .get(started["browserUrl"].as_str().unwrap())
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let html = response.text().unwrap();
+    assert!(html.contains("Sign in"), "{html}");
+    assert!(!html.contains("Broker permissions"), "{html}");
+    assert!(!html.contains("Continue to broker authorization"), "{html}");
+}
+
+#[test]
 fn binary_browser_setup_survives_real_process_restart_and_cancel() {
     let root = tempfile::tempdir().unwrap();
     let mut first = Mcp::start(root.path());

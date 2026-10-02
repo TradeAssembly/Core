@@ -513,7 +513,7 @@ impl BrowserOnboarding {
         if let Some(instance) = attempt
             .instance_ref
             .as_ref()
-            .filter(|_| attempt.connection_id.is_none())
+            .filter(|_| attempt.connection_id.is_none() && progress["hubAuthenticated"] == true)
         {
             let (service, _) = self.bound_service(&attempt)?;
             let descriptor = service.broker_connection_descriptor(instance)?;

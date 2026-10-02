@@ -43,6 +43,7 @@ jobs:
           cargo test --locked -p tradeassembly-runtime --lib windows_private::tests 2>&1 | tee target/native-proof/private-files.log
           cargo test --locked -p tradeassembly-runtime --lib local_install::tests 2>&1 | tee target/native-proof/setup.log
           cargo test --locked -p tradeassembly-runtime --test local_owner_identity 2>&1 | tee target/native-proof/owner.log
+          cargo test --locked -p tradeassembly-runtime --test browser_onboarding_stdio 2>&1 | tee target/native-proof/browser-onboarding.log
           cargo build --release --locked -p tradeassembly-runtime --bins -p tradeassembly-distribution 2>&1 | tee target/native-proof/build.log
       - name: Preserve native binaries and output; no private producer source
         if: always()

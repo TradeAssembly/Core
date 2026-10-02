@@ -1192,11 +1192,72 @@ using the correct corporate Bitwarden entry and MFA. STS confirms account
 `056319544861`. CLI readback confirms the staging OAuth function is Active,
 last update Successful, revision `ab34e70e-e9e2-4eea-8879-b79469f15bbe`, code
 SHA-256/base64 `UccEHtBt5Szri9i/FjWolF4cMikQzKs5ahozFICKUNY=`. Staging policy
-is unchanged. Next: implement a revision-fenced, guaranteed-restoration
-revoked-owner probe, then production packaged onboarding/Relay and the full
-candidate/registry gates. Do not mutate staging admission until the restoration
-path is settled and tested. Preserve native MCP `37062`, owner MCP `80253`, and
+was unchanged at that checkpoint. The subsequent revoked-owner proof is recorded
+below. Next: production packaged onboarding/Relay and the full candidate/registry
+gates. Preserve native MCP `37062`, owner MCP `80253`, and
 real Warden `8186`; none of this qualifies or publishes npm packages.
+Revoked-owner design is settled in private Relay `xtask/src/oauth_revocation.rs`:
+keep every original staging owner, briefly append the verified controlled
+nonowner, start one paper/data-only pending transaction, restore the original
+policy, then test its unexpired callback through both origins. Require actual
+401/`unauthorized`, an unchanged consistent-read DynamoDB row with no grant,
+and exact restored environment/code. The deployed callback source is
+`apps/broker-oauth-relay/src/lib.rs::callback`: admission is checked before
+state claim and provider exchange. This is not a provider-call counter claim.
+AWS updates are fixed to staging function/account, fenced by revision, bounded
+in time, and reject concurrent unrelated edits. A mode-0600 immutable recovery
+file precedes mutation; an independent process restores after 120 seconds if the
+probe is interrupted. Normal/error exits also restore before returning. Remote
+AWS outage can still require the explicit restore command; do not claim an
+absolute restoration guarantee during provider outage. Existing owner remains
+admitted, no real provider code or consent is used, production is untouched.
+Focused restoration/evidence tests (3/3) and strict Clippy passed. Local Relay
+commits `5f0c48a`, `6c5522a` own this driver; not pushed or merged. First actual
+probe rejected AWS CLI stdin JSON before any configuration mutation. Exact
+original policy was read back, then the explicit restore command `74665` passed.
+The corrected driver uses AWS CLI `--environment` for validated non-secret
+variables. Second probe `4499` created only a pending transaction, then correctly
+failed its overly strict hex digest check and restored admission on the error
+path. The deployed digest is base64url; `4d60852` fixes that exact binding, not
+the gate. Third probe `91068` failed before mutation because its Hub session
+expired while Cargo waited for the integration build lock. Both actors were
+refreshed through native CLI. Final `bb336ab` also binds restoration to the exact
+AWS account/region/function ARN. Do not reuse stale credentials across build
+waits; build the xtask first, then supply credentials to its ready executable.
+Actual final probe `48188` exits 0 on `bb336ab`, using that already built Rust
+xtask. Both custom/direct unexpired revoked-owner callbacks returned actual
+401/`unauthorized`; the consistently read pending/no-grant row was identical
+before and after. Row SHA-256:
+`5c745d5fd2d704bc8412aeda94fd7ad0e04eef4d71594627d5734f87f118a43a`.
+Original owner admission and every other variable were restored exactly; code
+SHA remained unchanged. Independent CLI readback confirms Successful update,
+revision `d147cb5d-0241-4d84-a048-1d1112e87028`, original allowlist only.
+The watchdog was stopped only after successful restoration. Durable recovery
+files remain mode-0600 under ignored operator state; no raw credentials/provider
+codes were written. One failed-probe pending row and the successful probe row
+expire normally; neither has a grant. No broker orders or production mutation.
+Ignored actual evidence `staging/oauth-revocation-proof-v4.json` SHA-256
+`b853076acba796d6a63169aa1aecbb20b7bf203959bdecc3496168176bd8581a`.
+`just relay-environment-oauth-revocation-verify` process `71753` exits 0 and binds
+the exact native candidate/config/source/actors, both-origin 401 observations,
+unchanged durable row and restored policy. Scope remains explicitly
+`staging-oauth-revocation-only`, `fullE4Complete:false`. This closes only the live
+revoked-owner case. Earlier journal/denial source hashes remain valid because
+their source module is unchanged; this driver is a separate private module.
+Full owning `just verify` process `29803` exits 0. Its run began on `5f0c48a`
+and continued while the diagnostic fixes were committed; final `bb336ab` has
+separate 3/3 targeted tests and strict all-target xtask Clippy (`17710`, exit 0).
+No claim of a single pristine-final-revision release gate or merge readiness is
+made. Final integration/release checkpoints still require stable owning gates.
+Integration log `/tmp/tradeassembly-oauth-revocation-integration.log` SHA-256
+`026087230647e91e3137a926266bd81db39e8aa2b212abe1bc4d92a994cc05ec`;
+targeted log `/tmp/tradeassembly-oauth-revocation-tests.log` SHA-256
+`7653648bac3333ebd218cbaa5acadcf8eb621ac5b4eaac3a1048571589986e8d`.
+Optional Core-checkout smoke remains explicitly skipped, not passing evidence.
+Next acceptance: exact native packaged production Hub/Alpaca Paper onboarding,
+production Relay entitlement/read-write/export and denials, then full private
+E4 aggregation and candidate/registry gates. Staging-owner-only and production
+configuration overall verdicts remain false until their complete matrix passes.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
 principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,
 instead of HTML-escaped `jsonencode` bytes. Quote/backslash escaping preserves

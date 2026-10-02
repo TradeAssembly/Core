@@ -1068,6 +1068,29 @@ for this repair. Next: await that run, capture digest-bound native outputs,
 update the Mac producer pin only, and repeat real resumed status on those bytes.
 The source-only probe `40470` is intentionally stopped. Owner `80253` and Warden
 `8186` are preserved. Frozen lock hash remains unchanged; no merge/npm release.
+GitHub run `37013112271` completed successfully. Pinned capture passed for artifact
+`11228864137`, ZIP SHA-256
+`fa2dc5341f8e270f99c511f5512c527e88e1da915524ca753855dc77579a98a5`.
+Deterministic extraction passed to `target/github-build-outputs-macos-onboarding-retry`
+with `qualified:false`. Core binary SHA-256:
+`bb6a2842130c316e71856bb910c37582001c12e299a082ec1424b1e9a297d088`.
+Its sandbox launcher is byte-identical to the already pinned launcher in the rig.
+Native probe MCP `59508` remains live, using the same isolated persisted state.
+Actual requests `701`–`704` prove: the expired onboarding attempt remains expired;
+fresh sandboxed paper-account verification succeeds and persists a receipt;
+the same explicit command key replays `duplicate:true` with unchanged checked-at;
+requesting Live against that paper instance rejects `account_mode_mismatch`.
+Native receipt checked-at: `1790948672076`; restart observation: `passed`.
+Read-only receipt export `onboarding-retry-native-receipts.json` SHA-256:
+`6c1ac80bb27db39b4647ab427f566e481302dd755bebcfef0e23dcd52bb075a3`.
+The two actual durable command rows are exported in
+`onboarding-retry-native-commands.json`, SHA-256
+`90b14b88aafe2640aceedfe9d2551639c31ec544fa996d630de169dea9f42c98`.
+No orders, credential replacement, expiry mutation or Live activation occurred.
+Next acceptance: a fresh finite browser setup through this exact native process
+must reach `ready` before its natural expiry; the expired prior attempt cannot
+substitute for this positive proof. Then complete the remaining E4 negatives and
+candidate/registry release gates. Do not claim full E4 or npm qualification.
 Do not restart the live rig or reinterpret partial onboarding as full E4 proof.
 No merged, published npm, new broker-order or complete E4 result is claimed.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner

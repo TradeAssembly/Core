@@ -465,7 +465,8 @@ Operator browser authentication was restored through the packaged MCP flow.
 The aggregate accepts five leaves, covers 24/35 routes and exits 1 correctly:
 11 routes and both deployment/rollback proofs remain unproven. Report SHA-256
 `db09d8e896d251b2f228a18e64f8fdc9e69e6cd0d2845eec2700074a82063dff`.
-The new clean-tree Relay integration gate is running; no pass is claimed yet.
+The new clean-tree Relay `just verify` integration gate passed (terminal 34978,
+exit 0); the previously accepted pinned Core composition smoke is retained.
 Next: positive workspace enrollment, six Watch routes and four OAuth routes.
 Watch must use its actual
 signed heartbeat and issued ACK capability, not inferred tokens or synthetic

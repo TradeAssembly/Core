@@ -152,8 +152,11 @@ log `/tmp/tradeassembly-hub-registration-full-gates.log`, SHA-256
 `100f24403c323119f5e5668995d7576a66a121c4c1c4bba3610984b5ad1729e2`.
 Edge check and dashboard build passed; four ARM64 Lambda packages built.
 These are local checkpoints, not deployed acceptance. Existing production-deploy
-SSO expired; refresh process `56311` remains the authorization flow. Chrome
-login reached MFA using the intended Bitwarden SSO item. Do not use root to
+SSO expired; refresh `56311` exited 255 after its pending authorization expired.
+Chrome login reached MFA using the intended Bitwarden SSO item; two current
+codes were rejected. AWS's supported two-code resync form remains open, with
+no confirmed successful resync. Resume that same identity flow before creating
+a fresh CLI authorization; do not repeat stale authorization URLs. Do not use root to
 bypass the owning deployment guard. Next: finish SSO, review/apply the bounded
 runtime plan and AWS-origin Worker deployment, then review the actual registry
 revision and update Relay's production manifest. No paid grant is fabricated.

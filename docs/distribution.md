@@ -261,7 +261,22 @@ Dashboard build passed, log `/tmp/tradeassembly-hub-identity-dashboard-build.log
 SHA-256 `70390a3c12776d553b58da93870d01260e90445a0bf033605e2274266bc71e69`.
 Actual production probes: storefront 200, anonymous buyer API 401, readiness
 200. Sources are not yet pushed. No actual charge, webhook grant, browser
-rendering or final native/profile qualification is claimed. Next: verify hosted storefront
+rendering or final native/profile qualification is claimed.
+Actual Chrome storefront now renders the signed-in buyer's registered Relay
+monthly offer and enables checkout, proving the real buyer read permission.
+Checkout and duplicate-safe retry both return 503. Authoritative custom log
+group `/tradeassembly/hub/production/api` records Stripe `/customers` HTTP 401
+at `2026-10-02T18:26:24Z` and `18:26:43Z`; the Lambda live alias is version 44.
+This is a provider credential rejection, not a frontend timeout or failed
+reservation. Preserve the existing browser attempt and durable reservation.
+Immediate next action: repair the approved production Stripe credential
+workflow, validate its provider access without exposing the value, update the
+existing secret if needed, then recover the same attempt. Hub instructions
+require `aws-secrets-manager` and `asm-exec` for operational secret handling;
+neither was found locally. Official AWS skill search returned
+`creating-secrets-using-best-practices` (loaded), not the required helper/skill.
+No direct Secrets Manager value reads, payment or grant were performed.
+After credential repair verify hosted storefront
 login, actual registered price and real purchase/access/portal. Check the
 dashboard client's buyer permission and cross-client subject/tenant binding
 from actual verified sessions; do not add synthetic entitlement or bypass

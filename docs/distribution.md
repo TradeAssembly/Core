@@ -79,8 +79,12 @@ Second repair `08ddf1859eceb022c2a91f93d295831294697af7` is pushed after clean
 full Core gate `60452` exited 0; log
 `/tmp/tradeassembly-windows-test-db-core-verify.log` SHA-256
 `45a1f8ee0d86ad6565d5c3a6e34731fa4dce8825de78515661343dd6b53fc485`.
-Windows-native confirmation is running as GitHub `37034024144`, watch `17348`,
-log `/tmp/tradeassembly-core-08dd-windows-watch.log`. Reuse the watch.
+Windows-native GitHub `37034024144` passed at the exact `08ddf18` pin; watch
+`17348` is terminal 0. Deterministic capture passed, artifact `11239686980`,
+ZIP SHA-256 `3afa22688ed8c1275d458f7235c280790768579804a2691a2b95cdee1ddbbd19`.
+Its archive/readback are preserved under coordinator
+`artifacts/f2-github-v2/windows-x64-customer-profile/`; capture is not package
+qualification or Windows runtime acceptance.
 Mac watch `71877` is terminal success. Private coordinator
 `35bbfda` pins all four Core targets; capture tests (2/2)/strict Clippy passed.
 Producer and SDK pins are unchanged. Captured Core ZIPs under coordinator
@@ -104,7 +108,10 @@ Warden controlled sink, duplicate and ambiguous recovery. Receipt
 SHA-256 `05adfd223864fc17504cd9d4ce150512df60dda1abe8e935f60c5a235285b6d3`.
 No actual broker orders or production Live activation. Prior v1/v2 invocations
 failed on operator-supplied paths; preserve them, do not relabel as passes.
-Next: Windows native result and actual production paid Relay onboarding.
+That Mac receipt binds the older test-commerce profile, not the corrected
+live-commerce profile below. Preserve it as historical package proof; repack
+and requalify the final profile without rebuilding unchanged native payloads.
+Next: actual production paid Relay onboarding and final package qualification.
 
 Private Relay worktree `/Users/davidjbeveridge/.codex/worktrees/f2-relay-watch-remember`:
 real staging OAuth setup/restart, both-origin journal proof, 19 OAuth negatives,
@@ -114,6 +121,13 @@ and revoked-owner proof/verifier passed. Revocation evidence is
 Original admission was restored exactly. Do not repeat that mutation for a newer
 timestamp; complete route/node coverage is still required.
 
+Private Relay `d11524a` corrects the production profile to the registered live
+commerce client; its manifest-bound regression rejects the registered test
+client. Three targeted tests and strict all-target xtask Clippy passed, log
+`/tmp/tradeassembly-production-live-client-profile-gates.log`, SHA-256
+`8e9b3331e60f762f054823484667ab78275037298bcfd92238bcd55a4bcd2fcb`.
+Corrected profile SHA-256 is
+`33edb356f2ed7d505c2c01c8d149193d06f0196f810948ca0550ad893aad0973`.
 The private production profile validator passes, but real packaged production
 onboarding and aggregate service acceptance do not. Its `checkoutUrl:null` is
 an open purchasable-onboarding gap: use the actual existing Hub catalog path,
@@ -130,7 +144,19 @@ a fresh signed-in operator registry. No global default/customer role changed.
 Relay has an active monthly catalog entry and both existing clients, but the
 fulfillment origin still names the older F2 gateway. AWS CLI confirms the actual
 production gateway is distinct; correct the normal Hub binding before purchase
-proof. This is not checkout or purchased entitlement acceptance.
+proof. Legacy dashboard edits correctly reject this manifest-managed product;
+use versioned plan/apply, not a guard bypass. Hub `ba45db1` checkpoints the
+operator review panel and signed-assertion route aliases. Hub Rust formatting,
+strict workspace Clippy and all workspace tests passed (two explicit skips),
+log `/tmp/tradeassembly-hub-registration-full-gates.log`, SHA-256
+`100f24403c323119f5e5668995d7576a66a121c4c1c4bba3610984b5ad1729e2`.
+Edge check and dashboard build passed; four ARM64 Lambda packages built.
+These are local checkpoints, not deployed acceptance. Existing production-deploy
+SSO expired; refresh process `56311` remains the authorization flow. Chrome
+login reached MFA using the intended Bitwarden SSO item. Do not use root to
+bypass the owning deployment guard. Next: finish SSO, review/apply the bounded
+runtime plan and AWS-origin Worker deployment, then review the actual registry
+revision and update Relay's production manifest. No paid grant is fabricated.
 Temporary CLI credential files are removed
 after each run; refreshed credentials return to Bitwarden.
 

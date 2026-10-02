@@ -309,6 +309,23 @@ after each run; refreshed credentials return to Bitwarden.
 
 An earlier Mac candidate passed native qualification; later source/profile bytes
 cannot inherit that pass. Reuse unaffected GitHub producer outputs/evidence.
+Current Mac candidate has now been repackaged with the exact production Hub
+storefront profile, using existing unchanged native inputs and installer.
+`target/f2-npm-mac-package-production-storefront/candidate.json` binds version
+`0.1.0-beta.3`, archive
+`30dcbd465e5964ded291328f3e8bbd92b7cfac8d663abfe01945bd21e8120c9b`,
+descriptor `51da2114d1e8ec86de4089734b8f165d76fc80e98fefbd660f7586c150fa7fea`,
+profile `6c73b9e50ce898d11a49fa62903fba984f59e4af2fa5a49aa417eb9e556a2869`.
+Freeze/describe/pack exited 0; candidate remains explicitly not publishable.
+Fresh native qualification is genuinely running (terminal session `18900`,
+distribution PID `78845` at last observation), source revision `03e60da` at
+preflight, log `/tmp/tradeassembly-production-storefront-qualification.log`,
+output `target/f2-npm-evidence-production-storefront/aarch64-apple-darwin`.
+Setup/reinstall/active-rig-denial and baseline state-preserving upgrade/rollback
+checks passed; sandbox checks are still running. No final receipt exists yet.
+Next: poll that same handle, inspect exact receipt/check digests when terminal;
+do not restart it or borrow old candidate qualification. Stripe's human key
+rotation dialog remains pending (verified this turn). L1/L3/L4 remain open.
 npm ownership/authentication, complete candidate/registry gates and integration
 remain open. No publication or production paid-readiness claim.
 

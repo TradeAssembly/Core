@@ -454,10 +454,16 @@ failed the actual Core extractor with `metadata_replace_failed`. The retained
 log is authoritative; Core's Windows private-file writer rejects inherited broad
 workspace ACLs. Coordinator `3c68760` allocates and validates only a fresh
 owner-only packaging parent; pinned binaries and security gates remain unchanged.
-Windows retry `37054136260` is in progress. Reuse it. Local recursive delivery
-hash binding repair passes 13 targeted tests and strict Clippy; no runtime proof
-is inferred from those tests. Next: capture Windows result, create exact npm
-delivery archives, and assemble experimental evidence for the candidate gate.
+Windows retry `37054136260` passed at `3c68760`. Artifact `11247459470` downloaded
+and ZIP SHA-256 independently recomputed:
+`d66f2aea8870e37a3474e6ade9ee2dcc721e2b01eb66e1f2bf5ea1150ece3bf0`.
+Windows bundle archive SHA-256
+`87cda25b4ae6c6a49a9f5da742ebe226c2edf69fb94992daacab760edfb8a3d8`;
+descriptor `36c9db674071376fca058525b6b5cfbabdb4bde3b0af11f0d7366c8c7f11b379`.
+Local recursive delivery hash binding repair passes 13 targeted tests and strict
+Clippy; no runtime proof is inferred from those tests. No live packaging processes
+remain. Next: create exact npm delivery archives and assemble experimental evidence
+for the candidate gate. No native producer rebuild is needed for these steps.
 The coordinator's whole-family `./repos check` still fails
 because its isolated checkout has no `Hub` child; no locks were refreshed and
 no family integration/merge readiness is claimed.

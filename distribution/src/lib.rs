@@ -282,7 +282,10 @@ pub fn verify_bundle(root: &Path, release: &Release) -> Result<()> {
         "bin/warden",
         "bin/tradeassembly-sandbox",
     ] {
-        executable_file(&root.join(payload_executable(name, &release.target)))?;
+        executable_file(
+            &root.join(payload_executable(name, &release.target)),
+            &release.target,
+        )?;
     }
     Ok(())
 }
@@ -320,18 +323,22 @@ fn payload_executable(name: &str, target: &str) -> String {
     }
 }
 
-fn executable_file(path: &Path) -> Result<()> {
+fn executable_file(path: &Path, target: &str) -> Result<()> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "executable_unavailable")?;
     if !metadata.is_file() {
         return Err("executable_must_be_regular".into());
     }
     #[cfg(unix)]
-    {
+    if target != TARGETS[4] {
+        // Windows executability is PE/architecture and native ACL semantics,
+        // not POSIX mode bits on the machine inspecting a foreign archive.
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
             return Err("executable_permission_missing".into());
         }
     }
+    #[cfg(not(unix))]
+    let _ = target;
     Ok(())
 }
 
@@ -497,6 +504,32 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn foreign_windows_permissions_do_not_relax_posix_or_regular_file_checks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("foreign.exe");
+        std::fs::write(
+            &binary,
+            b"permission fixture; native PE validation is separate",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o600)).unwrap();
+        super::executable_file(&binary, super::TARGETS[4]).unwrap();
+        for target in [super::TARGETS[0], super::TARGETS[2], super::TARGETS[3]] {
+            assert_eq!(
+                super::executable_file(&binary, target).unwrap_err(),
+                "executable_permission_missing"
+            );
+        }
+        let link = root.path().join("link.exe");
+        symlink(&binary, &link).unwrap();
+        assert_eq!(
+            super::executable_file(&link, super::TARGETS[4]).unwrap_err(),
+            "executable_must_be_regular"
+        );
+    }
     use super::*;
 
     #[test]

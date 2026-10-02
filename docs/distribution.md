@@ -460,10 +460,35 @@ and ZIP SHA-256 independently recomputed:
 Windows bundle archive SHA-256
 `87cda25b4ae6c6a49a9f5da742ebe226c2edf69fb94992daacab760edfb8a3d8`;
 descriptor `36c9db674071376fca058525b6b5cfbabdb4bde3b0af11f0d7366c8c7f11b379`.
-Local recursive delivery hash binding repair passes 13 targeted tests and strict
-Clippy; no runtime proof is inferred from those tests. No live packaging processes
-remain. Next: create exact npm delivery archives and assemble experimental evidence
-for the candidate gate. No native producer rebuild is needed for these steps.
+Delivery checkpoint: coordinator `53c6ef9` is pushed. Its packer uses exact pinned
+Node/npm, offline mode, no lifecycle scripts or inherited credentials. All delivered
+files receive recursive hashes. The common launcher is the exact qualified Mac
+archive (`a5322a786f940171e8034ff6303e1b7ce769f5e20986ffe531a1045fadc129bd`),
+after comparing the complete manifest and all other file contents. Only JSON
+serialization order and CRLF-only cli/README differences are normalized; added
+behavior fails. Sixteen targeted tests, strict Clippy and dependency audit pass.
+Actual Linux delivery jobs passed in run `37055677256` at `7537b18`; downloaded
+x64 ZIP `a3e06366e317e64bd09a627208eae783257e3687deb6c3fc1654a82ced033fc7`
+and arm64 ZIP `596a6c798da5f40f17f8059908483a0ac8f51c2f94f5bab452562f311fb3857f`.
+Windows-only run `37056091877` passed at `53c6ef9`; artifact `11248323678` ZIP
+`d81c4592d54819227dfdbc9868f9d04f67c4ea8bf07663495465bc638858a720`.
+All downloaded ZIP hashes were independently recomputed. No native producer
+rebuild or Mac qualification replacement occurred.
+`assemble-experimental` builds Core's existing receipt schema from the actual
+archives, readbacks, outputs and delivery bytes. The assembled evidence root is
+`target/f2-npm-evidence-production-storefront`; Mac receipt is unchanged.
+First four-target candidate check failed at Windows `executable_permission_missing`:
+the verifier required POSIX execute bits on a foreign Windows payload. Decision:
+permission validation must follow the declared target, not the verifier host.
+Windows retains regular-file, full inventory, digest, PE machine/architecture,
+source and provenance checks; POSIX payloads still require executable bits.
+`distribution/src/lib.rs::executable_file` implements that correction with an
+explicit negative POSIX/link regression. All 32 distribution tests and strict
+distribution Clippy pass (three native process tests remain explicitly skipped
+here; their unchanged Mac qualification evidence is retained). No gate completion
+claim until owning gates and the four-target candidate verifier pass. Next: those
+exact gates, then the CI-owned aggregate/publication steps. L1 commercial proof
+and full L3/L4 remain open.
 The coordinator's whole-family `./repos check` still fails
 because its isolated checkout has no `Hub` child; no locks were refreshed and
 no family integration/merge readiness is claimed.

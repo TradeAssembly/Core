@@ -1004,6 +1004,21 @@ operator state and receipts. Reuse owner MCP `27109` and real Warden `8186`.
 The current profile-scoped owner needs normal Hub sign-in, not copied session
 tokens. The old loopback URL still belongs to the unchanged release binary;
 shipping the repair requires a separately pinned GitHub-built Core candidate.
+Clean owning gate `82967` is terminal exit 0 against committed Core
+`5de65946ca531302616b539d039537fdbeada0ce`, including the full required
+`just verify` sequence. Log `target/onboarding-clean-integration-verify.log`
+SHA-256: `d548be0c4a299ab2a09cd1920864a73bc39bcd65271e9533d77c63f886450086`.
+The unchanged frozen lock remains
+`222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
+That exact Core source is pushed to `codex/f2-npm-distribution`. Actual GitHub
+Mac arm64 native run `36971256125` is queued against that SHA with the new
+browser stdio regression included in the existing producer workflow. Public
+Core uses the standard free `macos-15` runner; no private allowance cap changed.
+Next: read the terminal native result once, capture pinned run/artifact bytes,
+then use a distinct isolated repaired binary with the existing operator profile
+and state to finish genuine Hub/Alpaca setup. Do not restart `27109`/Warden `8186`
+blindly or reinterpret this source gate/build dispatch as OAuth or release proof.
+No merged, published npm, new broker-order or complete E4 result is claimed.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
 principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,
 instead of HTML-escaped `jsonencode` bytes. Quote/backslash escaping preserves

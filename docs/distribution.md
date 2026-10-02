@@ -437,9 +437,19 @@ journal admission, duplicate replay, query/export and denials pass the owning
 validator. Relay `dc69f40` corrects the probe's enrollment schema and exact 403
 nonowner workspace denial expectations; nine tests and strict xtask Clippy pass.
 The actual 118-route admission probe and separate offline validator now pass;
-the full Relay integration gate is still running. Partial failed reports remain
-diagnostic only. Revocation,
-node/ACK/callback effects, deployment/rollback and commerce proof remain open.
+the full Relay integration gate is still running. Current-candidate OAuth
+revocation now also passes: both callbacks denied before durable changes and
+original admission restored. Relay `2f6f715` counts exact workspace 403 denials;
+ten targeted tests/strict xtask Clippy pass. The actual aggregate accepts all four
+current leaves but still rejects readiness: 19/35 routes require positive owner,
+node or issued-capability evidence, and two deployment/rollback proofs are absent.
+Next leaf must use isolated ephemeral installation keys and existing Hub/Reach
+signing APIs, an Inspect-only command, real durable transitions and negative
+replay/stale/revoked checks on custom/direct surfaces. Watch must use its actual
+signed heartbeat and issued ACK capability, not inferred tokens or synthetic
+successful delivery. Existing handler source owns the contract; preserve native
+candidate bytes. Partial failures remain diagnostic only; no actual broker orders.
+Node/ACK/callback effects, deployment/rollback and commerce proof remain open.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope
 for redesign. Continue independent candidate work while that dependency resolves.

@@ -1091,6 +1091,34 @@ Next acceptance: a fresh finite browser setup through this exact native process
 must reach `ready` before its natural expiry; the expired prior attempt cannot
 substitute for this positive proof. Then complete the remaining E4 negatives and
 candidate/registry release gates. Do not claim full E4 or npm qualification.
+Fresh native attempt v7 `e616bf47a0f19ba58c2081f5bf7ecb7641bc1833bebbb3fc15980563eb3161f0`
+completed actual staging browser consent and OAuth exchange on the exact new
+GitHub-built bytes. Native MCP `59508`, request `706`, reported `ready:true`,
+Hub authenticated, Relay permitted, broker connected and real Warden ready.
+The renewed same-account grant is credential revision 2, instance revision
+`1790949212495`; its first native receipt checked-at is `1790949214086`.
+The browser visibly showed “Connection verified. You can return to your agent.”
+Screenshot `onboarding-native-v7-ready.png` SHA-256:
+`61b0e2fe6fad704eac557a5f4cbf0be2b612cde97804c9419592a82137cccc7e`.
+Observed friction: the original scope-selection tab did not refresh after its
+`target=_blank` authorization form opened the provider tab. One explicit refresh
+rendered success; MCP readiness itself did not require that refresh. Record this
+honestly; automatic browser completion is not proven. Local page/status requests
+also incur credential-store lookup latency; do not restart loading requests.
+Only the isolated native probe was intentionally restarted. Current native MCP
+`37062`, request `711`, again reports `ready:true` with credential revision 2 and
+restart observation `passed`; checked-at `1790949385190`. Old MCP `80253` and
+real Warden `8186` remain untouched. New browser capability is returned by `711`.
+Actual persisted revision-2 restart evidence is exported in
+`onboarding-native-v7-restart-receipts.json`, SHA-256
+`78f91468a9f74771365e5744614658c6f71fa4fcdd6abc167c98059f52d78eba`.
+Positive native OAuth/readiness/restart proof is now closed, not full E4.
+Next: extend the existing private Relay `xtask/src/relay_environment.rs` driver
+to capture/verify the remaining finite E4 matrix (defined below), retaining its
+real owner/nonowner and zero-effect bindings. Record the stale-tab friction in
+the customer handoff; no automatic browser-refresh proof is claimed. Production
+packaged onboarding, callback/state negatives and production Relay cases remain
+required before candidate/registry release acceptance.
 Do not restart the live rig or reinterpret partial onboarding as full E4 proof.
 No merged, published npm, new broker-order or complete E4 result is claimed.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner

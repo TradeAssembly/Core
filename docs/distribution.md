@@ -317,15 +317,20 @@ storefront profile, using existing unchanged native inputs and installer.
 descriptor `51da2114d1e8ec86de4089734b8f165d76fc80e98fefbd660f7586c150fa7fea`,
 profile `6c73b9e50ce898d11a49fa62903fba984f59e4af2fa5a49aa417eb9e556a2869`.
 Freeze/describe/pack exited 0; candidate remains explicitly not publishable.
-Fresh native qualification is genuinely running (terminal session `18900`,
-distribution PID `78845` at last observation), source revision `03e60da` at
-preflight, log `/tmp/tradeassembly-production-storefront-qualification.log`,
-output `target/f2-npm-evidence-production-storefront/aarch64-apple-darwin`.
-Setup/reinstall/active-rig-denial and baseline state-preserving upgrade/rollback
-checks passed; sandbox checks are still running. No final receipt exists yet.
-Next: poll that same handle, inspect exact receipt/check digests when terminal;
-do not restart it or borrow old candidate qualification. Stripe's human key
-rotation dialog remains pending (verified this turn). L1/L3/L4 remain open.
+Fresh native qualification completed (terminal `18900`, exit 0), source revision
+`03e60da` at preflight, log `/tmp/tradeassembly-production-storefront-qualification.log`
+SHA-256 `c00207314b9417cc3f48930ac1035d085daf678b071889c37673312da9fe71eb`.
+All 14 required local native checks passed, including real Warden/controlled
+sink, duplicate and ambiguous recovery, source-free setup, sandbox denials,
+scripts-disabled npm/pnpm and state-preserving upgrade/rollback. Receipt
+`target/f2-npm-evidence-production-storefront/aarch64-apple-darwin/receipt.json`
+SHA-256 `1133c3949ed404d205e8ba5fa5b72c63bf38184ce96094a55649d6ee42b6fa53`
+binds the new descriptor; actual broker orders are false. Artifact/check hashes
+were independently recomputed, not inferred from the pass label.
+Next: preserve this qualified Mac artifact; finish equivalent native packaging
+for the experimental targets, real L1 production acceptance, CI-owned publication
+and the full aggregate gates. Stripe's human key rotation dialog remains pending
+(verified this turn). L1/L3/L4 and overall L2 candidate gate remain open.
 npm ownership/authentication, complete candidate/registry gates and integration
 remain open. No publication or production paid-readiness claim.
 

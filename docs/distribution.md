@@ -1121,6 +1121,46 @@ packaged onboarding, callback/state negatives and production Relay cases remain
 required before candidate/registry release acceptance.
 Do not restart the live rig or reinterpret partial onboarding as full E4 proof.
 No merged, published npm, new broker-order or complete E4 result is claimed.
+E4 staging journal both-origin slice is now verified. Private Relay commits
+`a5dc56e` (strict v2 capture/verifier and exact edge journal routing), `02321ad`
+(isolated configuration-test backend data), and `aac3df2` (Wrangler package cwd)
+are local checkpoints; not merged or pushed. The custom host previously sent
+journal requests to the OAuth-only service and returned 404. Staging now pins
+the existing journal gateway separately, on only three exact method/path pairs;
+OAuth backend selection is unchanged. Production edge configuration/deployment
+is untouched. Cloudflare staging version is
+`c833f37e-6cbe-4f31-9ed1-4709a90f8cdf`, deployed by successful
+`just edge-deploy-staging` handle `20557` from `aac3df2`.
+Actual deployed probe `57210` and `just relay-environment-journal-verify` both
+exit 0. Hub verified the actual owner and nonowner. Both custom and direct
+origins reject anonymous/nonowner ingest/read/export (12 actual 401 responses),
+owner reads agree, replay has the same receipt and exactly one existing event,
+conflicting key rejects 409, wrong workspace rejects 403, query/export agree,
+and actual archive hashes are unchanged across denial attempts. The original
+event key/timestamp were reused; no extra event, broker order or Live activation.
+Ignored evidence: private Relay
+`.operator/relay-environments/staging/journal-proof-both-origins.json`, SHA-256
+`46c1a83b2bf75ee6a9816b1d6ea2746da90cc964b6decb151a4e6771c9e351b6`.
+It binds exact native Core binary SHA-256
+`bb6a2842130c316e71856bb910c37582001c12e299a082ec1424b1e9a297d088`,
+config, probe source, request and hashed actors. Scope is explicitly
+`staging-journal-only`, `fullE4Complete:false`; stale/incomplete/different-input
+evidence is rejected by the verifier. This is not candidate/package qualification.
+Full owning `just verify` handle `92426` exits 0 on `02321ad`; the later commit
+changes only the Wrangler invocation directory, and its actual deploy reruns
+edge format/Clippy/tests/build successfully. Integration log is private Relay
+`target/staging-journal-both-origins-integration.log`, SHA-256
+`0020763f907227ec100c48aab69f62b4452c28dbbcc7e70e59ce1b1402a0984b`.
+The optional Core checkout smoke is explicitly skipped, not new passing evidence.
+Previous gate attempts exhausted disk or reused expired deployment-backend data.
+Only regenerable Cargo dev caches were cleaned; release bundles, receipts and
+live processes were preserved. Pure existing mock-provider OpenTofu tests now
+use isolated working data and a shared provider cache; no test was weakened.
+The original frozen release-lock SHA-256 remains
+`222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
+Next acceptance: remaining finite OAuth callback/admission negatives, then
+production packaged onboarding/Relay evidence and candidate/registry gates.
+Do not rerun this completed slice or count it as complete E4.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
 principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,
 instead of HTML-escaped `jsonencode` bytes. Quote/backslash escaping preserves

@@ -155,14 +155,19 @@ strict workspace Clippy and all workspace tests passed (two explicit skips),
 log `/tmp/tradeassembly-hub-registration-full-gates.log`, SHA-256
 `100f24403c323119f5e5668995d7576a66a121c4c1c4bba3610984b5ad1729e2`.
 Edge check and dashboard build passed; four ARM64 Lambda packages built.
-These are local checkpoints, not deployed acceptance. Existing production-deploy
-SSO expired; refresh `56311` exited 255 after its pending authorization expired.
-Chrome login reached MFA using the intended Bitwarden SSO item; two current
-codes were rejected. AWS's supported two-code resync form remains open, with
-no confirmed successful resync. Resume that same identity flow before creating
-a fresh CLI authorization; do not repeat stale authorization URLs. Do not use root to
-bypass the owning deployment guard. Next: finish SSO, review/apply the bounded
-runtime plan and AWS-origin Worker deployment, then review the actual registry
+These are local checkpoints, not deployed acceptance. SSO refresh `54230`
+completed successfully; AWS CLI verified the intended `HubProductionDeploy`
+assumed role in account `056319544861`. Bitwarden CLI supplied credentials and
+TOTP directly to the requesting Chrome process without logging them. No root
+bypass or MFA disable. Plan `25950` failed safely before apply: omitted
+observability inputs would remove existing alerts and violate the outbox
+precondition. Readback confirms the existing confirmed SNS subscriber and $25
+Hub budget. Final plan `54589` also preserves the existing enabled recovery
+timer. Reviewed plan `dist/hub-release-evidence/20261002T172002Z-38417/hub.plan`
+has no deletions/replacements: four package/alias updates and Stripe-webhook
+outbox-wake permission/configuration. Guarded apply `55336` is running; log
+`/tmp/tradeassembly-hub-manifest-runtime-apply.log`. Next: verify that apply,
+deploy the AWS-origin Worker, then review the actual registry
 revision and update Relay's production manifest. No paid grant is fabricated.
 Temporary CLI credential files are removed
 after each run; refreshed credentials return to Bitwarden.

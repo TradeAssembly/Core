@@ -1161,6 +1161,42 @@ The original frozen release-lock SHA-256 remains
 Next acceptance: remaining finite OAuth callback/admission negatives, then
 production packaged onboarding/Relay evidence and candidate/registry gates.
 Do not rerun this completed slice or count it as complete E4.
+OAuth denial driver is committed locally in private Relay `238538c`. Actual
+probe `37653` is terminal exit 0: both custom/direct origins reject anonymous
+and nonowner start/status/ack, wrong-environment start, tampered callbacks, and
+naturally expired callbacks; the production callback rejects the valid staging
+transaction. All 19 checks passed. The isolated owner transaction remained
+pending with no grant before natural expiry. No provider consent was opened;
+only a synthetic non-grant code was used. This does not claim a measured
+provider-call counter or live revoked-owner proof.
+Ignored evidence `staging/oauth-denial-proof.json` under private Relay
+`.operator/relay-environments/`, SHA-256
+`239dbed0b6bda6b92a0ca5db5e8ef64fd80a75b259b762c6cc650434366906b9`.
+It binds the same exact native candidate, source, configuration and hashed
+actors. Scope is `staging-oauth-denials-only`; revoked-owner and full E4 remain
+explicitly false. Deterministic `just relay-environment-oauth-denial-verify`
+process `3508` exited 0 against the real evidence and exact native binary in
+private Relay `.operator/relay-environments/operator-auth/bin-retry-native/`.
+An initial verifier invocation used a nonexistent Core-local path and correctly
+failed `candidate unavailable`; only the corrected digest-bound run is passing.
+Owning `just verify` process `77746` exited 0 on `238538c`;
+log `/tmp/tradeassembly-oauth-denial-integration.log`, SHA-256
+`3ef26e23fedabeab23a7ddbd48aac4b1f6b6a53725ca22a3c4dfc2343c5d6e6b`.
+The optional Core-checkout smoke is skipped, not passing evidence.
+Because the source binding changed, the actual journal probe was repeated on
+the same existing event, not a new record. Probe `75451` and verifier passed;
+`staging/journal-proof-both-origins-238538c.json` SHA-256
+`59b654e9871b044e7dd2d8e08468a1f2196db70afb908111f86bc8f92a024bf0`.
+AWS CLI renewal completed through the same remote login `33605` in Chrome,
+using the correct corporate Bitwarden entry and MFA. STS confirms account
+`056319544861`. CLI readback confirms the staging OAuth function is Active,
+last update Successful, revision `ab34e70e-e9e2-4eea-8879-b79469f15bbe`, code
+SHA-256/base64 `UccEHtBt5Szri9i/FjWolF4cMikQzKs5ahozFICKUNY=`. Staging policy
+is unchanged. Next: implement a revision-fenced, guaranteed-restoration
+revoked-owner probe, then production packaged onboarding/Relay and the full
+candidate/registry gates. Do not mutate staging admission until the restoration
+path is settled and tested. Preserve native MCP `37062`, owner MCP `80253`, and
+real Warden `8186`; none of this qualifies or publishes npm packages.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
 principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,
 instead of HTML-escaped `jsonencode` bytes. Quote/backslash escaping preserves

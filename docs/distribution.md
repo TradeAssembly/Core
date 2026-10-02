@@ -451,13 +451,27 @@ original admission restored. Relay `2f6f715` counts exact workspace 403 denials;
 ten targeted tests/strict xtask Clippy pass. The actual aggregate accepts all four
 current leaves but still rejects readiness: 19/35 routes require positive owner,
 node or issued-capability evidence, and two deployment/rollback proofs are absent.
-Next leaf must use isolated ephemeral installation keys and existing Hub/Reach
-signing APIs, an Inspect-only command, real durable transitions and negative
-replay/stale/revoked checks on custom/direct surfaces. Watch must use its actual
+Relay `44ff774` now implements the isolated node-effect leaf using the existing
+Hub/Reach SDK signing contracts and Inspect-only commands. Both actual staging
+surfaces passed 25 cases each; owning merge and offline verification passed.
+Proof SHA-256 `47e81a2e165c197fc97a64dff16eccf487cc9183c77963fd3df7cad60e014942`.
+Durable pairing, enqueue/idempotency conflicts, signed claim/accept/finish,
+duplicate and ambiguous-outcome recovery, invalid/stale/replayed authority and
+revocation cleanup are verified. Failed probes remain diagnostic only; the
+owning recovery tool durably revoked the isolated node whose cleanup was
+throttled. The actual cause was API Gateway's five-request-per-second limit;
+requests are now paced below it without changing infrastructure or acceptance.
+Operator browser authentication was restored through the packaged MCP flow.
+The aggregate accepts five leaves, covers 24/35 routes and exits 1 correctly:
+11 routes and both deployment/rollback proofs remain unproven. Report SHA-256
+`db09d8e896d251b2f228a18e64f8fdc9e69e6cd0d2845eec2700074a82063dff`.
+The new clean-tree Relay integration gate is running; no pass is claimed yet.
+Next: positive workspace enrollment, six Watch routes and four OAuth routes.
+Watch must use its actual
 signed heartbeat and issued ACK capability, not inferred tokens or synthetic
 successful delivery. Existing handler source owns the contract; preserve native
 candidate bytes. Partial failures remain diagnostic only; no actual broker orders.
-Node/ACK/callback effects, deployment/rollback and commerce proof remain open.
+ACK/positive callback effects, deployment/rollback and commerce proof remain open.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope
 for redesign. Continue independent candidate work while that dependency resolves.

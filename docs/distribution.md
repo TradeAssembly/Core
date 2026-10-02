@@ -85,6 +85,10 @@ ZIP SHA-256 `3afa22688ed8c1275d458f7235c280790768579804a2691a2b95cdee1ddbbd19`.
 Its archive/readback are preserved under coordinator
 `artifacts/f2-github-v2/windows-x64-customer-profile/`; capture is not package
 qualification or Windows runtime acceptance.
+Windows extraction `95946` also exited 0 through the owning Rust verifier;
+exact Core/launcher/installer, unchanged Warden/Alpaca and SDK-tree bindings
+were checked. Outputs are `target/github-build-outputs-windows-x64-customer-profile/`.
+No native Windows customer acceptance is claimed; experimental packaging remains.
 Mac watch `71877` is terminal success. Private coordinator
 `35bbfda` pins all four Core targets; capture tests (2/2)/strict Clippy passed.
 Producer and SDK pins are unchanged. Captured Core ZIPs under coordinator

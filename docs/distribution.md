@@ -437,7 +437,15 @@ journal admission, duplicate replay, query/export and denials pass the owning
 validator. Relay `dc69f40` corrects the probe's enrollment schema and exact 403
 nonowner workspace denial expectations; nine tests and strict xtask Clippy pass.
 The actual 118-route admission probe and separate offline validator now pass;
-the full Relay integration gate is still running. Current-candidate OAuth
+the clean-tree full Relay integration gate subsequently passed for `2f6f715`,
+and that scoped branch is pushed. The initially skipped Core composition smoke
+also passed separately through the owning `just dependency-smoke`, with the
+exact pinned Core `a16d4a769258fb7354d9102017533850020f8f2c` in a disposable
+detached checkout. It proves dependency/profile/source bindings, required files,
+architecture and verify dry-run, not a replacement native qualification.
+Composition log SHA-256
+`069f7046978b315da25fea311f00d90d9047c2bb251cc35ba39df47d8bff70fe`.
+Frozen shipping bytes remain unchanged. Current-candidate OAuth
 revocation now also passes: both callbacks denied before durable changes and
 original admission restored. Relay `2f6f715` counts exact workspace 403 denials;
 ten targeted tests/strict xtask Clippy pass. The actual aggregate accepts all four

@@ -430,8 +430,13 @@ deployed Hub returned a legacy entitlement without identity/product/mode or a
 payment-backed period. Relay's strict admission contract remains unchanged.
 Existing paid-period implementation was merged into Hub's deployment branch as
 `048c107`; formatting, strict workspace Clippy and workspace tests pass. Guarded
-AWS deployment is pending. Next: verify the deployed enriched contract, then
-rerun the route matrix and a fresh unique journal admission. Revocation,
+AWS deployment completed with zero additions/deletions/replacements; Hub API
+alias is version 45 and additive DSQL migration passed. Live Hub returns all 12
+required fields with the existing payment-backed test period. Fresh unique
+journal admission, duplicate replay, query/export and denials pass the owning
+validator. Relay `dc69f40` corrects the probe's enrollment schema and exact 403
+nonowner workspace denial expectations; nine tests and strict xtask Clippy pass.
+The full route matrix is still pending; partial failures remain diagnostic only. Revocation,
 node/ACK/callback effects, deployment/rollback and commerce proof remain open.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope

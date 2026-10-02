@@ -245,10 +245,23 @@ SHA-256 `6c73b9e50ce898d11a49fa62903fba984f59e4af2fa5a49aa417eb9e556a2869`;
 owning three tests and strict xtask Clippy pass, log
 `/tmp/tradeassembly-relay-buyer-profile-tests.log`, SHA-256
 `2e4d56852cd25d2320e637e9751d067f03a792cd9698d58965970f8f9381c41a`.
-Both source changes are committed locally, not pushed or deployed. No actual
-charge, webhook grant, browser rendering or final native/profile qualification
-is claimed. Next: package and review the normal code-only Hub deploy, apply it,
-deploy the existing Hub Edge/dashboard target, then verify hosted storefront
+Hub source is committed locally through `93a82df`; private Relay remains
+`f7286b0`. AWS code-only deployment of `1519033` completed from reviewed plan
+`Hub/dist/hub-release-evidence/20261002T181709Z-62694/hub.plan` (four Lambda
+code hashes and four live aliases only). Existing DSQL/KMS positive and
+negative authorization checks passed. Cloudflare Hub Worker version
+`3ddae085-beff-4ce6-871d-abb795cd52c6` deploys the storefront plus `93a82df`
+account-binding repair: Edge now matches Rust's `org_id` or `user:<sub>`;
+nonstandard aliases cannot choose account authority, and legacy bare-subject
+personal sessions require fresh sign-in rather than silent account migration.
+Owning Edge check passed with 100 tests; log
+`/tmp/tradeassembly-hub-identity-edge-check.log`, SHA-256
+`b23f84a8b5d2560552c02bfeaf61ec7a180f71cbec8297c6750b7b3cf6dce7e6`.
+Dashboard build passed, log `/tmp/tradeassembly-hub-identity-dashboard-build.log`,
+SHA-256 `70390a3c12776d553b58da93870d01260e90445a0bf033605e2274266bc71e69`.
+Actual production probes: storefront 200, anonymous buyer API 401, readiness
+200. Sources are not yet pushed. No actual charge, webhook grant, browser
+rendering or final native/profile qualification is claimed. Next: verify hosted storefront
 login, actual registered price and real purchase/access/portal. Check the
 dashboard client's buyer permission and cross-client subject/tenant binding
 from actual verified sessions; do not add synthetic entitlement or bypass

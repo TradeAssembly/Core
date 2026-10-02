@@ -1011,13 +1011,27 @@ SHA-256: `d548be0c4a299ab2a09cd1920864a73bc39bcd65271e9533d77c63f886450086`.
 The unchanged frozen lock remains
 `222b1f205edb39bc5e233333c210213354e024d0fa47ac6a5c7588354bf9b639`.
 That exact Core source is pushed to `codex/f2-npm-distribution`. Actual GitHub
-Mac arm64 native run `36971256125` is queued against that SHA with the new
+Mac arm64 native run `36971256125` succeeded against that SHA with the new
 browser stdio regression included in the existing producer workflow. Public
 Core uses the standard free `macos-15` runner; no private allowance cap changed.
-Next: read the terminal native result once, capture pinned run/artifact bytes,
-then use a distinct isolated repaired binary with the existing operator profile
-and state to finish genuine Hub/Alpaca setup. Do not restart `27109`/Warden `8186`
-blindly or reinterpret this source gate/build dispatch as OAuth or release proof.
+Pinned capture and extraction passed: artifact `11212346113`, ZIP SHA-256
+`a0157bb40c1818edbfdfcd918aae3ad6cebb8ad827cb5570cbd0e5a3f2965186`,
+Core binary SHA-256
+`6ac19384ffe3df5ed6404b326d1f63ac5b700692b8a0e7b5126b3f51bea698f3`.
+The extracted inventory remains `qualified:false`; this is not candidate
+release qualification. Existing owner MCP `27109` was deliberately stopped
+after verification and replaced by repaired binary MCP `39130` (PID `54884`),
+using preserved isolated state and real Warden `8186` (PID `34090`).
+Actual business Hub sign-in and Relay entitlement are verified. Expired v4 was
+replaced by v5 onboarding `c50fcd26d2d2dd3c511f9ed7c7cc576324a8d2f6694d528ed2f4e79be695967f`.
+The repaired browser flow reaches actual Alpaca consent for TradeAssembly
+Staging, `env=paper`, requested `data trading`, without pasted keys.
+Chrome CDP navigation timed out; bounded native Chrome navigation succeeded.
+Chrome tab `1003168274` is preserved at provider consent. No account is selected
+and Allow has not been clicked. Next: obtain action-time confirmation for the
+exact paper account grant and provider terms, then verify actual callback,
+connection acknowledgement and read-only account access through MCP. No orders.
+Do not restart the live rig or reinterpret partial onboarding as full E4 proof.
 No merged, published npm, new broker-order or complete E4 result is claimed.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
 principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,

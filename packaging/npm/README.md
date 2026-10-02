@@ -33,3 +33,5 @@ release manifest by digest. A staging-profile package is rejected by the
 first-release verifier even if its native binaries pass. The profile contains
 public endpoints and client identifiers, never credentials. Local-only Core
 bundles may omit a hosted profile; they are not the customer Relay release.
+Customer profiles leave `organizationId` null/omitted so sign-in uses the user's
+verified organization or personal scope, not the publisher's test organization.

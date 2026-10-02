@@ -1258,6 +1258,48 @@ Next acceptance: exact native packaged production Hub/Alpaca Paper onboarding,
 production Relay entitlement/read-write/export and denials, then full private
 E4 aggregation and candidate/registry gates. Staging-owner-only and production
 configuration overall verdicts remain false until their complete matrix passes.
+Production profile inputs were refreshed through AWS CLI: production Hub code
+`jRx4TzRaWTBnAFrsolv4/5avoSxDwn0g2mB7J8e+nMg=` declares production, the expected
+issuer and `https://hub.tradeassembly.ai`; its dashboard client is distinct from
+the already Hub-verified native client. Production OAuth code
+`6O8BCylGsrROkipnzYRs1otj04dElCfqhwx6lAtDYb4=` declares production, public base
+`https://connect.tradeassembly.ai`, expected production Alpaca client and Hub.
+Production gateway is Active/Successful, code
+`VZgDzkZoq+3B9BC9MHa0IOtaHLf8dNAUJwSzFnkoFLU=`; gateway/Reach origins remain
+the existing isolated production outputs, not the staging endpoints.
+Private Relay `cc694fd` creates `deployment-profiles/relay-production-connection.json`
+and `xtask/src/relay_production_profile.rs`, with owning verify/test recipes.
+Profile SHA-256 `1beb89e9afd501697470ca21d824e28050e117153305b57175c9e7322a4511f1`.
+The exact private validator rejects mixed identity, staging origins, unsafe
+callbacks, missing entitlement checks, unexpected checkout and secret fields;
+2/2 tests and strict all-target xtask Clippy pass. Actual profile verifier
+`13427` exits 0 but explicitly reports deployed onboarding and full E4 false.
+Log `/tmp/tradeassembly-relay-production-profile-tests.log` SHA-256
+`1b6632ac14d5d2279aae11fd881f43729baa59d906807b41102a78fa85f8d415`.
+Customer isolation gap discovered: Core required a fixed `organizationId` and
+forced it into sign-in. Publishing the diagnostic operator organization would
+not produce general customer onboarding. Core `connection_profile.rs` now
+accepts null/omitted organization, preserves explicit nonempty organization
+binding, rejects blank values, and lets WorkOS/Hub derive verified tenant or
+documented personal scope. The production asset uses null; no test tenant is
+shipped. Source pointers: Core `ConnectionProfile::{validate,configure}` and
+existing WorkOS configured-organization claim enforcement; Hub
+`docs/integrations/v1/identity.md` and ADR-001 personal/tenant derivation.
+Targeted Core process `50836` exits 0 (3 connection-profile tests). Remaining
+owning gates and repaired native-byte qualification are not inferred from that
+test. This changes runtime source: the existing `677693f` native binary remains
+preserved, but cannot be relabeled as supporting the new null-organization
+profile. Next: finish source/boundary/owning gates, commit this scoped repair,
+obtain the separately pinned GitHub native build, then perform production
+source-free onboarding and required byte-invalidated qualification. Do not
+rebuild or requalify unchanged Warden/Alpaca producers, touch the staging rig,
+or substitute a manually forced test organization to make onboarding pass.
+Strict all-target runtime Clippy `13001` exits 0. Public source scan passed;
+whitelist correctly rejected the uncommitted checkpoint. Test log SHA-256
+`eb68ae3a71f98ed5b3c54e56fbbdebf6ec87c14017ef82700dceda83ce58e704`;
+Clippy log SHA-256
+`7113e8bbd7ddcbfc7c4db3567fc597d5d68a43b197a5651e99adc012ac5b396f`.
+Clean owning gates are still required before pushing/dispatching new Core bytes.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner
 principal hash now uses the same UTF-8 JSON tuple as runtime `serde_json`,
 instead of HTML-escaped `jsonencode` bytes. Quote/backslash escaping preserves
@@ -1895,6 +1937,24 @@ the command explicitly reports `qualified: false`. Preserve the original Mac
 arm64 bundle; extend this command for a separately identified new Mac candidate.
 
 ## Current implementation and remaining release gaps
+
+Latest continuation checkpoint (2026-10-02): staging journal, real OAuth owner
+readiness/restart, actor/state/expiry negatives and revoked-owner callbacks have
+their partial live proofs above; full E4/registry acceptance is still open.
+Private Relay `cc694fd` owns the tenant-neutral production profile and exact
+validator. Core `connection_profile.rs` has the required optional-organization
+repair; focused tests (3/3) and strict all-target runtime Clippy passed. Source
+scan `18325` passed; its whitelist command then correctly rejected uncommitted
+changes. Commit this repair before clean owning gates; do not waive that check.
+Core owning log: `/tmp/tradeassembly-customer-profile-core-verify.log`.
+Relay owning log: `/tmp/tradeassembly-customer-profile-relay-verify.log`.
+Reuse their live processes rather than starting duplicate gate runs.
+No other test/build agents are being started. Keep MCP `37062`/`80253` and Warden
+`8186` untouched. Next: finish this source checkpoint and stable owning gates,
+then GitHub-built repaired Core bytes, production source-free onboarding,
+remaining production Relay matrix and candidate/registry qualification. The
+current `677693f` binary cannot accept the new null-organization profile. No
+producer rebuild, Apple step, broker order, merge or npm publication is implied.
 
 The Rust distribution crate and npm shim implement packing, byte verification,
 safe extraction, private per-user roots, source-free local setup, real-authority

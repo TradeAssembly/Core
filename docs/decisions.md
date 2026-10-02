@@ -90,5 +90,11 @@
   sink proof remains the separate unchanged M2 gate.
 - A private local checkpoint enables source/archive checks; it is not a release
   approval, pin update, merge, or public publication.
+- Customer hosted connection profiles do not force an operator's WorkOS
+  organization. `organizationId` may be null/omitted; signed identity and Hub's
+  personal-tenant rule remain authoritative. Explicit nonempty organization
+  scopes retain their binding; blank scopes are invalid. Endpoint/client and
+  entitlement checks are unchanged. A binary built before this contract repair
+  is not qualified for the tenant-neutral profile and must not be relabeled.
 - No scheduler rewrite, extra brokers, UI buildout or hosted agent orchestration
   is introduced by this extraction packet. Frozen F2 M0–M8 criteria are unchanged.

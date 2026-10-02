@@ -5,6 +5,13 @@ service/port boundary. identity-sdk, plugin-sdk and sightline-sidecar are intern
 workspace crates. Brokers and Warden remain explicit external executable or
 package contracts, not private sibling-source dependencies.
 
+Hosted connection profiles contain public deployment inputs only. Their optional
+`organizationId` is a deliberate operator scope, not a required customer default.
+Customer profiles leave it null/omitted, allowing WorkOS and Hub to derive the
+tenant from verified identity (including Hub's documented personal scope).
+Explicit organization profiles still enforce that organization. No profile may
+supply an actor, tenant authority, credential or entitlement in place of Hub.
+
 Distribution is a separate Rust installer around locked payload artifacts. npm
 glue selects an exact-version native package; it never builds customer source.
 Immutable payloads, a stable digest-bound Warden authority path, persistent state,

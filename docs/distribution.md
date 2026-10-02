@@ -485,9 +485,20 @@ source and provenance checks; POSIX payloads still require executable bits.
 `distribution/src/lib.rs::executable_file` implements that correction with an
 explicit negative POSIX/link regression. All 32 distribution tests and strict
 distribution Clippy pass (three native process tests remain explicitly skipped
-here; their unchanged Mac qualification evidence is retained). No gate completion
-claim until owning gates and the four-target candidate verifier pass. Next: those
-exact gates, then the CI-owned aggregate/publication steps. L1 commercial proof
+here; their unchanged Mac qualification evidence is retained). Clean `f96371a`
+passed `just verify`, explicit `cargo xtask verify`, and the actual four-target
+candidate verifier in terminal `76483` (exit 0), and is pushed on the existing
+distribution branch. Owning-gate log SHA-256
+`0b71b341a0c3e4e287aa443e7878ea2f0f3e51db1767f0989695b404acd1f28b`;
+candidate log `fccfd64682b7fa5d8251da91b6f288f67afe5ac15ac3ea0ed7a7121d13510c78`.
+The candidate is qualified under this policy with Mac ARM64 as the only qualified
+target; Windows/Linux remain experimental and `releaseReady` remains false.
+Next: CI-owned aggregate/publication steps. Private evidence transport must
+preserve exact receipt-referenced bytes, exclude unrelated local state, check
+all digests and the externally pinned archive hash, and rerun the existing
+candidate verifier on extracted evidence. It must not synthesize test results,
+rerun native producer builds, or replace completed Mac qualification.
+L1 commercial proof
 and full L3/L4 remain open.
 The coordinator's whole-family `./repos check` still fails
 because its isolated checkout has no `Hub` child; no locks were refreshed and

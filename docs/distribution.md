@@ -397,6 +397,30 @@ Existing commands: private `just relay-environment-journal-verify`,
 `just relay-environment-oauth-revocation-verify` with exact config/candidate/
 evidence arguments; owning policy/Watch/Reach/Hub tests. Implement the missing
 full E4 adapter over those proofs, not hand-written success assertions.
+October 2 continuation: private Relay now has the initial Rust coverage adapter
+`just relay-environment-e4-assess JOURNAL_CONFIG OAUTH_CONFIG CANDIDATE
+JOURNAL_PROOF OAUTH_DENIAL_PROOF REVOCATION_PROOF NEW_REPORT`. Four unit tests
+and strict xtask Clippy pass. It inventories 35 current routes, reuses owning
+leaf validators and reports missing live coverage with a nonzero exit. Actual
+assessment against the current storefront package candidate rejects the three
+existing receipts, which bind different candidate bytes; report SHA-256
+`873a78a4bee7246fa8e9d37099d825a0d4b333542e76e2738982e7e6503cbff3`.
+This is a real rejection, not full E4 proof or a replacement of prior accepted
+evidence. Adapter completion still requires actual missing route/deployment/
+rollback proofs. Keep this same adapter and contract; no new parallel verifier.
+Actual staging routing checks subsequently found direct Gateway/Reach/Watch
+admission returning 401 while custom-domain equivalents returned 404. Private
+Relay `f92b53e` fixes this finite edge gap with exact 35-route classification,
+distinct service origins and source-derived parity tests; production Connect
+remains OAuth-only. Final Relay `e40ef23` passed `just verify` (Core composition
+smoke explicitly skipped for unset local path) and the owning staging deployment.
+Deployed Worker `3410cd51-3eb0-430b-be66-625f8fbb1ff6` returns 401 for Gateway
+access, Reach scope, Watch node-status and journal query on both custom/direct
+origins; invalid callback state returns 400 on both. Public pages return 200;
+misverbs/unknown paths and production non-OAuth access remain 404. Private
+diagnostic report SHA-256
+`ecab04b9b816c80fabed55fd16f65a83bcd7ec8859a61cb8885d119ae667cf78`.
+This closes the finite routing repair, not full E4 actor/deployment/rollback proof.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope
 for redesign. Continue independent candidate work while that dependency resolves.

@@ -75,7 +75,12 @@ uses the existing locked `winapi-util` safe file-information API for Windows
 volume/file identity, preserving rejection of foreign/replaced fixtures. Native
 CI also runs the database-ownership tests; no test is skipped or weakened.
 Local ownership tests (2/2), onboarding unit tests (5/5), and public scan pass.
-Windows-native confirmation of this second repair remains required.
+Second repair `08ddf1859eceb022c2a91f93d295831294697af7` is pushed after clean
+full Core gate `60452` exited 0; log
+`/tmp/tradeassembly-windows-test-db-core-verify.log` SHA-256
+`45a1f8ee0d86ad6565d5c3a6e34731fa4dce8825de78515661343dd6b53fc485`.
+Windows-native confirmation is running as GitHub `37034024144`, watch `17348`,
+log `/tmp/tradeassembly-core-08dd-windows-watch.log`. Reuse the watch.
 Mac watch `71877` is terminal success. Private coordinator
 `35bbfda` pins all four Core targets; capture tests (2/2)/strict Clippy passed.
 Producer and SDK pins are unchanged. Captured Core ZIPs under coordinator
@@ -92,8 +97,14 @@ Mac package `target/f2-npm-mac-package-production-customer` is now packed as
 `0.1.0-beta.3`, binding the exact captured `3abf3e0` Core bytes and private
 production profile SHA-256
 `1beb89e9afd501697470ca21d824e28050e117153305b57175c9e7322a4511f1`.
-Packing is not qualification. Next: checkpoint and gate the Windows fixture
-repair, rerun only Windows, and qualify/test the production Mac package.
+Native package qualification `93761` exited 0: source-free install, npm/pnpm
+ignore-scripts, upgrade/rollback and preserved state, sandbox denials, real
+Warden controlled sink, duplicate and ambiguous recovery. Receipt
+`target/f2-npm-evidence-production-customer-v3/aarch64-apple-darwin/receipt.json`
+SHA-256 `05adfd223864fc17504cd9d4ce150512df60dda1abe8e935f60c5a235285b6d3`.
+No actual broker orders or production Live activation. Prior v1/v2 invocations
+failed on operator-supplied paths; preserve them, do not relabel as passes.
+Next: Windows native result and actual production paid Relay onboarding.
 
 Private Relay worktree `/Users/davidjbeveridge/.codex/worktrees/f2-relay-watch-remember`:
 real staging OAuth setup/restart, both-origin journal proof, 19 OAuth negatives,
@@ -110,8 +121,13 @@ not a new billing system, test tenant, invented price or entitlement bypass.
 Actual Chrome production Hub sign-in succeeded, but the current account lacks
 operator catalog authority. Repair the intended account/role mapping through
 normal WorkOS administration; do not bypass Hub through DSQL or fabricate a
-paid entitlement. Stored WorkOS CLI configuration has only a staging environment;
-verify production credential/environment mapping before using it.
+paid entitlement. Official WorkOS CLI `0.23.0` accessed the dashboard through
+existing Bitwarden credentials without Keychain. Production environment identity
+was verified and targeted explicitly; existing `hub-operator` permissions are
+present. The intended user's organization membership was `member`; repair only
+that existing membership and verify a newly issued Hub session, not a global
+default role or customer authority. Temporary CLI credential files are removed
+after each run; refreshed credentials return to Bitwarden.
 
 An earlier Mac candidate passed native qualification; later source/profile bytes
 cannot inherit that pass. Reuse unaffected GitHub producer outputs/evidence.

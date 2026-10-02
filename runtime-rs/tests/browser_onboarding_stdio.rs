@@ -21,9 +21,16 @@ impl Drop for Mcp {
 }
 impl Mcp {
     fn start(root: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tradeassembly"))
-            .current_dir(root)
-            .env_clear()
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tradeassembly"));
+        command.current_dir(root).env_clear();
+        // Keep Windows' OS-owned DLL/runtime location, not the user's auth,
+        // broker, proxy or project configuration. An empty environment is not
+        // a valid Windows process environment for the networking runtime.
+        #[cfg(windows)]
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", system_root);
+        }
+        let mut child = command
             .env("TRADEASSEMBLY_AUTH_PROFILE", "local_owner")
             .env(
                 "TRADEASSEMBLY_WARDEN_TOKEN_REF",

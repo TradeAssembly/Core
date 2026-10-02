@@ -276,6 +276,21 @@ require `aws-secrets-manager` and `asm-exec` for operational secret handling;
 neither was found locally. Official AWS skill search returned
 `creating-secrets-using-best-practices` (loaded), not the required helper/skill.
 No direct Secrets Manager value reads, payment or grant were performed.
+Credential investigation: Bitwarden's default Stripe CLI credential validates
+against a different account with no Relay price (registered price returns 404);
+it was not reassigned or modified. The local `tradeassembly-staging` CLI live
+credential returns 401. Chrome Bitwarden autofill completed normal sign-in to
+the intended Stripe account `acct_1U5pZ0FGQTzcfc3P` (Trade Assembly). Its
+existing `Hub Worker Commerce Production` restricted key is present but its
+secret cannot be revealed through that row. No full-access key substitution,
+permission expansion or rotation was performed. The existing-key rotation
+dialog is open in agent-owned `stripeRecoveryTab`, Chrome group
+`Hub Stripe recovery`, awaiting the required credential-change human handoff.
+Choose old-key expiration in 24 hours and submit rotation, then leave the new
+key display open (never paste its value into chat). Resume by securely saving
+the replacement in Bitwarden, validating the registered price/provider access,
+updating only the existing runtime secret and recovering the same checkout.
+Verify permissions and production runtime refresh before claiming repair.
 After credential repair verify hosted storefront
 login, actual registered price and real purchase/access/portal. Check the
 dashboard client's buyer permission and cross-client subject/tenant binding

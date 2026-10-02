@@ -118,15 +118,20 @@ The private production profile validator passes, but real packaged production
 onboarding and aggregate service acceptance do not. Its `checkoutUrl:null` is
 an open purchasable-onboarding gap: use the actual existing Hub catalog path,
 not a new billing system, test tenant, invented price or entitlement bypass.
-Actual Chrome production Hub sign-in succeeded, but the current account lacks
-operator catalog authority. Repair the intended account/role mapping through
-normal WorkOS administration; do not bypass Hub through DSQL or fabricate a
-paid entitlement. Official WorkOS CLI `0.23.0` accessed the dashboard through
+Actual Chrome production Hub sign-in now has operator catalog authority after
+normal WorkOS administration repaired the intended existing membership; do not
+bypass Hub through DSQL or fabricate a paid entitlement. Official WorkOS CLI
+`0.23.0` accessed the dashboard through
 existing Bitwarden credentials without Keychain. Production environment identity
 was verified and targeted explicitly; existing `hub-operator` permissions are
-present. The intended user's organization membership was `member`; repair only
-that existing membership and verify a newly issued Hub session, not a global
-default role or customer authority. Temporary CLI credential files are removed
+present. The intended user's organization membership was `member`; only that
+membership was assigned the existing Hub Operator role, with CLI readback and
+a fresh signed-in operator registry. No global default/customer role changed.
+Relay has an active monthly catalog entry and both existing clients, but the
+fulfillment origin still names the older F2 gateway. AWS CLI confirms the actual
+production gateway is distinct; correct the normal Hub binding before purchase
+proof. This is not checkout or purchased entitlement acceptance.
+Temporary CLI credential files are removed
 after each run; refreshed credentials return to Bitwarden.
 
 An earlier Mac candidate passed native qualification; later source/profile bytes

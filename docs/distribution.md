@@ -1058,6 +1058,16 @@ Source-probe executable SHA-256:
 Owning verify `43749` passed tests/dependency checks but exited 1 at the clean-tree
 language invariant. Checkpoint these scoped changes, then rerun the unchanged
 full gate on that clean revision; this is not a waived or passing full gate.
+The clean owning gate `49742` is terminal exit 0 against checkpoint
+`677693fffce399db22ee467a336fb0deebbd5aa4`, including the full `just verify`
+sequence. Log `target/onboarding-retry-clean-verify.log` SHA-256:
+`f4e09163bac72ccb9d378b1d2ff5ccd209ff3f3eceb78bbca6bb3154dd7690f2`.
+That exact repair is pushed to `codex/f2-npm-distribution`; Mac ARM GitHub run
+`37013112271` was dispatched against it. Do not mistake prior run `36971256125`
+for this repair. Next: await that run, capture digest-bound native outputs,
+update the Mac producer pin only, and repeat real resumed status on those bytes.
+The source-only probe `40470` is intentionally stopped. Owner `80253` and Warden
+`8186` are preserved. Frozen lock hash remains unchanged; no merge/npm release.
 Do not restart the live rig or reinterpret partial onboarding as full E4 proof.
 No merged, published npm, new broker-order or complete E4 result is claimed.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner

@@ -216,9 +216,43 @@ ignored). Test log `/tmp/tradeassembly-hub-portal-rust-tests.log`, SHA-256
 `f138bee9925eaf6a005e8b7c5a091cdf2c8213d9add589490b2588fa853fac6b`.
 This is adapter/route test evidence, not a real paid Portal/E2E receipt. It is
 committed locally, not yet pushed/deployed. No paid grant is fabricated.
-Next: implement the separate buyer contract and bounded login continuation in
-Hub, its thin storefront, then set the private Relay profile checkout URL and
-run its owning profile checks. In-scope owners: Hub API/manifest/dashboard auth,
+Hub `1519033` now implements the separate buyer API, bounded signed storefront
+continuation and thin purchase view. It preserves the product-bearer route,
+rejects caller-selected provider/identity/mode/return authority, checks the
+manifest at reservation, and persists the same browser attempt across ambiguity
+and reload. Real disposable PostgreSQL checks found and fixed an existing
+subscription query missing its commerce-mode bind, and a replay projection
+that selected the live price for test subscriptions. The new reservation returns
+its selected price from the transaction snapshot. Full Rust fmt/strict Clippy/
+workspace tests passed: 246 passed, 3 ignored; the two database commerce tests
+were separately executed and passed against isolated PostgreSQL on port 15473.
+This is real database/adapter evidence, not Stripe or paid-production evidence.
+Logs and SHA-256:
+`/tmp/tradeassembly-hub-buyer-rust-tests.log`
+`09cf6a7e958ca915c9905efebbc2a205c2afa315b54ca62756c9acaab96fa610`;
+`/tmp/tradeassembly-hub-buyer-database-tests.log`
+`67d9c2dd1bcf5c032324f3194ec0afe60b25216ac834566b73c358f3201a35c5`;
+`/tmp/tradeassembly-hub-buyer-edge-check.log`
+`4c9478012ab06946efa0b1224c80c524f0ba7ee552410de4b7c435dc7fe0b054`
+(95 passing tests, bootstrap/type checks); dashboard build passed with unchanged
+CSS and asset `index-DxtxgvWs.js`. Hub has no UIS manifest/DESIGN binding;
+`uis validate --workspace . --json` reported that absence, so this slice reuses
+existing components/styles rather than adopting a new interface system.
+Disposable server `/tmp/tradeassembly-hub-buyer-db.NsiVzL` was stopped cleanly;
+no user rig was stopped and its test state remains recoverable.
+Private Relay `f7286b0` sets the exact Hub storefront checkout URL. Profile
+SHA-256 `6c73b9e50ce898d11a49fa62903fba984f59e4af2fa5a49aa417eb9e556a2869`;
+owning three tests and strict xtask Clippy pass, log
+`/tmp/tradeassembly-relay-buyer-profile-tests.log`, SHA-256
+`2e4d56852cd25d2320e637e9751d067f03a792cd9698d58965970f8f9381c41a`.
+Both source changes are committed locally, not pushed or deployed. No actual
+charge, webhook grant, browser rendering or final native/profile qualification
+is claimed. Next: package and review the normal code-only Hub deploy, apply it,
+deploy the existing Hub Edge/dashboard target, then verify hosted storefront
+login, actual registered price and real purchase/access/portal. Check the
+dashboard client's buyer permission and cross-client subject/tenant binding
+from actual verified sessions; do not add synthetic entitlement or bypass
+authority to make the check pass. In-scope owners: Hub API/manifest/dashboard auth,
 dashboard API/view/tests and existing commerce contract; private Relay profile
 and its existing profile tests; canonical release documentation. No Core native
 rebuild, new database migration, new hosted OAuth client, price change, actual

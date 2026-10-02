@@ -436,7 +436,9 @@ required fields with the existing payment-backed test period. Fresh unique
 journal admission, duplicate replay, query/export and denials pass the owning
 validator. Relay `dc69f40` corrects the probe's enrollment schema and exact 403
 nonowner workspace denial expectations; nine tests and strict xtask Clippy pass.
-The full route matrix is still pending; partial failures remain diagnostic only. Revocation,
+The actual 118-route admission probe and separate offline validator now pass;
+the full Relay integration gate is still running. Partial failed reports remain
+diagnostic only. Revocation,
 node/ACK/callback effects, deployment/rollback and commerce proof remain open.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope

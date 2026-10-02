@@ -1027,10 +1027,37 @@ replaced by v5 onboarding `c50fcd26d2d2dd3c511f9ed7c7cc576324a8d2f6694d528ed2f4e
 The repaired browser flow reaches actual Alpaca consent for TradeAssembly
 Staging, `env=paper`, requested `data trading`, without pasted keys.
 Chrome CDP navigation timed out; bounded native Chrome navigation succeeded.
-Chrome tab `1003168274` is preserved at provider consent. No account is selected
-and Allow has not been clicked. Next: obtain action-time confirmation for the
-exact paper account grant and provider terms, then verify actual callback,
-connection acknowledgement and read-only account access through MCP. No orders.
+The user approved the exact paper-account consent and provider terms. Actual
+Alpaca callback completed; OAuth credentials reached the isolated Core store.
+The former MCP process had exited, so fresh owner MCP `80253` now uses the same
+GitHub-built Core bytes, persisted state and real Warden `8186`. The isolated
+runtime now explicitly selects the GitHub-built sandbox launcher plus the
+preserved pinned Node/SRT accoutrements; no sandbox bypass or host Node dependency.
+Actual MCP broker verification succeeded with connectivity checked and a durable
+`tradeassembly.broker_onboarding_receipt.v1` receipt (credential revision 1,
+instance revision `1790946478814`, checked-at `1790946626289`). No orders.
+Setup status exposed a distinct retry defect: its fixed verification key replayed
+the earlier sandbox-unavailable failure, producing `idempotency_replay_failed`
+despite successful fresh account verification. The source repair assigns a fresh
+random key to each read-only status verification; explicit broker command replay
+semantics remain unchanged. Its targeted key/account/mode regression passes.
+Actual repaired source-build MCP `40470`, request `601`, resumed that same durable
+OAuth attempt without another grant: `ready:true`, Hub authenticated, Relay
+permitted, broker connected, real Warden ready. Fresh account health persisted
+receipt checked-at `1790947141355`; the restart observation reports `passed`
+with current and prior process observations. This uses the real sandboxed Alpaca
+account read, not a mock. The unchanged GitHub binary MCP `80253` remains separate.
+Next: full owning gates, separately pinned GitHub-built repaired bytes, then
+repeat actual status/restart proof on those exact bytes. Source-build evidence
+does not qualify the GitHub candidate or complete E4 acceptance.
+The actual persisted receipt/restart rows were exported read-only to isolated
+`onboarding-retry-source-receipts.json`, SHA-256
+`cae768ab83a1cc06a3f5338fe683a7f07d69a37492806b5e168624a91864a1ad`.
+Source-probe executable SHA-256:
+`0a363d5fa1b4a31ed306e4ea9b2aef5bc99ee5132d0dcd26bef572ad308abd6c`.
+Owning verify `43749` passed tests/dependency checks but exited 1 at the clean-tree
+language invariant. Checkpoint these scoped changes, then rerun the unchanged
+full gate on that clean revision; this is not a waived or passing full gate.
 Do not restart the live rig or reinterpret partial onboarding as full E4 proof.
 No merged, published npm, new broker-order or complete E4 result is claimed.
 E2 follow-up is committed locally at Relay `da8b639`: OpenTofu's owner

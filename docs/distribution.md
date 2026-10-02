@@ -190,10 +190,43 @@ Plan digest `sha256:f31a14c2219e9ef27dd4d9ec5dcfc9491d13de50be31fffb1e9726512220
 actual apply and fresh readback both prove registry revision 2. Receipt screenshot
 is coordinator `artifacts/f2-production-registry/relay-revision-2.png`.
 Existing live/test clients, price mappings and entitlement policy are unchanged.
-Next: implement the authenticated purchase-start flow; the current private
-gateway only serves `/checkout/return`, and AWS Hub lacks the dashboard
-subscription-management route used by the Edge UI. Resolve those exact service
-contracts before final profile packaging. No paid grant is fabricated.
+Purchase-start decision: use a product-neutral Hub buyer storefront, not a new
+Relay-hosted OAuth/session BFF and not billing in public Core. The existing
+product-bearer checkout keeps its mapped-product authority unchanged. A new,
+separate dashboard buyer contract must require the verified Hub session plus
+`hub:commerce:checkout:write`, bind the account to its verified tenant/subject,
+and resolve an active account-subscription offer and one exact cloud-web return
+template from the current registered product configuration. A registered live
+client must exist; test-only registrations are not sellable. Caller-selectable
+prices, customer IDs, identity, commerce mode, entitlements and free-form return
+URLs remain forbidden. The storefront URL carries product/offer/surface IDs
+only. Its signed login continuation accepts only the bounded storefront path,
+not arbitrary redirects. The request carries an opaque idempotency key and
+expected manifest digest; stale configuration is 409, and checkout continues
+through the existing durable reservation/customer/session/replay machinery.
+Stripe's hosted checkout displays the actual price before purchase. Neither a
+return nor an open Checkout session grants access; real webhook/entitlement
+evidence is still required. Reuse the existing Hub purchases/portal interface.
+
+Hub `a43a55e` locally implements the missing AWS dashboard billing-portal route
+with live customer/subscription ownership, signed buyer permission, strict
+return target and Stripe-only redirect validation. Four targeted tests pass;
+full fmt/strict workspace Clippy/workspace tests passed (242 passed, 2 existing
+ignored). Test log `/tmp/tradeassembly-hub-portal-rust-tests.log`, SHA-256
+`f138bee9925eaf6a005e8b7c5a091cdf2c8213d9add589490b2588fa853fac6b`.
+This is adapter/route test evidence, not a real paid Portal/E2E receipt. It is
+committed locally, not yet pushed/deployed. No paid grant is fabricated.
+Next: implement the separate buyer contract and bounded login continuation in
+Hub, its thin storefront, then set the private Relay profile checkout URL and
+run its owning profile checks. In-scope owners: Hub API/manifest/dashboard auth,
+dashboard API/view/tests and existing commerce contract; private Relay profile
+and its existing profile tests; canonical release documentation. No Core native
+rebuild, new database migration, new hosted OAuth client, price change, actual
+broker order, Apple payment or unrelated UI redesign is needed for this slice.
+Before deployment require authority/CSRF/ownership/mode/return/stale/replay
+negative tests and the owning full Hub Rust/Edge gates. Review normal deploy
+plans for code-only updates; then obtain real production purchase/access/portal
+evidence and the protected-staging matrix before final profile packaging.
 Temporary CLI credential files are removed
 after each run; refreshed credentials return to Bitwarden.
 

@@ -421,6 +421,18 @@ misverbs/unknown paths and production non-OAuth access remain 404. Private
 diagnostic report SHA-256
 `ecab04b9b816c80fabed55fd16f65a83bcd7ec8859a61cb8885d119ae667cf78`.
 This closes the finite routing repair, not full E4 actor/deployment/rollback proof.
+Current continuation: Relay `7a37a35` adds the finite 118-observation live route
+admission probe and exact-set verifier; nine E4 tests and strict xtask Clippy pass.
+Fresh current-candidate journal replay/query/export and OAuth denial/real-expiry
+proofs pass their owning validators. Journal replay does not establish fresh
+paid admission. The route probe preserved a real owner-console 503 failure:
+deployed Hub returned a legacy entitlement without identity/product/mode or a
+payment-backed period. Relay's strict admission contract remains unchanged.
+Existing paid-period implementation was merged into Hub's deployment branch as
+`048c107`; formatting, strict workspace Clippy and workspace tests pass. Guarded
+AWS deployment is pending. Next: verify the deployed enriched contract, then
+rerun the route matrix and a fresh unique journal admission. Revocation,
+node/ACK/callback effects, deployment/rollback and commerce proof remain open.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope
 for redesign. Continue independent candidate work while that dependency resolves.

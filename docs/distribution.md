@@ -145,17 +145,16 @@ was verified and targeted explicitly; existing `hub-operator` permissions are
 present. The intended user's organization membership was `member`; only that
 membership was assigned the existing Hub Operator role, with CLI readback and
 a fresh signed-in operator registry. No global default/customer role changed.
-Relay has an active monthly catalog entry and both existing clients, but the
-fulfillment origin still names the older F2 gateway. AWS CLI confirms the actual
-production gateway is distinct; correct the normal Hub binding before purchase
-proof. Legacy dashboard edits correctly reject this manifest-managed product;
+Relay has an active monthly catalog entry and both existing clients. The older
+F2 gateway binding was corrected through the versioned manifest review below.
+Legacy dashboard edits correctly reject this manifest-managed product;
 use versioned plan/apply, not a guard bypass. Hub `ba45db1` checkpoints the
 operator review panel and signed-assertion route aliases. Hub Rust formatting,
 strict workspace Clippy and all workspace tests passed (two explicit skips),
 log `/tmp/tradeassembly-hub-registration-full-gates.log`, SHA-256
 `100f24403c323119f5e5668995d7576a66a121c4c1c4bba3610984b5ad1729e2`.
 Edge check and dashboard build passed; four ARM64 Lambda packages built.
-These are local checkpoints, not deployed acceptance. SSO refresh `54230`
+These gates prove the scoped Hub repair, not paid Relay acceptance. SSO refresh `54230`
 completed successfully; AWS CLI verified the intended `HubProductionDeploy`
 assumed role in account `056319544861`. Bitwarden CLI supplied credentials and
 TOTP directly to the requesting Chrome process without logging them. No root
@@ -175,8 +174,26 @@ existing Hub owner, account `2e778d60d9f80f40c6af6f499c52acc8`, with no all-acco
 or unrelated AI/email/container access. Retry deploy `37739` exited 0; Worker
 version `51a5e5f8-a5fb-43f6-b3b0-b3dc421a0f7b` serves the existing custom domain; log
 `/tmp/tradeassembly-hub-cloudflare-dashboard-deploy-correct-account.log`.
-Next: verify Worker deployment, then review the actual registry
-revision and update Relay's production manifest. No paid grant is fabricated.
+Worker `/readyz` returned `{"status":"ready"}`. The deployed panel exposed a
+missing read path for the current registry revision. Hub `0e84418` adds only
+that read alias/panel operation through the existing operator authority, plus
+anonymous and signed-nonoperator denial tests. Full Rust gates and Edge checks
+passed: logs `/tmp/tradeassembly-hub-registry-read-rust-gates.log` and
+`/tmp/tradeassembly-hub-registry-read-edge-check.log`. Package `14972`, reviewed
+runtime apply `67458` and Worker deploy `77035` all exited 0. Worker version
+`6b876e22-0580-459f-be60-44d2f91f9bf4`; apply plan had only code/alias changes.
+The real operator read proved revision 1, then a reviewed plan changed only
+`relay-web` to the production origin. Private Relay `2ffb2a7` binds revision 2,
+mutation `relay.f2.production.0002`, manifest digest
+`sha256:173cd8b1ffb3ba7445a1c061972307b71f4c2cafa34951ca587499a0fc1291f3`.
+Plan digest `sha256:f31a14c2219e9ef27dd4d9ec5dcfc9491d13de50be31fffb1e9726512220b8b9`;
+actual apply and fresh readback both prove registry revision 2. Receipt screenshot
+is coordinator `artifacts/f2-production-registry/relay-revision-2.png`.
+Existing live/test clients, price mappings and entitlement policy are unchanged.
+Next: implement the authenticated purchase-start flow; the current private
+gateway only serves `/checkout/return`, and AWS Hub lacks the dashboard
+subscription-management route used by the Edge UI. Resolve those exact service
+contracts before final profile packaging. No paid grant is fabricated.
 Temporary CLI credential files are removed
 after each run; refreshed credentials return to Bitwarden.
 

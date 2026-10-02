@@ -421,6 +421,35 @@ Windows/Linux need build/inventory/architecture/license/digest proof only with
 experimental disclosure. Run owning gates, Core `just verify`, `cargo xtask
 verify` and required archive checks once on stable revisions. No rebuild between
 qualification and promotion.
+
+Native assembly implementation checkpoint (October 2): private coordinator
+`tools/f2-github stage-native` now stages all four supported native-host layouts
+without changing Core or its already-qualified Mac package. It rejects wrong
+host/producer pins, modified extracted-output digests, unsafe Node archive paths,
+links, duplicates, unsupported inputs and existing destinations. It uses the
+official Node 22.23.2 archive checksums, that archive's npm CLI, scripts-disabled
+lock installation with an isolated npm configuration/environment, and packaging
+assets read by `git show` from the exact producer revision. Production profile
+bytes are bound to the explicitly supplied digest. Its receipt is staging only;
+Core GitHub provenance verification remains required before accepting inputs,
+and Core freeze/describe/pack/qualification remain authoritative afterward.
+Seven focused tests, strict Clippy, dependency audit and secret scan pass.
+Actual Mac-input staging and Core describe-native-inputs/freeze pass in separate
+ignored `target/f2-coordinator-stage-smoke*` paths. Staging receipt SHA-256
+`db8437e9cfe0c04142577879a46dd9c3e88dbca66362f514042f62026a7bb84c`;
+frozen smoke manifest `435e809658049c4389a1369581caab2c3af61e51cd8beb6ff7d6e69b0dc8853d`.
+This is not Windows/Linux execution or qualification evidence. Existing qualified
+Mac archive remains `30dcbd465e5964ded291328f3e8bbd92b7cfac8d663abfe01945bd21e8120c9b`.
+Next: compose this assembler with the existing native distribution executable
+on the three experimental GitHub runners, then capture actual packaged outputs.
+GitHub capability readback: Core is public; Warden, Alpaca and coordinator are
+private. Coordinator currently has no Actions secrets/environments. Resolve
+cross-repository artifact transport without placing a local personal/browser/
+Bitwarden token in CI; do not assume its repository-scoped token reads private
+producer artifacts. The coordinator's whole-family `./repos check` still fails
+because its isolated checkout has no `Hub` child; no locks were refreshed and
+no family integration/merge readiness is claimed.
+
 Exit: `cargo xtask distribution-verify --candidate --evidence ABSOLUTE_DIR`
 returns 0 under the four-target policy with correct production profile/L1 bindings.
 

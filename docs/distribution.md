@@ -440,13 +440,25 @@ ignored `target/f2-coordinator-stage-smoke*` paths. Staging receipt SHA-256
 frozen smoke manifest `435e809658049c4389a1369581caab2c3af61e51cd8beb6ff7d6e69b0dc8853d`.
 This is not Windows/Linux execution or qualification evidence. Existing qualified
 Mac archive remains `30dcbd465e5964ded291328f3e8bbd92b7cfac8d663abfe01945bd21e8120c9b`.
-Next: compose this assembler with the existing native distribution executable
-on the three experimental GitHub runners, then capture actual packaged outputs.
-GitHub capability readback: Core is public; Warden, Alpaca and coordinator are
-private. Coordinator currently has no Actions secrets/environments. Resolve
-cross-repository artifact transport without placing a local personal/browser/
-Bitwarden token in CI; do not assume its repository-scoped token reads private
-producer artifacts. The coordinator's whole-family `./repos check` still fails
+Private coordinator now composes the captured native Core installer with these
+inputs through `package-native`; no producer bytes are rebuilt. Digest-bound
+private prerelease cache assets solve cross-repository transport with the
+coordinator's existing read-only job token, not a personal/browser/Bitwarden token.
+Actual GitHub run `37052707743`, attempt 2, at `c108c20` passed both Linux jobs.
+Downloaded x64 artifact ZIP SHA-256
+`668443d39c037e6b5710c2b6d9b16609090d3a7f7d2e8810955661e28913d857`;
+arm64 `40703709420058a98486738b6f30a79c48a386ff5030d327059d1df8d8218341`.
+These are packaged trees and receipts, not npm delivery archives or runtime
+acceptance. Windows run `37053299398` passed all 11 orchestration tests but
+failed the actual Core extractor with `metadata_replace_failed`. The retained
+log is authoritative; Core's Windows private-file writer rejects inherited broad
+workspace ACLs. Coordinator `3c68760` allocates and validates only a fresh
+owner-only packaging parent; pinned binaries and security gates remain unchanged.
+Windows retry `37054136260` is in progress. Reuse it. Local recursive delivery
+hash binding repair passes 13 targeted tests and strict Clippy; no runtime proof
+is inferred from those tests. Next: capture Windows result, create exact npm
+delivery archives, and assemble experimental evidence for the candidate gate.
+The coordinator's whole-family `./repos check` still fails
 because its isolated checkout has no `Hub` child; no locks were refreshed and
 no family integration/merge readiness is claimed.
 

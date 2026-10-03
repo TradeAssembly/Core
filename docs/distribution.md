@@ -708,6 +708,25 @@ misverbs/unknown paths and production non-OAuth access remain 404. Private
 diagnostic report SHA-256
 `ecab04b9b816c80fabed55fd16f65a83bcd7ec8859a61cb8885d119ae667cf78`.
 This closes the finite routing repair, not full E4 actor/deployment/rollback proof.
+Production follow-through, October 3: private Relay
+`ac3f4ba176a3bf3dd1f070c94e5b1a4a0f0bda78` enables the same exact service
+routes at `connect.tradeassembly.ai`, with separately pinned production Gateway,
+Reach, Watch and OAuth origins and the existing Worker account. The regression
+test first failed on the missing flag; all seven edge tests and clean-source
+`just verify` pass. Optional Core composition smoke was explicitly skipped for
+an unset local Core path. Reviewed production-only Wrangler deployment through
+`just edge-deploy-production` activated Worker
+`6e694083-84bf-40f4-bf04-413496226751`; previous `5503bc2d…` remains retained.
+Actual provider readback verifies all six bindings and unchanged staging Worker
+`3410cd51…`. All 35 custom/direct route pairs match; 35 misverbs and 35 extra
+paths return 404 (140 observations total). HTTP 400/422 validation responses
+are not authenticated admission proof. Private evidence bundle
+`edge-routing-repair-20261003/evidence.json` SHA-256
+`37c50bdb2b8b9d16681d04f406ce6f5816403fe10596c6f056023337e0c6f155`
+keeps commercial/release readiness false. Staging configuration, shipping edge
+handler source, AWS backends, secrets, native packages and prior actor proof
+inputs remain unchanged. This operator repair is not the required full CI chain,
+positive OAuth, production purchase/lifecycle, Watch delivery/ACK or Reach proof.
 Current continuation: Relay `7a37a35` adds the finite 118-observation live route
 admission probe and exact-set verifier; nine E4 tests and strict xtask Clippy pass.
 Fresh current-candidate journal replay/query/export and OAuth denial/real-expiry

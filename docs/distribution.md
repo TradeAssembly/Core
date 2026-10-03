@@ -705,8 +705,12 @@ NEW_PRIVATE_REPORT` (`xtask/src/relay_e4/iam_plans.rs`). It consumes twelve actu
 provider-refreshed plans and filtered function metadata, rejects IAM drift and
 missing/additional policies, and checks nineteen source-owned roles (including
 Hub backup) and twelve Lambda configurations. This is only plan/inventory
-parity: provider freshness, reviewed source provenance, backup managed-policy
-document review and actual role-admission/separation remain unverified. It is
+parity: provider freshness, reviewed source provenance and actual
+role-admission/separation remain unverified. Managed-policy documents must match
+reviewed defaults exactly: Logs `v1`, Backup `v30` plus its canonical SHA-256.
+This retains the existing AWS-owned Backup service policy on the backup role
+only; it grants no new permissions and rejects upstream document/version drift.
+The strengthened receipt is `tradeassembly.f2.iam-plan-parity/v2`. It is
 not the full `deployed-iam-secret-separation` release proof and cannot satisfy
 L4 on its own. Preserve failed observations; do not apply a broad plan just to
 make this assessor green.

@@ -3,6 +3,14 @@
 Core's owning commands are `just` and `cargo xtask`. Product owns integrated
 release decisions; Studio owns its frontend and presentation contracts.
 
+The additive `cargo xtask oauth-fault-proof` gate archives the exact frozen Mac
+Core revision and Cargo lock, permits only an exactly removable two-hook
+`cfg(test)` overlay and isolated test support, and runs five exact non-skipped
+behavioral assertions. It binds raw logs/source/toolchain and reports only
+source-level faults. Production identity/HTTP, packaged fault execution, full
+onboarding and release readiness remain false. Existing integration/release
+gates are unchanged.
+
 `cargo xtask distribution-freeze-native` validates and inventories explicitly
 staged native inputs on the target host. It preserves the original Mac arm64
 bundle and reports `qualified: false`; runtime enforcement receipts are separate.

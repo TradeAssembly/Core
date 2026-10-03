@@ -29,3 +29,8 @@ their actual host; its output is explicitly not native qualification.
 The narrowly whitelisted `packaging/npm/cli.cjs` is native-launch glue only.
 No install scripts, source compilation, re-signing frozen bytes, unsandboxed
 fallback, Apple payment, automatic strategy activation, or active-rig upgrades.
+
+`cargo xtask oauth-fault-proof --descriptor ABSOLUTE_DESCRIPTOR --evidence
+ABSOLUTE_NEW_DIRECTORY` is additive frozen-source fault evidence only. Preserve
+qualified native bytes and production proof ownership; never label its test
+identity/transport boundaries as deployed authentication or full onboarding.

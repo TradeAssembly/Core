@@ -1,5 +1,11 @@
 # Extraction decisions
 
+- Frozen OAuth source-fault proof is separate from packaged production positive
+  proof. Do not change production profiles, trust or transport to inject faults.
+  Compile the descriptor's archived Core revision and dependency lock with only
+  an exactly reconstructible test overlay. Preserve native bytes and accepted
+  producer pins. Source fault results never imply full production onboarding.
+
 - Registry qualification is additive evidence, not a rewrite of native
   qualification. The first-release published gate requires a separate typed
   receipt bound to the original native receipt, five-package registry capture,

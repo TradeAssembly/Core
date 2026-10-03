@@ -5,6 +5,12 @@ service/port boundary. identity-sdk, plugin-sdk and sightline-sidecar are intern
 workspace crates. Brokers and Warden remain explicit external executable or
 package contracts, not private sibling-source dependencies.
 
+OAuth fault qualification uses an archived frozen Core source tree with two
+test-only identity/HTTP boundary hooks. Production control flow and shipping
+bytes remain unchanged. Independent real local custody/SQLite readback at a
+scripted ACK sink proves source ordering and distinct-process lost-response
+recovery, not deployed identity, provider HTTP or packaged fault execution.
+
 Hosted connection profiles contain public deployment inputs only. Their optional
 `organizationId` is a deliberate operator scope, not a required customer default.
 Customer profiles leave it null/omitted, allowing WorkOS and Hub to derive the

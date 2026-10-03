@@ -671,6 +671,24 @@ tests from deployed positive evidence. Control the browser handoff through
 Chrome. Do not build another identity/OAuth implementation or use fixture-only
 stdio tests as production proof.
 
+The complementary Core source fault owner is `cargo xtask oauth-fault-proof
+--descriptor ABSOLUTE_DESCRIPTOR --evidence ABSOLUTE_NEW_DIRECTORY`. It requires
+the unchanged frozen Mac descriptor, archives its exact Core revision and lock,
+and overlays only two `cfg(test)` boundary hooks plus isolated test support.
+Removing the exact hooks must reconstruct the frozen OAuth file byte-for-byte.
+It compiles that archived tree, not the current checkout's later repairs, then
+runs five exact named behavioral tests with nonzero execution checks and raw
+logs. Real local credential/SQLite adapters are independently reopened before
+the scripted sink consumes ACK. Failures in custody/receipt writes must prevent
+ACK; consumed ACK with a lost response must recover in a distinct test process
+without fetching status or rewriting credentials, revoke its verifier, and
+replay without transport. Credential revision drift must block recovery.
+The archived source, dependency lock, overlay/test source, test executable,
+toolchain and logs are hash-bound. This is source-only fault evidence, explicitly
+not WorkOS/HTTP/provider authentication, frozen-binary fault execution, fresh
+signup, full onboarding or release readiness. It complements deployed positive
+proofs; it cannot silently replace a requirement for deployed observations.
+
 The fourth owner is staging positive OAuth, distinct from production packaged
 onboarding and from existing staging denial/revocation proofs. Private Relay's
 `xtask/src/oauth_positive.rs` now implements begin/complete/paired verification

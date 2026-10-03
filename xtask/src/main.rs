@@ -4,6 +4,7 @@ mod bundle_local;
 mod check_whitelist;
 mod core_verify;
 mod foss_core_boundary;
+mod oauth_fault_proof;
 mod plugin_contract;
 mod public_scan;
 
@@ -15,6 +16,7 @@ fn main() {
         "verify" if rest.is_empty() => core_verify::verify(),
         "setup" if rest.is_empty() => core_verify::setup(),
         "onboarding-verify" if rest.is_empty() => core_verify::onboarding_verify(),
+        "oauth-fault-proof" => oauth_fault_proof::run(rest, root),
         "architecture-core" if rest.is_empty() => architecture_check::run_core_architecture(root),
         "architecture-check" => architecture_check::run_architecture_check_command(rest, root),
         "contract" => architecture_check::run_contract_check_command(rest, root),

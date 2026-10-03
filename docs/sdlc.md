@@ -3,6 +3,13 @@
 Use `just` / `cargo xtask` for local Core commands. `scripts/sdlc/verify` is a thin
 wrapper; Product owns the top-level release/control-plane SDLC.
 
+`cargo xtask oauth-fault-proof --descriptor ABSOLUTE_DESCRIPTOR --evidence
+ABSOLUTE_NEW_DIRECTORY` owns the finite frozen-source OAuth fault complement.
+It runs exact named behavioral assertions against archived source and writes
+hash-bound raw logs. It never rebuilds a shipping payload or replaces production
+signup/login/OAuth evidence. Time/output bounds and a failed named assertion
+stop capture without a passing proof.
+
 Distribution work uses `cargo xtask distribution-pack`, native-host
 `cargo xtask distribution-qualify`, and `cargo xtask distribution-verify`.
 Qualification requires a clean committed test harness, runs the actual installed

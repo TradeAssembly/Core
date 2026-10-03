@@ -130,6 +130,16 @@ Exact configurations, producer pins and raw receipt paths remain in history
 and short current state. Reuse original owning validators for unchanged
 accepted receipts; do not relabel source hashes or fabricate authority.
 
+Commercial-lifecycle DB capture uses a closed, SELECT-only readback operation
+on the existing deployment-only migration Lambda, not direct operator DSQL
+access or a public endpoint. Preserve the runtime-only DSQL principal policy
+and legacy migration request; unknown/malformed operations cannot migrate.
+Read only the requested mode/event/subscription and bound outbox projection.
+Exact approved invocation identity, alias/deployed-code digest and actual stored
+webhook/outbox bindings are required; source tests and JSON flags are not
+production receipts. This capture seam still requires implementation and
+production qualification; it does not relax L1 or add a hosted service.
+
 Exit: all above revised L1 cases have actual owning acceptance; failures remain
 nonzero. Browser/provider handoffs are recorded once and preserved.
 

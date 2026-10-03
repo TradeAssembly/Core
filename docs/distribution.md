@@ -731,6 +731,27 @@ current trust only; all remaining readback/execution/secret/storage and full
 release obligations remain mandatory. Management credentials only read trust,
 never stand in for the admitted CI execution.
 
+The full IAM-family composition now has an owning coordinator command:
+`just f2-iam-separation-verify ABSOLUTE_CONFIG ABSOLUTE_CANDIDATE
+ABSOLUTE_NEW_REPORT`. `tools/f2-github/src/iam_separation.rs` freezes the approved
+source/live receipts (`cf3eb789...`/`cef6f500...`) and candidate `51da2114...`,
+retains the original source pins, and requires the live capture to remain within
+24 hours. It independently revalidates both actual readback jobs/attempt and
+unexpired provider ZIP/member digests at `4ca4737...`, then reuses the existing
+fresh code-role admission/current-trust checker for both environments at
+`5df29c88...`. Config cannot select authority, commands or receipt digests.
+Processes, input bytes, capture interval and retries are bounded; changed inputs,
+wrong source/attempt/role, skipped or missing denial, expired/replaced artifacts
+and hand-filled success flags cannot pass. Private new-only partial receipts
+remain diagnostic on failure; full release and deployment flags remain false.
+Actual execution accepted four constituents and correctly rejected historical
+staging run `37106818511` with `ci_authority_run_binding_invalid`. This is an
+implemented gate and an actual negative observation, **not** full IAM acceptance.
+The missing reviewed staging admission remains required after controller freeze;
+do not repeat deployments or change trust merely to make this result green.
+The owning README defines the fixed input and receipt contract. A replacement
+live capture requires an explicit reviewed digest amendment, not a caller flag.
+
 Reviewed IaC provenance now uses private Relay `just
 relay-environment-iam-source-parity SAVED_PLAN_ROOT PARITY_INPUTS HUB_SOURCE
 CANDIDATE NEW_REPORT` (`xtask/src/relay_e4/iam_source.rs`). It compares each of

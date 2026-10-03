@@ -791,9 +791,33 @@ Four targeted fault tests and strict Clippy pass. Actual plan-only proof accepts
 saved plan `b6012617...` with exactly four trust replacements; the original
 unreconciled Hub-plan input was correctly rejected, not applied. Use the original
 hash-bound reconciled input directory, preserving all historical proof bytes.
-Fresh live successor parity, both actual C admissions, the offline consumption
-adapter and the full IAM family remain required. Full L1–L4 scope and all eleven
-actual jobs remain required; no successor leaf alone makes the release ready.
+Fresh live successor parity passed 130 actual metadata reads; C staging
+`37121530138` and production Gateway `37121751022` plan-only admissions passed
+without another deployment. Release tooling R `abb592a18d3687cfe296433bf8ff9ccb2e2d3162`
+now consumes exact source `cf3eb789...` and successor `061f001a...`, checks all
+source/input/plan/lock/verifier bindings and 24-hour freshness, then re-reads
+actual GitHub admissions, workflow bytes, original inventory/artifact facts and
+retained ZIP/member hashes. No CI GetRole privilege or operator credentials
+were added. The operator-only authority command retains fresh AWS reads.
+
+Actual local full IAM composition passed (`98215`, terminal 0), private receipt
+`f2-release-execution-reset/.operator/iam-successor-composition-20261003/iam-separation-final.json`,
+SHA-256 `1b8667c4598cb8187a4d58b0dc0712418b6f2c48e2dfebb21906b60563f4d31d`.
+It proves the IAM family only: `releaseReady=false`, deployment acceptance is
+not evaluated and `executionContext.sameRunReleaseSourceVerified=false`.
+The adapter also implements actual R run/attempt/source/workflow checks for a
+CI invocation; that same-run invocation is not yet proven. Targeted authority
+and composition fault tests, strict Clippy, 85 provider-tool tests, actionlint
+and harness checks pass (one unrelated opt-in retained-publication test ignored).
+Coordinator owning `just verify` passed on committed R (`1116`, terminal 0),
+including its required harness, locked dependencies, strict Clippy/tests and
+product contracts. Full-family source integration and the actual same-run CI
+receipt remain required, as do production onboarding/commerce/effects/data-preserving rollback,
+all eleven successful jobs, exact npm publication and real registry journeys.
+Full L1–L4 scope is unchanged; an IAM leaf or local composition is not launch
+acceptance. Original dirty release-reset edits were preserved in stash
+`f6d688ac8e4fedc2eeef02cafa18576ecb69e0ab` and reconciled as newer upstream
+supersets; frozen controller C and accepted native/package bytes were unchanged.
 
 Reviewed IaC provenance now uses private Relay `just
 relay-environment-iam-source-parity SAVED_PLAN_ROOT PARITY_INPUTS HUB_SOURCE

@@ -715,6 +715,17 @@ not the full `deployed-iam-secret-separation` release proof and cannot satisfy
 L4 on its own. Preserve failed observations; do not apply a broad plan just to
 make this assessor green.
 
+Actual code-role admission can now be revalidated by coordinator `just
+f2-ci-code-authority-verify ENVIRONMENT RUN_ID ABSOLUTE_NEW_REPORT`. It binds
+retained real CI run/attempt/ordered steps to compiled approved `5df29c` wrapper
+and reusable workflow bytes, and reads both exact deployed OIDC trusts afresh.
+Skipped/missing denial, foreign source/environment/attempt, extra trust and
+wildcard subjects reject. Reusing the passed production job does not repeat its
+deployment. The source-bound private result proves CI code-role admission and
+current trust only; all remaining readback/execution/secret/storage and full
+release obligations remain mandatory. Management credentials only read trust,
+never stand in for the admitted CI execution.
+
 1. Actual packaged production Hub/Alpaca Paper signup/connect/read/status, without
    manual keys, forced diagnostic tenant or staging URLs. One initial browser
    consent is allowed; stored test grants support later automated smoke tests.

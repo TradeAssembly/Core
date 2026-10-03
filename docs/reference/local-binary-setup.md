@@ -1,7 +1,10 @@
 # Local binary setup (F2 implementation preview)
 
 This describes the binary command surface, not an available public release.
-Public downloads and signing/notarization still need release acceptance.
+Public downloads still need release acceptance. The initial release is unsigned
+or ad-hoc signed; Apple Developer ID signing/notarization is deferred, not its
+launch gate. Prepared version-pinned installer, update/rollback, browser
+connection and export instructions are in [the direct-install guide](direct-install.md).
 An unsigned local candidate now bundles Alpaca and its sandbox dependencies.
 Do not send users to build from source as the
 released installation procedure.

@@ -188,6 +188,20 @@ expiry/refresh or customer onboarding. Qualify the changed Core producer and its
 affected four-target packages through the existing candidate pipeline; preserve
 the accepted e0cebadd candidate and unchanged Warden/Alpaca evidence. Do not
 relabel old native acceptance or publish the failed-durability binary as ready.
+The bounded refreshed packaging lane is coordinator `refreshed-native` in its
+existing `f2-release.yml`, `tools/f2-github/src/{main,native_package,refreshed_native}.rs`
+and Justfile. It admits only the four fixed c4d8e93 Core builder runs, complete
+successful owning steps and actual artifact digests. Preserve the old e0 cache
+and receipts, compose only the new Core JSON/ZIP with unchanged Warden/Alpaca,
+then invoke existing owning extraction, SDK-tree binding, native freeze/pack,
+experimental integrity and fresh Mac controlled-sink qualification. Qualifier
+source is clean c4d8e93, including the retained a2e246 tests. No Core producer
+rebuild, publish authority, caller-selected source/run, orders, or Live activation.
+Acceptance: coordinator strict fmt/Clippy/full tests and harness checks, followed
+by actual four-target CI packages and Core `distribution-verify --candidate`.
+Missing producer steps/digests, wrong target/source or incomplete pages stop
+before packaging; failed Mac/native gates do not become receipts. Actual new
+customer expiry/refresh and complete L1/L3/L4 remain required after this lane.
 The Windows receipt producer must hash actual packaged launcher bytes, not its
 LF-normalized comparison inventory. Preserve the rejected October 3 receipt;
 repair and retry only Windows packaging/integrity from the accepted native input

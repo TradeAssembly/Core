@@ -829,6 +829,15 @@ acceptance. Original dirty release-reset edits were preserved in stash
 `f6d688ac8e4fedc2eeef02cafa18576ecb69e0ab` and reconciled as newer upstream
 supersets; frozen controller C and accepted native/package bytes were unchanged.
 
+The finite CI transport is now implemented on R: `just f2-iam-inputs-export`
+exports only the five exact projected inputs and admission run IDs to a closed,
+bounded credential-free bundle; `just f2-iam-bundle-verify` invokes the existing
+owning composition from private scratch. The private immutable cache asset is
+`iam-inputs-20261003.json`, SHA-256 `c80314c24c6476d742cf512ff2aa61d6922a77dd0de5946d02b877cac6ba9aa0`.
+The explicit `iam-separation` CI selector has only contents/actions read
+authority, no AWS/OIDC/vault/operator credential transport. Actual same-run
+execution remains required; this constituent is not the eleven-job chain.
+
 Reviewed IaC provenance now uses private Relay `just
 relay-environment-iam-source-parity SAVED_PLAN_ROOT PARITY_INPUTS HUB_SOURCE
 CANDIDATE NEW_REPORT` (`xtask/src/relay_e4/iam_source.rs`). It compares each of

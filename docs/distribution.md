@@ -661,7 +661,7 @@ verdict remains false. It is not an implementation of `f2 launch-verify` and
 does not prove source integration or semantic receipt validity. New owning
 verifier pins require explicit contract review, never relabeling old receipts.
 
-The source audit fixes three remaining proof ownership boundaries. Implement
+The source audit fixes four remaining proof ownership boundaries. Implement
 packaged production onboarding first, using Core's existing
 `runtime-rs/src/cli/browser_onboarding.rs` and
 `runtime-rs/src/service/plugin_oauth.rs`, plus Relay's existing broker handoff.
@@ -670,6 +670,28 @@ before ACK and restart readback; distinguish replay/wrong-owner/canceled denial
 tests from deployed positive evidence. Control the browser handoff through
 Chrome. Do not build another identity/OAuth implementation or use fixture-only
 stdio tests as production proof.
+
+The fourth owner is staging positive OAuth, distinct from production packaged
+onboarding and from existing staging denial/revocation proofs. Private Relay's
+`xtask/src/oauth_positive.rs` now implements begin/complete/paired verification
+over the existing deployed broker service; E4 accepts its custom/direct pair
+only after that owning gate passes. It requires real provider callbacks and
+Paper account reads, identical ready retries, wrong verifier/instance/nonowner
+denials, unchanged credentials after denials, ACK/retry and consumed status.
+Local discrimination tests are not deployed positives. Browser callback
+interception must be verified before a short-lived capture begins; codes go
+process-to-process, never copied by the user or saved in exported evidence.
+Preserve the current production consent independently. No shipping binary,
+identity service, entitlement or broker order change is implied.
+
+The final coordinator must consume semantic raw inputs, not the 25 report
+hashes alone: closed configs/descriptor, paired leaves and deployment chains.
+Include staging journal as a mandatory supporting input to E4. Keep accepted
+staging leaves at their own `ac3f4ba` validator, production leaves at their
+reviewed owner, and add reviewed pins for new owners rather than silently
+reinterpreting old proofs. Existing 24-hour checks remain enforced. Implement
+the missing full onboarding/commerce owners before wiring the eleven-job chain;
+do not turn incomplete constituent jobs into the final acceptance definition.
 
 The coordinator now provides `just f2-packaged-connection-probe CONFIG
 DESCRIPTOR NEW_PROOF` / `-verify` for actual frozen packaged MCP account/status

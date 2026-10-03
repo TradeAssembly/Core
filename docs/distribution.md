@@ -617,10 +617,32 @@ Fill uncovered cases only; no bespoke framework per check.
    Require a genuine provider-confirmed production purchase/entitlement record,
    existing or from an explicitly authorized operator purchase; no arbitrary
    charge or fabricated payment. Reuse Hub; price is not selected by this plan.
+   The private owning read-only leaf is now
+   `just relay-production-paid-period-probe CONFIG CANDIDATE-DESCRIPTOR NEW-PROOF`
+   with matching `-verify` and `-test` commands. Ten actual company Stripe CLI
+   reads plus two actual Hub reads must bind the same live checkout/customer/
+   subscription/Price, positive-value invoice, payment event, collected invoice
+   payment, succeeded PaymentIntent and captured/unrefunded/undisputed charge to
+   Hub's exact payment-backed active period. Closed source/input-bound private
+   receipts retain partial failures and explicitly keep commercial-lifecycle and
+   full-release false. No purchases or credential/account changes are made by
+   this command. Portal/return, actual signed-webhook delivery, cancellation,
+   expiry and denials remain required separate evidence. Fixture tests are not
+   actual production purchase proof. The owning gateway README defines safe
+   credential input, the twelve-read inventory and bounded capture/retry contract.
 3. Production enrollment/journal ingest/replay/query/export, entitlement and
    workspace/environment denials. Watch/Reach prove production owner/node
    authority, not an acceptance shared-secret bypass. Isolated diagnostic state;
    no broker orders, customer-account changes or new trading activation.
+   The private owning command is now `just relay-production-workspace-journal-probe`
+   with matching `-verify` and `-test` commands. Bind the exact qualified beta.3
+   Mac descriptor, real production identities/live decisions, the original fixed
+   diagnostic request and active Hub paid period. Require 46 actual gateway and
+   four Hub observations, both origins, duplicate/conflict recovery, single-event
+   replay/export and unchanged quotas after denials. Keep accepted staging sources
+   untouched. Closed source-bound evidence stays purchase/full-release false;
+   fixture unit tests are not hosted proof. The owning gateway README specifies
+   config, safe credential input, 300-second bound and same-request recovery.
 4. Every staging route classified protected/explicit exception; owner, verified
    nonowner and anonymous coverage on custom/direct surfaces. Callback tamper,
    expiry, environment and revocation before effects. Reuse valid current proof.
@@ -931,6 +953,26 @@ attachments do not establish registry acceptance. Schema-v1 remains historical.
 This is implementation, not a passing registry journey: actual publication and
 registry execution are still blocked by npm's 72-hour recovery hold.
 
+The coordinator now implements the missing exact-byte publication component:
+`just f2-release-publish RUN SOURCE ABSOLUTE_CORE_VERIFIER
+ABSOLUTE_CANDIDATE_EVIDENCE ABSOLUTE_NEW_OUTPUT_DIR`. It requires the actual
+owning CI publisher step and the eight successful predecessor gates, their
+same-run source-bound provider archives and the clean pinned Core candidate
+verifier. A distinct prepublish readback is never full-chain acceptance. All
+five accepted beta.3 hashes are pinned; bytes are privately snapshotted without
+repacking, native packages precede the launcher, and all existing versions are
+checked for conflicts before writes. One fsynced intent precedes each single
+submission. Exact observed metadata/tag/downloaded registry bytes settle success
+or ambiguous recovery; unresolved outcomes stop, while reruns reuse exact
+published versions. No overwrite, unpublish, automatic tag repair or placeholder
+package is supported. Existing scoped npm authorization and pinned Node/npm are
+required; no account setup, MFA/session/credential arguments or new credential
+service are introduced. Publisher bootstrap remains unproven and frozen metadata
+must not be amended to manufacture OIDC eligibility. The command is not wired
+into a complete release workflow yet; actual publication, registry qualification,
+production acceptance and the eleven-job/unsigned launch gates remain open.
+Fixture tests and an actual retained-tarball input check are not hosted proof.
+
 Reuse already verified unchanged deployments; no redeploy for unchanged inputs.
 First L1 setup uses the same reviewed deployment commands. Publish after candidate
 acceptance; registry acceptance follows publishing, never a circular prerequisite.
@@ -977,6 +1019,11 @@ ABSOLUTE_NEW_OUTPUT_DIR`. Its fixed contract requires the eleven L3 gate names
 as actual successful jobs at the reviewed workflow bytes, their exact successful
 owning gate steps and unexpired same-run/source archives with provider digests.
 Earlier successful attempts may be reused only within that same run/source.
+Consumption additionally requires `just f2-release-chain-verify RUN SOURCE
+ABSOLUTE_EVIDENCE_DIR`: fresh GitHub run/job/step/artifact/workflow readback,
+exact closed saved report and actual local ZIP digests/inventory. The matching
+prelaunch command keeps its ten-completed-plus-running-final distinction and
+cannot satisfy the eleven-completed-gate verdict. No report flag is an authority.
 Its scope is provider CI completion, with `releaseReady=false`; it does not
 replace owning acceptance or the final profile. The complete release jobs and
 actual passing chain remain open. Candidate-only runs deterministically fail.

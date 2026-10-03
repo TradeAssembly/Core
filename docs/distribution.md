@@ -642,6 +642,49 @@ thread. This reconciliation does not start a goal or resume release operations.
 
 ## L1 — Production service, purchasing and staging acceptance
 
+### Named candidate amendment: personal signup authority — 2026-10-03
+
+The actual isolated frozen-binary signup failed after the production callback
+with `workos_hub_identity_permission_missing`. Accepted owner sessions are
+organization-backed; ordinary personal AuthKit signup has no organization
+permissions. Execute this named repair under the replacement goal's runtime
+repair/candidate-amendment scope. The original candidate is retained, not edited
+or relabeled. A changed client is unqualified until the existing gates qualify
+its exact new native/archive/descriptor bytes and dependent captures.
+
+Decision: do not add environment-wide JWT scopes, manufacture permissions,
+assign customers to a shared organization, or substitute Connect authentication
+for the existing AuthKit public-client flow. Core verifies signature/issuer/
+client/subject/time as before. Only absent-organization sessions may defer the
+Hub identity permission decision to the real Hub projection; configured
+organization bindings and organization permission denials remain enforced.
+The projection must match the signed subject and exact `user:{sub}` personal
+tenant (or signed organization tenant) before custody, restart or refresh.
+
+Hub owns explicit personal self-service policy after active-client admission.
+Use a verified personal-session marker, never a caller-supplied tenant or role.
+Permit identity projection, own entitlement checks and mapped-product checkout
+only. Preserve product binding, commerce mode, account ownership, idempotency,
+administrative denials and payment-backed entitlement. Apply consistently to
+Edge's `auth.ts`/`service.ts` and Rust API's verifier/authenticated routes. Do
+not grant generic permissions during token verification. Dashboard account
+management remains a separately checked own-account route, not an operator grant.
+
+Finite acceptance: signed-token invalid signature/issuer/client/subject/time
+denials; absent versus blank/invalid organization discrimination; registered,
+inactive, unknown and cross-product client cases; personal own-account success
+without role claims; unchanged organization permission denials; no entitlement
+grant/operator access/other-account read; unpaid access stays denied. Source
+tests do not close real signup, custody, distinct-process restart, refresh,
+purchase/webhook/paid-period or Relay acceptance. Rebuild only invalidated
+outputs through existing owners and retain old successful/failing evidence.
+
+Source pointers: Core `runtime-rs/src/workos_identity.rs::{finish,
+validate_hub_claims,current_identity_and_token}`, `hub_identity::project_session`;
+Hub `apps/hub-edge/src/{auth,service,contracts}.ts`,
+`apps/hub-api/src/lib.rs::{WorkosTokenVerifier,authenticated,require_permission}`.
+No provider permission/configuration mutation is part of this repair.
+
 Outcome: paying customers can use production Relay, ordinary customers cannot
 use staging. Owners: private Relay runtime/IaC/xtask/profile; existing Hub identity,
 catalog/billing/entitlement; Core profile/onboarding. Product owns aggregation.

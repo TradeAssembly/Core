@@ -18,6 +18,14 @@ tenant from verified identity (including Hub's documented personal scope).
 Explicit organization profiles still enforce that organization. No profile may
 supply an actor, tenant authority, credential or entitlement in place of Hub.
 
+The named personal-signup candidate amendment permits a verified token without
+an organization to request Hub's real self-service projection without a role
+permission claim. Custody requires exact subject and `user:{sub}` tenant binding;
+stored-session restart and refresh retain that binding. Organization sessions
+still require their configured binding and identity permission. This source
+repair does not inherit the frozen binary's qualification; distribution gates
+must requalify changed native bytes and dependent captures.
+
 Distribution is a separate Rust installer around locked payload artifacts. npm
 glue selects an exact-version native package; it never builds customer source.
 Immutable payloads, a stable digest-bound Warden authority path, persistent state,

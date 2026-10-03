@@ -1,5 +1,12 @@
 # Extraction decisions
 
+- The named 2026-10-03 personal-signup repair changes candidate source, not the
+  retained frozen payload. A verified no-organization session defers personal
+  self-service authority to Hub's registered-client policy; exact subject and
+  derived tenant bind custody/restart/refresh. Organization bindings and role
+  permissions remain enforced. Changed binaries and dependent observations must
+  be qualified through existing owners; prior qualification is not inherited.
+
 - Frozen OAuth source-fault proof is separate from packaged production positive
   proof. Do not change production profiles, trust or transport to inject faults.
   Compile the descriptor's archived Core revision and dependency lock with only

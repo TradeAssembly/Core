@@ -160,6 +160,10 @@ impl WorkosAuthManager {
         }
         let claims = verify_access_token(&self.config, &session.access_token).await;
         if let Ok(claims) = claims {
+            validate_hub_claims(&claims, &self.config)?;
+            if session.tenant_id != hub_tenant_from_claims(&claims) {
+                return Err("workos_identity_binding_invalid".to_string());
+            }
             if claims.sub != session.identity.subject {
                 let _ = self.delete_session();
                 return Err("oidc_session_required".to_string());
@@ -333,9 +337,7 @@ impl WorkosAuthManager {
         let hub =
             crate::hub_identity::project_session(&self.config, &token.access_token, &claims.sub)
                 .await?;
-        if hub.subject_id != claims.sub {
-            return Err("workos_identity_binding_invalid".to_string());
-        }
+        validate_hub_projection(&claims, &hub)?;
         if expected_tenant.is_some_and(|tenant| tenant != hub.tenant_id) {
             return Err("workos_identity_binding_invalid".to_string());
         }
@@ -424,12 +426,26 @@ impl WorkosAuthManager {
 }
 
 fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<(), String> {
+    if claims
+        .organization_id
+        .as_deref()
+        .is_some_and(|organization| organization.trim().is_empty())
+    {
+        return Err("workos_organization_binding_invalid".to_string());
+    }
     if config
         .oidc_organization_id
         .as_deref()
         .is_some_and(|expected| claims.organization_id.as_deref() != Some(expected))
     {
         return Err("workos_organization_binding_invalid".to_string());
+    }
+    // Personal sessions have no organization role. Hub, not this client,
+    // authorizes self-service access for the registered product client. The
+    // caller still must verify the token and obtain a matching Hub projection
+    // before persisting credentials. Organization sessions retain RBAC.
+    if claims.organization_id.is_none() {
+        return Ok(());
     }
     let permission_present = claims
         .permissions
@@ -443,6 +459,23 @@ fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<
             .any(|permission| permission == "hub:identity:read");
     if !permission_present {
         return Err("workos_hub_identity_permission_missing".to_string());
+    }
+    Ok(())
+}
+
+fn hub_tenant_from_claims(claims: &AccessClaims) -> String {
+    claims
+        .organization_id
+        .clone()
+        .unwrap_or_else(|| format!("user:{}", claims.sub))
+}
+
+fn validate_hub_projection(
+    claims: &AccessClaims,
+    hub: &crate::hub_identity::HubIdentity,
+) -> Result<(), String> {
+    if hub.subject_id != claims.sub || hub.tenant_id != hub_tenant_from_claims(claims) {
+        return Err("workos_identity_binding_invalid".to_string());
     }
     Ok(())
 }
@@ -814,6 +847,57 @@ mod tests {
                 .unwrap_err(),
             "workos_hub_identity_permission_missing"
         );
+    }
+
+    #[test]
+    fn personal_preflight_defers_authority_but_requires_exact_hub_account() {
+        let (mut config, _, _) = setup();
+        config.oidc_organization_id = None;
+        let mut claims = AccessClaims {
+            iss: config.oidc_issuer.clone(),
+            sub: "user_personal".into(),
+            client_id: config.oidc_client_id.clone(),
+            exp: usize::MAX / 2000,
+            email: None,
+            name: None,
+            organization_id: None,
+            permissions: vec![],
+            scope: Some("openid profile email offline_access".into()),
+        };
+        assert!(validate_hub_claims(&claims, &config).is_ok());
+        for (subject, tenant, accepted) in [
+            ("user_personal", "user:user_personal", true),
+            ("user_other", "user:user_personal", false),
+            ("user_personal", "user:user_other", false),
+            ("user_personal", "org_other", false),
+        ] {
+            let hub = crate::hub_identity::HubIdentity {
+                subject_id: subject.into(),
+                tenant_id: tenant.into(),
+            };
+            assert_eq!(validate_hub_projection(&claims, &hub).is_ok(), accepted);
+        }
+        config.oidc_organization_id = Some("org_expected".into());
+        assert_eq!(
+            validate_hub_claims(&claims, &config).unwrap_err(),
+            "workos_organization_binding_invalid"
+        );
+        config.oidc_organization_id = None;
+        for organization in ["org_expected", "", " "] {
+            claims.organization_id = Some(organization.into());
+            assert!(validate_hub_claims(&claims, &config).is_err());
+        }
+        claims.organization_id = Some("org_expected".into());
+        claims.permissions.push("hub:identity:read".into());
+        assert!(validate_hub_claims(&claims, &config).is_ok());
+        assert!(validate_hub_projection(
+            &claims,
+            &crate::hub_identity::HubIdentity {
+                subject_id: claims.sub.clone(),
+                tenant_id: "org_expected".into(),
+            }
+        )
+        .is_ok());
     }
 
     #[test]

@@ -294,8 +294,13 @@ route proof, not new observations or effects. Compact source/process/artifact
 bindings are in coordinator `RECONCILIATION.md`; do not rerun accepted work.
 Read-only production Hub Stripe checks still return HTTP 401 for the existing
 correctly formatted live restricted key; no credential or entitlement mutation.
-The user added an npm Bitwarden passkey and the existing worker observed it
-listed. Fresh MFA and recovery-hold clearance are not yet verified. Bootstrap,
+The user added an npm Bitwarden passkey. On 2026-10-03 the existing browser
+account completed the supported npm CLI web login using that passkey; the CLI
+exited 0 and a separate registry `npm whoami` returned the expected publisher.
+The temporary mode-0600 token was saved/read back in the existing Bitwarden npm
+item without changing its password or passkey. This proves publisher login,
+not publication permission or recovery-hold clearance for a publish operation.
+No package was published and no account recovery was repeated. Bootstrap,
 actual production commerce/lifecycle/Watch/Reach, eleven-job release integration,
 exact npm publication and registry install/upgrade/rollback remain mandatory.
 
@@ -1137,7 +1142,10 @@ and a new check source or changed registry/native inputs invalidates reuse.
 The schema-v2 published gate requires this receipt; arbitrary exit-zero log
 attachments do not establish registry acceptance. Schema-v1 remains historical.
 This is implementation, not a passing registry journey: actual publication and
-registry execution are still blocked by npm's 72-hour recovery hold.
+registry execution are unproven. The earlier 72-hour recovery hold is historical,
+not a freshly verified publishing blocker; passkey-backed CLI login now passes.
+The actual gated publisher must establish publication acceptance without a
+speculative publish or weakened production/CI predecessors.
 
 The final-job restoration component now exists in coordinator
 `tools/f2-github/src/registry_restore.rs`, exposed through

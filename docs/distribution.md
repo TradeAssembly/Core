@@ -726,6 +726,19 @@ current trust only; all remaining readback/execution/secret/storage and full
 release obligations remain mandatory. Management credentials only read trust,
 never stand in for the admitted CI execution.
 
+Reviewed IaC provenance now uses private Relay `just
+relay-environment-iam-source-parity SAVED_PLAN_ROOT PARITY_INPUTS HUB_SOURCE
+CANDIDATE NEW_REPORT` (`xtask/src/relay_e4/iam_source.rs`). It compares each of
+the twelve retained saved-plan archives' complete embedded `.tf` files/modules
+and provider locks against compiled reviewed Relay `1ca5fb` and Hub `048c107`
+Git bytes, and requires actual `tofu show -json` equality with the parity input.
+Use only the corrected no-op Hub plan; no new plan/apply occurs. Input/candidate
+hashes are rechecked, subprocess output/time are bounded, and receipts exclude
+raw plan/state values. This closes saved-plan source provenance and reruns the
+existing nineteen-role/twelve-function inventory parity. It does not substitute
+for fresh provider reads, actual admission or full secret/storage separation.
+Accepted older receipts retain their original owning source/verifier pins.
+
 1. Actual packaged production Hub/Alpaca Paper signup/connect/read/status, without
    manual keys, forced diagnostic tenant or staging URLs. One initial browser
    consent is allowed; stored test grants support later automated smoke tests.

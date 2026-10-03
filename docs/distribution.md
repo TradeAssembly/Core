@@ -699,6 +699,18 @@ function metadata is insufficient. Resolve the existing CI-role source before
 asserting parity; do not broaden readback privileges for capture convenience or
 read secret values. These three proofs remain separate mandatory obligations.
 
+Relay now exposes the bounded offline assessor `just
+relay-environment-iam-plan-parity PRIVATE_INPUT_DIRECTORY CANDIDATE_DESCRIPTOR
+NEW_PRIVATE_REPORT` (`xtask/src/relay_e4/iam_plans.rs`). It consumes twelve actual
+provider-refreshed plans and filtered function metadata, rejects IAM drift and
+missing/additional policies, and checks nineteen source-owned roles (including
+Hub backup) and twelve Lambda configurations. This is only plan/inventory
+parity: provider freshness, reviewed source provenance, backup managed-policy
+document review and actual role-admission/separation remain unverified. It is
+not the full `deployed-iam-secret-separation` release proof and cannot satisfy
+L4 on its own. Preserve failed observations; do not apply a broad plan just to
+make this assessor green.
+
 1. Actual packaged production Hub/Alpaca Paper signup/connect/read/status, without
    manual keys, forced diagnostic tenant or staging URLs. One initial browser
    consent is allowed; stored test grants support later automated smoke tests.

@@ -207,6 +207,16 @@ eleven-job chain. Assemble the accepted beta.4 Mac and retained experimental
 results without rebuilding their native producers, then run the real owning
 candidate gate and wire the remaining complete direct-delivery chain.
 
+The explicit coordinator `amended-candidate` dispatch now assembles only the
+four accepted beta.4 artifacts with compiled run/source/job/artifact pins and
+fresh provider readback. It keeps the three successful experimental jobs from
+the earlier failed-Mac run distinct from the later successful Mac-only run.
+Read-only safe extraction preserves native receipts and referenced bytes;
+the exact shipping Core candidate verifier must run afterward. Its large
+candidate archive and seven rendered installer assets are retained separately
+from bounded proof. This constituent route cannot replace the full eleven-job
+chain, public-download journeys or paid customer acceptance.
+
 Exit: actual eleven-job direct chain and all owning steps/artifacts succeed;
 actual download/install checks succeed. npm registry remains explicitly pending.
 

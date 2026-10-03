@@ -281,6 +281,16 @@ The existing owning deployment validator accepts the actual retained different
 executable deployment and restoration, preserving nonempty journal data,
 archive bytes, storage protections, configuration and unrelated functions.
 This closes staging rollback proof only, not production or overall readiness.
+The retained E4 `CANDIDATE` argument is the exact packaging status file
+`target/f2-npm-mac-package-production-storefront/candidate.json`, SHA-256
+`4820ab91e67bf8cecb1755366a3a1a0c04d34f0e069db88a2753b58d3410f950`.
+It is not `tradeassembly-darwin-arm64/candidate-descriptor.json` (`51da2114...`),
+which packaged-connection and IAM commands explicitly require. The former's
+`release.candidateDescriptorSha256` binds the latter and both refer to the same
+frozen `30dcbd46...` archive/profile/native bytes. Never relabel a receipt or
+redeploy to repair this input-type error. Current owning deployment verification
+revalidated the original three snapshots/plan/deploy/rollback with the correct
+status file (`6b12e7`, terminal 0); all source/config/input hashes are unchanged.
 Coordinator targeted 55 tests, fmt/strict Clippy/actionlint and `just verify` pass.
 Candidate CI `37106550626` passed; deliberately skipped release jobs do not count.
 

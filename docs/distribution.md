@@ -126,6 +126,14 @@ Existing owning routes include:
   `relay-environment-oauth-revocation-verify` and the existing E4 adapter.
 - Existing packaged connection/login probe/verify commands are scoped constituents,
   not full production-onboarding acceptance.
+- `just f2-packaged-new-identity-login-capture CONFIG DESCRIPTOR NEW_DIR` learns
+  the first authenticated provider identity only for an explicit null-owner
+  configuration, then verifies the same identity in a distinct process. Its
+  private handoff uses the packaged same-origin login action and normal hosted
+  provider authorization, never an administrative provisioning API or default
+  browser. A failed capture requires a new attempt, not reuse of a dead callback.
+  The matching `-verify` is login/restart integrity only; genuine signup, refresh,
+  Alpaca, Warden readiness and complete onboarding remain separate required proof.
 Exact configurations, producer pins and raw receipt paths remain in history
 and short current state. Reuse original owning validators for unchanged
 accepted receipts; do not relabel source hashes or fabricate authority.

@@ -167,6 +167,11 @@ JavaScript module directly. Compile only control tooling, fixtures and owning
 tests for that repair; do not rebuild or modify frozen shipping binaries.
 The Core personal-authority amendment changes native bytes and requires affected
 archive/installation/capture requalification; old accepted candidate stays intact.
+The Windows receipt producer must hash actual packaged launcher bytes, not its
+LF-normalized comparison inventory. Preserve the rejected October 3 receipt;
+repair and retry only Windows packaging/integrity from the accepted native input
+cache, then pin that new CI artifact. Do not normalize a failed receipt, relax the
+owning gate, rebuild unchanged runtime producers, or repeat Mac/Linux acceptance.
 
 Exit: `cargo xtask distribution-verify --candidate --evidence ABSOLUTE_DIR`
 returns zero under the four-target policy and exact applicable product bindings.
@@ -194,6 +199,11 @@ isolated scratch, call included native installer. Preserve native package conten
 bind any outer envelope separately. No Node/npm/Rust build needed for direct setup.
 Actual public URL must be verified, not invented. Qualify Mac install/reinstall/
 stopped upgrade/rollback/active-rig refusal and npm-to-direct same-rig compatibility.
+Keep virgin direct install/reinstall separate from the same-rig launcher journey.
+The latter must preserve durable file hashes, root, payload, authority, facade and
+MCP, including facade operation after removing the isolated local npm layout.
+Local retained-byte smoke is diagnostic only; actual public downloads still own
+direct delivery acceptance and npm registry publication remains deferred.
 Publish literal tested instructions and experimental/unsigned disclosures.
 
 The coordinator now implements the bounded exact-byte direct publisher and

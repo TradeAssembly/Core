@@ -752,6 +752,49 @@ do not repeat deployments or change trust merely to make this result green.
 The owning README defines the fixed input and receipt contract. A replacement
 live capture requires an explicit reviewed digest amendment, not a caller flag.
 
+Controller closure decision (2026-10-03): use the two existing coordinator
+branches, not an advancing self-pinned controller. Freeze code controller C on
+`codex/f2-codebuild-distribution` after its owning gates; keep the environment
+wrappers, IAM subject and original inventory bindings on that branch. Complete
+final release source R on `codex/f2-release-execution-reset`, preserving its
+unfinished edits. Amend only the release workflow branch, release-chain branch
+and npm publication's exact ref/workflow-ref checks. R may compile already-known
+C and approved evidence digests; its own source comes from the immutable actual
+GitHub run context. Do not globally rename branches, force-reset the controller,
+assume SHA/tag dispatch, or repeatedly repin authority for unrelated tooling.
+
+Replace the existing controller trust once using the owning saved-plan/digest
+procedure. Require exactly four trust-only updates (two code and two readback
+roles), with an exact old-controller-to-C substitution and every other policy,
+subject, principal, action, resource, boundary and session limit unchanged.
+Preserve the original source/live receipts as historical baseline; they cannot
+describe current trusts after this replacement. An owning bounded successor
+assessor must verify that exact substitution against the original source-bound
+plan inputs, then re-run full fresh live parity. Only afterward can both C
+wrappers run `operation=plan` with rollback qualification false to establish
+current admissions/denials without deployments. Preserve prior deployment
+evidence at its actual producer source, never relabel it as a C admission.
+
+Final jobs must not receive operator credentials or new IAM read privileges.
+The existing management read route produces the fresh successor proof before
+R; R pins its exact digest. Add a closed offline consumption adapter that
+revalidates constituent hashes, source bindings, the existing 24-hour freshness
+bound and actual GitHub admissions/artifacts, and emits same-run/R evidence.
+Copying an accepted receipt or manifest flags is insufficient. The successor
+assessor now exists at Relay `4af40dfa...` in
+`xtask/src/relay_e4/iam_successor.rs`, with owning
+`relay-environment-iam-controller-{plan-verify,live-parity}` commands. It fixes
+C to `9bc6d450...`, reuses original source/lock and full live checks, and rejects
+any changed permission, resource/module/output envelope, extra/stale/wildcard
+authority, unknown value, changed original input or unreviewed controller.
+Four targeted fault tests and strict Clippy pass. Actual plan-only proof accepts
+saved plan `b6012617...` with exactly four trust replacements; the original
+unreconciled Hub-plan input was correctly rejected, not applied. Use the original
+hash-bound reconciled input directory, preserving all historical proof bytes.
+Fresh live successor parity, both actual C admissions, the offline consumption
+adapter and the full IAM family remain required. Full L1–L4 scope and all eleven
+actual jobs remain required; no successor leaf alone makes the release ready.
+
 Reviewed IaC provenance now uses private Relay `just
 relay-environment-iam-source-parity SAVED_PLAN_ROOT PARITY_INPUTS HUB_SOURCE
 CANDIDATE NEW_REPORT` (`xtask/src/relay_e4/iam_source.rs`). It compares each of

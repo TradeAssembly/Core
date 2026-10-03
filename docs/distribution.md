@@ -154,6 +154,11 @@ Mac native acceptance remains source-free MCP -> real Warden -> controlled
 credential-free sink; submit/duplicate/conflict/ambiguous recovery/reconcile;
 risk/authority denials, deterministic path, interruption and sandbox. No orders.
 Existing candidate qualification remains valid only for unchanged shipping inputs.
+Maintainer qualification may use a clean, pinned descendant of the shipping
+source; the receipt records both revisions. Agent-order tests execute the
+packaged `bin/tradeassembly-sandbox` launcher (bundled Node), never the 0644
+JavaScript module directly. Compile only control tooling, fixtures and owning
+tests for that repair; do not rebuild or modify frozen shipping binaries.
 The Core personal-authority amendment changes native bytes and requires affected
 archive/installation/capture requalification; old accepted candidate stays intact.
 

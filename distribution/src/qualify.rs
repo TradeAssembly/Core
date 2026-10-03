@@ -323,7 +323,7 @@ pub fn qualify(
     env.insert(
         "F2_TEST_SRT_CLI",
         payload
-            .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js")
+            .join(executable("bin/tradeassembly-sandbox"))
             .display()
             .to_string(),
     );

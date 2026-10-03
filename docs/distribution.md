@@ -137,8 +137,14 @@ and legacy migration request; unknown/malformed operations cannot migrate.
 Read only the requested mode/event/subscription and bound outbox projection.
 Exact approved invocation identity, alias/deployed-code digest and actual stored
 webhook/outbox bindings are required; source tests and JSON flags are not
-production receipts. This capture seam still requires implementation and
-production qualification; it does not relax L1 or add a hosted service.
+production receipts. Hub's SELECT-only seam is implemented at
+`e7c44e8697085750ef188882a72465e193f185b1`; actual isolated database boundary
+tests and local owning gates pass. CI run `37139561717` owns its deployable
+artifacts. The coordinator capture must bind that successful run/artifact,
+the exact HubProductionDeploy SSO identity and immutable deployed Lambda code
+before/after invocation. Actual qualified deployment/invocation and full
+commercial lifecycle acceptance remain required; this does not relax L1 or
+add a hosted service.
 
 Exit: all above revised L1 cases have actual owning acceptance; failures remain
 nonzero. Browser/provider handoffs are recorded once and preserved.
@@ -189,6 +195,17 @@ bind any outer envelope separately. No Node/npm/Rust build needed for direct set
 Actual public URL must be verified, not invented. Qualify Mac install/reinstall/
 stopped upgrade/rollback/active-rig refusal and npm-to-direct same-rig compatibility.
 Publish literal tested instructions and experimental/unsigned disclosures.
+
+The coordinator now implements the bounded exact-byte direct publisher and
+stored-commerce capture constituents. The publisher still requires an actual
+eight-gate CI prefix, separately scoped fixed-Core authority, an immutable
+shipping-source tag, and the same-run candidate job's provider-digest-bound
+seven-asset rendered artifact. Single-attempt durable intents govern draft,
+upload, publication and ambiguous recovery; no overwrite or local publication
+shortcut exists. Source/validator tests are not actual publication or the
+eleven-job chain. Assemble the accepted beta.4 Mac and retained experimental
+results without rebuilding their native producers, then run the real owning
+candidate gate and wire the remaining complete direct-delivery chain.
 
 Exit: actual eleven-job direct chain and all owning steps/artifacts succeed;
 actual download/install checks succeed. npm registry remains explicitly pending.

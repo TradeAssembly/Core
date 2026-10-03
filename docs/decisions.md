@@ -1,5 +1,12 @@
 # Extraction decisions
 
+- Registry qualification is additive evidence, not a rewrite of native
+  qualification. The first-release published gate requires a separate typed
+  receipt bound to the original native receipt, five-package registry capture,
+  fixed passing process logs and exact test sources. It runs existing installer
+  upgrade/rollback acceptance against real captured registry bytes. The native
+  candidate gate and frozen shipping payloads remain unchanged.
+
 - Frozen F2 macOS arm64 bytes and the M0–M6 parent release lock are not rebuilt or
   re-signed for npm delivery. New targets need independent native evidence. The
   first distribution format accepts only prerelease versions on `beta`; no Apple

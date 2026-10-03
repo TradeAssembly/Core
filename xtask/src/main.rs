@@ -22,6 +22,7 @@ fn main() {
         "distribution-pack"
         | "distribution-verify"
         | "distribution-capture-registry"
+        | "distribution-qualify-registry"
         | "distribution-freeze-native"
         | "distribution-describe-native-inputs"
         | "distribution-qualify"
@@ -35,6 +36,7 @@ fn main() {
                 "distribution-describe-candidate" => "describe-candidate",
                 "distribution-extract-github-builds" => "extract-github-builds",
                 "distribution-capture-registry" => "capture-registry",
+                "distribution-qualify-registry" => "qualify-registry",
                 _ => "verify",
             };
             std::process::Command::new("cargo")
@@ -57,6 +59,7 @@ fn main() {
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
             println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-extract-github-builds, distribution-qualify, distribution-verify, distribution-capture-registry");
+            println!("Registry delivery: distribution-qualify-registry --evidence ABSOLUTE_DIR --baseline-package ABSOLUTE_FROZEN_MAC_PACKAGE --source ABSOLUTE_CORE_CHECKOUT");
             0
         }
         _ => {

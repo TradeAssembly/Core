@@ -23,6 +23,11 @@ docs/distribution.md for platform qualification and stopped-only upgrade limits.
 New native inputs are separately inventoried with `distribution-freeze-native`,
 binding binary digests, architecture headers and pinned Node/SRT versions.
 Freezing inputs neither grants authority nor supplies native qualification.
+Published first-release delivery has a separate `registry/qualification.json`:
+actual npm/pnpm installs and frozen-baseline upgrade/rollback run in isolated
+local rigs against captured exact registry bytes. This preserves the accepted
+native receipt; source/input/log bindings are checked independently. No hosted
+source, credentials, broker orders or strategy activation enter this runner.
 Native qualification is a separate Rust command that runs the installed
 artifact against isolated local state and a controlled broker, binds the
 tested npm archives and test-harness revision, and emits a receipt only on

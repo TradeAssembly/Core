@@ -24,3 +24,14 @@ Record failures honestly. Ignored tests, synthetic fixtures and account-specific
 setup cannot stand in for the required real-boundary/customer/release evidence.
 Local checkpoint commits may precede clean-source gates; all owning merge and
 release gates remain mandatory before publication or consumer pin updates.
+
+# Registry release checkpoint
+
+After publishing exact qualified tarballs, use `cargo xtask
+distribution-capture-registry --evidence ABSOLUTE_DIR`, then `cargo xtask
+distribution-qualify-registry --evidence ABSOLUTE_DIR --baseline-package
+ABSOLUTE_FROZEN_MAC_PACKAGE --source ABSOLUTE_CORE_CHECKOUT` on Mac ARM64.
+The latter runs actual opt-in registry and frozen-baseline installer tests,
+not mock evidence. Require the default `distribution-verify` afterward.
+Keep failed logs, native receipts and frozen bytes; no overwrite or automatic
+republish is part of qualification. Release CI must retain these distinct proofs.

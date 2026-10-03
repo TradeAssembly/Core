@@ -14,7 +14,7 @@ use std::{
     process::Command,
 };
 
-fn evidence_file(root: &Path, proof: &Value) -> Result<PathBuf> {
+pub(crate) fn evidence_file(root: &Path, proof: &Value) -> Result<PathBuf> {
     let name = proof["artifact"]
         .as_str()
         .ok_or("artifact_binding_missing")?;
@@ -978,7 +978,7 @@ fn verify_registry_package(
     Ok(())
 }
 
-fn verify_first_release_registry(root: &Path, version: &str) -> Result<()> {
+pub(crate) fn verify_first_release_registry(root: &Path, version: &str) -> Result<()> {
     let registry: Value =
         read_json(&root.join("registry/registry.json")).map_err(|_| "registry_evidence_missing")?;
     if registry["schemaVersion"] != "tradeassembly.npm-registry.v1"
@@ -1146,7 +1146,9 @@ fn verify_first_release_matrix(
             ));
         }
     }
-    let qualified = verify_native_targets(root, &[TARGETS[0]], version, published)?;
+    // Published delivery has a separate process-derived receipt. Never rewrite
+    // or relabel the accepted native qualification to append registry checks.
+    let qualified = verify_native_targets(root, &[TARGETS[0]], version, false)?;
     let mut experimental = Vec::new();
     for index in [2, 3, 4] {
         let target = TARGETS[index];
@@ -1155,14 +1157,7 @@ fn verify_first_release_matrix(
     }
     if published {
         verify_first_release_registry(root, version)?;
-        let mac = root.join(TARGETS[0]);
-        let receipt: Value = read_json(&mac.join("receipt.json"))?;
-        let proof = &receipt["checks"]["registryUpgradeRollback"];
-        if proof["exitCode"] != 0 {
-            return Err("registry_mac_upgrade_rollback_missing".into());
-        }
-        evidence_file(&mac, proof)
-            .map_err(|code| format!("registry_mac_upgrade_rollback_invalid:{code}"))?;
+        crate::registry_qualify::verify(root, version)?;
     }
     Ok(json!({
         "schemaVersion":2,"qualified":true,"phase":if published {"published"} else {"candidate"},

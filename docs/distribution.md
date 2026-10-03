@@ -43,7 +43,231 @@ Do not reopen unchanged M0–M6 evidence. Historical M7/M8 and signed/full-relea
 verdicts remain unfulfilled; this launch needs its own explicit unsigned-paid
 contract and truthful verdicts, not a waiver of the historical requirements.
 
-## Current checkpoint
+## Execution contract — 2026-10-02 reset
+
+This section and the replacement goal below govern execution. Dated entries in
+the checkpoint history preserve evidence; their old `Next:` instructions are
+not a work queue. The frozen scope and all L1–L4 success criteria remain intact.
+
+**Accepted checkpoint:** L2's four-target candidate verifier passed locally and
+in GitHub run `37062163171`. The production-storefront Mac candidate passed all
+14 native checks. Preserve its bytes, receipt and unchanged Warden/Alpaca/SDK
+inputs. Windows/Linux remain experimental. This checkpoint does not establish
+production service acceptance, registry installation or a sellable release.
+
+**Reconciled stop checkpoint:** the user stopped the main thread and cleared its
+goal. No new goal is started by this reconciliation. Relay `ad11765` is clean and
+committed locally. The repaired clean-tree integration gate passed; staging
+deployment completed. Logs are `/tmp/tradeassembly-relay-watch-ack-integration-clean-space.log`
+(SHA-256 `a5422811d9c9c2469a5dcf4e72f7b9392c9a49505a1ab1cfdb4c9667e6a152ce`)
+and `/tmp/tradeassembly-watch-ack-staging-apply.log`
+(`6bb5e354e34e8530b17fa8748ad14c76ceae3c05380ff4bccda864d8f03d6553`).
+Retain prior unchanged-Core composition evidence; the newest gate explicitly
+skipped that optional local checkout check. Do not rebuild/redeploy this fix.
+
+The actual repaired probe returned 200 for delivery and duplicate delivery, then
+failed `actual browser notification not received`; cleanup revoked its node.
+Private `e4-watch-custom-repaired.json` SHA-256 is
+`f57d470657374f414f912883b0dc77f340a8f5cc947b584ecc79495db5e92223`.
+The existing private browser capture has a subscription and zero notifications.
+Collector PID 73204 subsequently expired; no release build/probe/collector was
+running at reconciliation. Preserve the capture and Chrome tab; inspect current
+state before a bounded resume. No accepted Watch/ACK proof or coverage increase.
+Staging remains 24/35; enrollment, six Watch routes, four positive OAuth routes,
+deployment/rollback evidence and separate production acceptance remain open.
+
+**Current execution, superseding the stop checkpoint:** the replacement L1–L4
+goal is active. Relay `b669dbe` rejects revoked installations instead of treating
+Hub history reads as active authority; the real registration/revocation regression
+failed before repair and passes after it. `7bc9225` adds the owning offline Watch
+verifier and E4 leaf. Both actual staging surfaces passed all 19 cases each,
+including real Chrome notification, issued/duplicate/durable ACK, recovery and
+revoked denial. Custom proof SHA-256
+`ba9d2af63b9dd36898784113e2b94fd2be3ef2530b6d9b1e5e00f89c6284a6aa`;
+direct `8b033cf8bff838a1305aaafa49096f596bf4f953ebc30ca026e13d722a927560`.
+The owning verifier, 18 targeted E4 tests and strict Clippy pass. The aggregate
+accepts six leaves and covers 30/35 routes; report
+`ababd1efab74f9382ef9f48a072d5fa114427e16e4d4953d3d9c07d1d7d829c4`
+correctly rejects readiness for enrollment, four positive OAuth routes and both
+deployment/rollback proofs. Staging repair deployment/readback passed with only
+the Lambda code hash changed; runtime and harness-inclusive full gates passed.
+The final full-gate log SHA-256 is
+`d23f0962b6cf4facebdfa58eec081b9441f44e5a4cea0d739dbcb0f1271bfccc`.
+Exact artifact/plan/log hashes and live handles are in the
+compact coordinator checkpoint. The earlier failed resumed diagnostic remains
+unaccepted. Core candidate/native bytes, production, and broker order state are
+unchanged; paid-production acceptance, CI/npm/registry and L4 remain mandatory.
+
+Enrollment continuation: Relay `fe416c0` + `7756cba` add the existing E4
+workspace driver/verifier. Actual custom/direct surfaces pass all 16 checks:
+owner re-enrollment/retry, unchanged pre/post quota, anonymous/nonowner denials,
+exact cost/schema checks and active Hub paid-period bindings. This is an existing
+operator workspace, not a new customer purchase. Proof SHA-256
+`167cb7e397e2374837a10e2bcedb3f1108ddbdd65e07cbe92328cb9770fde635`.
+21 targeted E4 tests and strict Clippy pass. The qualified Cargo.lock and Watch
+proofs remain unchanged and valid. Aggregate SHA-256
+`247e34ddf2733af1d125f2c206ec53138924079e889f6a4244199d5d3cc32eeb`
+accepts seven leaves and covers 31/35 routes; exit 1 correctly requires the four
+positive OAuth routes and deployment/rollback proof. The compact checkpoint
+records the passing full integration gate (log SHA-256
+`d95b59504e40438011228603f0e4e9cf8ae1f447c860999d5cad389c68d111db`;
+optional Core composition explicitly skipped) and exact next action. All L1–L4 production,
+CI/publication and registry requirements remain intact.
+The exact frozen production package also installs into isolated private local
+test state and its browser/MCP Hub login succeeds. Alpaca consent is pending the
+specific action-time access/terms confirmation; only `data` is requested on the
+existing Codex-managed Paper account. There is no trading scope, order, payment
+or new production entitlement proof. Preserve the live handles in the compact
+checkpoint and complete callback/status/ACK evidence before counting connection
+acceptance. The earlier bare-producer/profile mismatch is not a native defect.
+
+**Production remains a separate mandatory gate:** prove the exact deployed
+production package/profile's Hub login and Alpaca OAuth; actual production
+purchase/webhook/entitlement/allowance and subscription management; enrollment,
+journal ingest/replay/read/export; promised Watch/Reach effects and denials;
+deployment/storage/IAM/secret separation and data-preserving rollback. Bind
+observations to production resources, actors and artifacts. Staging receipts,
+test-mode purchases and a matching source revision cannot substitute for this.
+No real broker order is required or authorized by this acceptance plan.
+
+### Bounded architecture findings and decisions
+
+- `runtime-rs/src/workos_identity.rs::current_identity_and_token` deletes the
+  stored session on any refresh error. That can turn a transient provider failure
+  into another browser login. Defer changing the qualified Core binary unless
+  this defect blocks customer use or required acceptance. If it does, approve a
+  candidate amendment through existing gates; preserve prior evidence and
+  requalify changed bytes. Never silently inherit a binary qualification.
+- Product `.github/workflows/f2-release.yml` already runs native packaging and
+  the exact candidate verifier. It does not yet perform the entire deployment,
+  production acceptance, npm publication or final launch chain. Extend that
+  workflow and existing owner commands. Do not build a generic release engine,
+  agent scheduler, new credential service or another acceptance framework.
+- The workflow previously registered push events while all executable jobs
+  required manual dispatch. Relevant pushes must execute a real check; an
+  all-skipped workflow must never be counted as successful release verification.
+- `tools/f2-github/src/evidence_cache.rs` already transports only digest-bound
+  evidence and rejects unsafe/mismatched files. Reuse it. Candidate verification
+  after extraction is cheap and remains required; native qualification is not
+  repeated just to move evidence between machines.
+- E4 currently binds candidate/configuration and probe/router source hashes.
+  Preserve those checks. Source selection may be narrowed only when an owning
+  validator proves the exact relevant dependency set and tampering/invalidation
+  regressions pass. Do not hand-edit receipts to force a newer source hash.
+- Product harness instructions still prescribed a permanent coordinator model
+  and automatic review rounds. The active root owns this bounded execution;
+  existing user model selection wins. No routine reviewers, delegation, history
+  forks, issue fanout or planning packet per repair. The focused escalation below
+  is explicitly authorized for the main thread.
+
+### Main-thread model and escalation contract
+
+Recommended root: `gpt-6.1-sol` with `high` reasoning. This is an engineering
+judgment for the remaining integration/debugging work, not a measured claim
+about model superiority. Honor a different model explicitly selected by David.
+CI/CLI execute routine steps; the root owns decisions, integration and failures.
+
+After two substantive failed repairs of the same acceptance failure, repeated
+rework of the same fix, or an unresolved consequential authority/concurrency
+decision, stop that approach and obtain one focused diagnosis. Ordinary build
+waiting, missing credentials, disk exhaustion and known provider throttling are
+operational conditions to resolve with tools, not reasons to buy more reasoning.
+Do not count unrelated errors or polling turns as failed repair attempts.
+
+The main thread may use one fresh-context `default` subagent with
+`model=gpt-6-astra`, `reasoning_effort=high`, `fork_turns=none`. Provide the exact
+failure, expected behavior, relevant source pointers, attempted fixes, evidence
+and a bounded question. Request a root cause, smallest coherent repair and
+discriminating acceptance check. The root validates and integrates the result;
+deterministic gates still decide success. If the root is already Astra High,
+a focused Astra `xhigh` diagnosis is the escalation. Do not create reviewer
+chains or bounce indefinitely between models. This authorization is for the
+main thread; side conversations keep their own no-subagent boundary.
+
+### Tool choice before each operation
+
+Use existing CLI -> callable MCP/Codex integration -> bounded script over a
+supported API -> Chrome. Follow `ops_route.py` for the concrete operation and
+record real availability/blocker evidence; preserve and reuse its valid route
+assessment instead of redoing unrelated setup. Do not infer that no API exists
+from a single failed command. Repair routine authentication/configuration first.
+
+For console/network/Service Worker/DOM diagnostics use Chrome DevTools MCP when
+callable, or the supported protocol/API route. Do not manipulate DevTools panels
+through screen coordinates to obtain data an existing diagnostic interface
+provides. Native Computer Use is the last fallback for a specifically identified
+unsupported operation. A browser-only login fallback ends when login completes;
+return to the CLI/API for the original operation.
+
+At reconciliation, `chrome-devtools` was present but disabled in Codex config.
+It is now enabled and `codex mcp get chrome-devtools --json` confirms that state.
+This side conversation still has no callable DevTools tools: configuration is
+not connection proof. At main-thread startup discover callable tools; reload
+that MCP connection if needed and verify it before debugging. Do not repeatedly
+navigate Chrome settings/DevTools to compensate for a disabled connector.
+
+### Evidence reuse and invalidation
+
+| Change | Required action | Evidence retained |
+| --- | --- | --- |
+| Docs, status text or CI wiring only | Validate that change and its owning integration gates; run actual CI job before claiming CI success | Unchanged native artifacts and qualification; valid service observations |
+| Hosted Relay/Hub implementation | Owner tests, affected real staging/production behavior, deployment and compatibility checks | Core/Warden/Alpaca native qualification when their actual inputs match |
+| Production connection profile or packaged assets | New candidate descriptor; existing package/native gates and affected production onboarding | Unchanged producer build outputs, historical receipts |
+| Core/Warden/plugin native inputs | Rebuild affected outputs; owning gates and required candidate qualification | Unchanged other targets/components only where their validators accept them |
+| Environment/IAM/storage/provider configuration | Fresh affected deployment, isolation, authority and rollback observations | Native qualification with unchanged payload/profile |
+| Proof driver or verifier | Tests for false positives and dependency invalidation; owning verifier determines whether old raw observations remain usable | Original raw observations and historical results, never rewritten verdicts |
+
+Immutable qualification may be reused by matching inputs. Live facts such as
+current access, provider connectivity and deployed health require a fresh
+production smoke at promotion; they are not cached indefinitely. Scope/source
+changes invalidate affected evidence. Each owner's broader required gate still
+runs at its integration boundary. There is no general exemption from gates.
+
+### Execution order and browser bootstrap
+
+1. Resume from the stop checkpoint above. Inspect the existing browser capture
+   and receiver with the appropriate diagnostic tool; the hosted fix and gate
+   already passed. Resume the expired collector only when ready for the next
+   bounded actual delivery/ACK check, using its existing origin/subscription.
+2. Resolve the already identified first-launch dependencies once: production
+   Stripe credential repair and genuine purchase/access/portal evidence; npm
+   namespace/MFA/trusted-publisher bootstrap; initial Hub/Alpaca consent and the
+   real notification receiver. CLI/API checks follow supported authentication.
+   When a dependency genuinely requires human input, record the exact handoff
+   once and continue only independent in-scope work. No repeated navigation.
+3. Finish the finite missing L1 service/isolation/rollback observations. Use the
+   existing E4 adapter and owning probes. Production effects are explicit; a
+   passing staging aggregate cannot complete L1. Keep browser journey coverage
+   for changed customer auth/checkout surfaces and actual WebPush delivery.
+4. Complete one L3 workflow around existing commands and the L4 verifier. This
+   wiring is independent work while provider bootstrap is pending; do not wait
+   to publish before building the pipeline. First-launch proofs feed that same
+   pipeline. CI controls jobs, retries, artifact retention and dependency order.
+5. Run the pipeline against the frozen manifest, integrate qualified source,
+   publish beta, verify actual registry bytes/install/update, and obtain both
+   unsigned Core readiness and production Relay sellability verdicts. Then stop.
+
+Routine deployment uses scoped CI identities and designated acceptance actors,
+not an operator's browser cookies or a Bitwarden session uploaded into CI.
+Customer refresh grants remain scoped and revocable; synthetic grants do not
+prove paid entitlement. A browser receiver may remain running for real push
+delivery, with structured observations collected automatically. Reauthenticate
+only when the supported provider flow requires it. Never bypass consent/MFA.
+
+One immutable release input and one generated CI summary replace manual release
+shepherding. Use GitHub's job dependencies, concurrency and rerun-failed-jobs
+mechanisms; use existing digest verification for retained artifacts. After an
+ambiguous dispatch/deploy/publish response, inspect the existing operation or
+immutable version before retrying. CI stops on failure and emits its exact failed
+step, input identities, report/artifact links and bootstrap dependency. The root
+fixes that failure and resumes the affected job. An agent does not poll, click
+through accounts, repeatedly regenerate plans or orchestrate each passing step.
+
+Detailed receipts stay in retained CI artifacts. Update the canonical compact
+checkpoint only when a gate passes, the next action changes, or a dependency is
+identified. Model success statements and manually entered booleans are not proof.
+
+## Checkpoint history and evidence
 
 Core worktree `/Users/davidjbeveridge/.codex/worktrees/f2-npm-distribution`, branch
 `codex/f2-npm-distribution`: pushed source
@@ -349,16 +573,27 @@ targets. Preserve frozen artifacts, broker authority and unchanged valid proof.
 Prove real production signup, Hub purchase/entitlement, Alpaca OAuth without
 copied keys, enrollment, durable data, Watch/Reach and denial/isolation boundaries.
 Use existing deterministic acceptance tools; add only missing aggregation and
-CI orchestration. Build once, qualify exact artifacts, promote/deploy the same
+CI orchestration. Preserve accepted L2 candidate evidence, the reconciled Watch
+state and its private browser capture. Resolve first-launch identity/commerce/npm bootstrap once. Defer the
+Core refresh-session change unless required for customer use or acceptance.
+Extend Product's existing workflow; no generic release framework or new runner.
+Build only invalidated outputs, qualify exact artifacts, promote/deploy those
 artifacts, publish npm beta, verify registry installs/upgrades and integrate.
 Success requires current owning gates, both distribution verifier modes, the
 unsigned production launch verifier and successful actual CI receipts. No Apple,
 five-platform acceptance, F3/F4 or real trading. Root fixes named failures; CI
-owns routine execution. Do not silently expand scope or count partial passes.
+owns routine execution. Resume digest-matching completed steps, report missing
+bootstrap dependencies once, and preserve failed evidence. Run affected checks
+while editing and owning full gates at integration. Production behavior and
+production payment-backed entitlement remain required even when staging passes.
+No routine reviewer chains, delegation or per-repair planning. Focused main-thread
+Astra escalation is authorized under the contract above. Use CLI/MCP/API before
+Chrome and protocol diagnostics before visual DevTools manipulation. Do not
+silently expand scope or count partial passes. Finish when the gates pass.
 
-The replacement L1–L4 goal is active in the main thread. Its previous
-five-target/paid-exclusion objective has been replaced, not completed. Do not
-start a second competing implementation goal.
+The user cleared the main-thread goal after stopping execution. The text above
+is the reconciled replacement objective, ready for an explicit start in that
+thread. This reconciliation does not start a goal or resume release operations.
 
 ## L1 — Production service, purchasing and staging acceptance
 
@@ -473,6 +708,24 @@ signed heartbeat and issued ACK capability, not inferred tokens or synthetic
 successful delivery. Existing handler source owns the contract; preserve native
 candidate bytes. Partial failures remain diagnostic only; no actual broker orders.
 ACK/positive callback effects, deployment/rollback and commerce proof remain open.
+Historical Watch repair checkpoint: private Relay's isolated live probe established
+pairing, subscription, signed heartbeat, durable node readback and real staleness.
+Delivery returned 503; actual scoped DSQL readback proves SES delivered once,
+but WebPush failed. Cleanup durably revoked the isolated node. The adapter was
+incorrectly applying its 256-character subscription-key bound to the longer
+issued ACK capability. The regression fails before repair and passes with a
+separate 4096-character ACK bound matching the receiver; subscription-key limits
+are unchanged. Four adapter tests, strict adapter Clippy, sixteen E4 harness
+tests and strict xtask Clippy pass. The staging ARM64 Lambda build passes; its
+reviewed plan changes only the Lambda code hash, with no add/delete/config/IAM
+or data changes. Relay `ad11765` checkpoints the fix/diagnostic harness locally.
+The initial full gate rejected the uncommitted tree and the next attempt hit
+disk exhaustion. The clean-space rerun subsequently passed and the narrow
+staging deployment completed; see the reconciled stop checkpoint above. The
+remaining failure is real browser receipt/ACK, not the already repaired ACK
+length bound. Prove actual delivery/issued ACK, duplicate recovery and revoked
+denial on both surfaces, then pass the owning offline verifier. Native candidate
+bytes remain unchanged. No production mutation or broker orders are part of this repair.
 Exit: actual bound observations for every L1 case; deterministic aggregate passes.
 Missing approved live plan or billing access is a named dependency, not scope
 for redesign. Continue independent candidate work while that dependency resolves.
@@ -591,10 +844,92 @@ loop. Private Product owns `.github/workflows/f2-release.yml` and Rust/owning
 their existing dispatch/artifact interface; Relay owns service deployment recipes.
 Public Core must not fetch private source or hold hosted deployment credentials.
 
+The existing native/package and candidate jobs are implemented and accepted;
+extend them. A complete release run is still missing. Required remaining jobs:
+preflight immutable inputs and bootstrap availability; invoke reviewed owning
+staging deploy/smoke commands; invoke reviewed production plan/deploy/smoke;
+verify actual production commercial/service receipts; run the candidate gate;
+publish the exact npm tarballs; capture/compare registry bytes and run the Mac
+registry install/upgrade/rollback checks; run the unsigned launch aggregate.
+Use fixed reviewed commands, not commands supplied by an untrusted manifest.
+The manifest selects immutable revisions/artifacts/environments/receipt inputs.
+Privileged jobs execute only on approved protected release inputs; ordinary
+pushes run unprivileged checks. Existing concurrency/timeouts remain in force;
+new deploy/smoke jobs have bounded timeouts and preserve logs on failure.
+
+October 2 implementation checkpoint: private coordinator `eb78501` adds the
+finite `tools/f2-github/release-inputs.json` and owning Rust
+`preflight-release-inputs` command. The existing workflow requires this
+unprivileged input-consistency job before candidate/native packaging. It binds
+frozen asset hashes, verifier/archive, package names, support levels and required
+downstream gates; no manifest-provided executable commands are accepted.
+All 25 standalone tool tests, strict Clippy, fmt, actionlint and agent-harness
+checks pass locally. Actual CLI report is accepted with `releaseReady=false`;
+its digest/path are in the existing coordinator checkpoint. Commit is pushed;
+GitHub run `37089479807` preflight job `111106544760` passed; its downloaded
+report matches the local report byte-for-byte. Candidate job `111106683782`
+passed and run `37089479807` completed successfully. Coordinator `4ca4737`
+then added opt-in metadata-only OIDC inventory jobs. Actual run `37090769349`
+passed both staging and production: STS identity, four healthy own functions,
+and actual denial of cross-environment reads. Relay owning IaC `10283c1` is
+pushed and its full `just verify` passed. Exact receipt paths/hashes are in
+the existing coordinator checkpoint. This is deployment-inventory-only,
+`releaseReady=false`, not privileged deployment/rollback or launch acceptance.
+This is not bootstrap availability or a full release pipeline: all required
+service/deploy/publish/registry/launch jobs and actual receipts remain mandatory.
+
+Private Relay `3dba197` implements reviewed code-only plan/apply/rollback through
+`just relay-code-*`, with fsynced intent, exclusive receipt lock, one revision-
+fenced submission, bounded ambiguous-outcome recovery and exact previous ZIP.
+Ten targeted tests, strict Clippy, fmt and the standalone advisory audit pass.
+Actual staging Watch reuse accepted unchanged qualified bytes without an update;
+the current checkpoint records exact plan/receipt digests. The same receipt replay
+also passed unchanged. It is not changed-code deployment, rollback or durable-data
+preservation proof. The owning gate stopped on expired AWS auth; login was repaired
+and replacement `34859` passed (exit 0), with optional Core composition explicitly
+skipped. Relay `0190fa0` adds a pinned read-only private operator-build workflow;
+actionlint passes and both scoped commits are pushed. Actual GitHub run
+`37093153663` and driver job `111117580008` passed all steps on ubuntu-22.04.
+Actual run/job/artifact readbacks and downloaded ZIP/member/driver digests agree;
+the exact private archive is retained in the coordinator cache for CI consumption.
+The current checkpoint records all bindings. This proves operator build/transport,
+not deployment authority, service acceptance, rollback or release readiness.
+Runtime/proof dependencies and all native qualifications are unchanged.
+Privileged CI will pin immutable repo IDs, context, workflow_ref, reviewed
+workflow_sha and dispatch event in its OIDC subject, with STS audience and
+finite own-environment actions. Prepare matching IAM before changing subject
+format. At that operator-build checkpoint, no write role, subject customization
+or CI deployment had been applied. The current execution section records later
+reviewed authority and actual acceptance; deployment/rollback proof is separate.
+
+Completion evidence for this implementation task is an actual CI run that
+executes every required job with real inputs, a failed-job rerun that preserves
+successful artifact bindings, and deterministic rejection of absent/stale/
+tampered production and registry evidence. A workflow file, stub, mock runner,
+all-skipped run or successful candidate-only job cannot satisfy L3/L4.
+
 Pipeline:
 `preflight -> build/reuse -> stage/package -> native qualify -> staging smoke ->
 reviewed production plan/deploy -> production smoke -> candidate gate -> npm beta
 publish -> registry bytes/install/upgrade checks -> aggregate launch gate`.
+
+Registry delivery now has an owning implementation:
+`cargo xtask distribution-qualify-registry --evidence ABSOLUTE_DIR
+--baseline-package ABSOLUTE_FROZEN_MAC_PACKAGE --source ABSOLUTE_CORE_CHECKOUT`.
+After `distribution-capture-registry`, it verifies the unchanged candidate and
+all five captured registry tarballs before running actual Mac ARM64 npm/pnpm
+installs with lifecycle scripts disabled and isolated credential-free config/
+caches. It checks installed native/launcher bytes, the stable source-free rig
+after removing the package-manager client, and the existing real frozen-baseline
+upgrade/rollback/state-preservation test against the captured registry package.
+A separate source/input/log-bound `registry/qualification.json` is written only
+after both exact opt-in tests pass; it never edits accepted native receipts.
+Failed attempt logs remain diagnostic, completed valid receipts may be reused,
+and a new check source or changed registry/native inputs invalidates reuse.
+The schema-v2 published gate requires this receipt; arbitrary exit-zero log
+attachments do not establish registry acceptance. Schema-v1 remains historical.
+This is implementation, not a passing registry journey: actual publication and
+registry execution are still blocked by npm's 72-hour recovery hold.
 
 Reuse already verified unchanged deployments; no redeploy for unchanged inputs.
 First L1 setup uses the same reviewed deployment commands. Publish after candidate
@@ -636,6 +971,15 @@ Relay and rollback references. No unrelated cleanup or full signed release work.
 
 Product adds `f2-unsigned-production/v1` manifest/verifier profile to existing
 Rust release machinery, preserving historical M0–M8 and baseline bytes.
+The coordinator's existing `tools/f2-github` now has a local provider readback
+component, `capture-release-chain RUN_ID REVIEWED_SOURCE_COMMIT
+ABSOLUTE_NEW_OUTPUT_DIR`. Its fixed contract requires the eleven L3 gate names
+as actual successful jobs at the reviewed workflow bytes, their exact successful
+owning gate steps and unexpired same-run/source archives with provider digests.
+Earlier successful attempts may be reused only within that same run/source.
+Its scope is provider CI completion, with `releaseReady=false`; it does not
+replace owning acceptance or the final profile. The complete release jobs and
+actual passing chain remain open. Candidate-only runs deterministically fail.
 Proposed command, NOT IMPLEMENTED yet:
 `./sdlc f2 launch-verify --manifest PATH --evidence ABSOLUTE_DIR`.
 It requires L1–L3, stable owning gates, integrated/pushed source, unchanged
@@ -646,11 +990,54 @@ verifier alone, hand-filled booleans, grants without billing or mock-only proof.
 
 ## Next action and discipline
 
-Capture the existing pinned Core native builds when successful; clean owning
-gates have passed. Then execute L1 production packaged onboarding and
-purchase/service acceptance. Preserve the passed revoked-owner proof. Resolve
-npm ownership/trusted-publisher bootstrap through independent deterministic
-setup, not another agent/reviewer loop.
+Durable rollback continuation: private Relay `7169b50` adds the owning
+read-only `relay-data-sentinel` binary and
+`xtask/src/relay_e4/deployment.rs`; `just relay-environment-e4-deployment-snapshot`
+and `...-verify` feed the existing E4 aggregate's optional closed deployment
+bundle. No runtime dependency, frozen native byte, controller trust pin, schema,
+grant, or deployed code changed. Design is settled: existing environment-scoped
+verification roles, existing DSQL connector, native SQL parameters, an enabled
+owner-bound nonempty manifest, exact retained S3 version/body/COMPLIANCE retention,
+four healthy function/configuration readbacks, and three ordered observations.
+The reviewed plan and distinct accepted CI deploy/rollback receipts must bind
+changed code, exact revisions and rollback-origin digest. Reuse/empty data/mock
+fixtures cannot satisfy the gate. Actual CI run/job/artifact readback remains
+mandatory; the offline chain validator does not attest provider provenance.
+Staging's real pre-effect capture passed. The corresponding production owner
+currently has no enrolled workspace/archive, proved by the read-only scoped
+discovery. Do not fabricate a paid grant or seed SQL to solve that dependency;
+complete normal production purchase/enrollment/archive acceptance before claiming
+production data preservation. Do not deploy a deliberately degraded Watch build
+or alter ZIP metadata merely to manufacture a changed-code test. Existing E4
+route observations are reused, not rerun; the actual deploy/rollback gate remains
+open until its accepted receipt chain exists. Exact checks/handles are in the
+existing compact coordinator checkpoint.
+
+Current CI slice: Relay `39f6f9a` and coordinator `3a79700` are pushed. The
+intent-capable operator passed its owning gates and actual GitHub driver build;
+its exact archive/member/source digests are retained in the private cache.
+Reviewed environment-specific code roles are applied and pinned to the exact
+coordinator commit/wrapper/dispatch subject. Repository-only OIDC customization
+retains immutable IDs. Actual staging/production plan-only runs pass own-role
+authentication and opposite-role/function denials. Unchanged staging execution
+passes after an empty-artifact-selection repair. Actual intent archive readback,
+fresh-run accepted-receipt recovery and same-job rerun all pass; accepted receipt
+bytes and staging code/revision remain unchanged. These are reuse/replay proofs,
+not changed-code timeout or durable-data-preserving rollback proof. No update
+occurred in the failed probe. Never repin a controller
+with unresolved ambiguous effects; recover under its original reviewed version
+first. Exact identifiers, artifact bindings, checks and next action are in the
+compact
+coordinator checkpoint. This is not changed-code deployment, data-preserving
+rollback, paid-production acceptance or launch completion. The full coordinator
+gate remains red for its missing isolated Hub checkout. All L1–L4 criteria and
+the frozen shipping/native qualification inputs remain unchanged.
+
+Follow the execution contract at the top of this file. Native builds, four-target
+packaging, Mac qualification and actual CI candidate verification have passed;
+do not execute their historical `Next:` instructions again. Preserve the current
+Watch repair/probe, close missing L1 production and staging observations, resolve
+the named Stripe/npm bootstrap dependencies, and complete L3/L4 automation.
 
 Keep this checkpoint compact: milestone, revision/changed files, exact gate/
 evidence, live handle and next action. Detailed history belongs in the archive.

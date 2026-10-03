@@ -19,6 +19,7 @@ pub mod install;
 pub mod native;
 pub mod package;
 pub mod qualify;
+pub mod registry_qualify;
 
 #[cfg(windows)]
 #[path = "../../platform/windows_private.rs"]

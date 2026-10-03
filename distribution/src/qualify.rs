@@ -8,7 +8,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
-fn committed_source_revision(source: &Path, core_revision: &str) -> Result<String> {
+pub(crate) fn committed_source_revision(source: &Path, core_revision: &str) -> Result<String> {
     let status = Command::new("git")
         .args([
             "-C",

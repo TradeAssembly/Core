@@ -66,3 +66,15 @@ Studio lifecycle implementations back into Core to satisfy a Core gate.
 No merge/release claim until all owning gates and the Product F2 locked release
 verifier pass. A local checkpoint commit needed for archive/source-cleanliness
 qualification is not a merge, pin, publication or release decision.
+# Registry delivery acceptance
+
+The unsigned first-release published gate requires separate process-derived
+registry qualification; candidate-only evidence never suffices. Owning command:
+`cargo xtask distribution-qualify-registry --evidence ABSOLUTE_DIR
+--baseline-package ABSOLUTE_FROZEN_MAC_PACKAGE --source ABSOLUTE_CORE_CHECKOUT`.
+It requires Mac ARM64, exact prior registry capture, a clean committed test
+checkout, actual npm/pnpm installs with scripts disabled, and real frozen-baseline
+upgrade/rollback/state preservation against the captured native registry package.
+Fixed tests must execute and pass; ignored/skipped/zero-test summaries fail.
+The separate receipt binds native/registry inputs, test sources and logs.
+Full Core gates and production/CI acceptance remain separate mandatory gates.

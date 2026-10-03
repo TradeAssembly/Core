@@ -202,6 +202,14 @@ by actual four-target CI packages and Core `distribution-verify --candidate`.
 Missing producer steps/digests, wrong target/source or incomplete pages stop
 before packaging; failed Mac/native gates do not become receipts. Actual new
 customer expiry/refresh and complete L1/L3/L4 remain required after this lane.
+That lane completed successfully as run37160679970 at coordinator803bc00.
+The bounded `refreshed-candidate` constituent now admits only its four actual
+successful artifact IDs/digests, validates new c4d8e93 receipt/source/qualifier
+bindings through the existing assembly owner, and runs the owning candidate
+gate before rendering. Historical e0 producer/cache/qualification inputs and
+read-only rendering remain distinct; active delivery/capture/publication must
+reject them. Candidate/render success still cannot establish public delivery,
+full chain, production onboarding or paid Relay. Preserve those release gates.
 The Windows receipt producer must hash actual packaged launcher bytes, not its
 LF-normalized comparison inventory. Preserve the rejected October 3 receipt;
 repair and retry only Windows packaging/integrity from the accepted native input

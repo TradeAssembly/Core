@@ -269,6 +269,36 @@ identified. Model success statements and manually entered booleans are not proof
 
 ## Checkpoint history and evidence
 
+### Actual staging rollback qualification — 2026-10-03
+
+Coordinator source `52ec6abd8cd0a6b037d625ce32137d936fa12787` adds an explicit
+default-off staging-Watch-only changed-code qualification switch. Reviewed
+trust-only repinning leaves existing permissions/resources/configuration intact.
+Actual GitHub plan `37106573790` attempt 2, deploy `37106704530` and rollback
+`37106818511` succeeded with intent archived before effects and exact provider
+readbacks. Production run `37106705426` was plan-only; no production update.
+The existing owning deployment validator accepts the actual retained different
+executable deployment and restoration, preserving nonempty journal data,
+archive bytes, storage protections, configuration and unrelated functions.
+This closes staging rollback proof only, not production or overall readiness.
+Coordinator targeted 55 tests, fmt/strict Clippy/actionlint and `just verify` pass.
+Candidate CI `37106550626` passed; deliberately skipped release jobs do not count.
+
+Private Relay corrected aggregate
+`.operator/relay-environments/staging/e4-current-with-actual-rollback-corrected-20261003.json`
+SHA-256 `3ffec1a943d9243d635500c690fb4a220f31795adf8052d98d1edf14059f2ca9`
+passes all eight supplied owning leaves with no deployment gaps, 31/35 routes
+proven, four positive OAuth routes outstanding. Exit 1, `fullE4Complete=false`
+and `releaseReady=false` are required. Correction selected the retained exact
+route proof, not new observations or effects. Compact source/process/artifact
+bindings are in coordinator `RECONCILIATION.md`; do not rerun accepted work.
+Read-only production Hub Stripe checks still return HTTP 401 for the existing
+correctly formatted live restricted key; no credential or entitlement mutation.
+The user added an npm Bitwarden passkey and the existing worker observed it
+listed. Fresh MFA and recovery-hold clearance are not yet verified. Bootstrap,
+actual production commerce/lifecycle/Watch/Reach, eleven-job release integration,
+exact npm publication and registry install/upgrade/rollback remain mandatory.
+
 Core worktree `/Users/davidjbeveridge/.codex/worktrees/f2-npm-distribution`, branch
 `codex/f2-npm-distribution`: pushed source
 `3abf3e052b932dff5c0a0c18bf5673691842e58b` permits customer tenant selection
@@ -952,6 +982,23 @@ The schema-v2 published gate requires this receipt; arbitrary exit-zero log
 attachments do not establish registry acceptance. Schema-v1 remains historical.
 This is implementation, not a passing registry journey: actual publication and
 registry execution are still blocked by npm's 72-hour recovery hold.
+
+The final-job restoration component now exists in coordinator
+`tools/f2-github/src/registry_restore.rs`, exposed through
+`just f2-release-registry-restore RUN SOURCE ABSOLUTE_CORE_VERIFIER
+ABSOLUTE_CANDIDATE_EVIDENCE ABSOLUTE_PRELAUNCH_EVIDENCE ABSOLUTE_NEW_OUTPUT`.
+It requires fresh actual ten-predecessor/current-final-step provider acceptance,
+clean pinned sources, snapshots the small proof ZIP against its provider digest,
+downloads the unique unexpired same-run/source large registry-byte artifact,
+checks exact inventories, all five frozen delivery hashes and the registry
+manifest, then invokes the unchanged owning Core published gate. Original native
+evidence is re-hashed and never overwritten. Duplicate central-directory names
+are rejected even when the ZIP library normalizes them away. Size/time, links,
+traversal, stale/foreign source, partial input and overwrite guards are enforced.
+It keeps readiness false and proves no production commerce. Transport fixture
+tests and actual candidate-only refusal are not positive registry proof.
+Positive restoration/final-job wiring still require the real release run and
+published registry packages; no placeholder inputs or gate bypass.
 
 The coordinator now implements the missing exact-byte publication component:
 `just f2-release-publish RUN SOURCE ABSOLUTE_CORE_VERIFIER

@@ -673,6 +673,19 @@ Fill uncovered cases only; no bespoke framework per check.
    untouched. Closed source-bound evidence stays purchase/full-release false;
    fixture unit tests are not hosted proof. The owning gateway README specifies
    config, safe credential input, 300-second bound and same-request recovery.
+   Reach/Watch reuse their existing private E4 command interfaces, extended to
+   closed production targets and production heartbeat signing. Production
+   admission must persist actual Hub identity/live payment-backed period, cover
+   the whole observation interval and bind the hosted tenant/subject principal
+   to the workspace. Existing Inspect, duplicate/recovery, delivery/issued-ACK
+   and revoked-denial cases remain required on both origins; no broker orders.
+   Local fixture tests establish verifier discrimination only, not positive
+   production observations. Accepted staging node/Watch receipts retain their
+   original owning source/verifier pin `ac3f4ba176a3bf3dd1f070c94e5b1a4a0f0bda78`;
+   final aggregation must validate each proof family through its approved pin,
+   never relabel old source hashes or require new observations for unchanged
+   valid evidence. The retained node receipt is `e4-node-effects-accepted.json`,
+   not the stale similarly named `e4-node-effects-current.json`.
 4. Every staging route classified protected/explicit exception; owner, verified
    nonowner and anonymous coverage on custom/direct surfaces. Callback tamper,
    expiry, environment and revocation before effects. Reuse valid current proof.

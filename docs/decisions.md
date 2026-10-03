@@ -116,5 +116,11 @@
   scopes retain their binding; blank scopes are invalid. Endpoint/client and
   entitlement checks are unchanged. A binary built before this contract repair
   is not qualified for the tenant-neutral profile and must not be relabeled.
+- October 3 approved verification coverage: one full nextest unit/integration pass
+  plus explicit workspace doctests replaces duplicate full cargo-test/nextest
+  execution. Security/source/public gates and release opt-ins remain unchanged.
+  Cheap strict release prerequisites run first; dirty development is an explicit
+  mode, never release proof. Non-runtime harness/docs changes do not independently
+  invalidate unchanged native behavior; retain exact producer and verifier refs.
 - No scheduler rewrite, extra brokers, UI buildout or hosted agent orchestration
   is introduced by this extraction packet. Frozen F2 M0–M8 criteria are unchanged.

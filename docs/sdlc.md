@@ -3,6 +3,15 @@
 Use `just` / `cargo xtask` for local Core commands. `scripts/sdlc/verify` is a thin
 wrapper; Product owns the top-level release/control-plane SDLC.
 
+The October 3 recovery uses one full nextest unit/integration pass plus explicit
+workspace doctests instead of executing that full suite twice. Release `verify`
+first requires clean committed source, required inputs/tools and practical Unix
+storage headroom; `verify --dev` keeps coverage/scans but permits dirty development
+and cannot establish release qualification. CI/deterministic runners own logs,
+exit status and resume. The selected Sol High owners diagnose and repair; one
+Astra Medium diagnosis is available for stuck work. Core docs/distribution.md is
+canonical; coordinator RELEASE_CURRENT.md is the only live checkpoint.
+
 `cargo xtask oauth-fault-proof --descriptor ABSOLUTE_DESCRIPTOR --evidence
 ABSOLUTE_NEW_DIRECTORY` owns the finite frozen-source OAuth fault complement.
 It runs exact named behavioral assertions against archived source and writes

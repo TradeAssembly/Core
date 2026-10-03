@@ -14,6 +14,7 @@ fn main() {
     let rest = args.get(1..).unwrap_or_default();
     let status = match args.first().map(String::as_str).unwrap_or("help") {
         "verify" if rest.is_empty() => core_verify::verify(),
+        "verify" if rest == ["--dev"] => core_verify::verify_dev(),
         "setup" if rest.is_empty() => core_verify::setup(),
         "onboarding-verify" if rest.is_empty() => core_verify::onboarding_verify(),
         "oauth-fault-proof" => oauth_fault_proof::run(rest, root),

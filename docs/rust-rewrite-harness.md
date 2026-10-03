@@ -45,9 +45,22 @@ ACL/account/elevation/WFP checks are implemented and executed.
 
 `cargo xtask verify` (also `just verify`) runs the fixed fail-fast registry in
 xtask/src/core_verify.rs: formatting, strict workspace Clippy, pinned standalone
-sandbox prerequisite installation, workspace tests and nextest, deny, audit,
+sandbox prerequisite installation, explicit workspace doctests and one full
+nextest unit/integration execution, deny, audit,
 machete, language/source-cleanliness, plugin contracts, Core architecture,
 public-source scanning and Core publication boundary/license checks.
+
+October 3 approved coverage amendment: `cargo test --workspace --doc --locked`
+covers doctests; `cargo nextest run --workspace --locked` covers the same workspace
+unit/integration binaries previously run twice. Ignored provider/sandbox/archive
+release opt-ins still require their separate actual invocations. No coverage is
+claimed from a skipped test. Cheap required-input, tool, committed-revision,
+clean-source and Unix disk-headroom preflight runs before formatting/compilation.
+The practical 2 GiB free-space floor catches known pressure, not cold-build sizing.
+`cargo xtask verify --dev` preserves scans and test coverage while explicitly
+allowing dirty source; it is not release qualification. Default `verify` requires
+clean committed source, including nonignored untracked files. Auth/provider
+availability preflight belongs to the owning release job, not public Core.
 
 `cargo xtask onboarding-verify` is the targeted local browser-onboarding gate:
 protected OAuth polling freshness/authority/redaction, OAuth binding/replay,

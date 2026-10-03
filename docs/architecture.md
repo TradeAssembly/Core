@@ -1,5 +1,11 @@
 # Extracted Core architecture
 
+Verification remains a fixed Rust xtask command plane. The approved October 3
+coverage amendment executes full unit/integration tests once through nextest and
+doctests explicitly, preserving scanners/security and separate release opt-ins.
+Public Core preflight checks only local inputs/tools/revision/headroom; hosted
+authentication and service qualification remain the owning release job's boundary.
+
 Core is a portable Rust workspace. CLI, HTTP, GraphQL and MCP share the runtime
 service/port boundary. identity-sdk, plugin-sdk and sightline-sidecar are internal
 workspace crates. Brokers and Warden remain explicit external executable or

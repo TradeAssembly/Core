@@ -4,7 +4,7 @@
 //! registry here makes the gate auditable and prevents `verify` or `setup`
 //! from silently growing webapp, service, or plugin-activation side effects.
 
-use std::process::Command;
+use std::{path::Path, process::Command};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Check {
@@ -41,11 +41,11 @@ const VERIFY_CHECKS: &[Check] = &[
     },
     Check {
         program: "cargo",
-        args: &["test", "--workspace"],
+        args: &["test", "--workspace", "--doc", "--locked"],
     },
     Check {
         program: "cargo",
-        args: &["nextest", "run", "--workspace"],
+        args: &["nextest", "run", "--workspace", "--locked"],
     },
     Check {
         program: "cargo",
@@ -101,7 +101,113 @@ const SETUP_CHECKS: &[Check] = &[
 
 /// Run the complete, ordered Core verification gate.
 pub(crate) fn verify() -> i32 {
-    run_checks(VERIFY_CHECKS, run_command)
+    verify_mode(false)
+}
+
+/// Full coverage on a dirty development checkout, never release qualification.
+pub(crate) fn verify_dev() -> i32 {
+    verify_mode(true)
+}
+
+fn verify_mode(development: bool) -> i32 {
+    if let Err(reason) = prerequisites(Path::new("."), development) {
+        eprintln!("Core verification preflight: {reason}");
+        return 1;
+    }
+    let mut checks = VERIFY_CHECKS.to_vec();
+    if development {
+        let whitelist = checks
+            .iter_mut()
+            .find(|check| {
+                check.args.first() == Some(&"xtask")
+                    && check.args.get(1) == Some(&"check-whitelist")
+            })
+            .expect("fixed whitelist check");
+        whitelist.args = &["xtask", "check-whitelist", "--repo", ".", "--allow-dirty"];
+    }
+    run_checks(&checks, run_command)
+}
+
+fn prerequisites(root: &Path, development: bool) -> Result<(), String> {
+    for input in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "packaging/sandbox/package-lock.json",
+        "docs/rust-source-whitelist.yaml",
+        "foss-core-publication.yaml",
+    ] {
+        if !root.join(input).is_file() {
+            return Err(format!("required input missing: {input}"));
+        }
+    }
+    for (program, args) in [
+        ("git", vec!["rev-parse", "--verify", "HEAD"]),
+        ("cargo", vec!["--version"]),
+        ("npm", vec!["--version"]),
+        ("cargo", vec!["nextest", "--version"]),
+        ("cargo", vec!["deny", "--version"]),
+        ("cargo", vec!["audit", "--version"]),
+        ("cargo-machete", vec!["--version"]),
+    ] {
+        let output = Command::new(program)
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map_err(|_| format!("required tool unavailable: {program}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "required tool or committed revision unavailable: {program}"
+            ));
+        }
+    }
+    let status = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(root)
+        .output()
+        .map_err(|_| "git status unavailable")?;
+    if !status.status.success() {
+        return Err("git status failed".into());
+    }
+    require_release_clean(&status.stdout, development)?;
+    #[cfg(unix)]
+    {
+        // A warm low-debug owning gate completed with about 3 GiB available.
+        // This 2 GiB reserve catches known disk pressure; it is not a cold-build guarantee.
+        let output = Command::new("df")
+            .args(["-Pk", "."])
+            .env("LC_ALL", "C")
+            .current_dir(root)
+            .output()
+            .map_err(|_| "storage headroom unavailable")?;
+        if !output.status.success() {
+            return Err("storage headroom check failed".into());
+        }
+        require_storage_headroom(&String::from_utf8_lossy(&output.stdout))?;
+    }
+    Ok(())
+}
+
+fn require_release_clean(status: &[u8], development: bool) -> Result<(), String> {
+    if !development && !status.is_empty() {
+        return Err("release verification requires clean committed source; use verify --dev for development".into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn require_storage_headroom(df: &str) -> Result<(), String> {
+    let available = df
+        .lines()
+        .last()
+        .and_then(|line| line.split_whitespace().nth(3))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or("storage headroom invalid")?;
+    if available < 2 * 1024 * 1024 {
+        return Err(
+            "less than 2 GiB free; preserve evidence and resolve storage before building".into(),
+        );
+    }
+    Ok(())
 }
 
 /// Prepare the Core workspace and its pinned standalone sandbox prerequisite.
@@ -238,8 +344,8 @@ mod tests {
                 "cargo fmt --check",
                 "cargo clippy --workspace --all-targets -- -D warnings",
                 "npm ci --prefix packaging/sandbox --ignore-scripts --no-audit --no-fund",
-                "cargo test --workspace",
-                "cargo nextest run --workspace",
+                "cargo test --workspace --doc --locked",
+                "cargo nextest run --workspace --locked",
                 "cargo deny check",
                 "cargo audit --ignore RUSTSEC-2023-0071",
                 "cargo-machete .",
@@ -251,6 +357,34 @@ mod tests {
             ]
         );
         assert!(commands.iter().all(|command| !command.contains("webapp")));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command.contains("nextest run"))
+                .count(),
+            1
+        );
+        assert!(!commands
+            .iter()
+            .any(|command| command == "cargo test --workspace"));
+    }
+
+    #[test]
+    fn dirty_development_is_not_clean_release_qualification() {
+        assert!(super::require_release_clean(b" M source.rs\n", false).is_err());
+        assert!(super::require_release_clean(b"?? new.rs\n", false).is_err());
+        assert!(super::require_release_clean(b" M source.rs\n", true).is_ok());
+        assert!(super::require_release_clean(b"", false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn headroom_fails_closed_before_expensive_checks() {
+        assert!(super::require_storage_headroom("Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/test 4000000 1902848 2097152 48% /\n").is_ok());
+        assert!(
+            super::require_storage_headroom("/dev/test 4000000 1902849 2097151 48% /\n").is_err()
+        );
+        assert!(super::require_storage_headroom("invalid\n").is_err());
     }
 
     #[test]

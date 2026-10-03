@@ -9,6 +9,17 @@ producer pins or declare release readiness until owning gates are qualified.
 Use Rust and cargo xtask/just command surfaces. Preserve original source; no
 broker orders, hosted implementations, secrets, generated trade advice, or Live
 policy activation. Existing M2 acceptance must survive relocation unchanged.
+
+October 3 recovery execution: the active root and independent implementation
+streams use the explicitly selected GPT-6.1 Sol High; stuck diagnosis uses one
+Astra Medium handoff. CI/deterministic runners own execution/results and failed-job
+resume. No automatic review or model-routing chain. Core docs/distribution.md is
+canonical; coordinator RELEASE_CURRENT.md is the one operational checkpoint.
+`cargo xtask verify` requires clean source before expensive work and uses one
+full nextest unit/integration pass plus explicit workspace doctests, preserving
+all scanners/security and separate release opt-ins. `verify --dev` explicitly
+permits dirty development but is never release qualification. See the harness
+coverage amendment; do not restore duplicate full-suite execution.
 EXTRACTION.md identifies the selected source and unresolved harness/license work.
 
 Distribution: `cargo xtask distribution-pack` owns frozen-payload packaging;

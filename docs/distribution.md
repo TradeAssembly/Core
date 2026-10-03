@@ -711,6 +711,35 @@ reinterpreting old proofs. Existing 24-hour checks remain enforced. Implement
 the missing full onboarding/commerce owners before wiring the eleven-job chain;
 do not turn incomplete constituent jobs into the final acceptance definition.
 
+The additive coordinator login owner is `just f2-packaged-login-capture CONFIG
+DESCRIPTOR ABSOLUTE_NEW_DIRECTORY`, with matching `f2-packaged-login-verify`.
+Its closed config selects an isolated installation and expected hashed owner.
+It requires the exact qualified Mac bytes/profile/installed record, the existing
+Bitwarden custody choice, and an actual initially unauthenticated packaged MCP.
+It initiates the normal loopback companion; its private handoff must be opened
+in Chrome and the normal sign-in button used. It never calls the default-browser
+login convenience or injects credentials. A twenty-minute capture bound requires
+the provider/Hub transition and same live identity in a distinct packaged process.
+Redacted per-phase observations survive partial failure; handoff capabilities
+are not exportable evidence. Unit tests discriminate malformed receipts only.
+Terminal bootstrap failures must stop immediately with a bounded machine code,
+not spend the capture deadline silently waiting for an impossible transition.
+Actual isolated production signup on 2026-10-03 completed provider email
+verification and delivered the loopback response, but Core denied it with
+`workos_hub_identity_permission_missing`. The new owning capture reports that
+failure directly. Existing organization-backed sessions are not evidence that
+personal signup works. Resolve the production native-client/personal-user
+authority binding without bypassing Core/Hub checks or altering frozen shipping
+bytes silently; a positive login or full-signup verdict remains unproven.
+This is login/restart evidence, explicitly not fresh signup, broker OAuth, full
+onboarding, CI provenance or release readiness. Those remaining proof families
+are still mandatory. The preceding packaged-connection producer stays unchanged.
+Fresh signup must include actual provider creation facts bound to this journey;
+an old user or a new local session is not signup. WorkOS's supported user API
+exposes creation/sign-in timestamps; a production-authorized reader is required.
+The saved WorkOS CLI staging/sandbox API key cannot read the verified production
+user (`entity_not_found` observed), and must not be used as production evidence.
+
 The coordinator now provides `just f2-packaged-connection-probe CONFIG
 DESCRIPTOR NEW_PROOF` / `-verify` for actual frozen packaged MCP account/status
 readback and a second process restart. Config pins the isolated installation,

@@ -175,6 +175,19 @@ JavaScript module directly. Compile only control tooling, fixtures and owning
 tests for that repair; do not rebuild or modify frozen shipping binaries.
 The Core personal-authority amendment changes native bytes and requires affected
 archive/installation/capture requalification; old accepted candidate stays intact.
+October 3 refresh-custody amendment: the actual beta4 rig lost its encrypted
+session after expiry although one scoped, owner-bound WorkOS refresh and signed
+token/Hub projection subsequently succeeded. `runtime-rs/src/workos_identity.rs`
+must distinguish transient refresh failures from terminal rejection, retain
+rotated credentials in the existing encrypted session until projection/commit,
+resume a pending rotation without consuming the old credential, and keep all
+owner/tenant/client/risk boundaries fail-closed. Required fault checks cover
+bounded retries, rejection, Hub outage, ambiguous custody write, owner mismatch,
+and expired pending rotation. These tests do not replace an actual distinct-process
+expiry/refresh or customer onboarding. Qualify the changed Core producer and its
+affected four-target packages through the existing candidate pipeline; preserve
+the accepted e0cebadd candidate and unchanged Warden/Alpaca evidence. Do not
+relabel old native acceptance or publish the failed-durability binary as ready.
 The Windows receipt producer must hash actual packaged launcher bytes, not its
 LF-normalized comparison inventory. Preserve the rejected October 3 receipt;
 repair and retry only Windows packaging/integrity from the accepted native input

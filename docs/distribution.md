@@ -244,6 +244,11 @@ Integrate/push scoped source; preserve product pins/baseline/provenance and supp
 install/update, purchase/manage, support and rollback instructions. Implement the
 semantic direct launch profile through existing machinery. Input consistency,
 receipt flags and job structure alone never establish release readiness.
+Prepared Core customer instructions live in `docs/reference/direct-install.md`.
+They describe the version-pinned bootstrap, returned MCP configuration, required
+local policy-service supervision, update/rollback/export and platform disclosures.
+Their publication and actual-command acceptance remain required; a document
+commit does not qualify public delivery, customer onboarding or paid Relay.
 `./sdlc f2 launch-verify --manifest PATH --evidence ABSOLUTE_DIR` is an intended
 route until implemented and verified. It must derive UNSIGNED_CORE_BETA_READY
 and RELAY_PRODUCTION_SELLABLE from all revised L1–L3 owning acceptance; both true.

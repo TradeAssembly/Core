@@ -656,6 +656,24 @@ tests from deployed positive evidence. Control the browser handoff through
 Chrome. Do not build another identity/OAuth implementation or use fixture-only
 stdio tests as production proof.
 
+The coordinator now provides `just f2-packaged-connection-probe CONFIG
+DESCRIPTOR NEW_PROOF` / `-verify` for actual frozen packaged MCP account/status
+readback and a second process restart. Config pins the isolated installation,
+onboarding reference and hashed expected owner. Inputs, real production profile,
+native binary and installed record are verified; response projection excludes
+credentials, personal fields and browser capabilities. This proves only a live
+same-owner connection/ACK/account/Warden readback, never fresh signup, login
+transition or the complete OAuth fault/denial contract. All broader readiness
+flags remain false; it cannot substitute for `production-onboarding` in L4.
+
+The separate `-prepare` command requires a verified existing Hub session and
+an authoritatively ended local attempt; it reuses the broker instance under a
+deterministic new setup key and holds only its own product companion for 20
+minutes. A new private handoff validates the exact returned loopback URL/id.
+No grant, orders, activation or agent runner is created. Chrome still completes
+the browser flow, subject to existing action-time consent boundaries. Inspect
+live handles and actual expiry before renewal; never replace an active flow.
+
 Subscription lifecycle belongs to current Hub commerce source
 `apps/hub-api/src/lib.rs` and the deployed Stripe webhook ingress, with a
 separate private Relay capture around the existing paid-period leaf. Require

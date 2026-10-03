@@ -666,6 +666,14 @@ same-owner connection/ACK/account/Warden readback, never fresh signup, login
 transition or the complete OAuth fault/denial contract. All broader readiness
 flags remain false; it cannot substitute for `production-onboarding` in L4.
 
+Local `-verify` keeps installation revalidation. The separate coordinator
+`f2-packaged-connection-export` emits a closed hash-only reference only after
+that check; `f2-packaged-connection-portable-verify` consumes reference,
+descriptor and proof without local installation/vault access. Exact artifact
+provenance and fresh provider acceptance remain separate CI obligations; neither
+this export nor the portable result upgrades the partial scope or establishes
+complete onboarding. Do not upload an operator installation or session to CI.
+
 The separate `-prepare` command requires a verified existing Hub session and
 an authoritatively ended local attempt; it reuses the broker instance under a
 deterministic new setup key and holds only its own product companion for 20

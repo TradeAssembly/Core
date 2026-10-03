@@ -739,6 +739,29 @@ existing nineteen-role/twelve-function inventory parity. It does not substitute
 for fresh provider reads, actual admission or full secret/storage separation.
 Accepted older receipts retain their original owning source/verifier pins.
 
+Fresh provider parity uses private Relay `just
+relay-environment-iam-live-parity PARITY_INPUTS ACCEPTED_SOURCE_PROOF CANDIDATE
+NEW_REPORT` (`xtask/src/relay_e4/iam_live.rs`). Its fixed accepted source receipt
+binds the twelve saved plans and all original inputs. Read-only AWS CLI checks
+compare all nineteen roles' trust, session limits, boundaries, inline policy
+inventories/documents and attachments; twelve healthy functions' roles and
+projected secret/storage references; exact managed-policy defaults; protected
+secret metadata; and both isolated Relay clusters and encrypted, versioned,
+Object-Lock-enabled, private archive buckets. Raw function environments stay
+inside the subprocess/verifier and are never retained or logged. Secret values
+are never retrieved. Calls, output and runtime are bounded; input hashes are
+rechecked after capture. The private receipt contains only projected metadata
+digests and verdicts. A passing live-parity constituent is not actual CI
+admission, the full IAM-separation family, or release acceptance: those flags
+remain false until the approved proof composition verifies them.
+IAM document comparison normalizes only legal single-string versus one-string
+array grammar positions; it never collapses arbitrary arrays, deduplicates
+values, or tolerates extra principals/actions/resources/conditions. Negative
+tests preserve rejection of each authority change.
+Secrets Manager's documented omitted `KmsKeyId` resolves to
+`alias/aws/secretsmanager` and requires actual enabled AWS-managed encryption
+key metadata; an omitted field alone is never encryption acceptance.
+
 1. Actual packaged production Hub/Alpaca Paper signup/connect/read/status, without
    manual keys, forced diagnostic tenant or staging URLs. One initial browser
    consent is allowed; stored test grants support later automated smoke tests.

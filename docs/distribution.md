@@ -241,6 +241,25 @@ route until implemented and verified. It must derive UNSIGNED_CORE_BETA_READY
 and RELAY_PRODUCTION_SELLABLE from all revised L1–L3 owning acceptance; both true.
 No historical signed M7/M8 claim, caller-supplied success or grant without billing.
 
+October 3 semantic closure audit: the intended launch route is not implemented.
+Do not compose narrow flags into full acceptance. Close these finite owner seams
+before the final dispatcher; preserve historical verifier pins separately from
+current shipping/source integration pins.
+
+| Missing semantic owner | Exact repair scope | Required acceptance |
+| --- | --- | --- |
+| Complete production onboarding | Coordinator `tools/f2-github/src/packaged_login.rs`, `packaged_connection.rs`, and their composition | Genuine new customer signup/provisioning, same attempt/identity/tenant/installation/candidate/Alpaca account across existing login and connection checks, custody, readiness/Warden state, separate-process restart and refresh; existing-owner/operator or disjoint proofs rejected |
+| Revised commercial lifecycle | Relay `xtask/src/relay_paid_period.rs` and a bounded lifecycle composition; Hub's existing webhook/portal integration tests; coordinator `hub_commerce_readback.rs` | Actual live purchase/paid period and signed event projection, owned history/portal and scheduled cancellation; actual identified test-mode sandbox lifecycle plus before/at/after-expiry and stale/duplicate non-restoration checks. Stored projection alone is not signed delivery; natural production expiry remains deferred |
+| Saved direct qualification | Coordinator `tools/f2-github/src/direct_delivery.rs` | Verify retained structured before/after state/status bindings, exact owning upgrade/rollback/active-rig results, source/package/baseline/log hashes and public-delivery provenance. Virgin and same-rig checks remain separate. Refresh actual public bytes near promotion; do not rerun native qualification merely to verify saved evidence |
+| Runtime compatibility | Existing Core candidate qualification, Relay dependency smoke, and coordinator direct same-rig owner | Finite Core/Warden/Alpaca/Relay boundary and launcher migration matrix bound to exact source/dependency locks and executed owning results; manifest agreement alone rejected |
+| Owning gates | Existing owning CI/gate runners and coordinator provider readback | Required complete command sets, exact clean source/toolchain, exit status and bounded full logs authenticated by owning CI job/artifact provenance; skipped/narrow/mismatched suites rejected |
+| Customer release documents | Core distribution/customer instructions and Relay purchase/manage/support instructions | Finite inventory bound to actual public manifest and deployment: tested pinned bootstrap, install/update/rollback/export, support, unsigned/experimental disclosures, purchase/manage, npm and natural-expiry deferrals; private URLs/stale commands/unsupported platform or signing claims rejected |
+
+The launch input manifest's path/digest rows need a closed companion layout for
+owning configs, descriptors and raw artifacts. It must not accept caller-selected
+commands/executables. These are missing release harness seams, not permission to
+rebuild unchanged native producers or expand product scope.
+
 ## Checkpoints, stop conditions and follow-up
 
 Target qualified build October 3, rehearsal October 4, launch October 5.

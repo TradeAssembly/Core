@@ -638,6 +638,41 @@ Reuse existing journal/OAuth drivers and M4/M5/M6 runners where they actually
 cover selected production resources. Old test receipts are not production proof.
 Fill uncovered cases only; no bespoke framework per check.
 
+The coordinator's `just f2-launch-inputs-preflight ABSOLUTE_MANIFEST
+ABSOLUTE_INPUT_ROOT ABSOLUTE_NEW_REPORT` checks the closed manifest, fixed
+archive references and all 25 proof-family paths/digests. It is input-only:
+owning/provider/production acceptance remains `not_evaluated` and every launch
+verdict remains false. It is not an implementation of `f2 launch-verify` and
+does not prove source integration or semantic receipt validity. New owning
+verifier pins require explicit contract review, never relabeling old receipts.
+
+The source audit fixes three remaining proof ownership boundaries. Implement
+packaged production onboarding first, using Core's existing
+`runtime-rs/src/cli/browser_onboarding.rs` and
+`runtime-rs/src/service/plugin_oauth.rs`, plus Relay's existing broker handoff.
+Capture actual signup/login, identity continuity, Paper callback, local custody
+before ACK and restart readback; distinguish replay/wrong-owner/canceled denial
+tests from deployed positive evidence. Control the browser handoff through
+Chrome. Do not build another identity/OAuth implementation or use fixture-only
+stdio tests as production proof.
+
+Subscription lifecycle belongs to current Hub commerce source
+`apps/hub-api/src/lib.rs` and the deployed Stripe webhook ingress, with a
+separate private Relay capture around the existing paid-period leaf. Require
+actual event delivery/persistence, canonical portal return, owner isolation,
+period-end and effective cancellation, expiry and stale/replayed denial.
+Provider event existence alone does not prove webhook delivery. Test clocks or
+seeded state cannot prove natural production expiry. Identify the deployed Hub
+revision before binding proof; the older SDK checkout is not the commerce owner.
+
+Deployed policy parity belongs to coordinator `tools/f2-github/src/ci_inventory.rs`
+and reviewed Relay/Hub IaC: execution/CI role trust, inline and attached policy
+versions/boundaries, filtered configured secret references and datastore/KMS
+conditions, plus actual own-role success/opposite-environment denial. Existing
+function metadata is insufficient. Resolve the existing CI-role source before
+asserting parity; do not broaden readback privileges for capture convenience or
+read secret values. These three proofs remain separate mandatory obligations.
+
 1. Actual packaged production Hub/Alpaca Paper signup/connect/read/status, without
    manual keys, forced diagnostic tenant or staging URLs. One initial browser
    consent is allowed; stored test grants support later automated smoke tests.

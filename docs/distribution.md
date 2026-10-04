@@ -340,6 +340,46 @@ acceptance. Watch needs its real paired node/heartbeat/notification/delivery/ACK
 owner; journal export does not establish a Watch cursor. Do not relabel these
 three boundaries as one passing library or manifest check.
 
+Customer adapter realization: use a small private Relay Rust client, not the
+compatibility xtask or a token-exposing Core tool. Existing Relay `/mcp` serves
+Reach only; `/v1/setup` does not implement product login. Hub ADR-001 requires
+Relay to own its WorkOS public-client PKCE/loopback session and Bitwarden custody,
+then use existing Hub identity and Relay enrollment/paid-admission contracts.
+Never share Hub dashboard cookies or Core's private session storage. This adds
+no identity issuer, managed agent runner or backend authentication service.
+
+Implement the settled journal seam first in private Relay
+`apps/studio-f2-gateway/src/journal_client.rs` and its owning tests: validate the
+actual c4 owner/digest export against verified identity and server-returned scope;
+persist the exact request, scope, payload digest and timestamp before submission;
+reload identical retry state and reject changed identity, scope, payload or
+bindings without modifying it. This production component must not claim customer
+delivery or end-to-end acceptance. Keep historical compatibility evidence intact.
+Core's owner namespace is exactly `personal:{issuer}:{subject}`
+(`runtime-rs/src/service/object_authorization.rs`), not Hub's independently
+verified `user:{sub}`/organization tenant. Bind both; never derive Hub authority
+from exported JSON. Preserve legitimate `owner: null` legacy strategy rows that
+Core filters through durable object scope (`service/journal_view.rs`), without
+inventing owners. The client must verify authenticated capture provenance before
+preparing the upload; parsing an envelope or caller-supplied hash is not proof.
+The remaining client uses `apps/relay-journal-client/src/{main,auth,transport}.rs`
+and its finite customer-flow tests, existing workspace/just packaging controls,
+and one customer instruction document. Resolve the exact Relay public-client
+registration, callback, live Hub mapping and private-client delivery before wiring
+login or publishing it; do not invent client IDs or substitute operator bearers.
+Acceptance uses the packaged client, real product login and purchased production
+allowance, nonempty c4 export, real ingest/read/export/replay, lost-response retry
+and distinct-process restart plus the existing authority/expiry/conflict denials.
+Additional client bytes have their own source/package/proof bindings; they do not
+replace or relabel frozen Core archives, Watch/Reach proof or the eleven-job chain.
+The existing production Relay registration was actually inspected October 3:
+client `client_01M2H9WP59BYWDP1CQPMZZ14BT`, exact redirect
+`http://127.0.0.1:8976/callback`. These match the unchanged coordinator production
+profile (SHA256 `6c73b9e50ce898d11a49fa62903fba984f59e4af2fa5a49aa417eb9e556a2869`)
+and the retained packaged login/restart capture. Reuse this registration; do not
+create another client or expand redirects. A dashboard readback is not current
+Hub mapping, private-client login/custody or purchased-allowance acceptance.
+
 Relay's current consumer contract additionally binds every paid access/admission
 decision to the authenticated tenant and subject, and accepts only live-commerce
 decisions in production or test-commerce decisions in staging/test. This is a

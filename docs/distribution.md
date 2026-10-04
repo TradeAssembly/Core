@@ -416,8 +416,10 @@ that file after the attempt. It does not accept raw tokens, alternate issuers or
 sessions. The actual production existing-user flow has completed signed identity,
 Hub projection and independent Bitwarden custody; a separately launched status command
 has succeeded. This is an existing-user client leaf, not genuine new signup, installed
-delivery, Alpaca composition or paid authority. Natural refresh observation remains
-separately tracked. Journal capture/upload commands, installed packaging and the full
+delivery, Alpaca composition or paid authority. A real post-expiry invocation also
+refreshed the same identity from its independent Bitwarden session and reverified Hub;
+the coordinator retains the exact source/binary/status bindings. Journal capture/upload
+commands, installed packaging and the full
 production acceptance remain open; these auth commands are not a customer release.
 The existing production Relay registration was actually inspected October 3:
 client `client_01M2H9WP59BYWDP1CQPMZZ14BT`, exact redirect

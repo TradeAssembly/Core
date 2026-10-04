@@ -418,9 +418,38 @@ Hub projection and independent Bitwarden custody; a separately launched status c
 has succeeded. This is an existing-user client leaf, not genuine new signup, installed
 delivery, Alpaca composition or paid authority. A real post-expiry invocation also
 refreshed the same identity from its independent Bitwarden session and reverified Hub;
-the coordinator retains the exact source/binary/status bindings. Journal capture/upload
-commands, installed packaging and the full
-production acceptance remain open; these auth commands are not a customer release.
+the coordinator retains the exact source/binary/status bindings. These existing-user
+leaves are not a customer release. The private client's bounded journal slice now
+implements `journal prepare/upload/read/export` over its existing preparation/
+transport owners. Installed delivery and real paid production acceptance remain
+open. Capture resolves the installed production
+Mac beta.4 producer through the fixed installation layout, verifies the accepted
+native/profile/descriptor bindings, and invokes only `auth status`, `journal
+export`, and `auth status` again. Core verifies its own session; Relay neither
+reads nor injects Core tokens. The public connection-profile overlay selects the
+same existing hosted Core custody namespace without editing the local rig. Both
+observed Core identities must match Relay's independently verified identity and
+remain valid through capture. No imported export file or caller-selected command
+counts as authenticated capture. Persist capture, the explicitly accepted existing
+catalog, server enrollment scope, and exact pending request in a private locked
+job before submission. Retry reopens those constituents without recapturing,
+changing scope/key/time, overwriting conflicts or borrowing operator credentials.
+Read/export expose one bounded page; an expired enrollment denies before transport.
+Component and actual CLI-denial tests cover immutable restart/tamper/receipt handling,
+but real purchased-production and installed customer qualification remain separate.
+An actual existing-user call reached frozen Core's verified provider boundary and
+correctly found no owned events; the client now reports `relay_core_journal_empty`
+without relabeling local-owner events. A controlled blank nontrading fixture in the
+isolated rig is separate from the user's strategy and from customer release proof.
+The actual nonempty CLI capture exposed a namespace mismatch in the private
+preparation adapter: frozen c4 `cli/mod.rs::authenticated_service` uses the
+derived stable identity as invocation subject, whereas a raw-subject service
+export uses a different owner namespace. Use a distinct CLI validator deriving
+`oidc:base64url(SHA256(issuer + NUL + raw_subject))` from verified claims, retain
+the exact exported owner/tenant bytes, and keep Hub principal binding on the raw
+subject. Do not accept either namespace opportunistically from the export.
+Foreign/mixed/raw-in-CLI owners and stable-in-Hub principal substitutions must
+fail; unchanged Core artifacts and existing raw-service parser remain separate.
 The existing production Relay registration was actually inspected October 3:
 client `client_01M2H9WP59BYWDP1CQPMZZ14BT`, exact redirect
 `http://127.0.0.1:8976/callback`. These match the unchanged coordinator production

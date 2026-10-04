@@ -273,6 +273,10 @@ fmt/Clippy/deny/audit/machete, unsafe/secret/whitelist/public/no-advice/boundary
 opt-in/target-specific release gates. Update owning harness docs/entry instructions.
 Use stable Cargo settings and standard OS/toolchain/target/lock/profile/config caches;
 compile control tooling once per revision/input set. No universal proof cache.
+Relay's existing full gate requires a committed clean source tree. Run targeted
+iteration checks first, commit the scoped repair locally, check `git status`,
+then run its full owning gate before pushing. Do not spend a full gate on a known
+dirty tree or bypass its clean-source/whitelist admission with an override.
 
 Existing public HTTPS host only, no private-repository access requirement.
 Pin literal version and digest, detect OS/arch, verify before executing, extract in
@@ -476,6 +480,21 @@ condition passes. Preserve the retained Core capture; do not retry enrollment,
 recapture, substitute operator authority or weaken admission while payment is absent.
 Repair Hub's production Stripe consumer, then qualify the actual approved purchase
 and reuse the original journal job under genuine paid authority.
+
+The private Relay client now has a read-only `subscription status` consumer,
+reusing the gateway's exact bounded Hub decision parser and independently binding
+both tenant and raw subject to its own verified session. It accepts no caller
+origin/product/mode/bearer, redacts provider identifiers, and keeps enrollment,
+allowance, purchase and full commercial acceptance separate. Actual CLI readback
+on October 4 confirmed the same unpaid production customer; component positives
+are not purchased production proof. Private-client packaging/public delivery and
+the full paid journey remain required. Neither this diagnostic nor successful
+login may grant entitlement or replace signed webhook/lifecycle evidence.
+The diagnostic source `40ee53b6ee9d272ea43e33bb4486ed54ac4d1334` passed the
+complete clean-source Relay `just verify`, including its exact pinned Core smoke,
+and is pushed on the existing recovery branch. The retained log and actual unpaid
+consumer receipt are indexed in `RELEASE_CURRENT.md`; deployed/public/paid and
+owning-CI qualification are not implied by this local gate.
 
 The launch input manifest's path/digest rows need a closed companion layout for
 owning configs, descriptors and raw artifacts. It must not accept caller-selected

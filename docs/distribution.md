@@ -350,7 +350,7 @@ Core change or a customer-supplied API key. Before normal browser signup, it
 requires a virgin c4 installation/session and WorkOS's exact-email user absence.
 Read-only production authority is bound to the already verified operator subject;
 the migrated CLI's staging key is not an acceptable substitute. After the existing
-packaged login capture, WorkOS user creation and successful password/OAuth events
+packaged login capture, WorkOS user creation and successful password/OAuth/Magic Auth events
 must bind the same email, new subject, fixed AuthKit/Connect application lineage,
 time window and Core-derived stable identity. Missing/foreign context fails closed;
 no admin-created fixture, old user or unverified identity is accepted. Only the
@@ -367,9 +367,23 @@ direction and full pagination preserve the existing failure rules, with exact
 email selection only after complete traversal. Unit fixtures cover these adapter
 bindings but do not establish a normal browser signup.
 No new provider key, hosted credential service or Core runtime change is needed.
+October4 observed hosted signup uses email-code Magic Auth. Admit only the
+documented `authentication.magic_auth_succeeded` / `type: magic_auth` with
+successful status, verified matching email/subject, fixed client context and
+the existing window. Do not broaden method/context/identity or source admission.
+Retain old-source preflights and timed-out attempts unchanged; a new qualification
+after an amended collector requires its own fresh isolated preflight before normal
+signup. Retrying an expired callback for an already created user proves login
+recovery only, never fresh signup. Source: `packaged_signup.rs` and
+https://workos.com/docs/events#authenticationmagic_auth_succeeded.
 Saved verification reuses the actual
 login owner and re-reads the intended provider. It never manufactures provider
 success from an offline fixture or receipt flag.
+The amended-source October4 isolated signup capture and a separate saved
+verification with fresh provider reads passed. The real packaged login includes
+distinct-process restart; this does not establish the remaining same-attempt
+Alpaca/custody/ACK/refresh/fault composition or either launch verdict. Current
+receipt locations and exact hashes remain in coordinator `RELEASE_CURRENT.md`.
 
 | New-user proof row | Private owner / targeted acceptance | Actual evidence needed |
 | --- | --- | --- |

@@ -8,7 +8,9 @@ pub struct ConnectionProfile {
     pub environment: String,
     pub issuer: String,
     pub client_id: String,
-    pub organization_id: String,
+    /// Optional operator-selected organization. Customer profiles leave this
+    /// unset; tenant authority is still derived from verified identity by Hub.
+    pub organization_id: Option<String>,
     pub hub_base_url: String,
     pub redirect_uri: String,
     pub relay_origins: Vec<String>,
@@ -61,6 +63,29 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(ConnectionProfile::read(&path).is_err());
     }
+
+    #[test]
+    fn customer_profile_does_not_force_an_operator_organization() {
+        let mut value = serde_json::to_value(profile()).unwrap();
+        value["organizationId"] = serde_json::Value::Null;
+        let customer: ConnectionProfile = serde_json::from_value(value.clone()).unwrap();
+        assert!(customer.validate().is_ok());
+        let mut base = RuntimeConfig::local("fixture.db");
+        base.oidc_organization_id = Some("operator-organization".into());
+        assert!(customer.configure(&base).oidc_organization_id.is_none());
+        value.as_object_mut().unwrap().remove("organizationId");
+        let omitted: ConnectionProfile = serde_json::from_value(value).unwrap();
+        assert!(omitted.validate().is_ok());
+        assert!(omitted.organization_id.is_none());
+        let scoped = profile();
+        assert_eq!(
+            scoped.configure(&base).oidc_organization_id.as_deref(),
+            Some("organization")
+        );
+        let mut invalid = scoped;
+        invalid.organization_id = Some("  ".into());
+        assert!(invalid.validate().is_err());
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -74,7 +99,10 @@ impl ConnectionProfile {
     pub fn validate(&self) -> Result<(), String> {
         if !matches!(self.environment.as_str(), "staging" | "production")
             || self.client_id.is_empty()
-            || self.organization_id.is_empty()
+            || self
+                .organization_id
+                .as_ref()
+                .is_some_and(|id| id.trim().is_empty())
         {
             return Err("connection_profile_invalid".into());
         }
@@ -134,7 +162,7 @@ impl ConnectionProfile {
         config.oidc_session_store = "bitwarden".into();
         config.oidc_issuer = self.issuer.clone();
         config.oidc_client_id = self.client_id.clone();
-        config.oidc_organization_id = Some(self.organization_id.clone());
+        config.oidc_organization_id = self.organization_id.clone();
         config.hub_base_url = self.hub_base_url.clone();
         config.oidc_redirect_uri = self.redirect_uri.clone();
         config.oidc_callback_timeout_seconds = 600;

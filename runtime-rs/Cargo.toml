@@ -62,6 +62,16 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 url = "2"
 webbrowser = "1"
 
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+getrandom = "0.3"
+hex = "0.4"
+windows-permissions = "0.2.4"
+winapi-util = "0.1.11"
+
+[target.'cfg(windows)'.dev-dependencies]
+fs2 = "0.4"
+
 [dev-dependencies]
 openidconnect = "4.0.1"
 rsa = "0.9.8"

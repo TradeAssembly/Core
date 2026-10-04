@@ -21,9 +21,16 @@ impl Drop for Mcp {
 }
 impl Mcp {
     fn start(root: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tradeassembly"))
-            .current_dir(root)
-            .env_clear()
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tradeassembly"));
+        command.current_dir(root).env_clear();
+        // Keep Windows' OS-owned DLL/runtime location, not the user's auth,
+        // broker, proxy or project configuration. An empty environment is not
+        // a valid Windows process environment for the networking runtime.
+        #[cfg(windows)]
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", system_root);
+        }
+        let mut child = command
             .env("TRADEASSEMBLY_AUTH_PROFILE", "local_owner")
             .env(
                 "TRADEASSEMBLY_WARDEN_TOKEN_REF",
@@ -69,6 +76,31 @@ impl Mcp {
             .expect("MCP must respond promptly");
         response["result"]["structuredContent"].clone()
     }
+}
+
+#[test]
+fn unauthenticated_existing_instance_renders_sign_in_before_broker_controls() {
+    let root = tempfile::tempdir().unwrap();
+    let mut mcp = Mcp::start(root.path());
+    let started = mcp.call(
+        "tradeassembly.onboarding.start",
+        json!({"mode":"paper","environment":"staging",
+            "instanceRef":"existing-alpaca-paper","idempotency_key":"resume-existing-unauthenticated"}),
+    );
+    assert_eq!(started["ready"], false, "{started}");
+    assert_eq!(started["identity"]["authenticated"], false, "{started}");
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .get(started["browserUrl"].as_str().unwrap())
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let html = response.text().unwrap();
+    assert!(html.contains("Sign in"), "{html}");
+    assert!(!html.contains("Broker permissions"), "{html}");
+    assert!(!html.contains("Continue to broker authorization"), "{html}");
 }
 
 #[test]

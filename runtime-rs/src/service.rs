@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod agent_deployment;
+mod agent_orders;
 mod attribution_journal;
 mod backtest;
 pub mod backtest_lifecycle;
@@ -367,7 +368,7 @@ impl TradeAssemblyService {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let identity = test_database_identity(&metadata);
+        let identity = test_database_identity(&metadata, &path);
         if registry.get(&path) != Some(&identity) {
             return Err("test_database_handoff_requires_owned_fixture".to_string());
         }
@@ -425,7 +426,7 @@ impl TradeAssemblyService {
         let expected = format!("sha256:{:x}", Sha256::digest(token.as_ref().as_bytes()));
         if record["dbPath"] != path.to_string_lossy().to_string()
             || record["tokenHash"] != expected
-            || record["identity"] != json!(test_database_identity(&metadata))
+            || record["identity"] != json!(test_database_identity(&metadata, &path))
         {
             return Err("test_database_handoff_invalid".to_string());
         }
@@ -433,7 +434,8 @@ impl TradeAssemblyService {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        registry.insert(path, test_database_identity(&metadata));
+        let identity = test_database_identity(&metadata, &path);
+        registry.insert(path, identity);
         drop(registry);
         Ok(Self::test_local(db))
     }
@@ -3207,60 +3209,72 @@ impl TradeAssemblyService {
                 }
             }
         }
-        let command_envelope = match control_plane::mcp_envelope(name, &arguments)
-            .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
-        {
-            Ok(envelope) => match control_plane::prepare_command(
-                self.runtime.storage.as_ref(),
-                self.runtime.finance_authority.as_ref(),
-                envelope.clone(),
-            ) {
-                Ok(record) if record.duplicate => {
-                    return record
-                        .response_status
-                        .map(|status| {
-                            record.response_body.clone().map_or_else(
-                                || mcp_duplicate_response(name, status),
-                                |body| mcp_duplicate_response_with_body(name, status, body),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            mcp::tool_error(
-                                name,
-                                "idempotency_in_progress",
-                                "MCP command is already in progress for this idempotency key.",
-                                None,
-                            )
-                        });
-                }
-                Ok(_) => Some(envelope),
-                Err(error) if error == "idempotency_conflict" => {
-                    return mcp::tool_error(
-                        name,
-                        "idempotency_conflict",
-                        "MCP command idempotency key was reused with a different payload.",
-                        None,
-                    );
-                }
-                Err(error) if error.starts_with("finance_authority:") => {
-                    let details = if name == "tradeassembly.execution.activate" {
-                        Some(execution::activation_blocked_preflight(
-                            self,
-                            arguments.clone(),
-                        ))
-                    } else {
-                        None
-                    };
-                    return mcp::tool_error(
-                        name,
-                        "finance_authority_denied",
-                        "MCP command failed TradeAssembly finance authority checks.",
-                        details,
-                    );
-                }
+        // Broker order tools have their own durable request/dispatch claims and
+        // mandatory C5 Warden admission. A second generic MCP command would
+        // misclassify the request before those exact authority bindings exist.
+        // Only the explicit bound handlers below may use this path.
+        let broker_order_tool = matches!(
+            name,
+            "tradeassembly.order.submit" | "tradeassembly.order.reconcile"
+        );
+        let command_envelope = if broker_order_tool {
+            None
+        } else {
+            match control_plane::mcp_envelope(name, &arguments)
+                .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
+            {
+                Ok(envelope) => match control_plane::prepare_command(
+                    self.runtime.storage.as_ref(),
+                    self.runtime.finance_authority.as_ref(),
+                    envelope.clone(),
+                ) {
+                    Ok(record) if record.duplicate => {
+                        return record
+                            .response_status
+                            .map(|status| {
+                                record.response_body.clone().map_or_else(
+                                    || mcp_duplicate_response(name, status),
+                                    |body| mcp_duplicate_response_with_body(name, status, body),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                mcp::tool_error(
+                                    name,
+                                    "idempotency_in_progress",
+                                    "MCP command is already in progress for this idempotency key.",
+                                    None,
+                                )
+                            });
+                    }
+                    Ok(_) => Some(envelope),
+                    Err(error) if error == "idempotency_conflict" => {
+                        return mcp::tool_error(
+                            name,
+                            "idempotency_conflict",
+                            "MCP command idempotency key was reused with a different payload.",
+                            None,
+                        );
+                    }
+                    Err(error) if error.starts_with("finance_authority:") => {
+                        let details = if name == "tradeassembly.execution.activate" {
+                            Some(execution::activation_blocked_preflight(
+                                self,
+                                arguments.clone(),
+                            ))
+                        } else {
+                            None
+                        };
+                        return mcp::tool_error(
+                            name,
+                            "finance_authority_denied",
+                            "MCP command failed TradeAssembly finance authority checks.",
+                            details,
+                        );
+                    }
+                    Err(_) => None,
+                },
                 Err(_) => None,
-            },
-            Err(_) => None,
+            }
         };
         let arguments = command_envelope
             .as_ref()
@@ -3279,6 +3293,8 @@ impl TradeAssemblyService {
             "tradeassembly.broker.connect" => broker_onboarding::connect(self, arguments.clone()),
             "tradeassembly.broker.status" => broker_onboarding::status(self, arguments.clone()),
             "tradeassembly.broker.verify" => broker_onboarding::verify(self, arguments.clone()),
+            "tradeassembly.order.submit" => agent_orders::submit(self, arguments.clone()),
+            "tradeassembly.order.reconcile" => agent_orders::reconcile(self, arguments.clone()),
             "tradeassembly.health" => {
                 let mut body = self.handle_http("GET", "/health", json!({})).body;
                 body["ok"] = json!(true);
@@ -3997,6 +4013,11 @@ impl TradeAssemblyService {
                 return mcp::tool_error(name, &code, "Journal access failed.", None);
             }
         }
+        if name.starts_with("tradeassembly.order.") {
+            if let Some(code) = service_error_code(&payload) {
+                return mcp::tool_error(name, &code, "Order operation failed closed.", None);
+            }
+        }
         let response = mcp::call_tool_with_payload(name, payload);
         self.complete_mcp_command_or_error(name, &command_envelope, 200, response)
     }
@@ -4160,9 +4181,7 @@ fn validate_studio_origin(origin: &str) -> Result<(), String> {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 struct TestDatabaseIdentity {
-    #[cfg(unix)]
     device: u64,
-    #[cfg(unix)]
     inode: u64,
 }
 
@@ -4238,7 +4257,7 @@ fn assert_test_database_is_owned(db: &str) {
         panic!("test database factory refuses an existing unregistered database");
     }
 
-    let identity = test_database_identity(&metadata);
+    let identity = test_database_identity(&metadata, &path);
     match registry.get(&path) {
         Some(expected) if expected == &identity => {}
         Some(_) => panic!("test database fixture identity changed"),
@@ -4249,7 +4268,7 @@ fn assert_test_database_is_owned(db: &str) {
 }
 
 #[cfg(unix)]
-fn test_database_identity(metadata: &std::fs::Metadata) -> TestDatabaseIdentity {
+fn test_database_identity(metadata: &std::fs::Metadata, _path: &Path) -> TestDatabaseIdentity {
     use std::os::unix::fs::MetadataExt;
     TestDatabaseIdentity {
         device: metadata.dev(),
@@ -4257,8 +4276,19 @@ fn test_database_identity(metadata: &std::fs::Metadata) -> TestDatabaseIdentity 
     }
 }
 
-#[cfg(not(unix))]
-fn test_database_identity(_metadata: &std::fs::Metadata) -> TestDatabaseIdentity {
+#[cfg(windows)]
+fn test_database_identity(_metadata: &std::fs::Metadata, path: &Path) -> TestDatabaseIdentity {
+    let file = std::fs::File::open(path).expect("test database identity requires an existing file");
+    let identity =
+        winapi_util::file::information(&file).expect("test database identity cannot be inspected");
+    TestDatabaseIdentity {
+        device: identity.volume_serial_number(),
+        inode: identity.file_index(),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn test_database_identity(_metadata: &std::fs::Metadata, _path: &Path) -> TestDatabaseIdentity {
     panic!("file-backed test database ownership is unsupported on this platform; use :memory:")
 }
 
@@ -6233,6 +6263,26 @@ mod test_database_factory_safety_tests {
     use super::assert_test_database_is_owned;
     use std::fs;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[cfg(windows)]
+    #[test]
+    fn replaced_windows_file_does_not_gain_fixture_authority() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("fixture.db");
+        assert_test_database_is_owned(path.to_str().expect("utf8 path"));
+        let replacement = directory.path().join("replacement.db");
+        fs::write(&replacement, b"replacement sentinel").expect("write replacement");
+        fs::remove_file(&path).expect("remove owned fixture");
+        fs::rename(&replacement, &path).expect("replace fixture");
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            assert_test_database_is_owned(path.to_str().expect("utf8 path"));
+        }))
+        .is_err());
+        assert_eq!(
+            fs::read(&path).expect("read replacement"),
+            b"replacement sentinel"
+        );
+    }
 
     #[test]
     fn fresh_fixture_can_reopen_but_unregistered_populated_file_is_untouched() {

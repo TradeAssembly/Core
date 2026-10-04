@@ -92,6 +92,14 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
             None,
         );
     }
+    if name.starts_with("tradeassembly.order.") {
+        return tool_error(
+            name,
+            "service_required",
+            "Order tools require an attached external-agent MCP connection.",
+            None,
+        );
+    }
     if matches!(
         name,
         "tradeassembly.account.login"
@@ -412,6 +420,41 @@ pub fn call_service_tool(
     arguments: Value,
 ) -> Value {
     let response = match name {
+        "tradeassembly.order.observe" => {
+            if !has_only_keys(&arguments, &["original_idempotency_key", "idempotency_key"]) {
+                return tool_error(
+                    name,
+                    "broker_recovery_request_invalid",
+                    "Order observation arguments do not match the tool schema.",
+                    None,
+                );
+            }
+            let Some(original_key) =
+                required_nonempty_string(&arguments, "original_idempotency_key")
+            else {
+                return tool_error(
+                    name,
+                    "broker_recovery_request_invalid",
+                    "Original order key required.",
+                    None,
+                );
+            };
+            let Some(recovery_key) = required_nonempty_string(&arguments, "idempotency_key") else {
+                return tool_error(
+                    name,
+                    "broker_recovery_request_invalid",
+                    "Distinct observation key required.",
+                    None,
+                );
+            };
+            service.handle_http_from_source(
+                "mcp",
+                "POST",
+                "/orders/broker-recovery",
+                json!({"originalIdempotencyKey":original_key,
+                    "recoveryIdempotencyKey":recovery_key}),
+            )
+        }
         "tradeassembly.agent.session.attach" | "tradeassembly.agent.session.detach" => {
             return tool_error(
                 name,
@@ -933,6 +976,9 @@ fn tool_specs() -> Vec<ToolSpec> {
     vec![
         tool_with_metadata("tradeassembly.agent.session.attach", "Attach External Agent", "Bind this MCP connection to an active external-client deployment and activation. Requires authenticated ownership and existing delegated authority; no token is returned. The client owns its agent loop.", object_schema([("deployment_id", string_schema("Existing external-client deployment ID.", None)), ("activation_id", string_schema("Existing active execution activation ID.", None)), ("idempotency_key", string_schema("Connection attachment retry key.", None))], ["deployment_id", "activation_id", "idempotency_key"]), false, false, true),
         tool_with_metadata("tradeassembly.agent.session.detach", "Detach External Agent", "Release only this MCP connection's agent lease. This does not cancel orders; reconcile outstanding outcomes before reconnecting.", object_schema([], []), false, false, true),
+        tool_with_metadata("tradeassembly.order.submit", "Submit Agent Order", "Submit a caller-chosen Paper or Live market order through the attached agent's durable execution and Warden boundary. TradeAssembly reads a fresh quote from the pinned market-data plugin and enforces risk before dispatch.", object_schema([("activation_id", string_schema("Existing active activation bound to this attached run.", None)), ("plugin_instance_ref", string_schema("Selected broker instance.", None)), ("order", object_like_schema("Market order: symbol, side, orderType, timeInForce, clientOrderId, and quantity or quantityMicros.")), ("idempotency_key", string_schema("Stable order submission key.", None))], ["activation_id", "plugin_instance_ref", "order", "idempotency_key"]), false, true, true),
+        tool_with_metadata("tradeassembly.order.reconcile", "Reconcile Broker Order", "Observe the outcome of an ambiguous Paper or Live broker submission without resubmitting. Requires an attached external-agent connection and the original submission key.", object_schema([("original_idempotency_key", string_schema("Original order submission key.", None)), ("idempotency_key", string_schema("Distinct reconciliation request key.", None))], ["original_idempotency_key", "idempotency_key"]), false, false, true),
+        tool_with_metadata("tradeassembly.order.observe", "Observe Broker Order as Owner", "Observe an original Paper or Live broker-order outcome through the authenticated owner recovery boundary. Use after a lost agent connection and before acknowledging a quarantined run. This never submits or replays an order.", object_schema([("original_idempotency_key", string_schema("Original order submission key.", None)), ("idempotency_key", string_schema("Distinct owner observation key.", None))], ["original_idempotency_key", "idempotency_key"]), false, false, true),
         tool("tradeassembly.onboarding.start", "Connect TradeAssembly", "Start resumable browser setup. Open browserUrl, then poll onboarding.status. Never accepts credentials. Does not activate trading.", object_schema([("mode", enum_string_schema("Owner-selected broker account mode.", &["paper", "live"])), ("environment", enum_string_schema("Deployment environment; defaults to the packaged connection profile.", &["staging", "production"])), ("relay", json!({"type":"boolean","description":"Also verify the selected Relay subscription.","default":false})), ("idempotency_key", string_schema("Stable setup request identifier.", None)), ("instanceRef", string_schema("Optional existing broker instance.", None))], ["mode", "idempotency_key"]), false),
         tool("tradeassembly.onboarding.status", "Connection Progress", "Inspect and reconcile browser setup. Readiness requires verified service results.", object_schema([("onboardingId", string_schema("Reference returned by onboarding.start.", None))], ["onboardingId"]), false),
         tool("tradeassembly.onboarding.cancel", "Cancel Connection Setup", "Cancel this setup attempt without disconnecting an existing account.", object_schema([("onboardingId", string_schema("Reference returned by onboarding.start.", None))], ["onboardingId"]), false),
@@ -1173,22 +1219,18 @@ fn studio_link(arguments: &Value) -> Value {
 }
 
 fn plugin_status(arguments: &Value) -> Value {
+    let tools = tool_names()
+        .into_iter()
+        .filter(|name| {
+            name.starts_with("tradeassembly.plugin.") || name.starts_with("tradeassembly.provider.")
+        })
+        .collect::<Vec<_>>();
     json!({
         "schemaVersion": "tradeassembly.mcp.plugin_status.v1",
         "ok": true,
         "registryPath": optional_string_arg(arguments, "registry_path"),
-        "status": "plugin install, disable, uninstall, invoke, and provider compatibility commands are available through shared application commands",
-        "tools": [
-            "tradeassembly.plugin.install",
-            "tradeassembly.plugin.disable",
-            "tradeassembly.plugin.uninstall",
-            "tradeassembly.plugin.invoke",
-            "tradeassembly.plugin.list",
-            "tradeassembly.plugin.capability_resolve",
-            "tradeassembly.plugin.capability_matrix",
-            "tradeassembly.provider.capability_matrix",
-            "tradeassembly.provider.pack_compatibility"
-        ]
+        "status": "Available plugin and provider MCP tools are listed below; order submission requires its explicit authority-bound MCP tool.",
+        "tools": tools
     })
 }
 
@@ -2312,6 +2354,43 @@ mod tests {
             .as_array()
             .expect("required fields")
             .contains(&json!("operation_id")));
+    }
+
+    #[test]
+    fn plugin_status_only_advertises_callable_mcp_tools() {
+        let status = super::plugin_status(&json!({}));
+        let available = super::tool_names();
+        let advertised = status["tools"].as_array().expect("plugin tool list");
+        assert!(!advertised.is_empty());
+        for name in advertised {
+            assert!(available.contains(&name.as_str().expect("tool name")));
+        }
+        assert!(!advertised.contains(&json!("tradeassembly.plugin.invoke")));
+    }
+
+    #[test]
+    fn agent_order_reconcile_never_fakes_a_standalone_result() {
+        let definitions = super::tool_definitions();
+        let tool = definitions
+            .as_array()
+            .expect("tool definitions")
+            .iter()
+            .find(|tool| tool["name"] == "tradeassembly.order.reconcile")
+            .expect("reconciliation tool");
+        assert_eq!(
+            tool["inputSchema"]["required"],
+            json!(["original_idempotency_key", "idempotency_key"])
+        );
+        assert_eq!(
+            super::call_tool("tradeassembly.order.reconcile", json!({}))["structuredContent"]
+                ["error"]["code"],
+            "service_required"
+        );
+        assert_eq!(
+            super::call_tool("tradeassembly.order.submit", json!({}))["structuredContent"]["error"]
+                ["code"],
+            "service_required"
+        );
     }
 
     #[test]

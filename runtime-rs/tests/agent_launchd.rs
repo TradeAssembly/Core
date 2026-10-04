@@ -245,6 +245,7 @@ fn profiles_are_isolated_and_uninstall_preserves_logs() {
     assert!(status(&fake, &second, &directory, 501).unwrap().loaded);
 }
 
+#[cfg(unix)]
 #[test]
 fn symlinked_plist_and_launch_agents_directory_are_rejected() {
     let root = tempdir();

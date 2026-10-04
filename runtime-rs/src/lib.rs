@@ -49,6 +49,7 @@ pub(crate) mod live_execution_checks;
 pub mod local_install;
 pub mod local_live_authorization;
 pub mod local_owner_identity;
+
 pub mod marketdata;
 pub mod mcp;
 pub mod messages;
@@ -84,4 +85,7 @@ pub mod strategy_lifecycle;
 pub mod surfaces;
 pub mod ta;
 pub mod warden_launchd;
+#[cfg(windows)]
+#[path = "../../platform/windows_private.rs"]
+pub mod windows_private;
 pub mod workos_identity;

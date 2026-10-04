@@ -1,5 +1,34 @@
 # Extraction decisions
 
+- The named 2026-10-03 personal-signup repair changes candidate source, not the
+  retained frozen payload. A verified no-organization session defers personal
+  self-service authority to Hub's registered-client policy; exact subject and
+  derived tenant bind custody/restart/refresh. Organization bindings and role
+  permissions remain enforced. Changed binaries and dependent observations must
+  be qualified through existing owners; prior qualification is not inherited.
+
+- Frozen OAuth source-fault proof is separate from packaged production positive
+  proof. Do not change production profiles, trust or transport to inject faults.
+  Compile the descriptor's archived Core revision and dependency lock with only
+  an exactly reconstructible test overlay. Preserve native bytes and accepted
+  producer pins. Source fault results never imply full production onboarding.
+
+- Registry qualification is additive evidence, not a rewrite of native
+  qualification. The first-release published gate requires a separate typed
+  receipt bound to the original native receipt, five-package registry capture,
+  fixed passing process logs and exact test sources. It runs existing installer
+  upgrade/rollback acceptance against real captured registry bytes. The native
+  candidate gate and frozen shipping payloads remain unchanged.
+
+- Frozen F2 macOS arm64 bytes and the M0–M6 parent release lock are not rebuilt or
+  re-signed for npm delivery. New targets need independent native evidence. The
+  first distribution format accepts only prerelease versions on `beta`; no Apple
+  payment/notarization or lifecycle install scripts. Warden digest/state migrations
+  are excluded from v1 upgrades, which require a stopped rig and preserve identity.
+  Distribution proof is distinct from runtime and public-release qualification.
+  Native freezing requires the actual host, exact input digests and pinned
+  Node/SRT versions. It cannot replace controlled-sink or OS-enforcement tests.
+
 - `portfolio_reservations` is the initial accounting kernel, not an authorization
   tool or activated broker feature. It uses an owner/account-scoped atomic storage
   expectation to reserve observed gross exposure plus all unreconciled holds,
@@ -81,5 +110,17 @@
   sink proof remains the separate unchanged M2 gate.
 - A private local checkpoint enables source/archive checks; it is not a release
   approval, pin update, merge, or public publication.
+- Customer hosted connection profiles do not force an operator's WorkOS
+  organization. `organizationId` may be null/omitted; signed identity and Hub's
+  personal-tenant rule remain authoritative. Explicit nonempty organization
+  scopes retain their binding; blank scopes are invalid. Endpoint/client and
+  entitlement checks are unchanged. A binary built before this contract repair
+  is not qualified for the tenant-neutral profile and must not be relabeled.
+- October 3 approved verification coverage: one full nextest unit/integration pass
+  plus explicit workspace doctests replaces duplicate full cargo-test/nextest
+  execution. Security/source/public gates and release opt-ins remain unchanged.
+  Cheap strict release prerequisites run first; dirty development is an explicit
+  mode, never release proof. Non-runtime harness/docs changes do not independently
+  invalidate unchanged native behavior; retain exact producer and verifier refs.
 - No scheduler rewrite, extra brokers, UI buildout or hosted agent orchestration
   is introduced by this extraction packet. Frozen F2 M0–M8 criteria are unchanged.

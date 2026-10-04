@@ -10,6 +10,7 @@ publicPathPrefixes:
   - .github/
   - .sdlc/
   - docs/
+  - distribution/
   - examples/
   - identity-sdk/
   - plugin-contracts/
@@ -40,6 +41,7 @@ publicFiles:
   - docker-compose.distributed.yml
   - foss-core-publication.yaml
   - render.yaml
+  - platform/windows_private.rs
 
 metadataOnlyPathPrefixes:
   - .sdlc/evidence/

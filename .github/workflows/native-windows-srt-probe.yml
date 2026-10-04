@@ -1,0 +1,115 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+name: Native Windows SRT setup probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install pinned sandbox package and inspect native status
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/native-srt-proof | Out-Null
+          npm ci --prefix packaging/sandbox --ignore-scripts --no-audit --no-fund *> target/native-srt-proof/npm-install.log
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned SRT install failed' }
+          $helper = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
+          & $helper status *> target/native-srt-proof/status-before.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native SRT status failed before setup' }
+          $before = Get-Content target/native-srt-proof/status-before.json -Raw | ConvertFrom-Json
+          if ($before.user.user.exists -or $before.user.cred_present) { throw 'Probe runner is not a fresh SRT host' }
+          netsh interface ipv4 show excludedportrange protocol=tcp *> target/native-srt-proof/excluded-ports.log
+          foreach ($port in 40080..40089) {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+            try { $listener.Start() } finally { $listener.Stop() }
+          }
+      - name: Provision SRT once and prove behavioral Windows startup
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $node = (Get-Command node).Source
+          $cli = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js'
+          $helper = 'packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
+          & $node $cli windows-install --proxy-port-range 40080-40089 *> target/native-srt-proof/setup.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native SRT provisioning failed or UAC was cancelled' }
+          & $helper status *> target/native-srt-proof/status-after.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native SRT status failed after setup' }
+          $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
+          if (-not $status.user.user.exists -or -not $status.user.cred_present) { throw 'Sandbox account or credential absent' }
+          if ($status.wfp.port_range[0] -ne 40080 -or $status.wfp.port_range[1] -ne 40089) { throw 'Installed WFP port range differs from probe config' }
+          for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $log = "target/native-srt-proof/behavior-shell-$attempt.log"
+            & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'cmd.exe /c exit 0' *> $log
+            if ($LASTEXITCODE -eq 0) { break }
+            $failure = Get-Content $log -Raw
+            if ($attempt -eq 2 -or -not $failure.Contains('wfp verify') -or -not $failure.Contains('timed out after 30000ms')) {
+              throw "Behavioral sandbox/WFP startup failed on attempt $attempt"
+            }
+          }
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c 'node.exe --eval "process.exit(0)"' *> target/native-srt-proof/behavior-node-path.log
+          $pathExit = $LASTEXITCODE
+          $nodeForward = $node.Replace('\', '/')
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json -c "`"$nodeForward`" --eval `"process.exit(0)`"" *> target/native-srt-proof/behavior-node-forward.log
+          $forwardExit = $LASTEXITCODE
+          & $node $cli --settings packaging/sandbox/native-probe-settings.json $node --eval 'process.exit(0)' *> target/native-srt-proof/behavior-node.log
+          $argvExit = $LASTEXITCODE
+          "path=$pathExit forward=$forwardExit argv=$argvExit" | Out-File target/native-srt-proof/child-exits.txt
+          if ($pathExit -ne 0 -or $forwardExit -ne 0) { throw 'Windows SRT Node child still lacks a working launch form' }
+          exit 0
+      - name: Build and exercise actual bundled Rust launcher
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --locked -p tradeassembly-runtime --bin tradeassembly-sandbox *> target/native-srt-proof/launcher-build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native Rust launcher build failed' }
+          $bundle = Join-Path (Get-Location) 'target/native-srt-mini-bundle'
+          New-Item -ItemType Directory -Force "$bundle/bin", "$bundle/runtime/node/bin" | Out-Null
+          Copy-Item target/debug/tradeassembly-sandbox.exe "$bundle/bin/tradeassembly-sandbox.exe"
+          Copy-Item (Get-Command node).Source "$bundle/runtime/node/bin/node.exe"
+          Copy-Item packaging/sandbox/node_modules "$bundle/runtime/node_modules" -Recurse
+          $settings = Get-Content packaging/sandbox/native-probe-settings.json -Raw | ConvertFrom-Json
+          $settings.filesystem.allowRead = @($bundle)
+          $settings | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 target/native-srt-proof/mini-settings.json
+          $settingsFile = (Resolve-Path target/native-srt-proof/mini-settings.json).Path
+          $cli = (Resolve-Path packaging/sandbox/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js).Path
+          $launcher = "$bundle/bin/tradeassembly-sandbox.exe"
+          $node = "$bundle/runtime/node/bin/node.exe"
+          $directCommand = "`"$($node.Replace('\', '/'))`" --eval `"process.exit(0)`""
+          & (Get-Command node).Source $cli --settings $settingsFile -c $directCommand *> target/native-srt-proof/direct-from-workspace.log
+          "workspace=$LASTEXITCODE" | Out-File target/native-srt-proof/direct-exits.txt
+          $proofRoot = (Resolve-Path target/native-srt-proof).Path
+          Push-Location $bundle
+          try {
+            & (Get-Command node).Source $cli --settings $settingsFile -c $directCommand *> "$proofRoot/direct-from-bundle.log"
+            "bundle=$LASTEXITCODE" | Out-File "$proofRoot/direct-exits-bundle.txt"
+            & $launcher --settings $settingsFile $node --eval 'process.exit(0)' *> "$proofRoot/launcher-node.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed Node child' }
+            & $launcher --settings $settingsFile $node --eval 'process.stdout.write(process.argv[1])' 'argument with spaces & ; intact' *> "$proofRoot/launcher-args.log"
+            if ($LASTEXITCODE -ne 0 -or (Get-Content "$proofRoot/launcher-args.log" -Raw).Trim() -ne 'argument with spaces & ; intact') { throw 'Rust launcher changed child arguments' }
+            $whoami = "$env:SystemRoot/System32/whoami.exe"
+            & $launcher --settings $settingsFile $whoami /user /fo csv /nh *> "$proofRoot/launcher-identity.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Actual Rust launcher failed sandbox identity child' }
+          } finally {
+            Pop-Location
+          }
+          $status = Get-Content target/native-srt-proof/status-after.json -Raw | ConvertFrom-Json
+          $identity = Get-Content target/native-srt-proof/launcher-identity.log -Raw
+          if (-not $identity.Contains($status.user.user.sid)) { throw 'Rust launcher child did not use sandbox SID' }
+      - name: Preserve probe logs, not release qualification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-srt-probe-${{ github.sha }}
+          path: target/native-srt-proof/
+          if-no-files-found: error
+          retention-days: 14

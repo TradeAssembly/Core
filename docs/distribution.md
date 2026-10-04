@@ -400,8 +400,17 @@ tests exercise the actual SQLite gateway, committed-write/lost-response recovery
 archive reopen, duplicate replay, export and denial/tamper/redirect/body bounds.
 Identity/grant/export fixtures remain explicitly synthetic, not product-login or
 paid-production evidence. `just relay-journal-client-test` is in the owning gate.
-Authentication, command entrypoint, customer packaging and production proof remain
-open; do not qualify this library alone as the installed customer adapter.
+The private auth implementation now adapts frozen c4's WorkOS public-client and
+checkpointed-refresh behavior, without changing Core or exposing its tokens.
+Relay owns a separate Bitwarden note namespace and private process lock; no
+Keychain fallback, Hub cookies or operator bearer substitution. Signed-token
+issuer/client/subject/expiry/org and actual Hub projection bind activation and
+refresh. Pending rotations survive dependency outages without reusing consumed
+credentials. Authenticated actions bind the fixed Relay origin and owner scope
+and deny expiry before HTTP. Component tests and an actual non-secret Bitwarden
+roundtrip are not product login, new signup, purchased authority or customer proof.
+The command entrypoint, installed packaging, actual private-client login/refresh
+and production acceptance remain open; the library alone is not a customer release.
 The existing production Relay registration was actually inspected October 3:
 client `client_01M2H9WP59BYWDP1CQPMZZ14BT`, exact redirect
 `http://127.0.0.1:8976/callback`. These match the unchanged coordinator production

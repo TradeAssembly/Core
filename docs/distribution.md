@@ -409,8 +409,16 @@ refresh. Pending rotations survive dependency outages without reusing consumed
 credentials. Authenticated actions bind the fixed Relay origin and owner scope
 and deny expiry before HTTP. Component tests and an actual non-secret Bitwarden
 roundtrip are not product login, new signup, purchased authority or customer proof.
-The command entrypoint, installed packaging, actual private-client login/refresh
-and production acceptance remain open; the library alone is not a customer release.
+The private `tradeassembly-relay` command now exposes fixed-profile discovery and
+`auth login/status/logout`. Its `--no-browser` login reports only a private temporary
+authorization-URL file path while retaining the same loopback listener, and removes
+that file after the attempt. It does not accept raw tokens, alternate issuers or Core
+sessions. The actual production existing-user flow has completed signed identity,
+Hub projection and independent Bitwarden custody; a separately launched status command
+has succeeded. This is an existing-user client leaf, not genuine new signup, installed
+delivery, Alpaca composition or paid authority. Natural refresh observation remains
+separately tracked. Journal capture/upload commands, installed packaging and the full
+production acceptance remain open; these auth commands are not a customer release.
 The existing production Relay registration was actually inspected October 3:
 client `client_01M2H9WP59BYWDP1CQPMZZ14BT`, exact redirect
 `http://127.0.0.1:8976/callback`. These match the unchanged coordinator production

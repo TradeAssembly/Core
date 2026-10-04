@@ -325,6 +325,21 @@ current shipping/source integration pins.
 | Owning gates | Existing owning CI/gate runners and coordinator provider readback | Required complete command sets, exact clean source/toolchain, exit status and bounded full logs authenticated by owning CI job/artifact provenance; skipped/narrow/mismatched suites rejected |
 | Customer release documents | Core distribution/customer instructions and Relay purchase/manage/support instructions | Finite inventory bound to actual public manifest and deployment: tested pinned bootstrap, install/update/rollback/export, support, unsigned/experimental disclosures, purchase/manage, npm and natural-expiry deferrals; private URLs/stale commands/unsupported platform or signing claims rejected |
 
+Runtime compatibility uses the shipping agent interface, not an invented native
+archive-wire requirement. c4 ships `tradeassembly.journal.export` with redacted,
+authenticated-owner events and canonical `eventsSha256`; caller-directed transport
+is supported. A private Relay adapter can preserve that actual export as its
+gateway payload while binding tenant/workspace to authenticated enrollment and
+persisting request/idempotency/time across retries. Qualify actual nonempty c4
+output through real durable Relay ingest/read/export/replay and the required
+authority/expiry/conflict denials. This needs no unchanged-Core rebuild. A local
+compatibility harness is not a shipped customer adapter or production proof.
+Reach separately needs real `studio.deployment.inspect` output bound to signed
+claim/accept/finish; existing E4 `inspect-only-proof` evidence remains service-leaf
+acceptance. Watch needs its real paired node/heartbeat/notification/delivery/ACK
+owner; journal export does not establish a Watch cursor. Do not relabel these
+three boundaries as one passing library or manifest check.
+
 Relay's current consumer contract additionally binds every paid access/admission
 decision to the authenticated tenant and subject, and accepts only live-commerce
 decisions in production or test-commerce decisions in staging/test. This is a

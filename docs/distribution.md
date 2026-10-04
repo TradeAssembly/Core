@@ -210,6 +210,15 @@ gate before rendering. Historical e0 producer/cache/qualification inputs and
 read-only rendering remain distinct; active delivery/capture/publication must
 reject them. Candidate/render success still cannot establish public delivery,
 full chain, production onboarding or paid Relay. Preserve those release gates.
+This constituent completed as run37162094467 at coordinator86a3dbc. The repaired
+Mac bytes are separately admitted by descriptoraa096dbb, payload035255f1 and
+native6b343179 in coordinator6ea23cd; old beta.4 evidence remains distinct.
+An isolated normal browser login and distinct native restart passed, followed
+by actual renewal after the original session expired and another distinct-process
+restart using that renewed expiry. Private observations are referenced from
+`RELEASE_CURRENT.md`. They used the existing owner and are not fresh signup,
+Alpaca/full-onboarding, signed commercial lifecycle, public delivery or final
+semantic launch proof. Keep those unchanged acceptance requirements.
 The Windows receipt producer must hash actual packaged launcher bytes, not its
 LF-normalized comparison inventory. Preserve the rejected October 3 receipt;
 repair and retry only Windows packaging/integrity from the accepted native input

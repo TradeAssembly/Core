@@ -388,6 +388,20 @@ allowance, nonempty c4 export, real ingest/read/export/replay, lost-response ret
 and distinct-process restart plus the existing authority/expiry/conflict denials.
 Additional client bytes have their own source/package/proof bindings; they do not
 replace or relabel frozen Core archives, Watch/Reach proof or the eleven-job chain.
+The private transport component now implements bounded HTTPS enrollment, exact
+durable-pending submission, receipt binding and scoped paginated read/export.
+It never follows redirects, automatically retries, reads Core tokens or changes
+the pending intent. Enrollment binds the verified Hub owner, approved catalog
+tuple and current paid period; scope uses Hub's subject projection, not export
+contents. Ambiguous enrollment retries use the same catalog; ambiguous journal
+submission retries reload the same durable request/key/time. Existing HTTP
+contracts remain unchanged, including hosted byte-limited pages. Local HTTP
+tests exercise the actual SQLite gateway, committed-write/lost-response recovery,
+archive reopen, duplicate replay, export and denial/tamper/redirect/body bounds.
+Identity/grant/export fixtures remain explicitly synthetic, not product-login or
+paid-production evidence. `just relay-journal-client-test` is in the owning gate.
+Authentication, command entrypoint, customer packaging and production proof remain
+open; do not qualify this library alone as the installed customer adapter.
 The existing production Relay registration was actually inspected October 3:
 client `client_01M2H9WP59BYWDP1CQPMZZ14BT`, exact redirect
 `http://127.0.0.1:8976/callback`. These match the unchanged coordinator production

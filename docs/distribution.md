@@ -467,6 +467,16 @@ write. Regression evidence must assert unchanged durable state on wrong actor,
 mode, expired, duplicate and stale observations. These source checks do not replace
 the real production purchase, signed delivery or supported sandbox lifecycle.
 
+October 4 customer diagnostic: the existing Relay session refreshed through its
+own consumer and Hub returned an exact tenant/subject/product/capability-matched
+live-commerce decision for `tradeassembly-relay` / `relay.use`: `permitted=false`,
+with no entitlement state, revision or paid period. This is actual unpaid-account
+evidence, not a paid-period qualification or proof that every other enrollment
+condition passes. Preserve the retained Core capture; do not retry enrollment,
+recapture, substitute operator authority or weaken admission while payment is absent.
+Repair Hub's production Stripe consumer, then qualify the actual approved purchase
+and reuse the original journal job under genuine paid authority.
+
 The launch input manifest's path/digest rows need a closed companion layout for
 owning configs, descriptors and raw artifacts. It must not accept caller-selected
 commands/executables. These are missing release harness seams, not permission to

@@ -384,6 +384,14 @@ verification with fresh provider reads passed. The real packaged login includes
 distinct-process restart; this does not establish the remaining same-attempt
 Alpaca/custody/ACK/refresh/fault composition or either launch verdict. Current
 receipt locations and exact hashes remain in coordinator `RELEASE_CURRENT.md`.
+The actual first attempt subsequently expired at Core's existing 30-minute
+boundary: browser Connect broker denied and two distinct packaged processes
+confirmed expired/unconnected/not-ready state. Preserve that original evidence.
+The recovery companion must allow explicit null instance/connection before broker
+selection while rejecting partial, malformed, live or foreign attempts. Renewal
+is a new attempt, not same-attempt signup acceptance. Complete the next fresh
+full journey without inserting planning/gates between login and broker connection;
+the original criteria and shipping bytes are unchanged.
 
 | New-user proof row | Private owner / targeted acceptance | Actual evidence needed |
 | --- | --- | --- |

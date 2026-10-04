@@ -345,6 +345,27 @@ current shipping/source integration pins.
 | Owning gates | Existing owning CI/gate runners and coordinator provider readback | Required complete command sets, exact clean source/toolchain, exit status and bounded full logs authenticated by owning CI job/artifact provenance; skipped/narrow/mismatched suites rejected |
 | Customer release documents | Core distribution/customer instructions and Relay purchase/manage/support instructions | Finite inventory bound to actual public manifest and deployment: tested pinned bootstrap, install/update/rollback/export, support, unsigned/experimental disclosures, purchase/manage, npm and natural-expiry deferrals; private URLs/stale commands/unsupported platform or signing claims rejected |
 
+The new-user constituent uses private coordinator qualification tooling, not a
+Core change or a customer-supplied API key. Before normal browser signup, it
+requires a virgin c4 installation/session and WorkOS's exact-email user absence.
+Read-only production authority is bound to the already verified operator subject;
+the migrated CLI's staging key is not an acceptable substitute. After the existing
+packaged login capture, WorkOS user creation and successful password/OAuth events
+must bind the same email, new subject, fixed AuthKit/Connect application lineage,
+time window and Core-derived stable identity. Missing/foreign context fails closed;
+no admin-created fixture, old user or unverified identity is accepted. Only the
+documented fixed users/events GET endpoints are used; bounded complete pagination,
+timeouts and redaction precede durable output. Saved verification reuses the actual
+login owner and re-reads the intended provider. It never manufactures provider
+success from an offline fixture or receipt flag.
+
+| New-user proof row | Private owner / targeted acceptance | Actual evidence needed |
+| --- | --- | --- |
+| Production authority and absence before signup | `packaged_signup.rs`; reject wrong anchor, nonempty/partial/repeated pages, inherited endpoint overrides | Fixed production anchor readback, exact-email empty response and virgin packaged MCP observation before login |
+| New subject and normal browser authentication | Existing `packaged_login.rs` plus provider user/creation/authentication projections; reject old/unverified/different user or client/time | Actual unchanged c4 login capture, matching provider GET/events and deidentified source-bound receipt |
+| Same installed bytes and attempt | Reuse packaged candidate/login owner; reject changed config/native/profile/descriptor/attempt or unbound receipt | Local owning verifier plus fixed source and proof digests; no native rebuild |
+| Full onboarding beyond signup | Existing connection and later composition; constituent readiness remains false | Same-attempt Alpaca OAuth/custody/ACK, real Warden, distinct restart/natural refresh and required fault/denial observations remain mandatory |
+
 Runtime compatibility uses the shipping agent interface, not an invented native
 archive-wire requirement. c4 ships `tradeassembly.journal.export` with redacted,
 authenticated-owner events and canonical `eventsSha256`; caller-directed transport

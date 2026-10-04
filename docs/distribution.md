@@ -312,6 +312,15 @@ current shipping/source integration pins.
 | Owning gates | Existing owning CI/gate runners and coordinator provider readback | Required complete command sets, exact clean source/toolchain, exit status and bounded full logs authenticated by owning CI job/artifact provenance; skipped/narrow/mismatched suites rejected |
 | Customer release documents | Core distribution/customer instructions and Relay purchase/manage/support instructions | Finite inventory bound to actual public manifest and deployment: tested pinned bootstrap, install/update/rollback/export, support, unsigned/experimental disclosures, purchase/manage, npm and natural-expiry deferrals; private URLs/stale commands/unsupported platform or signing claims rejected |
 
+Relay's current consumer contract additionally binds every paid access/admission
+decision to the authenticated tenant and subject, and accepts only live-commerce
+decisions in production or test-commerce decisions in staging/test. This is a
+consumer restriction, not authority to override Hub's registered client mode.
+Exact account/paid-period expiry denies new access before any admission or journal
+write. Regression evidence must assert unchanged durable state on wrong actor,
+mode, expired, duplicate and stale observations. These source checks do not replace
+the real production purchase, signed delivery or supported sandbox lifecycle.
+
 The launch input manifest's path/digest rows need a closed companion layout for
 owning configs, descriptors and raw artifacts. It must not accept caller-selected
 commands/executables. These are missing release harness seams, not permission to

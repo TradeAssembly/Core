@@ -354,8 +354,20 @@ packaged login capture, WorkOS user creation and successful password/OAuth event
 must bind the same email, new subject, fixed AuthKit/Connect application lineage,
 time window and Core-derived stable identity. Missing/foreign context fails closed;
 no admin-created fixture, old user or unverified identity is accepted. Only the
-documented fixed users/events GET endpoints are used; bounded complete pagination,
-timeouts and redaction precede durable output. Saved verification reuses the actual
+fixed users/events read operations are used; bounded complete pagination,
+timeouts and redaction precede durable output. REST GET remains supported. Existing
+Bitwarden dashboard authority may alternatively use official WorkOS CLI0.23.0
+vendor read queries, after validating exact production environment/team ownership
+and the same fixed operator anchor. Preserve raw event client context: curated
+CLI JSON drops it and is not sufficient evidence. The private collector adapter
+is implemented; its actual production team/user/owner and bounded event-read
+test has passed. The empty recent event window proves neither signup nor client
+lineage. Mixed credential modes fail; read mode is receipt-bound. Dashboard cursor
+direction and full pagination preserve the existing failure rules, with exact
+email selection only after complete traversal. Unit fixtures cover these adapter
+bindings but do not establish a normal browser signup.
+No new provider key, hosted credential service or Core runtime change is needed.
+Saved verification reuses the actual
 login owner and re-reads the intended provider. It never manufactures provider
 success from an offline fixture or receipt flag.
 

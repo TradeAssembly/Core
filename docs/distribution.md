@@ -250,6 +250,22 @@ retained results and failed-job reruns. Agents diagnose failures.
 Unprivileged immutable-input/auth/tool/space preflight comes first; clean committed
 state is required for archive/release, not ordinary dirty development.
 
+Private owning-CI source authority is separate from deployment authority. Keep
+Relay's exact clean Hub input `e4e3886577bd6fd344ce061fa9f99da25069d582` and Core
+`a16d4a769258fb7354d9102017533850020f8f2c`; do not change dependency locks to
+avoid checkout failure. The Hub input is published on the non-default
+`codex/f2-relay-ci-hub-input` branch, not merged into deployed Hub.
+The organization disables deploy keys; preserve that protection. Use a dedicated
+private GitHub App installed only on Hub with `contents:read` and mandatory
+`metadata:read`, no other permissions, webhook or user authorization. Keep its
+private key in Bitwarden and the owning Relay Actions secret, and its app ID in
+the owning Actions variable. The pinned official action issues a short-lived,
+Hub-only installation token; checkout must not persist credentials. This is
+provider CI bootstrap, not a new authentication service. No operator-token
+substitution, repository visibility change or IAM widening. Configuration and
+local gates alone are not acceptance: require actual intended-job checkout of
+both exact pins, full owning gate, and retained source/toolchain/log provenance.
+
 Core verification coverage amendment: one complete nextest unit/integration pass
 plus explicit workspace doctests replaces duplicate full cargo-test/nextest
 execution only after equivalent coverage/order tests are updated. Preserve strict

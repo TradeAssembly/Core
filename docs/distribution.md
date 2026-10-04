@@ -154,6 +154,19 @@ before/after invocation. Actual qualified deployment/invocation and full
 commercial lifecycle acceptance remain required; this does not relax L1 or
 add a hosted service.
 
+Signed-delivery composition additionally requires authenticated provider evidence
+of the exact event, endpoint, attempt/time and successful HTTP result, bound to
+the executing webhook artifact and unchanged route/deployment across that
+delivery window. Event retrieval, aggregate `delivery_success`, and the stored
+projection alone are insufficient. Official Stripe Workbench's Event deliveries
+surface is the bounded fallback when the preferred routes cannot supply exact
+attempts; capture its actual provider response, never a transcribed success flag
+or a guessed private API call. The coordinator's v2 readback also binds the fixed
+webhook Lambda to `stripe_webhook.zip` during readback; that is not proof of
+historical delivery-window routing. Reuse Hub's existing verifier/handler; add no
+runtime/schema receipt system unless actual delivery evidence cannot close this
+precise gap. Preserve natural production expiry's approved deferral.
+
 Exit: all above revised L1 cases have actual owning acceptance; failures remain
 nonzero. Browser/provider handoffs are recorded once and preserved.
 

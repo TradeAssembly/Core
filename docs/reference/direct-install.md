@@ -110,12 +110,16 @@ state and logs; do not delete databases or manually swap version pointers.
 
 ## Export and support
 
-The installed Core command `journal export` returns the local journal export.
+Use the exact installed `command` and configuration path returned in `mcp.args`
+by `distribution status`, then run `--config CONFIG_PATH journal export`. Pass
+each value as a separate argument; do not guess a database or use the agent's
+current working directory as the installation. The CLI exports JSON on stdout.
 Treat it as private trading data; save it only to a user-selected destination.
 Local export is not proof that Relay ingest, replay or hosted export succeeded.
 
 For a problem report, provide the installed version/target, non-secret error
-code and redacted reproduction steps through the project's support channel.
+code and redacted reproduction steps through
+[TradeAssembly Core issues](https://github.com/TradeAssembly/Core/issues).
 Do not include credentials, tokens, raw callback URLs, unredacted journals or
 private account payloads. An agent should read the installed CLI help and MCP
 tool descriptions first. A missing tool, failed login or denied entitlement

@@ -134,6 +134,16 @@ Existing owning routes include:
   owns the wait; no clock/custody mutation, renewed attempt, orders or Live.
   This closes the refresh collector seam only when its actual capture succeeds;
   parser tests, existing-user renewal and input flags are not full onboarding.
+- Coordinator `just f2-onboarding-journey-qualify SIGNUP_CONFIG BEFORE LOGIN SIGNUP
+  CONNECTION_CONFIG DESCRIPTOR REFRESH_DIRECTORY NEW_REPORT` and matching
+  `-verify` invoke the existing signup/provider and natural-refresh owners, then
+  bind the exact customer, original attempt/session, installation/config/candidate
+  and six distinct processes in an ordered <=30-minute positive journey. The
+  coordinator source is qualified at `80c338a2907ab7bb01bee6415c727dbf647811e9`;
+  actual positive capture remains required. Source-fault/denial acceptance,
+  authenticated owning CI provenance, paid Relay and complete launch are not
+  established by this constituent. Original producer pins and shipping bytes
+  are unchanged.
 - `just f2-packaged-new-identity-login-capture CONFIG DESCRIPTOR NEW_DIR` learns
   the first authenticated provider identity only for an explicit null-owner
   configuration, then verifies the same identity in a distinct process. Its

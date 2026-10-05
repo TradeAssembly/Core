@@ -126,6 +126,14 @@ Existing owning routes include:
   `relay-environment-oauth-revocation-verify` and the existing E4 adapter.
 - Existing packaged connection/login probe/verify commands are scoped constituents,
   not full production-onboarding acceptance.
+- Coordinator `just f2-packaged-connection-refresh-probe CONFIG DESCRIPTOR NEW_DIR`
+  uses the same installed connection owner before and after natural session
+  expiry; the matching `-verify` revalidates both saved owning proofs. The same
+  attempt/account/owner and four distinct packaged processes are required, with
+  Warden readiness and completed acknowledgement throughout. A bounded runner
+  owns the wait; no clock/custody mutation, renewed attempt, orders or Live.
+  This closes the refresh collector seam only when its actual capture succeeds;
+  parser tests, existing-user renewal and input flags are not full onboarding.
 - `just f2-packaged-new-identity-login-capture CONFIG DESCRIPTOR NEW_DIR` learns
   the first authenticated provider identity only for an explicit null-owner
   configuration, then verifies the same identity in a distinct process. Its

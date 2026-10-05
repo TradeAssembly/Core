@@ -152,6 +152,13 @@ Existing owning routes include:
   browser. A failed capture requires a new attempt, not reuse of a dead callback.
   The matching `-verify` is login/restart integrity only; genuine signup, refresh,
   Alpaca, Warden readiness and complete onboarding remain separate required proof.
+  Signup preparation now applies the same existing pre-login classifier as the
+  login collector: an ended, explicitly retryable callback timeout may precede
+  a new login only on an unauthenticated installation. Current-attempt failures,
+  existing authenticated users and authority/custody errors stay terminal. Actual
+  production user-absence and packaged unauthenticated preflight passed after
+  this repair; no customer signup/OAuth or complete journey is inferred. Frozen
+  binaries are unchanged; source/gate/raw-proof pointers live in RELEASE_CURRENT.md.
 Exact configurations, producer pins and raw receipt paths remain in history
 and short current state. Reuse original owning validators for unchanged
 accepted receipts; do not relabel source hashes or fabricate authority.

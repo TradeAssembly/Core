@@ -569,6 +569,19 @@ and is pushed on the existing recovery branch. The retained log and actual unpai
 consumer receipt are indexed in `RELEASE_CURRENT.md`; deployed/public/paid and
 owning-CI qualification are not implied by this local gate.
 
+The private-client portability repair at
+`13b2532ac88a20f04f390695bb920ecb387853b8` is also full-gated and pushed on the
+same branch. Explicit, bundled and migrated Bitwarden helper selection retains
+priority; only when neither installed helper exists does an authenticated
+`BW_SESSION` select the standard `bw` CLI. Missing/locked vault access fails
+closed. The actual existing-customer consumer independently verified Hub
+authentication through that CLI; it did not check paid entitlement. The corrected
+full local gate includes the exact pinned Core smoke. Its original invocation
+with a skipped smoke remains disqualified and retained. Official CLI/session
+setup, private-client public packaging, new-user and paid production journeys
+remain requirements; this repair is not a clean customer-install or launch verdict.
+Evidence and terminal process state are indexed only in `RELEASE_CURRENT.md`.
+
 The launch input manifest's path/digest rows need a closed companion layout for
 owning configs, descriptors and raw artifacts. It must not accept caller-selected
 commands/executables. These are missing release harness seams, not permission to

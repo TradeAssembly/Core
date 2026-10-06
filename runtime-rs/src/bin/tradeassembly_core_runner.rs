@@ -24,11 +24,13 @@ const CORE_REVISION: &str = env!("TRADEASSEMBLY_CORE_REVISION");
 struct Args {
     #[arg(long, conflicts_with_all = ["db", "runtime_config", "core_release"])]
     build_identity: bool,
+    #[arg(long, conflicts_with_all = ["db", "runtime_config", "core_release", "build_identity"])]
+    compatibility: bool,
     #[arg(long, conflicts_with = "runtime_config")]
     db: Option<String>,
     #[arg(long, conflicts_with = "db")]
     runtime_config: Option<PathBuf>,
-    #[arg(long, required_unless_present = "build_identity")]
+    #[arg(long, required_unless_present_any = ["build_identity", "compatibility"])]
     core_release: Option<String>,
 }
 
@@ -59,6 +61,13 @@ fn main() {
             "coreRevision": CORE_REVISION,
         }))
         .unwrap_or_else(|_| process::exit(1));
+        return;
+    }
+    if args.compatibility {
+        let descriptor: Value =
+            serde_json::from_str(include_str!("../../../contracts/compatibility.json"))
+                .expect("embedded compatibility descriptor");
+        write_response(&descriptor).unwrap_or_else(|_| process::exit(1));
         return;
     }
     let core_release = args.core_release.unwrap_or_else(|| process::exit(2));

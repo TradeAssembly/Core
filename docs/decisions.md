@@ -132,3 +132,16 @@
 clean-source gate. None requires Codex or a CI-provider run. The coordinator's
 local CI manifest owns separate integration tests and records gaps; no deployment
 or product repair is authorized by a passing local baseline.
+
+## Launch compatibility gate
+
+`just contract-test` checks the owning interface behavior.
+`contracts/compatibility.json` declares independently versioned launch contracts.
+Compatibility does not waive artifact integrity, expected deployment identity,
+job/receipt replay bindings, or existing state/authority migration restrictions.
+The coordinator owns the finite cross-component gate and exact release lock;
+its policy is `docs/compatibility.md`. No provider or agent acceptance is required
+for this local gate, and passing it is not production release readiness.
+
+The Core runner exposes read-only `--compatibility` without altering the existing
+`--build-identity` response. Core remains independent of private repositories.

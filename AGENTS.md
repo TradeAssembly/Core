@@ -45,3 +45,11 @@ fallback, Apple payment, automatic strategy activation, or active-rig upgrades.
 ABSOLUTE_NEW_DIRECTORY` is additive frozen-source fault evidence only. Preserve
 qualified native bytes and production proof ownership; never label its test
 identity/transport boundaries as deployed authentication or full onboarding.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.

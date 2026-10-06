@@ -124,3 +124,11 @@
   invalidate unchanged native behavior; retain exact producer and verifier refs.
 - No scheduler rewrite, extra brokers, UI buildout or hosted agent orchestration
   is introduced by this extraction packet. Frozen F2 M0–M8 criteria are unchanged.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.

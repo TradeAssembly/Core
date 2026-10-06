@@ -9,4 +9,7 @@ setup:
     cargo xtask setup
 
 check:
-    cargo xtask architecture-core
+    cargo xtask check
+
+build:
+    cargo xtask build

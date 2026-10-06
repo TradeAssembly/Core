@@ -16,6 +16,8 @@ fn main() {
         "verify" if rest.is_empty() => core_verify::verify(),
         "verify" if rest == ["--dev"] => core_verify::verify_dev(),
         "setup" if rest.is_empty() => core_verify::setup(),
+        "check" if rest.is_empty() => core_verify::check(),
+        "build" if rest.is_empty() => core_verify::build(),
         "onboarding-verify" if rest.is_empty() => core_verify::onboarding_verify(),
         "oauth-fault-proof" => oauth_fault_proof::run(rest, root),
         "architecture-core" if rest.is_empty() => architecture_check::run_core_architecture(root),
@@ -61,7 +63,7 @@ fn main() {
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
-            println!("Core tasks: setup, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-extract-github-builds, distribution-qualify, distribution-verify, distribution-capture-registry");
+            println!("Core tasks: setup, check, build, verify, onboarding-verify, architecture-core, check-whitelist, plugin-contract, scan-public, foss-core-boundary, bundle-local, distribution-pack, distribution-describe-native-inputs, distribution-freeze-native, distribution-describe-candidate, distribution-extract-github-builds, distribution-qualify, distribution-verify, distribution-capture-registry");
             println!("Registry delivery: distribution-qualify-registry --evidence ABSOLUTE_DIR --baseline-package ABSOLUTE_FROZEN_MAC_PACKAGE --source ABSOLUTE_CORE_CHECKOUT");
             0
         }

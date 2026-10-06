@@ -32,3 +32,6 @@ target/
 .sdlc/language-invariant-report.json
 !runtime-rs/src/bin/
 !runtime-rs/src/bin/tradeassembly.rs
+
+# Local Cargo target may be a cache-directory symlink.
+/target

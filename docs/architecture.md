@@ -109,3 +109,11 @@ same local idempotency boundary.
 See docs/rust-rewrite-harness.md for owning gates and docs/test-ownership.md for
 the extraction test split. Neither the source archive smoke nor an isolated build
 proves provider integration, Relay deployment, or the full customer journey.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.

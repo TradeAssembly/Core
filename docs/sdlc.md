@@ -51,3 +51,11 @@ The latter runs actual opt-in registry and frozen-baseline installer tests,
 not mock evidence. Require the default `distribution-verify` afterward.
 Keep failed logs, native receipts and frozen bytes; no overwrite or automatic
 republish is part of qualification. Release CI must retain these distinct proofs.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.

@@ -84,7 +84,7 @@ const VERIFY_CHECKS: &[Check] = &[
 const SETUP_CHECKS: &[Check] = &[
     Check {
         program: "cargo",
-        args: &["build", "--workspace", "--locked"],
+        args: &["fetch", "--locked"],
     },
     Check {
         program: "npm",
@@ -98,6 +98,49 @@ const SETUP_CHECKS: &[Check] = &[
         ],
     },
 ];
+
+/// Fast component feedback; does not claim release qualification.
+pub(crate) fn check() -> i32 {
+    run_checks(
+        &[
+            Check {
+                program: "cargo",
+                args: &["fmt", "--check"],
+            },
+            Check {
+                program: "cargo",
+                args: &[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            },
+            Check {
+                program: "cargo",
+                args: &["test", "--workspace", "--lib", "--locked"],
+            },
+            Check {
+                program: "cargo",
+                args: &["xtask", "architecture-core"],
+            },
+        ],
+        run_command,
+    )
+}
+
+/// Build native local executables. Distribution qualification remains separate.
+pub(crate) fn build() -> i32 {
+    run_checks(
+        &[Check {
+            program: "cargo",
+            args: &["build", "--workspace", "--bins", "--locked"],
+        }],
+        run_command,
+    )
+}
 
 /// Run the complete, ordered Core verification gate.
 pub(crate) fn verify() -> i32 {
@@ -393,7 +436,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![
-                "cargo build --workspace --locked",
+                "cargo fetch --locked",
                 "npm ci --prefix packaging/sandbox --ignore-scripts --no-audit --no-fund",
             ]
         );

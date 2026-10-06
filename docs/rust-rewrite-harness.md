@@ -99,3 +99,11 @@ upgrade/rollback/state preservation against the captured native registry package
 Fixed tests must execute and pass; ignored/skipped/zero-test summaries fail.
 The separate receipt binds native/registry inputs, test sources and logs.
 Full Core gates and production/CI acceptance remain separate mandatory gates.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.

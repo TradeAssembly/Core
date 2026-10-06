@@ -30,6 +30,7 @@ publicFiles:
   - CLAUDE.md
   - Cargo.lock
   - Cargo.toml
+  - contracts/compatibility.json
   - GEMINI.md
   - Justfile
   - LICENSE

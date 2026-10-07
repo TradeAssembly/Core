@@ -7,6 +7,8 @@ use tradeassembly_runtime::cli::{
 };
 
 fn main() {
+    tradeassembly_runtime::build_identity::install(env!("TRADEASSEMBLY_CORE_REVISION"))
+        .expect("compiled Core build identity");
     let cli = Cli::parse();
     if let Some(code) = tradeassembly_runtime::cli::run_installation_command(&cli) {
         process::exit(code);

@@ -318,7 +318,7 @@ pub(crate) fn onboarding_verify() -> i32 {
                 args: &[
                     "test",
                     "-p",
-                    "tradeassembly-runtime",
+                    "tradeassembly-core-binaries",
                     "--test",
                     "browser_onboarding_stdio",
                 ],

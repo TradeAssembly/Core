@@ -217,6 +217,8 @@ fn exec_bundled(args: Vec<OsString>) -> Result<(), ()> {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn main() -> ExitCode {
+    tradeassembly_runtime::build_identity::install(env!("TRADEASSEMBLY_CORE_REVISION"))
+        .expect("compiled Core build identity");
     if exec_bundled(std::env::args_os().collect()).is_err() {
         eprintln!("tradeassembly-sandbox: bundled runtime unavailable");
         ExitCode::FAILURE
@@ -227,6 +229,8 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "windows")]
 fn main() -> ExitCode {
+    tradeassembly_runtime::build_identity::install(env!("TRADEASSEMBLY_CORE_REVISION"))
+        .expect("compiled Core build identity");
     match bundled_command(std::env::args_os().collect())
         .and_then(|mut command| command.status().map_err(|_| ()))
     {
@@ -245,6 +249,8 @@ fn main() -> ExitCode {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn main() -> ExitCode {
+    tradeassembly_runtime::build_identity::install(env!("TRADEASSEMBLY_CORE_REVISION"))
+        .expect("compiled Core build identity");
     eprintln!("tradeassembly-sandbox: unsupported runtime platform");
     ExitCode::FAILURE
 }

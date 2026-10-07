@@ -70,7 +70,7 @@ jobs:
         timeout-minutes: 25
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo build --locked -p tradeassembly-runtime --bin tradeassembly-sandbox *> target/native-srt-proof/launcher-build.log
+          cargo build --locked -p tradeassembly-core-binaries --bin tradeassembly-sandbox *> target/native-srt-proof/launcher-build.log
           if ($LASTEXITCODE -ne 0) { throw 'Native Rust launcher build failed' }
           $bundle = Join-Path (Get-Location) 'target/native-srt-mini-bundle'
           New-Item -ItemType Directory -Force "$bundle/bin", "$bundle/runtime/node/bin" | Out-Null

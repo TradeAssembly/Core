@@ -1,11 +1,9 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 mod architecture_check;
-mod bundle_local;
 mod check_whitelist;
 mod core_verify;
 mod foss_core_boundary;
 mod oauth_fault_proof;
-mod plugin_contract;
 mod public_scan;
 
 fn main() {
@@ -23,7 +21,7 @@ fn main() {
         "architecture-core" if rest.is_empty() => architecture_check::run_core_architecture(root),
         "architecture-check" => architecture_check::run_architecture_check_command(rest, root),
         "contract" => architecture_check::run_contract_check_command(rest, root),
-        "bundle-local" => bundle_local::run(rest, root),
+        "bundle-local" | "plugin-contract" => runtime_tool(&args),
         "distribution-pack"
         | "distribution-verify"
         | "distribution-capture-registry"
@@ -59,7 +57,6 @@ fn main() {
                 .unwrap_or(1)
         }
         "check-whitelist" => check_whitelist::run_check_whitelist(rest, root),
-        "plugin-contract" => plugin_contract::run_plugin_contract(rest, root),
         "scan-public" => public_scan::run_public_scan(rest, root),
         "foss-core-boundary" => foss_core_boundary::run(rest, root),
         "help" | "--help" => {
@@ -73,4 +70,13 @@ fn main() {
         }
     };
     std::process::exit(status);
+}
+
+fn runtime_tool(args: &[String]) -> i32 {
+    std::process::Command::new("cargo")
+        .args(["run", "--locked", "-p", "tradeassembly-runtime-tools", "--"])
+        .args(args)
+        .status()
+        .map(|s| s.code().unwrap_or(1))
+        .unwrap_or(1)
 }

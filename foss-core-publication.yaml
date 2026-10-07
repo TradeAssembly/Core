@@ -5,6 +5,10 @@ repository: TradeAssembly/Core
 publicationClass: public_core
 
 publicPathPrefixes:
+  - strategy/
+  - simulation/
+  - core-binaries/
+  - runtime-tools/
   - .cargo/
   - .codex/
   - .github/

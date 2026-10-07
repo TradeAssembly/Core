@@ -63,3 +63,10 @@ job/receipt replay bindings, or existing state/authority migration restrictions.
 The coordinator owns the finite cross-component gate and exact release lock;
 its policy is `docs/compatibility.md`. No provider or agent acceptance is required
 for this local gate, and passing it is not production release readiness.
+
+## Targeted Rust iteration
+
+Use `just build-target PACKAGE BINARY` and `just test-package PACKAGE` during
+iteration. `just build-artifacts` builds the exact development outputs consumed
+by local CI; `just build` retains all-workspace behavior. Cargo owns dependency
+selection and caches. Full `just verify` remains required at integration.

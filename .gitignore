@@ -35,3 +35,6 @@ target/
 
 # Local Cargo target may be a cache-directory symlink.
 /target
+
+!core-binaries/src/bin/
+!core-binaries/src/bin/*.rs

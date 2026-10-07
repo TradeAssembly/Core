@@ -120,3 +120,21 @@ for this local gate, and passing it is not production release readiness.
 
 The Core runner exposes read-only `--compatibility` without altering the existing
 `--build-identity` response. Core remains independent of private repositories.
+
+## Targeted Rust build boundaries
+
+`tradeassembly-strategy` owns StrategySpec, strategy evaluation and backtest
+accounting. `tradeassembly-simulation` owns Monte Carlo and robustness algorithms.
+The runtime re-exports their existing module paths; wire formats and numerical
+behavior are unchanged. `tradeassembly-core-binaries` owns the five executable
+targets and their compiled revision; runtime/domain libraries do not embed Git
+identity. Startup installs one immutable process identity, and legal receipt
+verification fails closed without it. Exact receipt/replay bindings remain.
+
+The default xtask has no runtime dependency. It delegates `plugin-contract` and
+`bundle-local` to `tradeassembly-runtime-tools`, preserving real implementations.
+Binary-dependent tests now belong to the binary package; owning domain tests
+move with their modules. Publication and source scanners cover every new crate.
+`just build-target PACKAGE BINARY` and `just test-package PACKAGE` are targeted
+iteration commands; `just build-artifacts` selects the CLI and Core runner.
+Full verification and distribution qualification retain their existing gates.

@@ -39,6 +39,8 @@ struct Args {
 }
 
 fn main() {
+    tradeassembly_runtime::build_identity::install(env!("TRADEASSEMBLY_CORE_REVISION"))
+        .expect("compiled Core build identity");
     if let Err(error) = run(Args::parse()) {
         eprintln!(
             "{}",

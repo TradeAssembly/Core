@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+  "strategy",
+  "simulation",
+  "core-binaries",
+  "runtime-tools",
   "distribution",
   "identity-sdk",
   "plugin-sdk",

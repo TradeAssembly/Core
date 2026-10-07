@@ -4366,6 +4366,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tradeassembly-core-binaries"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "atomicwrites",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "fs2",
+ "getrandom 0.3.4",
+ "hex",
+ "openidconnect",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tradeassembly-runtime",
+ "winapi-util",
+ "windows-permissions",
+]
+
+[[package]]
 name = "tradeassembly-distribution"
 version = "0.1.0"
 dependencies = [
@@ -4427,7 +4455,6 @@ dependencies = [
  "atomicwrites",
  "axum",
  "base64 0.22.1",
- "cel",
  "chrono",
  "clap",
  "ed25519-dalek",
@@ -4450,7 +4477,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
- "serde_path_to_error",
  "serde_yaml",
  "sha2 0.10.9",
  "tar",
@@ -4461,10 +4487,27 @@ dependencies = [
  "tradeassembly-identity-sdk",
  "tradeassembly-plugin-sdk",
  "tradeassembly-sightline-sidecar",
+ "tradeassembly-simulation",
+ "tradeassembly-strategy",
  "url",
  "webbrowser",
  "winapi-util",
  "windows-permissions",
+]
+
+[[package]]
+name = "tradeassembly-runtime-tools"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "regex",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tradeassembly-runtime",
+ "walkdir",
 ]
 
 [[package]]
@@ -4475,10 +4518,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tradeassembly-simulation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "tradeassembly-strategy"
+version = "0.1.0"
+dependencies = [
+ "cel",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "serde_path_to_error",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "tradeassembly-xtask"
 version = "0.1.0"
 dependencies = [
- "flate2",
  "glob",
  "globset",
  "libc",
@@ -4489,7 +4554,6 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "tempfile",
- "tradeassembly-runtime",
  "walkdir",
 ]
 

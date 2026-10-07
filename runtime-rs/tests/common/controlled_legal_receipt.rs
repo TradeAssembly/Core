@@ -165,6 +165,17 @@ fn digest(bytes: impl AsRef<[u8]>) -> String {
 }
 
 pub fn write(root: &Path, config: &Value, owner: &LocalOwnerIdentity, now_ms: i64) {
+    // Qualification fixtures bind to their explicit source checkout, like the packaged binary.
+    let revision = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+        .output()
+        .expect("fixture source revision");
+    assert!(revision.status.success());
+    tradeassembly_runtime::build_identity::install(
+        std::str::from_utf8(&revision.stdout).unwrap().trim(),
+    )
+    .unwrap();
     let now = Utc.timestamp_millis_opt(now_ms).single().unwrap();
     let legal_root = root.join("legal");
     let receipt_root = legal_root.join("receipts");
@@ -256,7 +267,9 @@ pub fn write(root: &Path, config: &Value, owner: &LocalOwnerIdentity, now_ms: i6
             environment: config["legalEnvironment"].as_str().unwrap().into(),
             application_id: "tradeassembly_studio".into(),
             application_version: env!("CARGO_PKG_VERSION").into(),
-            application_build_digest: digest(env!("TRADEASSEMBLY_CORE_REVISION").as_bytes()),
+            application_build_digest: tradeassembly_runtime::build_identity::current()
+                .unwrap()
+                .application_digest(),
             rendered_content_hash: digest("rendered"),
             acceptance_statement_hash: digest("accepted"),
             acceptance_challenge_id: "controlled-challenge".into(),

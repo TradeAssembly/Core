@@ -54,6 +54,8 @@ enum ProtocolRequest {
 }
 
 fn main() {
+    tradeassembly_runtime::build_identity::install(env!("TRADEASSEMBLY_CORE_REVISION"))
+        .expect("compiled Core build identity");
     let args = Args::parse();
     if args.build_identity {
         write_response(&json!({

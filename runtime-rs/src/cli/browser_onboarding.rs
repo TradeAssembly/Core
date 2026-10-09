@@ -365,7 +365,7 @@ impl BrowserOnboarding {
                 let verification = tool_payload(
                     &service,
                     "tradeassembly.broker.verify",
-                    json!({"instanceRef":instance,"mode":attempt.mode,"idempotency_key":format!("{}:verify",attempt.id)}),
+                    verification_arguments(&attempt.id, instance, &attempt.mode),
                 )?;
                 let brokers = tool_payload(
                     &service,
@@ -513,7 +513,7 @@ impl BrowserOnboarding {
         if let Some(instance) = attempt
             .instance_ref
             .as_ref()
-            .filter(|_| attempt.connection_id.is_none())
+            .filter(|_| attempt.connection_id.is_none() && progress["hubAuthenticated"] == true)
         {
             let (service, _) = self.bound_service(&attempt)?;
             let descriptor = service.broker_connection_descriptor(instance)?;
@@ -755,6 +755,14 @@ async fn action(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
+fn verification_arguments(attempt_id: &str, instance: &str, mode: &str) -> Value {
+    // Each status poll requests fresh read-only account health. Reusing the
+    // onboarding identity would replay an earlier failure after local repair.
+    // Explicit broker commands retain their normal durable replay semantics.
+    json!({"instanceRef":instance,"mode":mode,
+        "idempotency_key":format!("{attempt_id}:verify:{:032x}",rand::random::<u128>())})
+}
+
 fn tool_payload(service: &TradeAssemblyService, name: &str, args: Value) -> Result<Value, String> {
     let response = service.call_mcp_tool(name, args);
     let value = &response["structuredContent"];
@@ -806,6 +814,20 @@ fn valid_host(state: &BrowserOnboarding, headers: &HeaderMap, mutation: bool) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verification_polls_use_fresh_keys_without_changing_account_or_mode() {
+        let first = super::verification_arguments("attempt-1", "alpaca-paper", "paper");
+        let retry = super::verification_arguments("attempt-1", "alpaca-paper", "paper");
+        assert_ne!(first["idempotency_key"], retry["idempotency_key"]);
+        for arguments in [first, retry] {
+            assert_eq!(arguments["instanceRef"], "alpaca-paper");
+            assert_eq!(arguments["mode"], "paper");
+            assert!(arguments["idempotency_key"]
+                .as_str()
+                .unwrap()
+                .starts_with("attempt-1:verify:"));
+        }
+    }
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, BrowserOnboarding) {

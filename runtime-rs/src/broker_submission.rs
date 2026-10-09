@@ -5,8 +5,8 @@
 //! remains the responsibility of the duplicate-safe plugin operation adapter.
 
 use crate::capability::local_full_entitlements;
+use crate::live_execution_checks::account_observation_matches;
 use crate::live_execution_checks::apply_current_credential_status;
-use crate::live_execution_checks::live_account_observation_matches;
 use crate::local_live_authorization::{
     binding_from_observed_state, check_local_live_mandate, check_persisted_run_authority,
     deployment_actor,
@@ -60,6 +60,7 @@ pub struct BrokerSubmissionDependencies {
 /// permit and cannot be used to dispatch without the final authorization step.
 #[derive(Clone, Debug)]
 pub struct BrokerCurrentState {
+    pub mode: String,
     pub run: Value,
     pub activation: Value,
     pub config: Value,
@@ -72,7 +73,7 @@ pub struct BrokerCurrentState {
     pub instance: Value,
     pub manifest: Value,
     pub package: crate::ports::InstalledPluginPackage,
-    pub mandate: crate::local_live_authorization::LocalLiveMandate,
+    pub mandate: Option<crate::local_live_authorization::LocalLiveMandate>,
     pub actor: crate::local_live_authorization::VerifiedLiveActor,
     pub now_ms: i64,
 }
@@ -135,21 +136,23 @@ pub fn build_order_intent(
             serde_json::json!({"kind":"deterministic", "attemptId":request.attempt_id})
         }
     };
+    let mandate = state.mandate.as_ref();
+    let config_digest = crate::spec::canonical_hash(&state.config)?;
     let intent = serde_json::json!({
         "schemaVersion": "tradeassembly.broker_order_intent.v1",
         "actor": state.actor,
         "executionProvenance": provenance,
-        "accountRef": state.mandate.binding.account_ref,
-        "configId": state.mandate.binding.execution_config_id,
-        "configDigest": state.mandate.binding.execution_config_digest,
-        "mandateId": state.mandate.mandate_id,
-        "mandateDigest": state.mandate.digest,
+        "accountRef": required_value(&state.selected, "accountRef")?,
+        "configId": required_value(&state.config, "configId")?,
+        "configDigest": config_digest,
+        "mandateId": mandate.map(|value| value.mandate_id.as_str()),
+        "mandateDigest": mandate.map(|value| value.digest.as_str()),
         "leaseResource": state.current_lease.resource,
         "leaseOwner": state.current_lease.owner,
         "leaseFence": state.current_lease.fencing_token,
         "leaseExpiresAtMs": state.current_lease.expires_at_ms,
-        "strategyVersion": state.mandate.binding.strategy_version,
-        "strategyHash": state.mandate.binding.strategy_hash,
+        "strategyVersion": required_value(&state.run, "strategyVersionId")?,
+        "strategyHash": required_value(&state.run, "strategySpecHash")?,
         "activationId": request.activation_id,
         "correlationId": request.correlation_id,
         "idempotencyKey": context.idempotency_key.as_str(),
@@ -183,6 +186,9 @@ pub fn load_current_state(
     context: &SideEffectContext,
 ) -> Result<BrokerCurrentState, String> {
     let now_ms = deps.clock.trusted_now_ms()?;
+    if !matches!(request.mode.as_str(), "paper" | "live") {
+        return Err("broker_submission_mode_invalid".into());
+    }
     let activation_id = required(&request.activation_id, "activation_id_missing")?;
     let run_id = format!("run_{activation_id}");
     let run = read(deps.storage.as_ref(), RUNS_NS, &run_id)?;
@@ -213,6 +219,8 @@ pub fn load_current_state(
         || config["orchestrator"].as_str().unwrap_or("deterministic")
             != run["orchestrator"].as_str().unwrap_or("deterministic")
         || activation["mode"] != run["mode"]
+        || config["mode"] != run["mode"]
+        || activation["accountRef"] != config["accountRef"]
         || activation["localLiveAuthority"] != run["localLiveAuthority"]
         || activation["capabilityGraphRevisionId"] != run["capabilityGraphRevisionId"]
         || activation["strategyVersionId"] != run["strategyVersionId"]
@@ -273,7 +281,7 @@ pub fn load_current_state(
         return Err("credential_not_configured".into());
     }
     let instance = apply_current_credential_status(stored_instance, &credential_status);
-    if !live_account_observation_matches(&instance, &selected, now_ms) {
+    if !account_observation_matches(&instance, &selected, now_ms, &request.mode) {
         return Err("live_account_observation_invalid".into());
     }
 
@@ -316,14 +324,31 @@ pub fn load_current_state(
         return Err("capability_selection_stale".into());
     }
 
-    let current =
-        binding_from_observed_state(&config, &revision, &selected, &instance, &deps.owner)
-            .map_err(str::to_string)?;
-    let mandate =
-        check_persisted_run_authority(deps.storage.as_ref(), &run, &config, &current, now_ms)
-            .map_err(|error| format!("live_authority_invalid:{error:?}"))?;
-    let actor = serde_json::from_value(run["localLiveAuthority"]["actor"].clone())
-        .map_err(|_| "live_authority_actor_invalid".to_string())?;
+    let current = if request.mode == "live" {
+        Some(
+            binding_from_observed_state(&config, &revision, &selected, &instance, &deps.owner)
+                .map_err(str::to_string)?,
+        )
+    } else {
+        None
+    };
+    let mandate = current
+        .as_ref()
+        .map(|current| {
+            check_persisted_run_authority(deps.storage.as_ref(), &run, &config, current, now_ms)
+                .map_err(|error| format!("live_authority_invalid:{error:?}"))
+        })
+        .transpose()?;
+    let actor = if request.mode == "live" {
+        serde_json::from_value(run["localLiveAuthority"]["actor"].clone())
+            .map_err(|_| "live_authority_actor_invalid".to_string())?
+    } else {
+        crate::local_live_authorization::VerifiedLiveActor {
+            actor_kind: "user".into(),
+            issuer: deps.owner.issuer.clone(),
+            subject: deps.owner.subject.clone(),
+        }
+    };
 
     let (provenance, lease, actor) = if let Some(attempt) = attempt {
         if !attempt_fencing_matches(request, &attempt) {
@@ -367,7 +392,7 @@ pub fn load_current_state(
         )?;
         if deployment_record["deployment"]["desiredState"] != "active"
             || deployment_record["deployment"]["executionConfigVersionId"] != config["configId"]
-            || deployment_record["deployment"]["mode"] != "live"
+            || deployment_record["deployment"]["mode"] != request.mode
         {
             return Err("agent_deployment_binding_invalid".into());
         }
@@ -376,19 +401,21 @@ pub fn load_current_state(
             agent.deployment_id(),
             agent.binding_digest(),
         );
-        let mandate_id = run["localLiveAuthority"]["mandateId"]
-            .as_str()
-            .ok_or_else(|| "live_mandate_id_missing".to_string())?;
-        let mandate = check_local_live_mandate(
-            deps.storage.as_ref(),
-            mandate_id,
-            &current,
-            &agent_actor,
-            now_ms,
-        )
-        .map_err(|error| format!("agent_live_authority_invalid:{error:?}"))?;
-        if mandate.digest != run["localLiveAuthority"]["mandateDigest"] {
-            return Err("live_authority_invalid".into());
+        if let Some(current) = current.as_ref() {
+            let mandate_id = run["localLiveAuthority"]["mandateId"]
+                .as_str()
+                .ok_or_else(|| "live_mandate_id_missing".to_string())?;
+            let mandate = check_local_live_mandate(
+                deps.storage.as_ref(),
+                mandate_id,
+                current,
+                &agent_actor,
+                now_ms,
+            )
+            .map_err(|error| format!("agent_live_authority_invalid:{error:?}"))?;
+            if mandate.digest != run["localLiveAuthority"]["mandateDigest"] {
+                return Err("live_authority_invalid".into());
+            }
         }
         let provenance = BrokerExecutionProvenance::Agent {
             run_id: agent.run_id().to_string(),
@@ -398,6 +425,7 @@ pub fn load_current_state(
         (provenance, lease, agent_actor)
     };
     Ok(BrokerCurrentState {
+        mode: request.mode.clone(),
         run,
         activation,
         config,

@@ -1,9 +1,65 @@
 # Extracted Core architecture
 
+Verification remains a fixed Rust xtask command plane. The approved October 3
+coverage amendment executes full unit/integration tests once through nextest and
+doctests explicitly, preserving scanners/security and separate release opt-ins.
+Public Core preflight checks only local inputs/tools/revision/headroom; hosted
+authentication and service qualification remain the owning release job's boundary.
+
 Core is a portable Rust workspace. CLI, HTTP, GraphQL and MCP share the runtime
 service/port boundary. identity-sdk, plugin-sdk and sightline-sidecar are internal
 workspace crates. Brokers and Warden remain explicit external executable or
 package contracts, not private sibling-source dependencies.
+
+OAuth fault qualification uses an archived frozen Core source tree with two
+test-only identity/HTTP boundary hooks. Production control flow and shipping
+bytes remain unchanged. Independent real local custody/SQLite readback at a
+scripted ACK sink proves source ordering and distinct-process lost-response
+recovery, not deployed identity, provider HTTP or packaged fault execution.
+
+Hosted connection profiles contain public deployment inputs only. Their optional
+`organizationId` is a deliberate operator scope, not a required customer default.
+Customer profiles leave it null/omitted, allowing WorkOS and Hub to derive the
+tenant from verified identity (including Hub's documented personal scope).
+Explicit organization profiles still enforce that organization. No profile may
+supply an actor, tenant authority, credential or entitlement in place of Hub.
+
+The named personal-signup candidate amendment permits a verified token without
+an organization to request Hub's real self-service projection without a role
+permission claim. Custody requires exact subject and `user:{sub}` tenant binding;
+stored-session restart and refresh retain that binding. Organization sessions
+still require their configured binding and identity permission. This source
+repair does not inherit the frozen binary's qualification; distribution gates
+must requalify changed native bytes and dependent captures.
+
+Distribution is a separate Rust installer around locked payload artifacts. npm
+glue selects an exact-version native package; it never builds customer source.
+Immutable payloads, a stable digest-bound Warden authority path, persistent state,
+and a shared launcher/exclusive installer lock keep delivery separate from runtime
+semantics. Installation registers the bundled Alpaca package through real local
+Warden, then reaps that temporary authority. Ongoing policy supervision is an
+explicit next command, not a hidden trading or agent activation. See
+docs/distribution.md for platform qualification and stopped-only upgrade limits.
+New native inputs are separately inventoried with `distribution-freeze-native`,
+binding binary digests, architecture headers and pinned Node/SRT versions.
+Freezing inputs neither grants authority nor supplies native qualification.
+Published first-release delivery has a separate `registry/qualification.json`:
+actual npm/pnpm installs and frozen-baseline upgrade/rollback run in isolated
+local rigs against captured exact registry bytes. This preserves the accepted
+native receipt; source/input/log bindings are checked independently. No hosted
+source, credentials, broker orders or strategy activation enter this runner.
+Native qualification is a separate Rust command that runs the installed
+artifact against isolated local state and a controlled broker, binds the
+tested npm archives and test-harness revision, and emits a receipt only on
+passing target-local processes. The five-target aggregate verifier, not one
+native receipt, decides candidate and registry readiness.
+
+Native Windows distribution and local owner/setup storage share the Core-owned
+`platform/windows_private.rs` adapter. It validates owner-only DACLs and rejects
+reparse points using the actual file handles, protects new state before writing
+secrets, and publishes synced files through write-through atomic moves. It does
+not depend on private Warden source. Warden independently implements the same
+external authority-storage contract; native qualification remains required.
 
 Agents and deterministic evaluation use the same versioned strategy, authority,
 risk, journal and side-effect machinery. Agent submission does not require a
@@ -53,3 +109,42 @@ same local idempotency boundary.
 See docs/rust-rewrite-harness.md for owning gates and docs/test-ownership.md for
 the extraction test split. Neither the source archive smoke nor an isolated build
 proves provider integration, Relay deployment, or the full customer journey.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.
+
+## Launch compatibility gate
+
+`just contract-test` checks the owning interface behavior.
+`contracts/compatibility.json` declares independently versioned launch contracts.
+Compatibility does not waive artifact integrity, expected deployment identity,
+job/receipt replay bindings, or existing state/authority migration restrictions.
+The coordinator owns the finite cross-component gate and exact release lock;
+its policy is `docs/compatibility.md`. No provider or agent acceptance is required
+for this local gate, and passing it is not production release readiness.
+
+The Core runner exposes read-only `--compatibility` without altering the existing
+`--build-identity` response. Core remains independent of private repositories.
+
+## Targeted Rust build boundaries
+
+`tradeassembly-strategy` owns StrategySpec, strategy evaluation and backtest
+accounting. `tradeassembly-simulation` owns Monte Carlo and robustness algorithms.
+The runtime re-exports their existing module paths; wire formats and numerical
+behavior are unchanged. `tradeassembly-core-binaries` owns the five executable
+targets and their compiled revision; runtime/domain libraries do not embed Git
+identity. Startup installs one immutable process identity, and legal receipt
+verification fails closed without it. Exact receipt/replay bindings remain.
+
+The default xtask has no runtime dependency. It delegates `plugin-contract` and
+`bundle-local` to `tradeassembly-runtime-tools`, preserving real implementations.
+Binary-dependent tests now belong to the binary package; owning domain tests
+move with their modules. Publication and source scanners cover every new crate.
+`just build-target PACKAGE BINARY` and `just test-package PACKAGE` are targeted
+iteration commands; `just build-artifacts` selects the CLI and Core runner.
+Full verification and distribution qualification retain their existing gates.

@@ -4,35 +4,15 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license-file = "../LICENSE"
-build = "build.rs"
-
-[[bin]]
-name = "tradeassembly"
-path = "src/bin/tradeassembly.rs"
-
-[[bin]]
-name = "tradeassembly-core-runner"
-path = "src/bin/tradeassembly_core_runner.rs"
-
-[[bin]]
-name = "tradeassembly-connected-runner"
-path = "src/bin/tradeassembly_connected_runner.rs"
-
-[[bin]]
-name = "tradeassembly-reach-node"
-path = "src/bin/tradeassembly_reach_node.rs"
-
-[[bin]]
-name = "tradeassembly-sandbox"
-path = "src/bin/tradeassembly_sandbox.rs"
 
 [dependencies]
+tradeassembly-strategy = { path = "../strategy" }
+tradeassembly-simulation = { path = "../simulation" }
 aes-gcm = "0.10"
 async-graphql = "7"
 async-nats = "0.49.1"
 axum = "0.8"
 base64 = "0.22"
-cel-interpreter = { package = "cel", version = "0.14.0", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = "2"
@@ -50,7 +30,6 @@ schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_json_canonicalizer = "0.3.2"
-serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 tar = "0.4"
@@ -61,6 +40,16 @@ tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "ne
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 url = "2"
 webbrowser = "1"
+
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+getrandom = "0.3"
+hex = "0.4"
+windows-permissions = "0.2.4"
+winapi-util = "0.1.11"
+
+[target.'cfg(windows)'.dev-dependencies]
+fs2 = "0.4"
 
 [dev-dependencies]
 openidconnect = "4.0.1"

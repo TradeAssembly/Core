@@ -3831,8 +3831,33 @@ mod tests {
             package_source: None,
             offline: true,
             skip_default_plugins: false,
-        })
-        .expect("supported default package request");
+        });
+        let catalogue: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../plugin-contracts/default-external-plugins.json"
+        ))
+        .unwrap();
+        let selected = catalogue["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["selectedByDefault"] == true)
+            .unwrap();
+        let target = super::runtime_target();
+        let supported = selected["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|package| package["target"] == target);
+        if !supported {
+            assert_eq!(
+                request.err().unwrap(),
+                json!({"ok":true,"status":"skipped",
+                "reason":"unsupported_target","target":target,
+                "pluginRef":selected["pluginRef"],"optional":true})
+            );
+            return;
+        }
+        let request = request.expect("supported default package request");
 
         assert!(request.offline);
         assert!(!request.source.is_empty());

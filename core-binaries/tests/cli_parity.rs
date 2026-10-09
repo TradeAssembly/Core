@@ -122,8 +122,22 @@ fn plugins_cli_routes_instance_lifecycle_through_shared_application_commands() {
         .expect("sim instance");
     assert_eq!(sim["enabled"], false);
 
-    let offline = Cli::try_parse_from(["tradeassembly", "plugins", "install-default", "--offline"])
-        .expect("offline default install parses");
+    // Exercise package failure independently of which optional default packages
+    // have been published for this host. The launch catalogue currently has
+    // only a Mac ARM default package; that does not change offline admission.
+    let offline = Cli::try_parse_from([
+        "tradeassembly",
+        "plugins",
+        "install",
+        "--source",
+        "https://example.invalid/offline-plugin.tar.gz",
+        "--package-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--manifest-sha256",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--offline",
+    ])
+    .expect("offline package install parses");
     let response = execute_command(&service, offline.command);
     assert_eq!(
         response["error"]["code"], "plugin_package_install_failed",

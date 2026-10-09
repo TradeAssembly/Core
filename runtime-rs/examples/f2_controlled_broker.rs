@@ -1,6 +1,6 @@
 //! Offline test-only controlled broker fixture.
 use rusqlite::{params, Connection};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::{self, BufReader};
 use tradeassembly_plugin_sdk::{
@@ -9,7 +9,6 @@ use tradeassembly_plugin_sdk::{
 };
 
 fn run() -> Result<(), &'static str> {
-    const ACCOUNT_REF: &str = "account://mandate-live/controlled";
     if !std::fs::symlink_metadata(".f2-controlled-broker-fixture")
         .map(|m| m.file_type().is_file())
         .unwrap_or(false)
@@ -21,6 +20,11 @@ fn run() -> Result<(), &'static str> {
         DEFAULT_MAX_ENVELOPE_BYTES,
     )
     .map_err(|_| "controlled_request_invalid")?;
+    let account_ref = match request.context.mode.as_str() {
+        "paper" => "account://mandate-paper/controlled",
+        "live" => "account://mandate-live/controlled",
+        _ => return Err("controlled_mode_invalid"),
+    };
     let body = match &request.payload {
         RequestPayload::Operation(body) | RequestPayload::BrokerOrder(body) => body,
         _ => return Err("controlled_operation_required"),
@@ -49,8 +53,10 @@ fn run() -> Result<(), &'static str> {
             .map_err(|_| "controlled_response_write_failed");
     }
     if request.metadata.operation_id != "broker.live_order_submit"
+        && request.metadata.operation_id != "broker.paper_order_submit"
         && request.metadata.operation_id != "broker.order_submit"
         && request.metadata.operation_id != "broker.order_lookup"
+        && request.metadata.operation_id != "broker.order_lookup.paper"
     {
         return Err("controlled_operation_unsupported");
     }
@@ -67,7 +73,72 @@ fn run() -> Result<(), &'static str> {
     if std::fs::symlink_metadata(db_path).is_ok_and(|m| !m.file_type().is_file()) {
         return Err("controlled_state_path_invalid");
     }
-    let is_lookup = request.metadata.operation_id == "broker.order_lookup";
+    let is_lookup = matches!(
+        request.metadata.operation_id.as_str(),
+        "broker.order_lookup" | "broker.order_lookup.paper"
+    );
+    if let Some(sink_url) = body["config"]["sink_url"].as_str() {
+        let response = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|_| "controlled_sink_unavailable")?
+            .post(sink_url)
+            .json(&json!({"operation":request.metadata.operation_id,
+                "accountRef":account_ref,"body":body}))
+            .send()
+            .map_err(|_| "controlled_sink_unavailable")?;
+        if is_lookup && response.status().as_u16() == 404 {
+            // An explicit negative lookup is evidence of absence; a timeout or
+            // other sink failure is not. The real host maps this provider code
+            // to a durable absent recovery outcome without replaying the order.
+            let absent = PluginResponse {
+                schema_version: "1".into(),
+                request_id: request.request_id,
+                status: ResponseStatus::Failed,
+                response_schema: "schema://tradeassembly.f2-controlled-broker/order@1".into(),
+                payload: json!({}),
+                provider_outcome: ProviderOutcome {
+                    code: "provider_order_absent".into(),
+                    provider_request_id: None,
+                    provider_reference: None,
+                },
+                reconciliation: Reconciliation::Required,
+                evidence_references: vec![],
+                redacted_diagnostics: vec![],
+            };
+            return write_response(io::stdout().lock(), &absent, DEFAULT_MAX_ENVELOPE_BYTES)
+                .map_err(|_| "controlled_response_write_failed");
+        }
+        if !response.status().is_success() {
+            return Err("controlled_sink_unavailable");
+        }
+        let payload: Value = response.json().map_err(|_| "controlled_sink_invalid")?;
+        let provider_order_id = payload["providerOrderId"]
+            .as_str()
+            .ok_or("controlled_sink_invalid")?
+            .to_string();
+        let plugin_response = PluginResponse {
+            schema_version: "1".into(),
+            request_id: request.request_id,
+            status: ResponseStatus::Succeeded,
+            response_schema: "schema://tradeassembly.f2-controlled-broker/order@1".into(),
+            payload,
+            provider_outcome: ProviderOutcome {
+                code: "ok".into(),
+                provider_request_id: None,
+                provider_reference: Some(provider_order_id),
+            },
+            reconciliation: Reconciliation::Reconciled,
+            evidence_references: vec![],
+            redacted_diagnostics: vec![],
+        };
+        return write_response(
+            io::stdout().lock(),
+            &plugin_response,
+            DEFAULT_MAX_ENVELOPE_BYTES,
+        )
+        .map_err(|_| "controlled_response_write_failed");
+    }
     if is_lookup && !std::path::Path::new(db_path).exists() {
         return Err("controlled_order_not_found");
     }
@@ -88,7 +159,7 @@ fn run() -> Result<(), &'static str> {
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "controlled_storage_failed")?;
-        tx.execute("INSERT INTO orders(client_id,account_ref,provider_order_id,symbol,side,quantity,order_type,time_in_force,digest,submissions) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(client_id) DO UPDATE SET submissions=submissions+1", params![client_id, ACCOUNT_REF, client_id, body["symbol"].as_str().ok_or("controlled_request_invalid")?, body["side"].as_str().ok_or("controlled_request_invalid")?, body["quantity"].as_str().ok_or("controlled_request_invalid")?, body["orderType"].as_str().ok_or("controlled_request_invalid")?, body["timeInForce"].as_str().ok_or("controlled_request_invalid")?, digest]).map_err(|_| "controlled_storage_failed")?;
+        tx.execute("INSERT INTO orders(client_id,account_ref,provider_order_id,symbol,side,quantity,order_type,time_in_force,digest,submissions) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(client_id) DO UPDATE SET submissions=submissions+1", params![client_id, account_ref, client_id, body["symbol"].as_str().ok_or("controlled_request_invalid")?, body["side"].as_str().ok_or("controlled_request_invalid")?, body["quantity"].as_str().ok_or("controlled_request_invalid")?, body["orderType"].as_str().ok_or("controlled_request_invalid")?, body["timeInForce"].as_str().ok_or("controlled_request_invalid")?, digest]).map_err(|_| "controlled_storage_failed")?;
         let stored: String = tx
             .query_row(
                 "SELECT digest FROM orders WHERE client_id=?1",

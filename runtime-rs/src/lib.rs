@@ -1,3 +1,4 @@
+pub mod build_identity;
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
 pub mod adapters;
@@ -11,7 +12,7 @@ pub mod archive_outbox;
 pub mod attribution_journal;
 pub mod audit;
 pub mod auth;
-pub mod backtest_accounting;
+pub use tradeassembly_strategy::backtest_accounting;
 pub mod backtest_contracts;
 pub mod backtest_engine;
 pub mod backtest_report;
@@ -49,10 +50,11 @@ pub(crate) mod live_execution_checks;
 pub mod local_install;
 pub mod local_live_authorization;
 pub mod local_owner_identity;
+
 pub mod marketdata;
 pub mod mcp;
 pub mod messages;
-pub mod monte_carlo;
+pub use tradeassembly_simulation::monte_carlo;
 pub mod onboarding;
 pub mod openapi;
 pub mod order_updates;
@@ -69,7 +71,7 @@ pub mod research_comparison;
 pub mod research_notebook;
 pub mod risk;
 pub mod robustness_contracts;
-pub mod robustness_engine;
+pub use tradeassembly_simulation::robustness_engine;
 pub mod robustness_projection;
 pub mod runtime_config;
 pub mod scheduler;
@@ -77,11 +79,14 @@ pub mod seed;
 pub mod selector;
 pub mod service;
 pub mod simbroker;
-pub mod spec;
+pub use tradeassembly_strategy::spec;
 pub mod storage;
-pub mod strategy_kernel;
+pub use tradeassembly_strategy::strategy_kernel;
 pub mod strategy_lifecycle;
 pub mod surfaces;
 pub mod ta;
 pub mod warden_launchd;
+#[cfg(windows)]
+#[path = "../../platform/windows_private.rs"]
+pub mod windows_private;
 pub mod workos_identity;

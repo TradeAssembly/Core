@@ -1,5 +1,34 @@
 # Extraction decisions
 
+- The named 2026-10-03 personal-signup repair changes candidate source, not the
+  retained frozen payload. A verified no-organization session defers personal
+  self-service authority to Hub's registered-client policy; exact subject and
+  derived tenant bind custody/restart/refresh. Organization bindings and role
+  permissions remain enforced. Changed binaries and dependent observations must
+  be qualified through existing owners; prior qualification is not inherited.
+
+- Frozen OAuth source-fault proof is separate from packaged production positive
+  proof. Do not change production profiles, trust or transport to inject faults.
+  Compile the descriptor's archived Core revision and dependency lock with only
+  an exactly reconstructible test overlay. Preserve native bytes and accepted
+  producer pins. Source fault results never imply full production onboarding.
+
+- Registry qualification is additive evidence, not a rewrite of native
+  qualification. The first-release published gate requires a separate typed
+  receipt bound to the original native receipt, five-package registry capture,
+  fixed passing process logs and exact test sources. It runs existing installer
+  upgrade/rollback acceptance against real captured registry bytes. The native
+  candidate gate and frozen shipping payloads remain unchanged.
+
+- Frozen F2 macOS arm64 bytes and the M0–M6 parent release lock are not rebuilt or
+  re-signed for npm delivery. New targets need independent native evidence. The
+  first distribution format accepts only prerelease versions on `beta`; no Apple
+  payment/notarization or lifecycle install scripts. Warden digest/state migrations
+  are excluded from v1 upgrades, which require a stopped rig and preserve identity.
+  Distribution proof is distinct from runtime and public-release qualification.
+  Native freezing requires the actual host, exact input digests and pinned
+  Node/SRT versions. It cannot replace controlled-sink or OS-enforcement tests.
+
 - `portfolio_reservations` is the initial accounting kernel, not an authorization
   tool or activated broker feature. It uses an owner/account-scoped atomic storage
   expectation to reserve observed gross exposure plus all unreconciled holds,
@@ -81,5 +110,58 @@
   sink proof remains the separate unchanged M2 gate.
 - A private local checkpoint enables source/archive checks; it is not a release
   approval, pin update, merge, or public publication.
+- Customer hosted connection profiles do not force an operator's WorkOS
+  organization. `organizationId` may be null/omitted; signed identity and Hub's
+  personal-tenant rule remain authoritative. Explicit nonempty organization
+  scopes retain their binding; blank scopes are invalid. Endpoint/client and
+  entitlement checks are unchanged. A binary built before this contract repair
+  is not qualified for the tenant-neutral profile and must not be relabeled.
+- October 3 approved verification coverage: one full nextest unit/integration pass
+  plus explicit workspace doctests replaces duplicate full cargo-test/nextest
+  execution. Security/source/public gates and release opt-ins remain unchanged.
+  Cheap strict release prerequisites run first; dirty development is an explicit
+  mode, never release proof. Non-runtime harness/docs changes do not independently
+  invalidate unchanged native behavior; retain exact producer and verifier refs.
 - No scheduler rewrite, extra brokers, UI buildout or hosted agent orchestration
   is introduced by this extraction packet. Frozen F2 M0–M8 criteria are unchanged.
+
+## Local CI setup phase
+
+`just setup` prepares locked dependencies; `just check` runs developer feedback;
+`just build` produces local native binaries; `just verify` preserves the complete
+clean-source gate. None requires Codex or a CI-provider run. The coordinator's
+local CI manifest owns separate integration tests and records gaps; no deployment
+or product repair is authorized by a passing local baseline.
+
+## Launch compatibility gate
+
+`just contract-test` checks the owning interface behavior.
+`contracts/compatibility.json` declares independently versioned launch contracts.
+Compatibility does not waive artifact integrity, expected deployment identity,
+job/receipt replay bindings, or existing state/authority migration restrictions.
+The coordinator owns the finite cross-component gate and exact release lock;
+its policy is `docs/compatibility.md`. No provider or agent acceptance is required
+for this local gate, and passing it is not production release readiness.
+
+The Core runner exposes read-only `--compatibility` without altering the existing
+`--build-identity` response. Core remains independent of private repositories.
+
+## Targeted Rust build boundaries
+
+`tradeassembly-strategy` owns StrategySpec, strategy evaluation and backtest
+accounting. `tradeassembly-simulation` owns Monte Carlo and robustness algorithms.
+The runtime re-exports their existing module paths; wire formats and numerical
+behavior are unchanged. `tradeassembly-core-binaries` owns the five executable
+targets and their compiled revision; runtime/domain libraries do not embed Git
+identity. Startup installs one immutable process identity, and legal receipt
+verification fails closed without it. Exact receipt/replay bindings remain.
+
+The default xtask has no runtime dependency. It delegates `plugin-contract` and
+`bundle-local` to `tradeassembly-runtime-tools`, preserving real implementations.
+Binary-dependent tests now belong to the binary package; owning domain tests
+move with their modules. Publication and source scanners cover every new crate.
+`just build-target PACKAGE BINARY` and `just test-package PACKAGE` are targeted
+iteration commands; `just build-artifacts` selects the CLI and Core runner.
+Full verification and distribution qualification retain their existing gates.
+
+The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.

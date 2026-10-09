@@ -1,4 +1,4 @@
-//! Concrete, local admission boundary for live broker orders.
+//! Concrete, local admission boundary for Paper and Live broker orders.
 //!
 //! This module deliberately stops at the finance-authority C5 boundary.  It
 //! does not dispatch to a provider and it never treats an accepted submission
@@ -18,6 +18,24 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 const INTENTS_NS: &str = "broker_order_intents";
+
+// Renewal extends liveness, not the identity or lifetime of a signed intent.
+// Keep the original deadline; every other authority/input field stays exact.
+fn same_authority_during_renewal(bound: &Value, current: &Value, now_ms: i64) -> bool {
+    let Some(deadline) = bound["leaseExpiresAtMs"].as_i64() else {
+        return false;
+    };
+    if deadline <= now_ms
+        || current["leaseExpiresAtMs"]
+            .as_i64()
+            .is_none_or(|renewed| renewed < deadline)
+    {
+        return false;
+    }
+    let mut normalized = current.clone();
+    normalized["leaseExpiresAtMs"] = bound["leaseExpiresAtMs"].clone();
+    normalized == *bound
+}
 
 pub struct LocalBrokerSubmissionBoundary {
     deps: BrokerSubmissionDependencies,
@@ -88,6 +106,22 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
     ) -> Result<BrokerSubmissionPermit, String> {
         let (price_ref, receipt_id) = Self::receipt_reference(request)?;
         let state = load_current_state(&self.deps, request, context)?;
+        if state.mode == "paper"
+            && !state.manifest["manifest"]["operations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|operation| {
+                    operation["id"] == "broker.order_lookup.paper"
+                        && operation["capability"] == "broker.order_lookup.paper"
+                        && operation["effect"] == "read"
+                        && operation["traits"]["modes"]
+                            .as_array()
+                            .is_some_and(|modes| modes.iter().any(|mode| mode == "paper"))
+                })
+        {
+            return Err("broker_paper_recovery_operation_missing".into());
+        }
         let (base_intent, _) = build_order_intent(&state, request, context, prepared)?;
         let symbol = required_value(&base_intent["order"], "symbol")?;
         let price_evidence = prices::load_price_evidence(&self.deps, &state, symbol, &receipt_id)?;
@@ -109,7 +143,11 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         // or configuration change during that work invalidates this attempt.
         let current = load_current_state(&self.deps, request, context)?;
         let (fresh_base, _) = build_order_intent(&current, request, context, prepared)?;
-        if fresh_base != base_intent {
+        if !same_authority_during_renewal(
+            &base_intent,
+            &fresh_base,
+            self.deps.clock.trusted_now_ms()?,
+        ) {
             return Err("broker_submission_state_changed".into());
         }
         let fresh_price = prices::load_price_evidence(&self.deps, &current, symbol, &receipt_id)?;
@@ -128,17 +166,22 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         let authority = AuthorityContext {
             actor: current.actor.subject.clone(),
             surface: "broker_boundary".into(),
-            account_mode: "live".into(),
+            account_mode: current.mode.clone(),
+        };
+        let (command_name, side_effect_class) = if current.mode == "live" {
+            ("order.submit.live", "live_order")
+        } else {
+            ("order.submit.paper", "paper_order")
         };
         let envelope = ControlPlaneCommandEnvelope {
             schema_version: "tradeassembly.control_plane.command.v1".into(),
             command_id: format!("cmd_{}", hash_text(context.idempotency_key.as_str())),
             correlation_id: request.correlation_id.clone(),
-            command_name: "order.submit.live".into(),
+            command_name: command_name.into(),
             command_group: "order".into(),
             source_interface: "broker_boundary".into(),
-            target_object: Some(current.mandate.binding.account_ref.clone()),
-            side_effect_class: "live_order".into(),
+            target_object: Some(required_value(&current.selected, "accountRef")?.into()),
+            side_effect_class: side_effect_class.into(),
             authority,
             idempotency_key: context.idempotency_key.clone(),
             idempotency_requirement: "required".into(),
@@ -153,7 +196,11 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         // mandate, configuration, and price before handing out the permit.
         let post_c5 = load_current_state(&self.deps, request, context)?;
         let (post_c5_base, _) = build_order_intent(&post_c5, request, context, prepared)?;
-        if post_c5_base != base_intent {
+        if !same_authority_during_renewal(
+            &base_intent,
+            &post_c5_base,
+            self.deps.clock.trusted_now_ms()?,
+        ) {
             return Err("broker_submission_state_changed_after_authorization".into());
         }
         let post_c5_price = prices::load_price_evidence(&self.deps, &post_c5, symbol, &receipt_id)?;
@@ -197,4 +244,47 @@ fn hash_text(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_authority_during_renewal;
+    use serde_json::json;
+
+    #[test]
+    fn renewal_preserves_authority_but_cannot_extend_signed_deadline() {
+        let bound = json!({"leaseExpiresAtMs":100, "leaseOwner":"owner",
+            "leaseFence":7, "leaseResource":"rig", "configDigest":"config",
+            "mandateDigest":"mandate", "packageSha256":"package",
+            "order":{"quantityMicros":1}});
+        assert!(same_authority_during_renewal(&bound, &bound, 99));
+        let mut renewed = bound.clone();
+        renewed["leaseExpiresAtMs"] = json!(200);
+        assert!(same_authority_during_renewal(&bound, &renewed, 99));
+        assert!(!same_authority_during_renewal(&bound, &renewed, 100));
+        assert!(!same_authority_during_renewal(&bound, &renewed, 101));
+        renewed["leaseExpiresAtMs"] = json!(99);
+        assert!(!same_authority_during_renewal(&bound, &renewed, 90));
+        for field in [
+            "leaseOwner",
+            "leaseFence",
+            "leaseResource",
+            "configDigest",
+            "mandateDigest",
+            "packageSha256",
+            "order",
+        ] {
+            let mut changed = bound.clone();
+            changed["leaseExpiresAtMs"] = json!(200);
+            changed[field] = json!("different");
+            assert!(
+                !same_authority_during_renewal(&bound, &changed, 90),
+                "{field}"
+            );
+        }
+        let mut malformed = bound.clone();
+        malformed["leaseExpiresAtMs"] = json!("100");
+        assert!(!same_authority_during_renewal(&bound, &malformed, 90));
+        assert!(!same_authority_during_renewal(&malformed, &bound, 90));
+    }
 }

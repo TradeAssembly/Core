@@ -633,6 +633,10 @@ fn post_json(
     token: &str,
     body: Value,
 ) -> Result<Value, &'static str> {
+    #[cfg(test)]
+    if fault_tests::active() {
+        return fault_tests::post_json(url, token, body);
+    }
     if token.is_empty() || token.len() > 16_384 {
         return Err("plugin_oauth_actor_token_invalid");
     }
@@ -801,6 +805,10 @@ fn actor_token(
     config: &crate::runtime_config::RuntimeConfig,
     actor: &str,
 ) -> Result<String, &'static str> {
+    #[cfg(test)]
+    if fault_tests::active() {
+        return fault_tests::actor_token(actor);
+    }
     let runtime =
         tokio::runtime::Runtime::new().map_err(|_| "plugin_oauth_identity_unavailable")?;
     runtime
@@ -878,6 +886,10 @@ fn scopes_allowed(descriptor: &Value, requested: &[String]) -> bool {
         .iter()
         .all(|scope| declared.iter().any(|entry| entry["id"] == *scope))
 }
+
+#[cfg(test)]
+#[path = "plugin_oauth_fault_tests.rs"]
+mod fault_tests;
 
 #[cfg(test)]
 mod tests {

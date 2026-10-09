@@ -37,6 +37,8 @@ struct BootstrapRecord {
     finished_at_ms: Option<i64>,
     identity: Option<Value>,
     error: Option<String>,
+    #[serde(default)]
+    browser_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +82,15 @@ impl IdentityBootstrap {
         if self.customer_auth_unconfigured {
             return Ok(configuration_required());
         }
+        if self.manager.uses_local_owner() {
+            return Ok(local_owner_result());
+        }
+        if let Some(record) = self.read_record()? {
+            if matches!(record.phase, BootstrapPhase::Pending) && record.process_id == process_id()
+            {
+                return Ok(record.to_value());
+            }
+        }
         if let Ok(identity) = self.manager.current_identity().await {
             return Ok(authenticated_result(&identity, true));
         }
@@ -104,6 +115,7 @@ impl IdentityBootstrap {
             finished_at_ms: None,
             identity: None,
             error: None,
+            browser_url: None,
         };
         self.write_record(&record)?;
 
@@ -127,7 +139,17 @@ impl IdentityBootstrap {
                         return;
                     }
                 };
-                let outcome = runtime.block_on(manager.login_with_browser_opener(open_browser));
+                let browser_state_path = state_path.clone();
+                let browser_attempt_id = worker_attempt_id.clone();
+                let outcome = runtime.block_on(manager.login_with_browser_opener(move |url| {
+                    update_record(&browser_state_path, &browser_attempt_id, |record| {
+                        record.browser_url = Some(url.clone());
+                    })?;
+                    // Opening the browser is a convenience. The caller can use the
+                    // returned URL when no desktop browser is available.
+                    let _ = open_browser(url);
+                    Ok(())
+                }));
                 match outcome {
                     Ok(identity) => {
                         let _ = write_success(&state_path, &worker_attempt_id, &identity);
@@ -152,6 +174,16 @@ impl IdentityBootstrap {
     pub async fn status(&self) -> Result<Value, String> {
         if self.customer_auth_unconfigured {
             return Ok(configuration_required());
+        }
+        if self.manager.uses_local_owner() {
+            return Ok(local_owner_result());
+        }
+        // Polling an active login must not contend with token persistence.
+        if let Some(record) = self.read_record()? {
+            if matches!(record.phase, BootstrapPhase::Pending) && record.process_id == process_id()
+            {
+                return Ok(record.to_value());
+            }
         }
         if let Ok(identity) = self.manager.current_identity().await {
             return Ok(authenticated_result(&identity, true));
@@ -216,9 +248,37 @@ fn configuration_required() -> Value {
     })
 }
 
+fn local_owner_result() -> Value {
+    json!({
+        "authenticated": false,
+        "hubAuthenticated": false,
+        "localRuntimeAvailable": true,
+        "status": "configuration_required",
+        "error": "hosted_sign_in_not_configured",
+        "retryable": false,
+        "browserLaunch": "not_started",
+        "message": "Local access is ready. Hosted sign-in is not configured in this installation. Use the published connection setup; do not paste credentials or edit configuration.",
+    })
+}
+
 #[cfg(test)]
 mod customer_configuration_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_owner_is_not_hosted_authentication() {
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_profile = "local_owner".into();
+        let bootstrap = IdentityBootstrap::new(config);
+        let result = bootstrap
+            .start_with_browser_opener(|_| panic!("local owner must not open a browser"))
+            .await
+            .unwrap();
+        assert_eq!(result["authenticated"], false);
+        assert_eq!(result["hubAuthenticated"], false);
+        assert_eq!(result["localRuntimeAvailable"], true);
+        assert_eq!(bootstrap.status().await.unwrap(), result);
+    }
 
     #[tokio::test]
     async fn missing_customer_configuration_neither_opens_browser_nor_writes_state() {
@@ -247,6 +307,7 @@ impl BootstrapRecord {
             process_id: process_id(),
             finished_at_ms: Some(now_ms()),
             error: Some("oidc_bootstrap_interrupted".to_string()),
+            browser_url: None,
             ..self.clone()
         }
     }
@@ -267,6 +328,7 @@ impl BootstrapRecord {
             "identity": self.identity,
             "error": self.error,
             "retryable": !matches!(self.phase, BootstrapPhase::Succeeded),
+            "browserUrl": if matches!(self.phase, BootstrapPhase::Pending) { self.browser_url.clone() } else { None },
         })
     }
 }
@@ -287,6 +349,7 @@ fn write_success(path: &PathBuf, attempt_id: &str, identity: &CliIdentity) -> Re
         record.finished_at_ms = Some(now_ms());
         record.identity = Some(identity.redacted_status());
         record.error = None;
+        record.browser_url = None;
     })
 }
 
@@ -296,6 +359,7 @@ fn write_failure(path: &PathBuf, attempt_id: &str, error: &str) -> Result<(), St
         record.phase = BootstrapPhase::Failed;
         record.finished_at_ms = Some(now_ms());
         record.error = Some(error.to_string());
+        record.browser_url = None;
     })
 }
 
@@ -470,6 +534,7 @@ mod tests {
             finished_at_ms: None,
             identity: None,
             error: None,
+            browser_url: Some("https://example.test/authorize?state=old".to_string()),
         };
         bootstrap.write_record(&record).unwrap();
         let status = tokio::runtime::Runtime::new()
@@ -479,6 +544,7 @@ mod tests {
         assert_eq!(status["status"], "interrupted");
         assert_eq!(status["error"], "oidc_bootstrap_interrupted");
         assert_eq!(status["authenticated"], false);
+        assert!(status["browserUrl"].is_null());
     }
 
     #[test]
@@ -493,6 +559,7 @@ mod tests {
             finished_at_ms: Some(now_ms()),
             identity: Some(json!({"authenticated": true, "stableIdentityId": "stable"})),
             error: None,
+            browser_url: None,
         };
         bootstrap.write_record(&record).unwrap();
         let status = tokio::runtime::Runtime::new()

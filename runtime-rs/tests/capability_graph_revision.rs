@@ -15,6 +15,59 @@ use tradeassembly_runtime::service::TradeAssemblyService;
 
 const EPOCH: &str = "2026-07-22T12:00:00Z";
 
+#[test]
+fn authenticated_capability_queries_preserve_research_mode_not_broker_authority() {
+    let (_directory, _db, base) = test_service("authenticated-research-mode");
+    let owner = base.for_authenticated_invocation("test", "owner", None, None);
+    let (strategy, version, hash) = publish_static_strategy(&owner);
+    let body = graph_body(&strategy, &version, &hash);
+    let resolution = owner.call_mcp_tool(
+        "tradeassembly.plugin.capability_graph_resolve",
+        body.clone(),
+    );
+    assert_eq!(
+        resolution["structuredContent"]["ok"], true,
+        "{resolution:#}"
+    );
+    let saved = owner.call_mcp_tool("tradeassembly.plugin.capability_revision_save", body);
+    let revision = &saved["structuredContent"]["revision"];
+    assert_eq!(revision["mode"], "backtest", "{saved:#}");
+    assert_eq!(
+        revision["authority"]["accountMode"], "paper",
+        "authority: {}",
+        revision["authority"]
+    );
+}
+
+#[test]
+fn portfolio_research_capabilities_resolve_without_enabling_live_execution() {
+    let (_directory, _db, service) = test_service("portfolio-catalog");
+    for (capability, operation) in tradeassembly_runtime::capability::PORTFOLIO_RESEARCH_OPERATIONS
+    {
+        for mode in ["backtest", "live"] {
+            let response = service.call_mcp_tool(
+                "tradeassembly.plugin.capability_graph_resolve",
+                json!({
+                    "mode": mode, "evaluation_epoch": EPOCH,
+                    "requirements": [{"requirementId":"pipeline", "capability":capability}],
+                    "bindings": {"pipeline": {
+                        "pluginInstanceRef":"core-runtime", "operationId":operation
+                    }}
+                }),
+            );
+            let body = &response["structuredContent"];
+            assert_eq!(
+                body["ok"],
+                mode == "backtest",
+                "{capability} {mode}: {body:#}"
+            );
+            if mode == "live" {
+                assert!(body.to_string().contains("mode_incompatible"), "{body:#}");
+            }
+        }
+    }
+}
+
 fn fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../examples/strategy-spec/v3/valid/static-equity.json")
@@ -451,9 +504,11 @@ fn immutable_revision_survives_restart_and_rejects_idempotency_conflict() {
         json!({
             "actor": "user.local",
             "surface": "capability-revision-test",
-            "accountMode": "backtest"
+            "accountMode": "paper"
         })
     );
+    // HTTP binds account authority separately from the research graph selector.
+    assert_eq!(first["revision"]["mode"], "backtest");
     let revision_id = first["revision"]["revisionId"]
         .as_str()
         .expect("revision id")

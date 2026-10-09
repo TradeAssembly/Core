@@ -33,6 +33,8 @@ fn service_pair() -> (
 }
 
 fn create_strategy(service: &TradeAssemblyService, id: &str) {
+    let mut spec = tradeassembly_runtime::spec::btc_exit_demo_spec_payload();
+    spec["strategy_id"] = json!(id);
     let response = service.handle_http(
         "POST",
         "/product/strategies/create",
@@ -42,6 +44,7 @@ fn create_strategy(service: &TradeAssemblyService, id: &str) {
             "symbol": "BTC/USD",
             "providerRef": "sim",
             "creationMode": "import",
+            "spec": spec,
         }),
     );
     assert_eq!(response.status, 201, "{:?}", response.body);
@@ -53,6 +56,7 @@ fn create_strategy(service: &TradeAssemblyService, id: &str) {
         json!({"strategyId": id, "expectedDraftHash": draft_hash}),
     );
     assert_eq!(published.status, 200, "{:?}", published.body);
+    assert_eq!(published.body["ok"], true, "{:?}", published.body);
 }
 
 fn body(response: Value) -> Value {
@@ -148,6 +152,7 @@ fn cross_principal_research_roots_are_private_and_opaque() {
     );
     assert_eq!(run.status, 200, "{:?}", run.body);
     let run = body(run.body);
+    assert_ne!(run["status"], "blocked", "{run:?}");
     let job_id = run["id"].as_str().expect("job id").to_string();
 
     let owner_jobs = alice.handle_http("GET", "/research/jobs", json!({}));

@@ -55,6 +55,12 @@ pub struct PluginOperationResponse {
 }
 
 pub trait PluginOperationPort: VersionedPort {
+    /// Verify that external dispatch is wired through an available broker PEP.
+    /// Actual invocation must still authorize every prepared order separately.
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        Err("broker_submission_boundary_unavailable".into())
+    }
+
     /// Observation-only recovery. The opaque plan can only be constructed after
     /// original evidence and current observer authentication have been checked.
     fn recover_ambiguous_broker_order(

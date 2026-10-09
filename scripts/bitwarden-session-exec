@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Thin local wrapper: keep the Bitwarden vault session out of TradeAssembly.
+set -euo pipefail
+
+session_file="${BW_SESSION_FILE:-$HOME/.bw_session}"
+if [[ ! -f "$session_file" ]]; then
+  echo "Bitwarden session file is missing" >&2
+  exit 66
+fi
+
+if mode="$(stat -f '%Lp' "$session_file" 2>/dev/null)"; then :; else
+  mode="$(stat -c '%a' "$session_file")"
+fi
+if [[ "$mode" != "600" && "$mode" != "400" ]]; then
+  echo "Bitwarden session file must use mode 0600 or 0400" >&2
+  exit 77
+fi
+
+session="$(<"$session_file")"
+case "$session" in
+  "export BW_SESSION="*) session="${session#export BW_SESSION=}" ;;
+  "BW_SESSION="*) session="${session#BW_SESSION=}" ;;
+esac
+session="${session%\"}"
+session="${session#\"}"
+if [[ -z "$session" ]]; then
+  echo "Bitwarden session file is empty" >&2
+  exit 77
+fi
+
+export BW_SESSION="$session"
+export BW_NOINTERACTION=true
+exec bw "$@"

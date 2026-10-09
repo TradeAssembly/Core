@@ -162,10 +162,19 @@ impl ExternalPluginHost {
         request: &PluginOperationRequest,
         context: &SideEffectContext,
     ) -> Result<PreparedPluginInvocation, String> {
-        if request.operation_id != "broker.order_lookup"
-            || request.capability != "broker.order_lookup.live"
-            || request.purpose != "recovery"
-            || request.mode != "live"
+        if !matches!(
+            (
+                request.operation_id.as_str(),
+                request.capability.as_str(),
+                request.mode.as_str()
+            ),
+            ("broker.order_lookup", "broker.order_lookup.live", "live")
+                | (
+                    "broker.order_lookup.paper",
+                    "broker.order_lookup.paper",
+                    "paper"
+                )
+        ) || request.purpose != "recovery"
         {
             return Err("broker_recovery_operation_invalid".into());
         }
@@ -203,7 +212,9 @@ fn validate_response_schema_document(
         serde_json::from_slice(&bytes).map_err(|_| "plugin_response_schema_invalid".to_string())?;
     let validator = jsonschema::validator_for(&schema)
         .map_err(|_| "plugin_response_schema_invalid".to_string())?;
-    if !validator.is_valid(&response.payload) {
+    // A provider failure has no success payload. Its envelope, declared schema,
+    // installed schema digest, and lexical output policy are still verified.
+    if response.status != ResponseStatus::Failed && !validator.is_valid(&response.payload) {
         return Err("plugin_response_payload_schema_mismatch".to_string());
     }
     Ok(())
@@ -463,7 +474,12 @@ fn execute(
     };
     let response = reader.join();
     if !status.success() {
-        return Err("plugin_process_failed".to_string());
+        // Exit status is safe operational evidence; never forward plugin stderr,
+        // which can contain provider payloads or credentials.
+        return Err(match status.code() {
+            Some(code) => format!("plugin_process_failed:exit_code={code}"),
+            None => "plugin_process_failed:terminated".to_string(),
+        });
     }
     response.map_err(|_| "plugin_response_invalid".to_string())?
 }
@@ -564,15 +580,17 @@ fn short_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::ports::{
-        FailureMode, InstalledPluginPackage, PluginOperationRequest, PortDescriptor, PortKind,
-        SandboxedPluginProcess, VersionedPort,
+        FailureMode, PortDescriptor, PortKind, SandboxedPluginProcess, VersionedPort,
     };
+    use crate::ports::{InstalledPluginPackage, PluginOperationRequest};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
     use tradeassembly_plugin_sdk::{PluginRequest, PluginResponse};
 
@@ -704,8 +722,10 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     struct NativeTestSandbox;
 
+    #[cfg(unix)]
     impl VersionedPort for NativeTestSandbox {
         fn descriptors(&self) -> Vec<PortDescriptor> {
             let mut descriptor = PortDescriptor::new(PortKind::Plugins, "test.plugin-sandbox");
@@ -714,6 +734,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl PluginProcessSandboxPort for NativeTestSandbox {
         fn spawn(&self, request: &PluginSandboxRequest) -> Result<SandboxedPluginProcess, String> {
             let child = Command::new(&request.executable)
@@ -878,6 +899,10 @@ mod tests {
             validate_response_schema_document(&package, &wire_response(json!({"account": 42}))),
             Err("plugin_response_payload_schema_mismatch".to_string())
         );
+        let mut failed = wire_response(json!({}));
+        failed.status = ResponseStatus::Failed;
+        failed.provider_outcome.code = "provider_order_absent".into();
+        assert!(validate_response_schema_document(&package, &failed).is_ok());
         fs::write(
             directory.path().join("schemas/account.json"),
             br#"{"type":"object"}"#,
@@ -888,6 +913,10 @@ mod tests {
                 &package,
                 &wire_response(json!({"account": "connected"}))
             ),
+            Err("plugin_response_schema_digest_mismatch".to_string())
+        );
+        assert_eq!(
+            validate_response_schema_document(&package, &failed),
             Err("plugin_response_schema_digest_mismatch".to_string())
         );
     }
@@ -940,7 +969,7 @@ mod tests {
                     1_000,
                 )
                 .unwrap_err(),
-                "plugin_process_failed"
+                "plugin_process_failed:exit_code=7"
             );
         }
     }

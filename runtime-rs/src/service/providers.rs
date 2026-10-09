@@ -153,17 +153,25 @@ pub(crate) fn capabilities(provider_ref: &str, service: &TradeAssemblyService) -
         .map(|capability| json!(capability.capability))
         .collect::<Vec<_>>();
     match provider_ref {
-        "core-runtime" => capabilities.extend([
-            json!("calendar.session.resolve@1"),
-            json!("market_data.bars.read@1"),
-            json!("expression.cel.evaluate@1"),
-            json!("indicator.bars.normalize@1"),
-            json!("indicator.stateful.calculate@1"),
-            json!("order.intent.build@1"),
-            json!("order.option.submit@1"),
-            json!("order.option_combo.submit@1"),
-            json!("plugin.capability_matrix"),
-        ]),
+        "core-runtime" => capabilities.extend(
+            [
+                json!("calendar.session.resolve@1"),
+                json!("market_data.bars.read@1"),
+                json!("expression.cel.evaluate@1"),
+                json!("indicator.bars.normalize@1"),
+                json!("indicator.stateful.calculate@1"),
+                json!("order.intent.build@1"),
+                json!("order.option.submit@1"),
+                json!("order.option_combo.submit@1"),
+                json!("plugin.capability_matrix"),
+            ]
+            .into_iter()
+            .chain(
+                crate::capability::PORTFOLIO_RESEARCH_OPERATIONS
+                    .iter()
+                    .map(|(capability, _)| json!(capability)),
+            ),
+        ),
         "sim" => capabilities.extend([
             json!("broker.paper"),
             json!("broker.order_submit"),
@@ -810,7 +818,7 @@ fn core_runtime_plugin(service: &TradeAssemblyService) -> PluginCatalogEntry {
                         "option_contract",
                         "future_contract",
                     ],
-                    &["paper", "live"],
+                    &["research", "backtest", "paper", "live"],
                 ),
                 core_strategy_operation(
                     "order.option.submit_v1",
@@ -860,7 +868,25 @@ fn core_runtime_plugin(service: &TradeAssemblyService) -> PluginCatalogEntry {
                     &["equity", "crypto_spot"],
                     &["research", "backtest", "simulation", "paper", "live"],
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(crate::capability::PORTFOLIO_RESEARCH_OPERATIONS.iter().map(
+                |(capability, operation)| {
+                    core_strategy_operation(
+                        operation,
+                        capability,
+                        "evaluate",
+                        &["strategy_envelope"],
+                        &[],
+                        &[],
+                        &["schema://strategy/envelope@1"],
+                        &["schema://strategy/envelope@1"],
+                        &["equity"],
+                        &["research", "backtest"],
+                    )
+                },
+            ))
+            .collect(),
             credential_status: CredentialResolutionStatus {
                 configured: true,
                 custody: "none".to_string(),

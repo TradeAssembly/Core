@@ -112,17 +112,17 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn run(args: &[&str], input: Option<String>) -> Result<Vec<u8>, String> {
-    // BW_SESSION is supplied by the user's agent/service environment, never read
-    // from another application's configuration or persisted by TradeAssembly.
-    if std::env::var("BW_SESSION")
-        .ok()
-        .is_none_or(|value| value.is_empty())
-    {
-        return Err("bitwarden_session_required".into());
-    }
-    let binary = std::env::var_os("TRADEASSEMBLY_BITWARDEN_CLI").unwrap_or_else(|| "bw".into());
+    // The default helper reads the user's mode-0600 Bitwarden session file in
+    // its own process. TradeAssembly never reads or exports that vault session.
+    // An explicit CLI override preserves headless/CI integrations that provide
+    // their own credential process.
+    let (binary, prefix): (_, &[&str]) = match std::env::var_os("TRADEASSEMBLY_BITWARDEN_CLI") {
+        Some(binary) => (binary, &[]),
+        None => bitwarden_helper().ok_or(ERROR)?,
+    };
     let mut command = Command::new(binary);
     command
+        .args(prefix)
         .args(args)
         .arg("--raw")
         .env("BW_NOINTERACTION", "true")
@@ -174,6 +174,21 @@ fn run(args: &[&str], input: Option<String>) -> Result<Vec<u8>, String> {
         return Err(ERROR.into());
     }
     Ok(bytes)
+}
+
+fn bitwarden_helper() -> Option<(std::ffi::OsString, &'static [&'static str])> {
+    let bundled = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .join("tradeassembly-bitwarden");
+    if bundled.is_file() {
+        return Some((bundled.into_os_string(), &[]));
+    }
+    let home = std::env::var_os("HOME")?;
+    let migrated = std::path::PathBuf::from(home).join(".local/bin/bitwarden-keychain-secret");
+    migrated
+        .is_file()
+        .then(|| (migrated.into_os_string(), &["exec"][..]))
 }
 
 #[cfg(test)]

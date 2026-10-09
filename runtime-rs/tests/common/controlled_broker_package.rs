@@ -10,6 +10,28 @@ pub fn install_controlled_package(
     root: &Path,
     binary: &Path,
 ) -> tradeassembly_runtime::ports::InstalledPluginPackage {
+    install_controlled_package_for_mode(service, root, binary, "live")
+}
+
+pub fn install_controlled_package_for_mode(
+    service: &TradeAssemblyService,
+    root: &Path,
+    binary: &Path,
+    mode: &str,
+) -> tradeassembly_runtime::ports::InstalledPluginPackage {
+    install_controlled_package_for_mode_and_sink(service, root, binary, mode, None)
+}
+
+pub fn install_controlled_package_for_mode_and_sink(
+    service: &TradeAssemblyService,
+    root: &Path,
+    binary: &Path,
+    mode: &str,
+    sink_url: Option<&str>,
+) -> tradeassembly_runtime::ports::InstalledPluginPackage {
+    assert!(matches!(mode, "paper" | "live"));
+    let instance_ref = format!("mandate-{mode}");
+    let account_ref = format!("account://{instance_ref}/controlled");
     fn live(value: &mut Value) {
         match value {
             Value::String(s) => {
@@ -46,7 +68,17 @@ pub fn install_controlled_package(
     manifest["metadata"]["id"] = json!("example.mandate-live");
     manifest["metadata"]["version"] = json!("0.1.0");
     manifest["runtime"] = json!({"protocol":"stdio","entrypoint":"fixture","timeoutSeconds":5});
-    manifest["configuration"] = json!({"fields":[]});
+    manifest["configuration"] = if sink_url.is_some() {
+        manifest["permissions"].as_array_mut().unwrap().push(json!({
+            "id":"network.outbound",
+            "description":"Connect only to the isolated controlled broker sink."
+        }));
+        json!({"fields":[{"id":"sink_url","label":"Controlled sink URL",
+            "description":"Isolated test broker endpoint.","inputType":"url",
+            "required":true,"storageClass":"configuration"}]})
+    } else {
+        json!({"fields":[]})
+    };
     manifest["health"] = json!({"requiredConfiguration":[],"requiredCredentials":[],"connectionCheckOperation":null});
     manifest["capabilities"]
         .as_array_mut()
@@ -55,12 +87,24 @@ pub fn install_controlled_package(
             "id": "broker.order_lookup.live",
             "description": "Read a previously submitted controlled order for recovery."
         }));
+    for capability in ["broker.order_submit.paper", "broker.order_lookup.paper"] {
+        manifest["capabilities"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": capability,
+                "description": "Controlled paper order admission and recovery."
+            }));
+    }
     for operation in manifest["operations"].as_array_mut().unwrap() {
         operation["protocol"] = json!("stdio");
         match operation["id"].as_str() {
-            Some("marketdata.quote.read") => {
-                operation["traits"]["outputSchemaRefs"] =
-                    json!(["schema://tradeassembly.f2-controlled-broker/quote@1"])
+            Some("marketdata.quote.read" | "marketdata.bars.read" | "marketdata.bars.read_v1") => {
+                operation["traits"]["modes"] = json!(["paper", "live"]);
+                if operation["id"] == "marketdata.quote.read" {
+                    operation["traits"]["outputSchemaRefs"] =
+                        json!(["schema://tradeassembly.f2-controlled-broker/quote@1"]);
+                }
             }
             Some("broker.live_order_submit") => {
                 operation["traits"]["outputSchemaRefs"] =
@@ -76,6 +120,17 @@ pub fn install_controlled_package(
         .find(|operation| operation["id"] == "broker.live_order_submit")
         .cloned()
         .expect("controlled live submit operation");
+    let mut paper_submit = submit.clone();
+    paper_submit["id"] = json!("broker.paper_order_submit");
+    paper_submit["capability"] = json!("broker.order_submit.paper");
+    paper_submit["financeAction"] =
+        json!({"actionId":"order.submit.paper","resourceType":"brokerage_account"});
+    paper_submit["purpose"] = json!("paper_trading");
+    paper_submit["traits"]["modes"] = json!(["paper"]);
+    manifest["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(paper_submit);
     let mut lookup = submit;
     lookup["id"] = json!("broker.order_lookup");
     lookup["capability"] = json!("broker.order_lookup.live");
@@ -98,6 +153,21 @@ pub fn install_controlled_package(
     lookup["checkPacks"] = json!(["recovery_reconciliation"]);
     lookup["receiptClass"] = json!("recovery_evidence");
     manifest["operations"].as_array_mut().unwrap().push(lookup);
+    let mut paper_lookup = manifest["operations"]
+        .as_array()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("controlled live lookup operation");
+    paper_lookup["id"] = json!("broker.order_lookup.paper");
+    paper_lookup["capability"] = json!("broker.order_lookup.paper");
+    paper_lookup["financeAction"] =
+        json!({"actionId":"order.lookup.paper","resourceType":"brokerage_account"});
+    paper_lookup["traits"]["modes"] = json!(["paper"]);
+    manifest["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(paper_lookup);
     let quote_schema = br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["quote"],"properties":{"quote":{"type":"object","additionalProperties":false,"required":["symbol","bid","ask","timestamp"],"properties":{"symbol":{"type":"string"},"bid":{"type":"string"},"ask":{"type":"string"},"timestamp":{"type":"string"}}}}}"#;
     let order_schema = br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["accountRef","clientOrderId","providerOrderId","symbol","side","quantity","orderType","timeInForce","status","intentDigest","submissionCount"],"properties":{"accountRef":{"type":"string"},"clientOrderId":{"type":"string"},"providerOrderId":{"type":"string"},"symbol":{"type":"string"},"side":{"type":"string"},"quantity":{"type":"string"},"orderType":{"type":"string"},"timeInForce":{"type":"string"},"status":{"const":"accepted"},"intentDigest":{"type":"string"},"submissionCount":{"type":"integer"}}}"#;
     let executable = std::fs::read(binary).unwrap();
@@ -134,12 +204,13 @@ pub fn install_controlled_package(
     std::fs::write(&path, &package).unwrap();
     let installed = service.handle_http("POST", "/plugins/packages", json!({"source":{"type":"package","locator":path,"package":{"type":"file","locator":path}},"integrity":{"packageSha256":sha(&package),"manifestSha256":canonical},"trust":{"level":"local-test"},"idempotencyKey":"install-controlled-broker"}));
     assert!(installed.status < 300, "{installed:#?}");
-    let created = service.handle_http("POST", "/plugins/instances", json!({"instanceRef":"mandate-live","pluginRef":"example.mandate-live","enabled":true,"configuration":{},"accountMode":"live","accountRef":"account://mandate-live/controlled"}));
+    let configuration = sink_url.map_or_else(|| json!({}), |url| json!({"sink_url":url}));
+    let created = service.handle_http("POST", "/plugins/instances", json!({"instanceRef":instance_ref,"pluginRef":"example.mandate-live","enabled":true,"configuration":configuration,"accountMode":mode,"accountRef":account_ref}));
     assert!(created.status < 300, "{created:#?}");
     let runtime = service.runtime();
     let mut instance = runtime
         .plugins
-        .get_instance("mandate-live")
+        .get_instance(&instance_ref)
         .unwrap()
         .unwrap();
     runtime
@@ -149,19 +220,19 @@ pub fn install_controlled_package(
             &std::collections::BTreeMap::from([("fixture".into(), "controlled-test-value".into())]),
         )
         .unwrap();
-    instance["accountMode"] = json!("live");
-    instance["accountRef"] = json!("account://mandate-live/controlled");
+    instance["accountMode"] = json!(mode);
+    instance["accountRef"] = json!(account_ref);
     instance["credentialRevision"] = json!(1);
     let configuration_digest =
         tradeassembly_runtime::spec::canonical_hash(&instance["configuration"]).unwrap();
-    instance["health"] = json!({"state":"ready","connectivityChecked":true,"checkedAtMs":runtime.clock.now_ms(),"account":{"id":"controlled","mode":"live","status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false},"binding":{"instanceRef":instance["instanceRef"],"pluginRef":instance["pluginRef"],"packageSha256":instance["activePackageSha256"],"configurationDigest":configuration_digest,"credentialRevision":1,"accountRef":instance["accountRef"],"accountMode":"live"}});
+    instance["health"] = json!({"state":"ready","connectivityChecked":true,"checkedAtMs":runtime.clock.now_ms(),"account":{"id":"controlled","mode":mode,"status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false},"binding":{"instanceRef":instance["instanceRef"],"pluginRef":instance["pluginRef"],"packageSha256":instance["activePackageSha256"],"configurationDigest":configuration_digest,"credentialRevision":1,"accountRef":instance["accountRef"],"accountMode":mode}});
     let context = SideEffectContext::new(
         AuthorityContext::local_cli(),
         IdempotencyKey::new("controlled-health").unwrap(),
     );
     runtime
         .plugins
-        .put_instance("mandate-live", instance, &context)
+        .put_instance(&instance_ref, instance, &context)
         .unwrap();
     let package_sha = sha(&package);
     runtime

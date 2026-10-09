@@ -10,7 +10,7 @@ plugins:
       locator: core://plugins/tradeassembly.core-runtime
       manifestPath: plugin-contracts/manifests/core-runtime.manifest.yaml
     integrity:
-      manifestSha256: 920b3a028e8514847c76abe517ab190a6946c92c65e5b0f1e07d7274759a6875
+      manifestSha256: fa2baacb37de9dbcebecad76440f82b814d494002d1219dd75c4dce8660e7468
   - id: tradeassembly.simbroker
     source:
       type: core

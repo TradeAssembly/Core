@@ -112,6 +112,7 @@ fn lifecycle_is_idempotent_and_preserves_state_and_logs() {
     assert!(!Path::new(&removed.plist_path).exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn conflicts_symlinks_and_unmanaged_services_fail_closed() {
     let root = tempfile::tempdir().unwrap();
@@ -148,6 +149,7 @@ fn conflicts_symlinks_and_unmanaged_services_fail_closed() {
         .any(|call| call.starts_with("bootout:")));
 }
 
+#[cfg(unix)]
 #[test]
 fn log_symlink_is_rejected_before_lifecycle_changes() {
     let root = tempfile::tempdir().unwrap();

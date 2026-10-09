@@ -862,6 +862,27 @@ impl LeaseRepository for LocalSqliteOperations {
 }
 
 impl EvidencePort for LocalSqliteOperations {
+    fn verify_durable(&self) -> Result<(), String> {
+        let connection = self.connection()?;
+        let path: String = connection
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE name='main'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(sqlite_error)?;
+        let sync: i64 = connection
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .map_err(sqlite_error)?;
+        if path.is_empty() || !mode.eq_ignore_ascii_case("wal") || sync < 2 {
+            return Err("durable_evidence_unavailable".into());
+        }
+        Ok(())
+    }
+
     fn append(&self, record: EvidenceRecord) -> Result<(), String> {
         let connection = self.connection()?;
         connection
@@ -1386,6 +1407,42 @@ mod tests {
         assert!(replacement.fencing_token > claim.fencing_token);
         assert!(reopened.release(&claim).is_err());
         reopened.release(&replacement).expect("release");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verified_evidence_rejects_conflicting_deduplication_after_restart() {
+        let path = test_path("verified-evidence");
+        let record = EvidenceRecord {
+            evidence_id: "receipt-1".into(),
+            evidence_type: "execution.activation.commit_authorized".into(),
+            aggregate_id: "activation-1".into(),
+            payload: serde_json::json!({"commandDigest":"first"}),
+            idempotency_key: key("receipt-key"),
+            recorded_at_ms: 100,
+        };
+        LocalSqliteOperations::new(&path, false)
+            .append_verified(record.clone())
+            .unwrap();
+        let reopened = LocalSqliteOperations::new(&path, false);
+        reopened.verify_durable().unwrap();
+        assert!(LocalSqliteOperations::new(":memory:", false)
+            .verify_durable()
+            .is_err());
+        reopened.append_verified(record.clone()).unwrap();
+        let mut conflicting = record.clone();
+        conflicting.payload = serde_json::json!({"commandDigest":"different"});
+        assert_eq!(
+            reopened.append_verified(conflicting).unwrap_err(),
+            "evidence_receipt_mismatch"
+        );
+        let mut conflicting = record.clone();
+        conflicting.aggregate_id = "another-activation".into();
+        assert_eq!(
+            reopened.append_verified(conflicting).unwrap_err(),
+            "evidence_receipt_mismatch"
+        );
+        assert_eq!(reopened.list("activation-1").unwrap(), vec![record]);
         let _ = std::fs::remove_file(path);
     }
 

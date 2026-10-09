@@ -24,6 +24,12 @@ pub struct BrokerSubmissionPermit {
 }
 
 pub trait BrokerSubmissionPort: Send + Sync {
+    /// Check availability of the enforcing boundary, never authorization for an
+    /// order. Unknown adapters must not advertise a protected dispatch path.
+    fn verify_available(&self) -> Result<(), String> {
+        Err("broker_submission_boundary_unavailable".into())
+    }
+
     fn admit(
         &self,
         request: &PluginOperationRequest,

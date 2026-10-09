@@ -25,7 +25,7 @@ fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secr
     let address = listener.local_addr().expect("mock address");
     let (requests_tx, requests_rx) = mpsc::channel();
     let server = thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..8 {
             let (mut stream, _) = listener.accept().expect("accept Alpaca request");
             let mut bytes = Vec::new();
             let mut buffer = [0_u8; 4096];
@@ -43,7 +43,13 @@ fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secr
                 .send(String::from_utf8_lossy(&bytes).to_string())
                 .expect("capture Alpaca request");
             let request = String::from_utf8_lossy(&bytes);
-            let body = if request.contains("POST /v2/orders ") {
+            let body = if request.contains("GET /v2/calendar?") {
+                r#"[{"date":"2026-01-01","open":"09:30","close":"16:00"}]"#
+            } else if request.contains("GET /v2/positions ") {
+                r#"[{"symbol":"SPY","qty":"1","market_value":"500"}]"#
+            } else if request.contains("GET /v2/orders?status=open&limit=500&nested=true") {
+                r#"[{"id":"open-package","client_order_id":"open-package-order","symbol":"SPY","side":"buy","status":"new","qty":"1","filled_qty":"0","notional":null,"limit_price":null}]"#
+            } else if request.contains("POST /v2/orders ") {
                 r#"{"id":"order-package","client_order_id":"stable-package-order","symbol":"SPY","side":"buy","status":"filled","qty":"1","filled_qty":"1"}"#
             } else if request.contains("/v2/stocks/bars") {
                 r#"{"bars":{"SPY":[{"t":"2026-01-02T00:00:00Z","o":500.0,"h":502.0,"l":499.0,"c":501.0,"v":10},{"t":"2026-01-02T00:01:00Z","o":501.0,"h":503.0,"l":500.0,"c":502.0,"v":12}]},"next_page_token":null}"#
@@ -79,7 +85,10 @@ fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secr
     ])
     .expect("default package CLI parses");
     let installed = execute_command(&service, cli.command);
-    assert_eq!(installed["package"]["pluginRef"], "tradeassembly.alpaca");
+    assert_eq!(
+        installed["package"]["pluginRef"], "tradeassembly.alpaca",
+        "{installed:#}"
+    );
     assert_eq!(installed["package"]["packageSha256"], package_sha256);
     assert_eq!(installed["package"]["manifestSha256"], manifest_sha256);
 
@@ -137,6 +146,39 @@ fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secr
     assert_eq!(invocation["binding"]["capability"], "account.health");
     assert_no_secrets(&invocation, &[api_key, api_secret]);
 
+    let portfolio = request(
+        &service,
+        "POST",
+        "/plugins/instances/alpaca-package-paper/operations/account.portfolio_state.read:invoke",
+        json!({
+            "mode": "paper",
+            "purpose": "account_reconciliation",
+            "accountRef": "account://alpaca/paper",
+            "idempotencyKey": "external-package-portfolio-1",
+            "input": {},
+        }),
+    );
+    assert_eq!(
+        portfolio["binding"]["operationId"],
+        "account.portfolio_state.read"
+    );
+    assert_eq!(
+        portfolio["binding"]["capability"],
+        "account.portfolio_state.read@1"
+    );
+    assert_eq!(
+        portfolio["response"]["payload"]["portfolioState"]["observation"]["atomic"],
+        false
+    );
+    assert_eq!(
+        portfolio["response"]["payload"]["portfolioState"]["positions"][0]["symbol"],
+        "SPY"
+    );
+    assert!(
+        portfolio["response"]["payload"]["portfolioState"]["openOrders"][0]["notional"].is_null()
+    );
+    assert_no_secrets(&portfolio, &[api_key, api_secret]);
+
     let health = request(
         &service,
         "POST",
@@ -157,7 +199,7 @@ fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secr
         health["instance"]["health"]["account"]["mode"],
         "provider_reported"
     );
-    assert!(health["instance"]["accountMode"].is_null());
+    assert_eq!(health["instance"]["accountMode"], "paper");
     assert_no_secrets(&health, &[api_key, api_secret]);
 
     let mut strategy_spec: Value = serde_json::from_slice(include_bytes!(
@@ -354,12 +396,7 @@ fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secr
     );
 
     server.join().expect("Alpaca mock server");
-    let captured = [
-        requests_rx.recv().unwrap(),
-        requests_rx.recv().unwrap(),
-        requests_rx.recv().unwrap(),
-        requests_rx.recv().unwrap(),
-    ];
+    let captured: Vec<_> = (0..8).map(|_| requests_rx.recv().unwrap()).collect();
     assert!(captured
         .iter()
         .any(|request| request.contains("GET /v2/stocks/bars?")));

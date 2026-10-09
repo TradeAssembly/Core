@@ -1,0 +1,27 @@
+[package]
+name = "tradeassembly-distribution"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license-file = "../LICENSE"
+
+[dependencies]
+base64 = "0.22"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+fs2 = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sysinfo = "0.33"
+tar = "0.4"
+tempfile = "3"
+walkdir = "2"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+getrandom = "0.3"
+hex = "0.4"
+windows-permissions = "0.2.4"

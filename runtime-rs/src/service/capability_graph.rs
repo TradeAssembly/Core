@@ -408,8 +408,10 @@ fn execution_revision(
         requirement.capability == "market_data.bars.read@1"
             && !bindings.contains_key(&requirement.requirement_id)
     });
+    let needs_quote =
+        mode.eq_ignore_ascii_case("live") || config["orchestrator"] == "external_agent";
     let mut additional_requirements = vec![execution_broker_requirement(config)];
-    if mode.eq_ignore_ascii_case("live") {
+    if needs_quote {
         additional_requirements.push(execution_quote_requirement(config));
     }
     expected_requirements.extend(parse_requirements(
@@ -441,7 +443,7 @@ fn execution_revision(
         "execution.broker.submit".to_string(),
         broker_binding.clone(),
     );
-    let quote_binding = if mode.eq_ignore_ascii_case("live") {
+    let quote_binding = if needs_quote {
         let binding = exact_plugin_binding(
             service,
             data_provider_ref,
@@ -540,7 +542,10 @@ fn intrinsic_binding(capability: &str) -> Option<CapabilityBinding> {
         "order.option_combo.submit@1" => "order.option_combo.submit_v1",
         "indicator.bars.normalize@1" => "indicator.bars.normalize_v1",
         "indicator.stateful.calculate@1" => "indicator.stateful.calculate_v1",
-        _ => return None,
+        other => crate::capability::PORTFOLIO_RESEARCH_OPERATIONS
+            .iter()
+            .find(|(capability, _)| *capability == other)
+            .map(|(_, operation)| *operation)?,
     };
     Some(CapabilityBinding {
         plugin_instance_ref: Some("core-runtime".to_string()),
@@ -636,11 +641,12 @@ fn execution_broker_requirement(config: &Value) -> Value {
 }
 
 fn execution_quote_requirement(config: &Value) -> Value {
+    let mode = config["mode"].as_str().unwrap_or("paper");
     json!({
         "requirementId": "execution.risk.quote",
         "capability": "marketdata.quote",
-        "purpose": "live_order_submission",
-        "requiredFor": ["live"],
+        "purpose": if mode.eq_ignore_ascii_case("live") { "live_order_submission" } else { "paper_trading" },
+        "requiredFor": [mode],
         "constraints": {
             "instrumentFamilies": [instrument_family(config["symbol"].as_str().unwrap_or_default())]
         },
@@ -1128,17 +1134,15 @@ fn authority_value(body: &Value) -> Value {
         .and_then(|value| value.get("surface"))
         .and_then(Value::as_str)
         .unwrap_or("service");
-    let account_mode = string_field(body, &["mode", "accountMode", "account_mode"])
-        .or_else(|| {
-            context
-                .and_then(|value| {
-                    value
-                        .get("accountMode")
-                        .or_else(|| value.get("account_mode"))
-                })
-                .and_then(Value::as_str)
-                .map(str::to_string)
+    let account_mode = context
+        .and_then(|value| {
+            value
+                .get("accountMode")
+                .or_else(|| value.get("account_mode"))
         })
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| string_field(body, &["accountMode", "account_mode", "mode"]))
         .unwrap_or_else(|| "paper".to_string());
     json!({
         "actor": actor,
@@ -1150,8 +1154,10 @@ fn authority_value(body: &Value) -> Value {
 fn side_effect_context(body: &Value, idempotency_key: &str) -> SideEffectContext {
     let mut authority = AuthorityContext::local_cli();
     authority.surface = "capability_graph".to_string();
-    authority.account_mode = string_field(body, &["mode", "accountMode", "account_mode"])
-        .unwrap_or_else(|| "paper".to_string());
+    authority.account_mode = authority_value(body)["accountMode"]
+        .as_str()
+        .unwrap_or("paper")
+        .to_string();
     SideEffectContext::new(
         authority,
         IdempotencyKey::new(idempotency_key)

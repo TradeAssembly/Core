@@ -70,3 +70,11 @@ Use `just build-target PACKAGE BINARY` and `just test-package PACKAGE` during
 iteration. `just build-artifacts` builds the exact development outputs consumed
 by local CI; `just build` retains all-workspace behavior. Cargo owns dependency
 selection and caches. Full `just verify` remains required at integration.
+
+## Hosted Linux CI
+
+Routine hosted verification invokes the existing owning local commands on Linux.
+Explicit setup precedes offline tests; compiler caches cannot establish test success.
+Native package qualification and production acceptance remain separate. The current
+authorized rollout may publish and merge passing source/workflow changes under the
+coordinator's hosted CI policy. No automatic agent review or deployment is required.

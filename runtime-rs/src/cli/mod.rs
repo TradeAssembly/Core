@@ -3832,7 +3832,7 @@ mod tests {
             offline: true,
             skip_default_plugins: false,
         });
-        let catalogue: Value = serde_json::from_str(include_str!(
+        let catalogue: serde_json::Value = serde_json::from_str(include_str!(
             "../../../plugin-contracts/default-external-plugins.json"
         ))
         .unwrap();
@@ -3842,7 +3842,7 @@ mod tests {
             .iter()
             .find(|plugin| plugin["selectedByDefault"] == true)
             .unwrap();
-        let target = runtime_target();
+        let target = super::runtime_target();
         let supported = selected["targets"]
             .as_array()
             .unwrap()

@@ -78,7 +78,12 @@ jobs:
       - name: Bind source, toolchain, logs and participant bytes
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain --untracked-files=all)"
+          git status --porcelain --untracked-files=all > target/linux-ci/source-status.log
+          if test -s target/linux-ci/source-status.log; then
+            cat target/linux-ci/source-status.log
+            echo 'Source changed during verification; inspect the recorded paths.' >&2
+            exit 1
+          fi
           rustc --version --verbose > target/linux-ci/rustc.txt
           tools='{}'
           for tool in rustc cargo just node npm cargo-nextest cargo-deny cargo-audit cargo-machete; do

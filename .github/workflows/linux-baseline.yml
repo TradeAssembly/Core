@@ -1,3 +1,4 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
 # Explicit one-time platform bootstrap; never a daily test prerequisite build.
 name: Linux compatibility baseline bootstrap
 on:

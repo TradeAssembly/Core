@@ -45,7 +45,13 @@ const VERIFY_CHECKS: &[Check] = &[
     },
     Check {
         program: "cargo",
-        args: &["nextest", "run", "--workspace", "--locked"],
+        args: &[
+            "nextest",
+            "run",
+            "--workspace",
+            "--locked",
+            "--no-fail-fast",
+        ],
     },
     Check {
         program: "cargo",
@@ -388,7 +394,7 @@ mod tests {
                 "cargo clippy --workspace --all-targets -- -D warnings",
                 "npm ci --prefix packaging/sandbox --ignore-scripts --no-audit --no-fund",
                 "cargo test --workspace --doc --locked",
-                "cargo nextest run --workspace --locked",
+                "cargo nextest run --workspace --locked --no-fail-fast",
                 "cargo deny check",
                 "cargo audit --ignore RUSTSEC-2023-0071",
                 "cargo-machete .",

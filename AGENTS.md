@@ -78,3 +78,5 @@ Explicit setup precedes offline tests; compiler caches cannot establish test suc
 Native package qualification and production acceptance remain separate. The current
 authorized rollout may publish and merge passing source/workflow changes under the
 coordinator's hosted CI policy. No automatic agent review or deployment is required.
+
+The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.

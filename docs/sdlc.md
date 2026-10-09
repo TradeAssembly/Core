@@ -92,3 +92,5 @@ iteration commands; `just build-artifacts` selects the CLI and Core runner.
 Full verification and distribution qualification retain their existing gates.
 
 Routine GitHub CI runs the owning Linux gate through `just setup`, `just verify`, `just contract-test` and `just build-artifacts`. Native release packaging is separate; public CI never accesses private products.
+
+The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.

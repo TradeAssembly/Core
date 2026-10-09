@@ -138,3 +138,5 @@ move with their modules. Publication and source scanners cover every new crate.
 `just build-target PACKAGE BINARY` and `just test-package PACKAGE` are targeted
 iteration commands; `just build-artifacts` selects the CLI and Core runner.
 Full verification and distribution qualification retain their existing gates.
+
+The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.

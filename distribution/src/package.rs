@@ -386,6 +386,19 @@ pub fn verify_matrix(root: &Path, published: bool) -> Result<Value> {
     )
 }
 
+/// Verify the existing Mac ARM64 native owner receipt and every required artifact/check.
+/// This is a constituent qualification verdict; matrix/publication remain separate.
+pub fn verify_native(root: &Path, target: &str) -> Result<Value> {
+    if target != TARGETS[0] {
+        return Err("native_verification_target_unsupported".into());
+    }
+    let release: Release = read_json(&root.join(target).join("release.json"))?;
+    let targets = verify_native_targets(root, &[TARGETS[0]], &release.version, false)?;
+    Ok(
+        json!({"schemaVersion":1,"qualified":true,"phase":"native-candidate","releaseReady":false,"targets":targets}),
+    )
+}
+
 fn verify_native_targets<'a>(
     root: &Path,
     targets: &[&'a str],
@@ -1170,6 +1183,23 @@ fn verify_first_release_matrix(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_constituent_rejects_experimental_targets_and_missing_proof() {
+        let root = tempfile::tempdir().unwrap();
+        for target in [
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+        ] {
+            assert_eq!(
+                super::verify_native(root.path(), target),
+                Err("native_verification_target_unsupported".into())
+            );
+        }
+        assert!(super::verify_native(root.path(), crate::TARGETS[0]).is_err());
+    }
+
     use super::*;
 
     #[test]

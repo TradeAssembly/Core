@@ -615,3 +615,13 @@ are qualified, run existing npm publication and actual npm/pnpm registry
 integrity/install/upgrade/rollback paths; otherwise report actual restriction and
 provider-confirmed next time once. Provider restoration needs no native rebuild;
 shipping changes need a new version. Direct delivery remains available.
+
+## Unattended native leaf verification
+
+The owning distribution CLI provides `verify-native --evidence ROOT --target
+aarch64-apple-darwin`. It exposes the existing complete native target verifier
+without changing its artifact/check requirements. This is a read-only constituent,
+not publication or complete launch readiness. Coordinator unattended validation
+pins the frozen qualification source separately from the compatible qualifier
+source and binary. Native qualification still uses the existing owner and all
+its assertions; development binaries cannot substitute for frozen packages.

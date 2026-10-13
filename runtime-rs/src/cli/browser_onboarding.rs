@@ -39,6 +39,22 @@ struct Attempt {
     last_error: Option<String>,
     expires_at_ms: i64,
     cancelled: bool,
+    #[serde(default)]
+    api_keys_stored: bool,
+    #[serde(default)]
+    api_keys_requested: bool,
+    #[serde(default)]
+    api_key_intent: Option<ApiKeyIntent>,
+}
+
+/// Binds the operation, never the submitted credential values.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApiKeyIntent {
+    package_sha256: String,
+    prior_revision_ref: String,
+    #[serde(default)]
+    enable_sequence: u64,
 }
 
 #[derive(Clone)]
@@ -176,6 +192,9 @@ impl BrowserOnboarding {
                         last_error: None,
                         expires_at_ms: now_ms() + LIFETIME_MS,
                         cancelled: false,
+                        api_keys_stored: false,
+                        api_keys_requested: false,
+                        api_key_intent: None,
                     };
                     self.save(&attempt)?;
                     attempt
@@ -292,6 +311,7 @@ impl BrowserOnboarding {
                     };
                     let router = Router::new()
                         .route(&format!("{prefix}/{{id}}"), get(page))
+                        .route(&format!("{prefix}/{{id}}/connection"), get(connection))
                         .route(&format!("{prefix}/{{id}}/{{action}}"), post(action))
                         .with_state(state);
                     let _ = ready_tx.send(());
@@ -326,6 +346,53 @@ impl BrowserOnboarding {
             result["nextAction"] = json!(
                 "This attempt has ended. Call tradeassembly.onboarding.start with a new idempotency_key and the user's chosen settings. Do not reopen the old authorization URL."
             );
+            return Ok(result);
+        }
+        if attempt.api_keys_requested {
+            let mut resumed = attempt.clone();
+            let service = self.bound_local_service(&resumed)?;
+            self.reconcile_api_keys(&service, &mut resumed)?;
+            let attempt = &resumed;
+            result["hubAuthenticated"] = json!(false);
+            result["credentialMethod"] = json!("api-key");
+            result["relayRequested"] = json!(attempt.relay_requested);
+            result["relay"] = json!({"status":if attempt.relay_requested {"unchecked"} else {"not_requested"},"permitted":false});
+            if !attempt.api_keys_stored {
+                return Ok(result);
+            }
+            let instance = attempt
+                .instance_ref
+                .as_deref()
+                .ok_or("onboarding_broker_prepare_failed")?;
+            let verification = tool_payload(
+                &service,
+                "tradeassembly.broker.verify",
+                verification_arguments(&attempt.id, instance, &attempt.mode),
+            )?;
+            let brokers = tool_payload(
+                &service,
+                "tradeassembly.broker.status",
+                json!({"instanceRef":instance}),
+            )?;
+            let verified = brokers["instances"][0]["accountVerified"] == true;
+            result["brokerConnected"] = json!(verified);
+            result["verification"] = verification;
+            result["credentialMethod"] = json!("api-key");
+            let warden_config = self.local_identity.configuration().clone();
+            let warden_ready =
+                std::thread::spawn(move || super::preflight_api_warden(&warden_config))
+                    .join()
+                    .is_ok_and(|result| result.is_ok());
+            result["wardenReady"] = json!(warden_ready);
+            if verified && warden_ready && !attempt.relay_requested {
+                result["status"] = json!("ready");
+                result["ready"] = json!(true);
+                result["nextAction"] =
+                    json!("Connection verified. Strategy activation is a separate user decision.");
+            } else if verified && warden_ready && attempt.relay_requested {
+                result["status"] = json!("entitlement_required");
+                result["nextAction"] = json!("Paper broker connection verified. Complete the separate Relay sign-in and subscription check.");
+            }
             return Ok(result);
         }
         let auth = tokio::runtime::Handle::current().block_on(self.bootstrap.status())?;
@@ -429,6 +496,178 @@ impl BrowserOnboarding {
         Ok((service, identity))
     }
 
+    fn bound_local_service(&self, attempt: &Attempt) -> Result<TradeAssemblyService, String> {
+        if !self.local_identity.uses_local_owner() {
+            return Err("onboarding_local_owner_required".into());
+        }
+        let owner =
+            tokio::runtime::Handle::current().block_on(self.local_identity.current_identity())?;
+        if attempt
+            .actor
+            .as_ref()
+            .is_some_and(|actor| actor != &owner.stable_identity_id)
+        {
+            return Err("onboarding_identity_changed".into());
+        }
+        register_verified_identity(&self.service, &owner)?;
+        Ok(authenticated_service(&self.service, &owner))
+    }
+
+    fn connection(&self, id: &str) -> Result<Value, String> {
+        let _guard = self.operation.lock().map_err(|_| "onboarding_busy")?;
+        let _process_guard = self.process_lock()?;
+        let mut attempt = self.read(id)?.ok_or("onboarding_not_found")?;
+        if attempt.cancelled || now_ms() >= attempt.expires_at_ms {
+            return Err("onboarding_attempt_ended".into());
+        }
+        let service = self.bound_local_service(&attempt)?;
+        if !attempt.api_keys_requested || attempt.instance_ref.is_none() {
+            return Ok(json!({"onboardingId":attempt.id,"mode":attempt.mode,
+                "environment":attempt.environment,"instance":null}));
+        }
+        let instance = self.reconcile_api_keys(&service, &mut attempt)?;
+        Ok(json!({"onboardingId":attempt.id,"mode":attempt.mode,
+            "environment":attempt.environment,"instance":instance}))
+    }
+
+    fn api_keys(&self, id: &str, body: &[u8]) -> Result<Value, String> {
+        let _guard = self.operation.lock().map_err(|_| "onboarding_busy")?;
+        let _process_guard = self.process_lock()?;
+        let mut attempt = self.read(id)?.ok_or("onboarding_not_found")?;
+        let service = self.bound_local_service(&attempt)?;
+        if !attempt.api_keys_requested {
+            return Err("onboarding_broker_prepare_required".into());
+        }
+        let fields = api_key_fields(body)?;
+        let projection = api_key_connection(&service, &attempt)?;
+        if projection["activePackageSha256"].as_str()
+            != fields.get("package_sha256").map(String::as_str)
+        {
+            return Err("onboarding_plugin_package_mismatch".into());
+        }
+        if attempt.api_keys_stored {
+            return Err("onboarding_credentials_already_configured".into());
+        }
+        if attempt.api_key_intent.is_some() {
+            let resumed = self.reconcile_api_keys(&service, &mut attempt)?;
+            if attempt.api_keys_stored {
+                return Ok(resumed);
+            }
+        } else {
+            if projection["credentialStatus"]["configured"] == true {
+                return Err("onboarding_credentials_already_configured".into());
+            }
+            attempt.api_key_intent = Some(ApiKeyIntent {
+                package_sha256: fields["package_sha256"].clone(),
+                prior_revision_ref: projection["credentialStatus"]["revisionRef"]
+                    .as_str()
+                    .ok_or("onboarding_credentials_status_failed")?
+                    .into(),
+                enable_sequence: 0,
+            });
+            // A crash after this write must never authorize adopting unrelated keys.
+            self.save(&attempt)?;
+        }
+        let intent = attempt.api_key_intent.as_ref().unwrap();
+        let stored = service.store_browser_onboarding_credentials(
+            attempt.instance_ref.as_deref().unwrap(),
+            &attempt.id,
+            &intent.package_sha256,
+            &intent.prior_revision_ref,
+            json!({"api_key":fields["api_key"],"api_secret":fields["api_secret"]}),
+        );
+        if stored.status != 200 {
+            return Err("onboarding_credentials_store_failed".into());
+        }
+        self.reconcile_api_keys(&service, &mut attempt)
+    }
+
+    fn reconcile_api_keys(
+        &self,
+        service: &TradeAssemblyService,
+        attempt: &mut Attempt,
+    ) -> Result<Value, String> {
+        let projection = api_key_connection(service, attempt)?;
+        if attempt.api_keys_stored || attempt.api_key_intent.is_none() {
+            return Ok(projection);
+        }
+        let intent = attempt.api_key_intent.as_ref().unwrap();
+        if projection["activePackageSha256"] != intent.package_sha256 {
+            return Err("onboarding_plugin_package_mismatch".into());
+        }
+        let instance = attempt.instance_ref.clone().unwrap();
+        let envelope = crate::control_plane::http_envelope(
+            "browser_onboarding_ui",
+            "POST",
+            &format!("/plugins/instances/{instance}/credentials"),
+            &json!({"idempotency_key":format!("{}:api-keys",attempt.id)}),
+        )?;
+        let receipt = service
+            .runtime()
+            .storage
+            .get_json(crate::control_plane::COMMAND_NS, &envelope.command_id)?
+            .map(serde_json::from_value::<crate::control_plane::ControlPlaneCommandRecord>)
+            .transpose()
+            .map_err(|_| "onboarding_credentials_receipt_invalid")?;
+        let Some(receipt) = receipt.filter(|r| r.response_status == Some(200)) else {
+            if projection["credentialStatus"]["configured"] == true
+                || projection["credentialStatus"]["revisionRef"] != intent.prior_revision_ref
+            {
+                return Err("onboarding_credentials_outcome_unknown".into());
+            }
+            return Ok(projection);
+        };
+        let binding = &receipt.envelope.payload_preview;
+        let stored = receipt
+            .response_body
+            .as_ref()
+            .ok_or("onboarding_credentials_receipt_invalid")?;
+        if receipt.envelope.source_interface != "browser_onboarding_ui"
+            || receipt.envelope.command_name != envelope.command_name
+            || receipt.envelope.target_object != envelope.target_object
+            || receipt.envelope.authority.actor.as_str()
+                != attempt
+                    .actor
+                    .as_deref()
+                    .ok_or("onboarding_identity_changed")?
+            || receipt.envelope.authority.account_mode != "paper"
+            || binding["onboardingId"] != attempt.id
+            || binding["instanceRef"] != instance
+            || binding["packageSha256"] != intent.package_sha256
+            || binding["priorRevisionRef"] != intent.prior_revision_ref
+            || stored["instanceRef"] != instance
+            || stored["credentialStatus"]["configured"] != true
+            || stored["credentialStatus"]["authenticationMethod"] != "api-key"
+            || stored["credentialStatus"]["revisionRef"]
+                != projection["credentialStatus"]["revisionRef"]
+            || projection["credentialStatus"]["configured"] != true
+            || projection["credentialStatus"]["authenticationMethod"] != "api-key"
+        {
+            return Err("onboarding_credentials_receipt_mismatch".into());
+        }
+        if projection["enabled"] != true {
+            let sequence = intent
+                .enable_sequence
+                .checked_add(1)
+                .ok_or("onboarding_state_invalid")?;
+            attempt.api_key_intent.as_mut().unwrap().enable_sequence = sequence;
+            self.save(attempt)?;
+            let enabled = service.handle_http_from_source(
+                "browser_onboarding_ui",
+                "POST",
+                &format!("/plugins/instances/{instance}:enable"),
+                json!({"idempotency_key":format!("{}:api-keys-enable:{sequence}",attempt.id)}),
+            );
+            if enabled.status != 200 {
+                return Err("onboarding_instance_enable_failed".into());
+            }
+        }
+        attempt.api_keys_stored = true;
+        attempt.last_error = None;
+        self.save(attempt)?;
+        api_key_connection(service, attempt)
+    }
+
     fn check_entitlement(&self, token: &str) -> Result<Value, String> {
         let profile = self
             .profile
@@ -489,10 +728,22 @@ impl BrowserOnboarding {
         }
         // Never reload a signed-in page while the user is choosing its next
         // action. Reloading here races browser clicks and assistive controls.
-        if progress["hubAuthenticated"] != true
-            || (attempt.connection_id.is_some() && progress["ready"] != true)
+        if !attempt.api_keys_requested
+            && (progress["hubAuthenticated"] != true
+                || (attempt.connection_id.is_some() && progress["ready"] != true))
         {
             links.push_str("<meta http-equiv=refresh content=5>");
+        }
+        if attempt.mode == "paper" && attempt.connection_id.is_none() {
+            if attempt.api_keys_requested {
+                let service = self.bound_local_service(&attempt)?;
+                let projection = api_key_connection(&service, &attempt)?;
+                if projection["credentialStatus"]["configured"] != true {
+                    links.push_str(&api_key_form(id, &projection));
+                }
+            } else if attempt.actor.is_none() {
+                links.push_str(&format!("<form method=post action=\"{id}/paper-keys\"><button>Connect with local paper API keys</button></form>"));
+            }
         }
         if let Some(url) = status["browserUrl"].as_str() {
             links.push_str(&format!(
@@ -510,11 +761,11 @@ impl BrowserOnboarding {
                 escape(url)
             ));
         }
-        if let Some(instance) = attempt
-            .instance_ref
-            .as_ref()
-            .filter(|_| attempt.connection_id.is_none() && progress["hubAuthenticated"] == true)
-        {
+        if let Some(instance) = attempt.instance_ref.as_ref().filter(|_| {
+            attempt.connection_id.is_none()
+                && !attempt.api_keys_stored
+                && progress["hubAuthenticated"] == true
+        }) {
             let (service, _) = self.bound_service(&attempt)?;
             let descriptor = service.broker_connection_descriptor(instance)?;
             links.push_str(&format!("<form method=post target=_blank action=\"{id}/authorize\"><fieldset><legend>Broker permissions</legend>"));
@@ -528,6 +779,13 @@ impl BrowserOnboarding {
                 }
             }
             links.push_str("</fieldset><button>Continue to broker authorization</button></form>");
+            if attempt.mode == "paper" && !attempt.api_keys_stored {
+                if let Ok(projection) = api_key_connection(&service, &attempt) {
+                    if projection["credentialStatus"]["configured"] != true {
+                        links.push_str(&api_key_form(id, &projection));
+                    }
+                }
+            }
         }
         if let Some(url) = progress["relay"]["checkoutUrl"]
             .as_str()
@@ -538,9 +796,9 @@ impl BrowserOnboarding {
                 escape(url)
             ));
         }
-        if progress["hubAuthenticated"] != true {
+        if !attempt.api_keys_requested && progress["hubAuthenticated"] != true {
             links.push_str(&format!("<form method=post target=_blank action=\"{id}/login\"><button>Sign in to TradeAssembly</button></form>"));
-        } else if attempt.instance_ref.is_none() {
+        } else if !attempt.api_keys_requested && attempt.instance_ref.is_none() {
             links.push_str(&format!(
                 "<form method=post action=\"{id}/broker\"><button>Connect broker</button></form>"
             ));
@@ -551,6 +809,7 @@ impl BrowserOnboarding {
                 "Connection verified. You can return to your agent."
             } else {
                 match progress["status"].as_str() {
+                    _ if attempt.api_keys_requested && !attempt.api_keys_stored => "Enter paper API keys. They remain in this Core installation.",
                     Some("warden_unavailable") => "Your broker is connected. Ask your agent to start the local policy service, then return here.",
                     Some("entitlement_required") => "Your broker is connected. Relay access is still required to complete this setup.",
                     _ if progress["hubAuthenticated"] == true && attempt.connection_id.is_some() => "Finish broker authorization in the other tab. This page checks the connection automatically.",
@@ -594,14 +853,45 @@ impl BrowserOnboarding {
             "cancel" => {
                 self.cancel(&mut attempt)?;
             }
+            "paper-keys" => {
+                if attempt.mode != "paper" || attempt.connection_id.is_some() {
+                    return Err("onboarding_api_keys_paper_required".into());
+                }
+                let service = self.bound_local_service(&attempt)?;
+                let owner = tokio::runtime::Handle::current()
+                    .block_on(self.local_identity.current_identity())?;
+                let instance = attempt
+                    .instance_ref
+                    .clone()
+                    .unwrap_or_else(|| "alpaca-paper".into());
+                tool_payload(
+                    &service,
+                    "tradeassembly.broker.connect",
+                    json!({"instanceRef":instance,"mode":"paper","idempotency_key":format!("{}:prepare",attempt.id)}),
+                )?;
+                attempt.instance_ref = Some(instance);
+                attempt.actor = Some(owner.stable_identity_id);
+                attempt.api_keys_requested = true;
+                self.save(&attempt)?;
+                return Ok(None);
+            }
             "broker" | "authorize" => {
+                if attempt.api_keys_requested {
+                    return Err("onboarding_credentials_already_configured".into());
+                }
                 if attempt.connection_id.is_some() {
                     return Ok(attempt.authorization_url.clone());
                 }
                 let (service, identity) = self.bound_service(&attempt)?;
                 let instance = if let Some(instance) = attempt.instance_ref.as_ref() {
-                    // Require ownership without replaying prepare with changed
-                    // inputs under the original command idempotency key.
+                    if service.broker_connection_descriptor(instance).is_err() {
+                        tool_payload(
+                            &service,
+                            "tradeassembly.broker.connect",
+                            json!({"instanceRef":instance,"mode":attempt.mode,
+                                "idempotency_key":format!("{}:prepare",attempt.id)}),
+                        )?;
+                    }
                     service.broker_connection_descriptor(instance)?;
                     instance.clone()
                 } else {
@@ -646,6 +936,120 @@ impl BrowserOnboarding {
     }
 }
 
+fn api_key_connection(service: &TradeAssemblyService, attempt: &Attempt) -> Result<Value, String> {
+    if attempt.cancelled || now_ms() >= attempt.expires_at_ms {
+        return Err("onboarding_attempt_ended".into());
+    }
+    if attempt.mode != "paper" {
+        return Err("onboarding_api_keys_paper_required".into());
+    }
+    if attempt.connection_id.is_some() {
+        return Err("onboarding_oauth_pending".into());
+    }
+    let instance_ref = attempt
+        .instance_ref
+        .as_deref()
+        .ok_or("onboarding_broker_prepare_required")?;
+    let response = service.handle_http_from_source(
+        "browser_onboarding_ui",
+        "GET",
+        &format!("/plugins/instances/{instance_ref}"),
+        json!({}),
+    );
+    if response.status != 200 {
+        return Err("onboarding_instance_unavailable".into());
+    }
+    let record = response.body;
+    let configuration = &record["configuration"];
+    if record["accountMode"] != "paper"
+        || record["pluginRef"] != "tradeassembly.alpaca"
+        || configuration["tradingApiUrl"] != "https://paper-api.alpaca.markets"
+        || configuration
+            .get("dataApiUrl")
+            .is_some_and(|v| v != "https://data.alpaca.markets")
+        || configuration.get("mode").is_some_and(|v| v != "paper")
+        || configuration
+            .get("account_mode")
+            .is_some_and(|v| v != "paper")
+    {
+        return Err("onboarding_api_keys_configuration_invalid".into());
+    }
+    let package = record["activePackageSha256"]
+        .as_str()
+        .filter(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or("onboarding_plugin_package_required")?;
+    let status = service.handle_http_from_source(
+        "browser_onboarding_ui",
+        "GET",
+        &format!("/plugins/instances/{instance_ref}/credentials"),
+        json!({}),
+    );
+    if status.status != 200 {
+        return Err("onboarding_credentials_status_failed".into());
+    }
+    Ok(
+        json!({"instanceRef":instance_ref,"pluginRef":record["pluginRef"],"activePackageSha256":package,
+        "accountMode":"paper","enabled":record["enabled"],"credentialStatus":status.body["credentialStatus"]}),
+    )
+}
+
+fn api_key_fields(body: &[u8]) -> Result<std::collections::BTreeMap<String, String>, String> {
+    if body.len() > 8192 {
+        return Err("onboarding_credentials_invalid".into());
+    }
+    let mut fields = std::collections::BTreeMap::new();
+    for (key, value) in url::form_urlencoded::parse(body) {
+        if !matches!(key.as_ref(), "api_key" | "api_secret" | "package_sha256")
+            || fields
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
+        {
+            return Err("onboarding_credentials_invalid".into());
+        }
+    }
+    if fields.len() != 3
+        || ["api_key", "api_secret"].iter().any(|key| {
+            fields.get(*key).is_none_or(|v| {
+                v.is_empty() || v.len() > 4096 || v.bytes().any(|b| b.is_ascii_control())
+            })
+        })
+    {
+        return Err("onboarding_credentials_invalid".into());
+    }
+    Ok(fields)
+}
+
+fn api_key_form(id: &str, projection: &Value) -> String {
+    format!("<form method=post action=\"{}/api-keys\"><fieldset><legend>Connect with paper API keys</legend><input type=hidden name=package_sha256 value=\"{}\"><p><label>Paper API key <input type=password name=api_key required autocomplete=off maxlength=4096></label></p><p><label>Paper API secret <input type=password name=api_secret required autocomplete=off maxlength=4096></label></p></fieldset><button>Save paper connection locally</button></form>", escape(id),escape(projection["activePackageSha256"].as_str().unwrap_or_default()))
+}
+
+fn safe_json(status: StatusCode, value: Value) -> Response {
+    let mut response = (status, axum::Json(value)).into_response();
+    response.headers_mut().insert(
+        "cache-control",
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+async fn connection(
+    State(state): State<BrowserOnboarding>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !valid_host(&state, &headers, false) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match tokio::task::spawn_blocking(move || state.connection(&id)).await {
+        Ok(Ok(value)) => safe_json(StatusCode::OK, value),
+        Ok(Err(code)) => safe_json(
+            StatusCode::BAD_REQUEST,
+            json!({"error":{"code":machine_code(&code)}}),
+        ),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 fn machine_code(code: &str) -> String {
     if !code.is_empty()
         && code.len() <= 128
@@ -671,7 +1075,7 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn document(message: &str, controls: &str) -> String {
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Connect TradeAssembly</title><h1>Connect TradeAssembly</h1><p>{}</p>{controls}<p>Credentials stay in the sign-in providers. Never paste keys into agent chat.</p></html>",escape(message))
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Connect TradeAssembly</title><h1>Connect TradeAssembly</h1><p>{}</p>{controls}<p>Broker API keys entered here stay in your local credential store. Never paste keys into agent chat.</p></html>",escape(message))
 }
 fn secured(html: String) -> Response {
     let mut response = Html(html).into_response();
@@ -724,6 +1128,26 @@ async fn action(
         .map(|v| format!("{v}/{id}"));
     if body.len() > 8192 {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    if action == "api-keys" {
+        let wants_json =
+            headers.get("accept").and_then(|v| v.to_str().ok()) == Some("application/json");
+        let result = tokio::task::spawn_blocking(move || state.api_keys(&id, &body)).await;
+        return match result {
+            Ok(Ok(value)) if wants_json => safe_json(StatusCode::OK, value),
+            Ok(Ok(_)) => {
+                axum::response::Redirect::to(redirect.as_deref().unwrap_or("/")).into_response()
+            }
+            Ok(Err(code)) if wants_json => safe_json(
+                StatusCode::BAD_REQUEST,
+                json!({"error":{"code":machine_code(&code)}}),
+            ),
+            Ok(Err(code)) => secured(document(
+                error_message(&code),
+                &format!("<p>Error code: <code>{}</code>.</p>", machine_code(&code)),
+            )),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
     }
     let scopes = url::form_urlencoded::parse(&body)
         .filter(|(key, _)| key == "scope")
@@ -832,11 +1256,36 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, BrowserOnboarding) {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("runtime.db").display().to_string();
-        let service = TradeAssemblyService::test_local(db.clone());
+        let db = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("runtime.db")
+            .display()
+            .to_string();
         let mut config = crate::runtime_config::RuntimeConfig::local(db);
         config.oidc_profile = "local_owner".into();
-        config.oidc_session_path = dir.path().join("session.bin").display().to_string();
+        config.oidc_session_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("session.bin")
+            .display()
+            .to_string();
+        config.artifact_root = Some(
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .join("artifacts")
+                .display()
+                .to_string(),
+        );
+        let (runtime, _) = crate::runtime_config::RuntimeBuilder::new(config.clone())
+            .with_finance_authority(Arc::new(crate::finance_authority::TestFinanceAuthority))
+            .build()
+            .unwrap();
+        let service =
+            TradeAssemblyService::from_runtime(config.database_path.as_ref().unwrap(), runtime);
         let manager = CliIdentityManager::new(config);
         let mut coordinator = BrowserOnboarding::new(&service, &manager);
         coordinator.profile = None;
@@ -854,6 +1303,394 @@ mod tests {
             "tradeassembly.onboarding.start",
             json!({"mode":"paper","environment":"staging","idempotency_key":"setup-1"}),
         )
+    }
+
+    fn install_paper_manifest(c: &BrowserOnboarding) {
+        let response = c.service.handle_http(
+            "GET",
+            "/plugins/manifests/tradeassembly.simbroker",
+            json!({}),
+        );
+        assert_eq!(response.status, 200);
+        let mut manifest = response.body;
+        manifest["pluginRef"] = json!("tradeassembly.alpaca");
+        manifest["manifest"]["metadata"]["id"] = json!("tradeassembly.alpaca");
+        manifest["package"] = json!({"packageSha256":"a".repeat(64)});
+        manifest["manifest"]["configuration"] = json!({"fields":[
+            {"id":"mode","inputType":"select","options":["paper","live"],"storageClass":"configuration","required":true},
+            {"id":"tradingApiUrl","inputType":"url","storageClass":"configuration","required":true,"defaultByAccountMode":{"paper":"https://paper-api.alpaca.markets","live":"https://api.alpaca.markets"}},
+            {"id":"api_key","inputType":"password","storageClass":"credential","required":true},
+            {"id":"api_secret","inputType":"password","storageClass":"credential","required":true}
+        ]});
+        manifest["manifest"]["health"]["requiredConfiguration"] = json!(["tradingApiUrl"]);
+        manifest["manifest"]["health"]["requiredCredentials"] = json!(["api_key", "api_secret"]);
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("paper-manifest-fixture").unwrap(),
+        );
+        c.service
+            .runtime()
+            .plugins
+            .install_manifest("tradeassembly.alpaca", manifest, &context)
+            .unwrap();
+    }
+
+    fn in_runtime<T>(operation: impl FnOnce() -> T) -> T {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { tokio::task::block_in_place(operation) })
+    }
+
+    fn paper_attempt(c: &BrowserOnboarding) -> String {
+        install_paper_manifest(c);
+        let id = start(c)["onboardingId"].as_str().unwrap().to_string();
+        in_runtime(|| c.browser_action(&id, "paper-keys", vec![])).unwrap();
+        let attempt = c.read(&id).unwrap().unwrap();
+        let service = in_runtime(|| c.bound_local_service(&attempt)).unwrap();
+        assert_eq!(
+            service
+                .handle_http_from_source(
+                    "fixture",
+                    "POST",
+                    "/plugins/instances/alpaca-paper:disable",
+                    json!({"idempotency_key":"fixture-disable"})
+                )
+                .status,
+            200
+        );
+        id
+    }
+
+    fn paper_form() -> String {
+        format!(
+            "api_key=PAPER_KEY_CANARY&api_secret=PAPER_SECRET_CANARY&package_sha256={}",
+            "a".repeat(64)
+        )
+    }
+
+    fn restart(c: &BrowserOnboarding) -> BrowserOnboarding {
+        let config = c.local_identity.configuration().clone();
+        let (runtime, _) = crate::runtime_config::RuntimeBuilder::new(config.clone())
+            .with_finance_authority(Arc::new(crate::finance_authority::TestFinanceAuthority))
+            .build()
+            .unwrap();
+        let service = TradeAssemblyService::from_runtime(c.service.db(), runtime);
+        let mut resumed = BrowserOnboarding::new(&service, &CliIdentityManager::new(config));
+        resumed.profile = None;
+        resumed.profile_error = None;
+        resumed
+    }
+
+    fn fail_write(c: &BrowserOnboarding, predicate: &str) {
+        rusqlite::Connection::open(c.service.db()).unwrap().execute_batch(&format!(
+            "CREATE TRIGGER onboarding_write_fault BEFORE INSERT ON tradeassembly_kv WHEN {predicate}
+             BEGIN SELECT RAISE(ABORT, 'onboarding fixture write failure'); END;"
+        )).unwrap();
+    }
+
+    fn clear_write_fault(c: &BrowserOnboarding) {
+        rusqlite::Connection::open(c.service.db())
+            .unwrap()
+            .execute_batch("DROP TRIGGER onboarding_write_fault;")
+            .unwrap();
+    }
+
+    #[test]
+    fn paper_key_restart_finishes_failed_enable_or_attempt_save_without_replacing_keys() {
+        for (fault, expected_error, enabled_before_restart) in [
+            ("NEW.namespace='control_plane_commands' AND NEW.idempotency_key LIKE '%:api-keys-enable:%'", "onboarding_instance_enable_failed", false),
+            ("NEW.namespace='browser_onboarding_v1' AND json_extract(NEW.value_json,'$.apiKeysStored')=1", "sqlite_operation_failed", true),
+        ] {
+            let (_dir, c) = fixture();
+            let id = paper_attempt(&c);
+            fail_write(&c, fault);
+            let error = in_runtime(|| c.api_keys(&id, paper_form().as_bytes())).unwrap_err();
+            if enabled_before_restart {
+                assert!(!error.is_empty());
+            } else {
+                assert_eq!(error, expected_error);
+            }
+            let attempt = c.read(&id).unwrap().unwrap();
+            assert!(!attempt.api_keys_stored);
+            assert!(attempt.api_key_intent.is_some());
+            let before = in_runtime(|| api_key_connection(&c.bound_local_service(&attempt).unwrap(), &attempt)).unwrap();
+            assert_eq!(before["enabled"], enabled_before_restart);
+            assert_eq!(before["credentialStatus"]["configured"], true);
+            clear_write_fault(&c);
+            let resumed = restart(&c);
+            let result = in_runtime(|| resumed.connection(&id)).unwrap();
+            assert_eq!(result["instance"]["enabled"], true);
+            assert_eq!(result["instance"]["credentialStatus"]["revisionRef"], before["credentialStatus"]["revisionRef"]);
+            assert!(resumed.read(&id).unwrap().unwrap().api_keys_stored);
+            let repeated = in_runtime(|| resumed.connection(&id)).unwrap();
+            assert_eq!(repeated, result);
+            let commands = crate::control_plane::list_commands(resumed.service.runtime().storage.as_ref()).unwrap();
+            let stores: Vec<_> = commands.iter().filter(|r| r.envelope.idempotency_key.as_str() == format!("{id}:api-keys")).collect();
+            assert_eq!(stores.len(), 1);
+            assert_eq!(stores[0].response_status, Some(200));
+            // The digest is entirely reproducible from safe public metadata.
+            assert_eq!(stores[0].envelope.payload_hash, format!("{:x}", Sha256::digest(serde_json::to_vec(&stores[0].envelope.payload_preview).unwrap())));
+            assert!(!serde_json::to_string(&commands).unwrap().contains("CANARY"));
+            assert!(crate::agent_runner::deployments(&resumed.service.runtime()).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn paper_key_intent_failure_precedes_credential_effect_and_can_retry_after_restart() {
+        let (_dir, c) = fixture();
+        let id = paper_attempt(&c);
+        fail_write(&c, "NEW.namespace='browser_onboarding_v1' AND json_type(NEW.value_json,'$.apiKeyIntent')='object'");
+        assert!(in_runtime(|| c.api_keys(&id, paper_form().as_bytes())).is_err());
+        assert!(
+            !c.service
+                .runtime()
+                .credentials
+                .status("alpaca-paper")
+                .configured
+        );
+        assert!(c.read(&id).unwrap().unwrap().api_key_intent.is_none());
+        clear_write_fault(&c);
+        let resumed = restart(&c);
+        assert_eq!(
+            in_runtime(|| resumed.api_keys(&id, paper_form().as_bytes())).unwrap()["enabled"],
+            true
+        );
+    }
+
+    #[test]
+    fn paper_key_unreceipted_store_never_adopts_or_overwrites_keys_on_restart() {
+        let (_dir, c) = fixture();
+        let id = paper_attempt(&c);
+        fail_write(&c, "NEW.namespace='control_plane_commands' AND NEW.idempotency_key LIKE '%:api-keys' AND json_extract(NEW.value_json,'$.response_status')=200");
+        assert_eq!(
+            in_runtime(|| c.api_keys(&id, paper_form().as_bytes())).unwrap_err(),
+            "onboarding_credentials_store_failed"
+        );
+        assert!(
+            c.service
+                .runtime()
+                .credentials
+                .status("alpaca-paper")
+                .configured
+        );
+        clear_write_fault(&c);
+        let resumed = restart(&c);
+        assert_eq!(
+            in_runtime(|| resumed.connection(&id)).unwrap_err(),
+            "onboarding_credentials_outcome_unknown"
+        );
+        assert_eq!(
+            in_runtime(|| resumed.api_keys(
+                &id,
+                paper_form().replace("CANARY", "REPLACEMENT").as_bytes()
+            ))
+            .unwrap_err(),
+            "onboarding_credentials_outcome_unknown"
+        );
+        let attempt = resumed.read(&id).unwrap().unwrap();
+        assert!(!attempt.api_keys_stored);
+        let projection = in_runtime(|| {
+            api_key_connection(&resumed.bound_local_service(&attempt).unwrap(), &attempt)
+        })
+        .unwrap();
+        assert_eq!(projection["enabled"], false);
+        assert_eq!(
+            projection["credentialStatus"]["revisionRef"],
+            "credential-generation:1"
+        );
+    }
+
+    #[test]
+    fn paper_key_resume_rejects_unrelated_credential_generation_and_changed_actor() {
+        let (_dir, c) = fixture();
+        let id = paper_attempt(&c);
+        fail_write(&c, "NEW.namespace='control_plane_commands' AND NEW.idempotency_key LIKE '%:api-keys-enable:%'");
+        assert!(in_runtime(|| c.api_keys(&id, paper_form().as_bytes())).is_err());
+        clear_write_fault(&c);
+        let mut attempt = c.read(&id).unwrap().unwrap();
+        let service = in_runtime(|| c.bound_local_service(&attempt)).unwrap();
+        let replaced = service.handle_http_from_source("fixture", "POST", "/plugins/instances/alpaca-paper/credentials",
+            json!({"credentials":{"api_key":"unrelated-key","api_secret":"unrelated-secret"},"idempotency_key":"unrelated-replacement"}));
+        assert_eq!(replaced.status, 200);
+        let resumed = restart(&c);
+        assert_eq!(
+            in_runtime(|| resumed.connection(&id)).unwrap_err(),
+            "onboarding_credentials_receipt_mismatch"
+        );
+        assert_eq!(
+            in_runtime(|| resumed.api_keys(&id, paper_form().as_bytes())).unwrap_err(),
+            "onboarding_credentials_receipt_mismatch"
+        );
+        attempt.actor = Some("different-owner".into());
+        resumed.save(&attempt).unwrap();
+        assert_eq!(
+            in_runtime(|| resumed.connection(&id)).unwrap_err(),
+            "onboarding_identity_changed"
+        );
+        assert!(!resumed.read(&id).unwrap().unwrap().api_keys_stored);
+        let instance = service.handle_http_from_source(
+            "fixture",
+            "GET",
+            "/plugins/instances/alpaca-paper",
+            json!({}),
+        );
+        assert_eq!(instance.body["enabled"], false);
+        assert_eq!(instance.body["credentialRevision"], 2);
+    }
+
+    #[test]
+    fn paper_key_setup_preserves_preexisting_credentials_and_separate_relay_admission() {
+        let (_dir, c) = fixture();
+        let id = paper_attempt(&c);
+        let mut attempt = c.read(&id).unwrap().unwrap();
+        let service = in_runtime(|| c.bound_local_service(&attempt)).unwrap();
+        let stored = service.handle_http_from_source("fixture", "POST", "/plugins/instances/alpaca-paper/credentials",
+            json!({"credentials":{"api_key":"existing-key","api_secret":"existing-secret"},"idempotency_key":"preexisting"}));
+        assert_eq!(stored.status, 200);
+        assert_eq!(
+            in_runtime(|| c.api_keys(&id, paper_form().as_bytes())).unwrap_err(),
+            "onboarding_credentials_already_configured"
+        );
+        assert!(c.read(&id).unwrap().unwrap().api_key_intent.is_none());
+        attempt.relay_requested = true;
+        c.save(&attempt).unwrap();
+        let status = in_runtime(|| c.public_status(&attempt)).unwrap();
+        assert_eq!(status["ready"], false);
+        assert_eq!(
+            status["relay"],
+            json!({"status":"unchecked","permitted":false})
+        );
+        // Relay selection does not prohibit local broker configuration.
+        assert!(in_runtime(|| c.browser_action(&id, "paper-keys", vec![])).is_ok());
+    }
+
+    #[test]
+    fn local_paper_key_customer_http_path_has_no_hosted_or_trade_effects() {
+        let (_dir, c) = fixture();
+        install_paper_manifest(&c);
+        let started = start(&c);
+        let url = started["browserUrl"].as_str().unwrap();
+        let origin = url::Url::parse(url).unwrap().origin().ascii_serialization();
+        let client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let page = client.get(url).send().unwrap().text().unwrap();
+        assert!(page.contains("Connect with local paper API keys"));
+        let initial: Value = client
+            .get(format!("{url}/connection"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert!(initial["instance"].is_null(), "{initial}");
+        let response = client
+            .post(format!("{url}/paper-keys"))
+            .header("origin", &origin)
+            .send()
+            .unwrap();
+        let status = response.status();
+        assert_eq!(status, 303, "{}", response.text().unwrap());
+        let prepared: Value = client
+            .get(format!("{url}/connection"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert_eq!(prepared["instance"]["accountMode"], "paper", "{prepared}");
+        assert_eq!(prepared["instance"]["activePackageSha256"], "a".repeat(64));
+        assert_ne!(prepared["instance"]["credentialStatus"]["configured"], true);
+        let form = format!(
+            "api_key=PAPER_KEY_CANARY&api_secret=PAPER_SECRET_CANARY&package_sha256={}",
+            "a".repeat(64)
+        );
+        for invalid_origin in ["https://evil.test", "null"] {
+            assert_eq!(
+                client
+                    .post(format!("{url}/api-keys"))
+                    .header("origin", invalid_origin)
+                    .body(form.clone())
+                    .send()
+                    .unwrap()
+                    .status(),
+                403
+            );
+        }
+        let wrong = client
+            .post(format!("{url}/api-keys"))
+            .header("origin", &origin)
+            .header("accept", "application/json")
+            .body(form.replace(&"a".repeat(64), &"b".repeat(64)))
+            .send()
+            .unwrap();
+        assert_eq!(wrong.status(), 400);
+        let result = client
+            .post(format!("{url}/api-keys"))
+            .header("origin", &origin)
+            .header("accept", "application/json")
+            .body(form.clone())
+            .send()
+            .unwrap();
+        assert_eq!(result.status(), 200);
+        let text = result.text().unwrap();
+        assert!(!text.contains("CANARY"));
+        let stored: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stored["credentialStatus"]["configured"], true, "{stored}");
+        assert_eq!(
+            stored["credentialStatus"]["authenticationMethod"],
+            "api-key"
+        );
+        assert_eq!(stored["enabled"], true);
+        assert_eq!(
+            client
+                .post(format!("{url}/api-keys"))
+                .header("origin", &origin)
+                .header("accept", "application/json")
+                .body(form)
+                .send()
+                .unwrap()
+                .status(),
+            400
+        );
+        let retained: Value = client
+            .get(format!("{url}/connection"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert_eq!(retained["instance"], stored);
+        assert!(crate::agent_runner::deployments(&c.service.runtime())
+            .unwrap()
+            .is_empty());
+        let attempt = c
+            .read(started["onboardingId"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(attempt.api_keys_stored);
+        assert!(attempt.connection_id.is_none());
+        assert!(!serde_json::to_string(&attempt).unwrap().contains("CANARY"));
+    }
+
+    #[test]
+    fn paper_key_route_rejects_live_mode_and_ended_attempts() {
+        let (_dir, c) = fixture();
+        install_paper_manifest(&c);
+        let started = start(&c);
+        let id = started["onboardingId"].as_str().unwrap();
+        let mut attempt = c.read(id).unwrap().unwrap();
+        attempt.mode = "live".into();
+        c.save(&attempt).unwrap();
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            tokio::task::block_in_place(|| c.browser_action(id, "paper-keys", vec![]))
+        });
+        assert_eq!(result.unwrap_err(), "onboarding_api_keys_paper_required");
+        attempt.mode = "paper".into();
+        attempt.cancelled = true;
+        c.save(&attempt).unwrap();
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            tokio::task::block_in_place(|| c.browser_action(id, "paper-keys", vec![]))
+        });
+        assert_eq!(result.unwrap_err(), "onboarding_attempt_ended");
     }
 
     #[test]

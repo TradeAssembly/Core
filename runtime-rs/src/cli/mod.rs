@@ -396,6 +396,13 @@ pub enum AuthCommand {
     Logout,
     /// Copy the current WorkOS session to Bitwarden, verify it, and retain Keychain.
     MigrateToBitwarden,
+    /// Verify stdin provider tokens against the packaged profile and Hub, then store in Bitwarden.
+    ImportSession {
+        #[arg(long)]
+        subject_sha256: String,
+        #[arg(long)]
+        tenant_sha256: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1179,6 +1186,38 @@ pub async fn run_with_service(
         }
         Command::Auth { command } => {
             let response = match command {
+                AuthCommand::ImportSession {
+                    subject_sha256,
+                    tenant_sha256,
+                } => {
+                    let result = async {
+                        use std::io::Read;
+                        let mut raw = Vec::new();
+                        std::io::stdin()
+                            .take(32769)
+                            .read_to_end(&mut raw)
+                            .map_err(|_| "workos_import_input_invalid".to_string())?;
+                        let profile_path = std::env::current_exe()
+                            .map_err(|_| "connection_profile_unavailable".to_string())?
+                            .parent()
+                            .ok_or("connection_profile_unavailable")?
+                            .join("connection-profile.json");
+                        let hosted = if profile_path.exists() {
+                            crate::connection_profile::ConnectionProfile::read(&profile_path)?
+                                .configure(config)
+                        } else {
+                            config.clone()
+                        };
+                        crate::workos_identity::WorkosAuthManager::new(hosted)
+                            .import_session(&raw, &subject_sha256, &tenant_sha256)
+                            .await
+                    }
+                    .await;
+                    match result {
+                        Ok(identity) => identity.redacted_status(),
+                        Err(code) => json!({"authenticated":false,"error":{"code":code}}),
+                    }
+                }
                 AuthCommand::MigrateToBitwarden => {
                     match crate::workos_identity::WorkosAuthManager::new(config.clone())
                         .migrate_to_bitwarden()

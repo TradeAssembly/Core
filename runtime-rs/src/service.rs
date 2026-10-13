@@ -867,6 +867,99 @@ impl TradeAssemblyService {
         Ok((service, session))
     }
 
+    /// The browser operation is bound by durable, non-secret intent. Credential
+    /// values go only to the owning custody adapter, never into a command hash.
+    pub(crate) fn store_browser_onboarding_credentials(
+        &self,
+        instance_ref: &str,
+        onboarding_id: &str,
+        package_sha256: &str,
+        prior_revision_ref: &str,
+        credentials: Value,
+    ) -> ServiceResponse {
+        let Some(principal) = self
+            .invocation_principal
+            .as_ref()
+            .filter(|p| p.issuer == "local-owner")
+        else {
+            return ServiceResponse::forbidden("onboarding_local_owner_required");
+        };
+        let source = "browser_onboarding_ui";
+        let path = format!("/plugins/instances/{instance_ref}/credentials");
+        let binding = bind_authenticated_invocation_value(
+            json!({"instanceRef":instance_ref,"onboardingId":onboarding_id,
+                "packageSha256":package_sha256,"priorRevisionRef":prior_revision_ref,
+                "idempotency_key":format!("{onboarding_id}:api-keys")}),
+            principal,
+            source,
+            self.invocation_actor_kind,
+            false,
+            None,
+        );
+        if let Some(response) =
+            object_authorization::authorize_private_request(self, "POST", &path, &binding)
+        {
+            return response;
+        }
+        let envelope = match control_plane::http_envelope(source, "POST", &path, &binding) {
+            Ok(envelope) => envelope,
+            Err(_) => return ServiceResponse::bad_request("invalid_command_envelope"),
+        };
+        let prepared = match control_plane::prepare_command(
+            self.runtime.storage.as_ref(),
+            self.runtime.finance_authority.as_ref(),
+            envelope.clone(),
+        ) {
+            Ok(record) => record,
+            Err(_) => return ServiceResponse::conflict("onboarding_credentials_command_failed"),
+        };
+        if prepared.duplicate {
+            return prepared.response_body.map_or_else(
+                || ServiceResponse::conflict("onboarding_credentials_outcome_unknown"),
+                |body| {
+                    ServiceResponse::duplicate_with_body(
+                        prepared.response_status.unwrap_or(409),
+                        &envelope.command_id,
+                        body,
+                    )
+                },
+            );
+        }
+        // Reject unrelated or ambiguous writes before entering the custody adapter.
+        let current = plugin_lifecycle::get_instance(self, instance_ref);
+        let status = plugin_lifecycle::credential_status_for(self, instance_ref);
+        if current.status != 200
+            || status.status != 200
+            || current.body["activePackageSha256"] != package_sha256
+            || status.body["credentialStatus"]["configured"] == true
+            || status.body["credentialStatus"]["revisionRef"] != prior_revision_ref
+        {
+            return ServiceResponse::conflict("onboarding_credentials_outcome_unknown");
+        }
+        let response = plugin_lifecycle::store_credentials(
+            self,
+            instance_ref,
+            json!({"credentials":credentials}),
+        );
+        if response.status != 200 {
+            // An unsuccessful cross-store write can have an unknown outcome.
+            // Preserve the prepared receipt and require reconciliation to prove it.
+            return response;
+        }
+        if control_plane::complete_command_with_body(
+            self.runtime.storage.as_ref(),
+            self.runtime.finance_authority.as_ref(),
+            &envelope,
+            response.status,
+            Some(response.body.clone()),
+        )
+        .is_err()
+        {
+            return ServiceResponse::internal_error("onboarding_credentials_receipt_failed");
+        }
+        response
+    }
+
     pub fn handle_http_from_source(
         &self,
         source_interface: &str,

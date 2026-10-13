@@ -68,6 +68,16 @@ public connection profiles, browser state/HTTP controls, identity bootstrap,
 and real stdio process restart/cancel. It does not prove deployed OAuth or
 customer installation; those require the actual packaged browser journey.
 
+The installed connection page supports local Alpaca paper API-key setup through
+its process-bound loopback capability. This route requires the local owner,
+binds the exact plugin package and durable nonsecret intent, and reconciles
+credential receipts before enabling the instance after a restart. It neither
+activates strategies nor grants Relay access. Hosted OAuth remains separate.
+`auth import-session --subject-sha256 HASH --tenant-sha256 HASH` imports bounded
+provider tokens from stdin only after normal signature and Hub projection
+validation, into an absent Bitwarden session. Test-session injection is not
+signup, Magic Auth or native PKCE proof.
+
 No skipped, zero-test or mock-only result is end-to-end evidence. Ignored real
 M2 controlled-broker/Warden and packaged-sandbox cases require their explicit
 invocations and exact artifact-bound receipts. Never place actual broker orders

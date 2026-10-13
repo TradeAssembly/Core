@@ -35,6 +35,8 @@ publicFiles:
   - Cargo.lock
   - Cargo.toml
   - contracts/compatibility.json
+  - contracts/public-workspace.v1.schema.json
+  - contracts/strategy-result-summary.v1.schema.json
   - GEMINI.md
   - Justfile
   - LICENSE

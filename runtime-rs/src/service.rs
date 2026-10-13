@@ -43,6 +43,7 @@ mod plugin_lifecycle;
 mod plugin_oauth;
 mod positions;
 mod providers;
+pub mod public_workspace;
 pub mod reach;
 mod replay;
 mod research;

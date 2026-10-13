@@ -692,3 +692,121 @@ fn ten_symbol_twenty_bar_example_enforces_shared_four_position_limit() {
         result.result_hash
     );
 }
+
+#[test]
+fn public_workspace_roundtrip_keeps_real_result_accounting_without_raw_dataset_or_authority() {
+    use tradeassembly_runtime::ports::{IdempotencyKey, SideEffectContext};
+    use tradeassembly_runtime::service::{
+        backtest_lifecycle, public_workspace, TradeAssemblyService,
+    };
+    let dataset = snapshot();
+    let mut version = version(strategy(
+        "bar.close > 101000000",
+        Some("bar.close < 100000000"),
+    ));
+    version["published"] = json!(true);
+    let mut configuration = manifest(&dataset, &version, EndOfDataPolicy::MarkToMarket)
+        .content
+        .configuration;
+    configuration.capability_graph.revision_id.clear();
+    configuration.capability_graph.graph_fingerprint.clear();
+    configuration.costs.fixed_fee_micros = UNIT;
+    let source_file = tempfile::NamedTempFile::new().unwrap();
+    let source = TradeAssemblyService::test_local(source_file.path().to_str().unwrap());
+    let context = SideEffectContext::new(
+        AuthorityContext::local_cli(),
+        IdempotencyKey::new("public-real-result").unwrap(),
+    );
+    source
+        .runtime()
+        .dataset_snapshots
+        .put(&dataset, &context)
+        .unwrap();
+    source
+        .runtime()
+        .storage
+        .put_json(
+            "strategy_versions",
+            "strategy-1:1",
+            version.clone(),
+            &context,
+        )
+        .unwrap();
+    source.runtime().storage.put_json("strategies", "strategy-1", json!({"id":"strategy-1","name":"Research fixture","status":"published","currentVersionId":"version-1","spec":version["spec"],"latestSpec":version["spec"]}), &context).unwrap();
+    let created = backtest_lifecycle::create(
+        &source,
+        json!({"idempotencyKey":"public-result-run","client":"test","purpose":"research","configuration":configuration}),
+    );
+    assert_eq!(created.status, 202, "{}", created.body);
+    let completed = backtest_lifecycle::process(&source, "public-result-worker");
+    assert_eq!(completed.body["status"], "completed", "{}", completed.body);
+    let notebook=source.research_notebook(json!({"strategyId":"strategy-1","notebookId":"portable-notebook","title":"Actual completed research","artifactSelectors":[{"kind":"backtest","id":created.body["runId"]}]}));
+    assert_eq!(notebook["ok"], true, "{notebook}");
+    let summary = public_workspace::result_summary(&source, "strategy-1").unwrap();
+    let result = &summary["backtests"][0];
+    assert_eq!(result["metrics"]["grossPnlMicros"], -4 * UNIT);
+    assert_eq!(result["metrics"]["netPnlMicros"], -6 * UNIT);
+    assert_eq!(result["metrics"]["feesMicros"], 2 * UNIT);
+    assert_eq!(result["reconciliation"]["residualMicros"], 0);
+    assert_eq!(result["reconciliation"]["status"], "reconciled");
+    assert_eq!(
+        result["period"],
+        serde_json::to_value(&dataset.content.time_slice).unwrap()
+    );
+    let bundle = public_workspace::export(&source).unwrap();
+    let encoded = serde_json::to_vec(&bundle).unwrap();
+    fn contains_key(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|v| contains_key(v, key))
+            }
+            Value::Array(items) => items.iter().any(|v| contains_key(v, key)),
+            _ => false,
+        }
+    }
+    let serialized: Value = serde_json::from_slice(&encoded).unwrap();
+    for excluded in [
+        "observations",
+        "authorityContext",
+        "localLiveAuthority",
+        "execution_activations",
+    ] {
+        assert!(
+            !contains_key(&serialized, excluded),
+            "unexpected raw field {excluded}"
+        );
+    }
+    let target_file = tempfile::NamedTempFile::new().unwrap();
+    let target = TradeAssemblyService::test_local(target_file.path().to_str().unwrap());
+    public_workspace::import(&target, &encoded).unwrap();
+    assert_eq!(
+        public_workspace::result_summary(&target, "strategy-1").unwrap()["backtests"],
+        summary["backtests"]
+    );
+    assert!(target
+        .runtime()
+        .dataset_snapshots
+        .list()
+        .unwrap()
+        .is_empty());
+    let restored = target
+        .runtime()
+        .storage
+        .get_json(
+            "research_notebooks",
+            notebook["notebookId"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored["notebook"], notebook["notebook"]);
+    assert!(target
+        .runtime()
+        .storage
+        .get_json(
+            "research_notebook_exports",
+            notebook["notebookId"].as_str().unwrap()
+        )
+        .unwrap()
+        .is_some());
+    assert!(target.runtime().backtests.list_runs().unwrap().is_empty());
+}

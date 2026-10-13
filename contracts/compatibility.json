@@ -25,6 +25,22 @@
       "capabilities": [
         "owner-bound-export"
       ]
+    },
+    {
+      "id": "core.workspace",
+      "version": "1.0.0",
+      "capabilities": [
+        "export-research",
+        "restore-stopped"
+      ]
+    },
+    {
+      "id": "core.results",
+      "version": "1.0.0",
+      "capabilities": [
+        "strategy-summary",
+        "completeness"
+      ]
     }
   ],
   "requires": [],

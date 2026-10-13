@@ -67,6 +67,16 @@ pub enum Command {
         #[command(subcommand)]
         command: StrategyCommand,
     },
+    /// Export/import public research records without execution authority.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+    /// Describe durable strategy results; absent metrics remain unavailable.
+    ResultSummary {
+        #[arg(long)]
+        strategy_id: String,
+    },
     Journal {
         #[command(subcommand)]
         command: JournalCommand,
@@ -218,6 +228,22 @@ pub enum Command {
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorkspaceCommand {
+    Export {
+        #[arg(long, required_unless_present = "stdout", conflicts_with = "stdout")]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        stdout: bool,
+    },
+    Import {
+        #[arg(long, required_unless_present = "stdin", conflicts_with = "stdin")]
+        from: Option<PathBuf>,
+        #[arg(long)]
+        stdin: bool,
     },
 }
 
@@ -1961,6 +1987,33 @@ fn execute_command_with_agent(
     agent: Option<&crate::agent_runner::CodexCliAdapter>,
 ) -> Value {
     match command {
+        Command::Workspace { command } => {
+            let result = match command {
+                WorkspaceCommand::Export { out: Some(out), .. } => {
+                    crate::service::public_workspace::export_file(service, &out)
+                }
+                WorkspaceCommand::Export { stdout: true, .. } => {
+                    crate::service::public_workspace::export(service).and_then(|bundle| {
+                        serde_json::to_value(bundle)
+                            .map_err(|_| "workspace_bundle_invalid".to_string())
+                    })
+                }
+                WorkspaceCommand::Import {
+                    from: Some(from), ..
+                } => crate::service::public_workspace::read_file(&from)
+                    .and_then(|raw| crate::service::public_workspace::import(service, &raw)),
+                WorkspaceCommand::Import { stdin: true, .. } => {
+                    crate::service::public_workspace::read_stdin()
+                        .and_then(|raw| crate::service::public_workspace::import(service, &raw))
+                }
+                _ => Err("workspace_io_required".to_string()),
+            };
+            result.unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}))
+        }
+        Command::ResultSummary { strategy_id } => {
+            crate::service::public_workspace::result_summary(service, &strategy_id)
+                .unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}))
+        }
         Command::Strategy { command } => match command {
             StrategyCommand::List => {
                 service
@@ -3514,6 +3567,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Mcp { .. } => "mcp",
         Command::Strategy { .. } => "strategy",
         Command::Journal { .. } => "journal",
+        Command::Workspace { .. } => "workspace",
+        Command::ResultSummary { .. } => "result-summary",
         Command::Providers { .. } => "providers",
         Command::Credentials { .. } => "credentials",
         Command::Account { .. } => "account",

@@ -375,6 +375,181 @@ impl StoragePort for LocalSqliteStorage {
         })
     }
 
+    fn public_workspace_snapshot(
+        &self,
+        namespaces: &[&str],
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<(String, String, Value)>, String> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction().map_err(redacted_sqlite_error)?;
+        let mut values = Vec::new();
+        let mut bytes = 0usize;
+        for namespace in namespaces {
+            let mut statement = tx.prepare("SELECT item_key, CASE namespace WHEN 'dataset_snapshots_v1' THEN json_remove(value_json,'$.content.observations') WHEN 'research_datasets' THEN json_remove(value_json,'$.records') WHEN 'backtests' THEN json_object('id',item_key) ELSE value_json END FROM tradeassembly_kv WHERE namespace=?1 ORDER BY item_key LIMIT ?2").map_err(redacted_sqlite_error)?;
+            let rows = statement
+                .query_map(params![namespace, (max_rows + 1) as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(redacted_sqlite_error)?;
+            for row in rows {
+                let (key, body) = row.map_err(redacted_sqlite_error)?;
+                bytes = bytes
+                    .checked_add(body.len())
+                    .ok_or("workspace_size_limit")?;
+                if values.len() >= max_rows || bytes > max_bytes {
+                    return Err("workspace_size_limit".to_string());
+                }
+                let value = serde_json::from_str(&body)
+                    .map_err(|_| "workspace_record_invalid".to_string())?;
+                values.push((namespace.to_string(), key, value));
+            }
+        }
+        Ok(values)
+    }
+
+    fn import_public_workspace(
+        &self,
+        writes: &[StorageWrite],
+        digest: &str,
+        bootstrap: &[StorageExpectation],
+    ) -> Result<ImmutablePutOutcome, String> {
+        let mut expected = std::collections::BTreeMap::new();
+        for baseline in bootstrap {
+            if baseline.namespace != "object_authorization_scopes_v1"
+                || ![
+                    "strategy:strat_local_btc_demo",
+                    "strategy:strat_local_crypto_replay",
+                    "plugin_instance:sim",
+                    "plugin_instance:local-data",
+                    "plugin_instance:alpaca-paper",
+                    "credential_reference:sim",
+                    "credential_reference:local-data",
+                    "credential_reference:alpaca-paper",
+                ]
+                .contains(&baseline.key.as_str())
+            {
+                return Err("workspace_bootstrap_invalid".to_string());
+            }
+            let value = baseline
+                .value
+                .as_ref()
+                .ok_or("workspace_bootstrap_invalid")?;
+            expected.insert(
+                (baseline.namespace.clone(), baseline.key.clone()),
+                serde_json::to_string(value).map_err(|_| "workspace_record_invalid".to_string())?,
+            );
+        }
+        let serialized = writes
+            .iter()
+            .map(|write| {
+                validate_key(&write.namespace, &write.key)?;
+                let value = serde_json::to_string(&write.value)
+                    .map_err(|_| "workspace_record_invalid".to_string())?;
+                if let Some(baseline) = expected.get(&(write.namespace.clone(), write.key.clone()))
+                {
+                    if baseline != &value {
+                        return Err("workspace_bootstrap_conflict".to_string());
+                    }
+                }
+                expected.insert((write.namespace.clone(), write.key.clone()), value.clone());
+                Ok((write, value))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut connection = self.connection()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(redacted_sqlite_error)?;
+        let receipt: Option<String> = tx.query_row("SELECT value_json FROM tradeassembly_kv WHERE namespace='public_workspace_imports_v1' AND item_key='current'", [], |row| row.get(0)).optional().map_err(redacted_sqlite_error)?;
+        let count: usize = tx
+            .query_row("SELECT COUNT(*) FROM tradeassembly_kv", [], |row| {
+                row.get(0)
+            })
+            .map_err(redacted_sqlite_error)?;
+        if let Some(receipt) = receipt {
+            if receipt
+                != serde_json::to_string(
+                    &serde_json::json!({"bundleHash":digest,"recordCount":expected.len()}),
+                )
+                .map_err(|_| "workspace_record_invalid")?
+                || count != expected.len() + 1
+            {
+                return Err("workspace_not_empty".to_string());
+            }
+            for ((namespace, key), expected_value) in &expected {
+                let current: Option<String> = tx.query_row("SELECT value_json FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2", params![namespace,key], |row| row.get(0)).optional().map_err(redacted_sqlite_error)?;
+                if current.as_ref() != Some(expected_value) {
+                    return Err("workspace_import_replay_conflict".to_string());
+                }
+            }
+            return Ok(ImmutablePutOutcome::AlreadyPresent);
+        }
+        if count != bootstrap.len() {
+            return Err("workspace_not_empty".to_string());
+        }
+        for baseline in bootstrap {
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT value_json FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2",
+                    params![baseline.namespace, baseline.key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(redacted_sqlite_error)?;
+            let expected_value = baseline
+                .value
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| "workspace_record_invalid".to_string())?;
+            if current != expected_value {
+                return Err("workspace_not_empty".to_string());
+            }
+        }
+        // Tables contain local execution work, evidence, and broker activity. None
+        // may predate a restore, even if the public key/value allowlist is empty.
+        for table in [
+            "journal_events",
+            "runtime_queue",
+            "runtime_events",
+            "runtime_schedules",
+            "runtime_outbox",
+            "runtime_inbox",
+            "runtime_leases",
+            "runtime_evidence",
+        ] {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(redacted_sqlite_error)?;
+            if exists {
+                let occupied: bool = tx
+                    .query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table})"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(redacted_sqlite_error)?;
+                if occupied {
+                    return Err("workspace_not_empty".to_string());
+                }
+            }
+        }
+        for (write, value) in serialized {
+            tx.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES(?1,?2,?3,?4,?5,unixepoch('subsec')*1000) ON CONFLICT(namespace,item_key) DO NOTHING", params![write.namespace,write.key,value,write.context.idempotency_key.as_str(),write.context.authority.actor]).map_err(redacted_sqlite_error)?;
+        }
+        let receipt = serde_json::to_string(
+            &serde_json::json!({"bundleHash":digest,"recordCount":expected.len()}),
+        )
+        .map_err(|_| "workspace_record_invalid")?;
+        tx.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES('public_workspace_imports_v1','current',?1,?2,'local-user',unixepoch('subsec')*1000)", params![receipt,digest]).map_err(redacted_sqlite_error)?;
+        tx.commit().map_err(redacted_sqlite_error)?;
+        Ok(ImmutablePutOutcome::Created)
+    }
+
     fn put_json_batch(
         &self,
         writes: &[StorageWrite],

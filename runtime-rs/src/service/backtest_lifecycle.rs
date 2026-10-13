@@ -600,7 +600,7 @@ fn navigation(service: &TradeAssemblyService, run_id: &str, strategy_id: &str) -
     })
 }
 
-fn report_projection(
+pub(super) fn report_projection(
     service: &TradeAssemblyService,
     run_id: &str,
 ) -> Result<crate::backtest_report::BacktestReport, String> {

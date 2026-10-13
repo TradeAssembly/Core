@@ -270,6 +270,15 @@ pub struct VerifiedCliSession {
     identity: CliIdentity,
 }
 
+impl VerifiedCliSession {
+    pub(crate) fn bind_service(
+        self,
+        service: &TradeAssemblyService,
+    ) -> Result<TradeAssemblyService, String> {
+        bind_authenticated_service(service, self.identity)
+    }
+}
+
 pub async fn verify_cli_session(config: &RuntimeConfig) -> Result<VerifiedCliSession, String> {
     let identity = CliIdentityManager::new(config.clone())
         .current_identity()
@@ -952,6 +961,167 @@ mod tests {
         let serialized = String::from_utf8_lossy(&ciphertext);
         assert!(!serialized.contains("runtime-user-123"));
         assert!(!serialized.contains("runtime-refresh-token"));
+
+        // Exercise the installed CLI dispatch after actual signature/PKCE
+        // verification. A customer issuer is retained as the object owner.
+        use crate::cli::{execute_command, run_with_service, Cli};
+        use clap::Parser;
+        let local_service = |path: &Path| {
+            let service = TradeAssemblyService::test_local(path.to_str().unwrap());
+            let mut runtime = service.runtime().as_ref().clone();
+            runtime.identity = Arc::new(
+                crate::adapters::local::system::LocalOidcIdentity::new(
+                    path.to_str().unwrap(),
+                    &config.oidc_issuer,
+                    &config.oidc_audience,
+                )
+                .unwrap(),
+            );
+            service.with_test_runtime(runtime)
+        };
+        let source_file = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        let source = local_service(source_file.path());
+        let owned = authenticated_service(&source, &config).await.unwrap();
+        // Use the real service creation route with the verified identity, rather
+        // than constructing object scopes in the fixture.
+        assert_eq!(owned.handle_http_from_source("cli", "POST", "/product/strategies/create", json!({"id":"customer-research","name":"Customer research","templateId":"blank"})).status, 201);
+        let bundle_path = root.path().canonicalize().unwrap().join("workspace.json");
+        let export_cli = Cli::try_parse_from([
+            "tradeassembly",
+            "workspace",
+            "export",
+            "--out",
+            bundle_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(run_with_service(export_cli, &source, &config).await, 0);
+        let bundle: crate::service::public_workspace::PublicWorkspaceBundle =
+            serde_json::from_slice(&fs::read(&bundle_path).unwrap()).unwrap();
+        assert!(bundle
+            .entries
+            .iter()
+            .any(|entry| entry.key == "customer-research"));
+        assert_eq!(
+            crate::service::public_workspace::export(&owned).unwrap_err(),
+            "workspace_local_sqlite_owner_required"
+        );
+        assert!(
+            owned
+                .handle_http_from_source("http", "POST", "/workspace/export", json!({}))
+                .status
+                >= 400
+        );
+        let target_file = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        let target = local_service(target_file.path());
+        let import_cli = || {
+            Cli::try_parse_from([
+                "tradeassembly",
+                "workspace",
+                "import",
+                "--from",
+                bundle_path.to_str().unwrap(),
+            ])
+            .unwrap()
+        };
+        assert_eq!(run_with_service(import_cli(), &target, &config).await, 0);
+        assert_eq!(run_with_service(import_cli(), &target, &config).await, 0);
+        let restored = target
+            .runtime()
+            .storage
+            .get_json("strategies", "customer-research")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["status"], "stopped");
+        for namespace in [
+            "execution_activations",
+            "execution_runs",
+            "execution_configs",
+            "credentials",
+        ] {
+            assert!(target
+                .runtime()
+                .storage
+                .list_json(namespace)
+                .unwrap()
+                .is_empty());
+        }
+        let other = owned.for_authenticated_invocation(
+            identity.issuer.clone(),
+            "other-customer",
+            None,
+            None,
+        );
+        assert_eq!(
+            execute_command(
+                &other,
+                Cli::try_parse_from([
+                    "tradeassembly",
+                    "result-summary",
+                    "--strategy-id",
+                    "customer-research"
+                ])
+                .unwrap()
+                .command
+            )["error"]["code"],
+            "object_not_available"
+        );
+        let mut other_identity = identity.clone();
+        other_identity.subject = "other-customer".into();
+        other_identity.stable_identity_id = "other-customer".into();
+        manager
+            .session_store()
+            .write(&StoredSession {
+                version: SESSION_VERSION,
+                identity: other_identity,
+                refresh_token: None,
+            })
+            .unwrap();
+        let other_path = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("other-workspace.json");
+        assert_eq!(
+            run_with_service(
+                Cli::try_parse_from([
+                    "tradeassembly",
+                    "workspace",
+                    "export",
+                    "--out",
+                    other_path.to_str().unwrap()
+                ])
+                .unwrap(),
+                &source,
+                &config
+            )
+            .await,
+            0
+        );
+        let other_bundle: crate::service::public_workspace::PublicWorkspaceBundle =
+            serde_json::from_slice(&fs::read(other_path).unwrap()).unwrap();
+        assert!(!other_bundle
+            .entries
+            .iter()
+            .any(|entry| entry.key == "customer-research"));
+        assert_eq!(run_with_service(import_cli(), &target, &config).await, 1);
+        let unknown_boundary =
+            TradeAssemblyService::from_runtime("server-storage", source.runtime().as_ref().clone());
+        assert_eq!(
+            run_with_service(import_cli(), &unknown_boundary, &config).await,
+            1
+        );
+        manager.logout().unwrap();
+        let unauthenticated_path = root.path().canonicalize().unwrap().join("signed-out.json");
+        let cli = Cli::try_parse_from([
+            "tradeassembly",
+            "workspace",
+            "export",
+            "--out",
+            unauthenticated_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(run_with_service(cli, &source, &config).await, 1);
+        assert!(!unauthenticated_path.exists());
     }
 
     #[tokio::test]

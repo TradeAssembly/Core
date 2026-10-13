@@ -1342,6 +1342,40 @@ pub async fn run_with_service(
         Command::Agent {
             command: AgentCommand::Uninstall(args),
         } => print_launchd_response(agent_launchd_uninstall(config, cli.config.as_deref(), args)),
+        Command::Workspace { command } => {
+            let result = async {
+                let session = crate::cli_identity::verify_cli_session(config).await?;
+                let workspace = crate::service::public_workspace::VerifiedLocalWorkspace::from_verified_session(
+                    service, session,
+                )?;
+                match command {
+                    WorkspaceCommand::Export { out: Some(out), .. } => workspace.export_file(&out),
+                    WorkspaceCommand::Export { stdout: true, .. } => workspace.export().and_then(|bundle| {
+                        serde_json::to_value(bundle).map_err(|_| "workspace_bundle_invalid".to_string())
+                    }),
+                    WorkspaceCommand::Import { from: Some(from), .. } => {
+                        crate::service::public_workspace::read_file(&from).and_then(|raw| workspace.import(&raw))
+                    }
+                    WorkspaceCommand::Import { stdin: true, .. } => {
+                        crate::service::public_workspace::read_stdin().and_then(|raw| workspace.import(&raw))
+                    }
+                    _ => Err("workspace_io_required".to_string()),
+                }
+            }
+            .await;
+            let response = result.unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}));
+            let failed = command_response_failed(&response);
+            let output = if failed {
+                output::failure(response, "workspace")
+            } else {
+                output::success(response, "workspace")
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).expect("CLI output JSON")
+            );
+            i32::from(failed)
+        }
         command => {
             let authenticated =
                 match require_authenticated_service(service, &identity_manager).await {

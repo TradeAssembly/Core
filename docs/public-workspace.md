@@ -1,6 +1,6 @@
 # Public workspace portability and descriptive results
 
-Core owns these interfaces without Hub, Relay, hosted billing, or Warden migration dependencies. The commands use the installed local owner's existing CLI identity and local SQLite storage. Provider-authenticated callers cannot export or import a workspace. No HTTP or MCP portability mutation route is added.
+Core owns these interfaces without Hub, Relay, hosted billing, or Warden migration dependencies. The actual local CLI verifies its existing identity and requires the local runtime profile and SQLite storage. A verified provider identity may export or import its own local records through that CLI; it does not acquire records belonging to the standalone local owner. Direct provider service calls and HTTP/MCP portability mutation remain unavailable. Standalone Core requires no hosted account.
 
 ```sh
 tradeassembly --db SOURCE_DB workspace export --out NEW_BUNDLE_FILE
@@ -26,6 +26,8 @@ No durable safe workspace settings namespace currently exists. `settings` explic
 Import requires an empty durable workspace. The exact eight ownership scopes seeded by authenticated local startup are permissible bootstrap metadata; unrelated scopes, data, or execution work fail the check. Import rebinds objects to the target local owner. SQLite checks emptiness and writes every safe record plus the digest-bound receipt in one `BEGIN IMMEDIATE` transaction with FULL synchronous WAL. A failed write rolls back all imported records. Retrying the same bundle succeeds only while all imported records and permissible bootstrap scopes still exactly match; modified state fails closed. Existing workspaces are never merged or overwritten. No activation, scheduler work, broker order, or execution authority is restored.
 
 `tradeassembly.strategy-result-summary.v1` separates operational run state, paper execution accounting, and native completed backtests. Native metrics come from integrity-verified `backtest_report.rs` calculations; archived portable reports use their validated accounting overview. Gross and net P&L, actual fees, reconciliation residual/status, time coverage, immutable strategy/dataset provenance, and source report digest are reported separately. Backtests are not summed into paper performance.
+
+Operational and paper `reconciliationStatus` preserves the execution ledger state: `clear`, `required`, or `unavailable`. Clear means no pending reconciliation requirement; it does not imply complete accounting or independently observed provider reconciliation.
 
 Paper metrics use the existing `tradeassembly.execution_ledger.v2` calculation for each actual activation. Missing price or realized P&L evidence remains null/unavailable. Paper fees are unavailable until that accounting owner supplies them. Each run carries actual durable start/stop milliseconds converted to RFC3339, snapshot provenance, and completeness. The source digest binds the operational, paper, backtest, and cursor projections. `source.localArchiveCursor` is the actual latest integrity-verified durable journal sequence for the authenticated owner, with its record digest; it is null when no owned event exists. It is not an event count or a synthetic zero. Legacy journal export schema v1 is unchanged.
 

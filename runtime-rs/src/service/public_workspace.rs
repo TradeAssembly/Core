@@ -203,14 +203,57 @@ fn entry(namespace: &str, key: String, value: Value) -> Result<PublicWorkspaceEn
     })
 }
 fn local_process(service: &TradeAssemblyService) -> Result<(), String> {
+    local_sqlite(service)?;
     if service
         .invocation_owner()
         .is_some_and(|owner| owner.issuer != "local-owner")
-        || service.runtime().storage.adapter_name() != "sqlite-wal"
     {
         return Err(code("workspace_local_sqlite_owner_required"));
     }
     Ok(())
+}
+
+fn local_sqlite(service: &TradeAssemblyService) -> Result<(), String> {
+    if service.runtime().storage.adapter_name() != "sqlite-wal"
+        || !service
+            .runtime_manifest()
+            .is_some_and(|manifest| manifest.profile == "local")
+    {
+        return Err(code("workspace_local_sqlite_owner_required"));
+    }
+    Ok(())
+}
+
+/// A local-process capability minted only from a verified CLI session. Hosted
+/// identity remains the object owner; this never links it to a local owner.
+pub(crate) struct VerifiedLocalWorkspace {
+    service: TradeAssemblyService,
+}
+
+impl VerifiedLocalWorkspace {
+    pub(crate) fn from_verified_session(
+        service: &TradeAssemblyService,
+        session: crate::cli_identity::VerifiedCliSession,
+    ) -> Result<Self, String> {
+        local_sqlite(service)?;
+        let service = session.bind_service(service)?;
+        if service.invocation_owner().is_none() {
+            return Err(code("workspace_local_sqlite_owner_required"));
+        }
+        Ok(Self { service })
+    }
+
+    pub(crate) fn export(&self) -> Result<PublicWorkspaceBundle, String> {
+        export_owned(&self.service)
+    }
+
+    pub(crate) fn import(&self, raw: &[u8]) -> Result<Value, String> {
+        import_owned(&self.service, raw)
+    }
+
+    pub(crate) fn export_file(&self, path: &Path) -> Result<Value, String> {
+        write_bundle_file(self.export()?, path)
+    }
 }
 fn strategy_id(value: &Value) -> Option<&str> {
     value["strategyId"]
@@ -220,6 +263,10 @@ fn strategy_id(value: &Value) -> Option<&str> {
 
 pub fn export(service: &TradeAssemblyService) -> Result<PublicWorkspaceBundle, String> {
     local_process(service)?;
+    export_owned(service)
+}
+
+fn export_owned(service: &TradeAssemblyService) -> Result<PublicWorkspaceBundle, String> {
     let rows = service.runtime().storage.public_workspace_snapshot(
         INPUT_NAMESPACES,
         MAX_ENTRIES,
@@ -732,6 +779,10 @@ impl<'de> Deserialize<'de> for UniqueJson {
 
 pub fn import(service: &TradeAssemblyService, raw: &[u8]) -> Result<Value, String> {
     local_process(service)?;
+    import_owned(service, raw)
+}
+
+fn import_owned(service: &TradeAssemblyService, raw: &[u8]) -> Result<Value, String> {
     if raw.len() > MAX_BUNDLE_BYTES {
         return Err(code("workspace_size_limit"));
     }
@@ -901,9 +952,12 @@ pub fn read_file(_: &Path) -> Result<Vec<u8>, String> {
 }
 #[cfg(unix)]
 pub fn export_file(service: &TradeAssemblyService, path: &Path) -> Result<Value, String> {
+    write_bundle_file(export(service)?, path)
+}
+#[cfg(unix)]
+fn write_bundle_file(bundle: PublicWorkspaceBundle, path: &Path) -> Result<Value, String> {
     use rustix::fs::{linkat, openat, unlinkat, AtFlags, Mode, OFlags};
     let (directory, filename) = parent_directory(path)?;
-    let bundle = export(service)?;
     let raw = serde_json::to_vec(&bundle).map_err(|_| code("workspace_bundle_invalid"))?;
     let temporary = format!(".workspace-{:032x}.tmp", rand::random::<u128>());
     let mut temporary_created = false;
@@ -945,6 +999,10 @@ pub fn export_file(service: &TradeAssemblyService, path: &Path) -> Result<Value,
 pub fn export_file(_: &TradeAssemblyService, _: &Path) -> Result<Value, String> {
     Err(code("workspace_file_io_unsupported"))
 }
+#[cfg(not(unix))]
+fn write_bundle_file(_: PublicWorkspaceBundle, _: &Path) -> Result<Value, String> {
+    Err(code("workspace_file_io_unsupported"))
+}
 
 pub fn result_summary(service: &TradeAssemblyService, id: &str) -> Result<Value, String> {
     service
@@ -970,8 +1028,10 @@ pub fn result_summary(service: &TradeAssemblyService, id: &str) -> Result<Value,
         } else if strategy_id(&value) == Some(id) {
             let activation = value["activationId"].as_str().unwrap_or_default();
             let projection = execution::workspace(service, id, &json!({"activationId":activation}));
+            // The wire field retains its v1 name, but the execution ledger owns
+            // a reconciliation state (clear/required/unavailable), not a status.
             let reconciliation =
-                projection["execution"]["ledger"]["reconciliation"]["status"].clone();
+                projection["execution"]["ledger"]["reconciliation"]["state"].clone();
             runs.push(json!({"runId":key,"mode":value["mode"],"state":value["state"],"period":{"start":timestamp(&value,"startedAtMs"),"end":timestamp(&value,"stoppedAtMs")},"reconciliationStatus":reconciliation}));
             if value["mode"] == "paper" {
                 let totals = &projection["execution"]["ledger"]["totals"];
@@ -1028,4 +1088,86 @@ fn timestamp(value: &Value, key: &str) -> Value {
 }
 fn summarize_report(report: &Value) -> Value {
     json!({"runId":report["run"]["runId"],"period":report["provenance"]["timeCoverage"],"provenance":{"reportHash":report["reportHash"],"strategyVersionId":report["provenance"]["strategyVersionId"],"strategySpecHash":report["provenance"]["strategySpecHash"],"datasetId":report["provenance"]["datasetId"],"datasetHash":report["provenance"]["datasetHash"]},"metrics":select(&report["overview"],&["grossPnlMicros","netPnlMicros","feesMicros","realizedPnlMicros","unrealizedPnlMicros","returnBps"]),"reconciliation":{"status":report["overview"]["reconciliationStatus"],"residualMicros":report["overview"]["reconciliationResidualMicros"]},"completeness":"completed_report"})
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use crate::cli::{run_with_service, Cli};
+    use crate::cli_identity::verify_cli_session;
+    use crate::runtime_config::{RuntimeBuilder, RuntimeConfig};
+    use clap::Parser;
+
+    #[tokio::test]
+    async fn local_workspace_cli_remains_account_free_and_rejects_server_profiles() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let mut config = RuntimeConfig::local(root.join("source.db").display().to_string());
+        config.oidc_profile = "local_owner".into();
+        config.artifact_root = Some(root.join("exports").display().to_string());
+        let local_service = |config: &RuntimeConfig| {
+            let (runtime, manifest) = RuntimeBuilder::new(config.clone())
+                .with_finance_authority(std::sync::Arc::new(
+                    crate::finance_authority::TestFinanceAuthority,
+                ))
+                .build()
+                .unwrap();
+            let mut service =
+                TradeAssemblyService::from_runtime(config.database_path.clone().unwrap(), runtime);
+            service.runtime_manifest = Some(manifest);
+            service.oauth_config = Some(config.clone());
+            service
+        };
+        let source = local_service(&config);
+        let session = verify_cli_session(&config).await.unwrap();
+        let workspace = VerifiedLocalWorkspace::from_verified_session(&source, session).unwrap();
+        let bundle_path = root.join("bundle.json");
+        let cli = Cli::try_parse_from([
+            "tradeassembly",
+            "workspace",
+            "export",
+            "--out",
+            bundle_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(run_with_service(cli, &source, &config).await, 0);
+        assert_eq!(
+            read_file(&bundle_path).unwrap(),
+            serde_json::to_vec(&workspace.export().unwrap()).unwrap()
+        );
+        for profile in ["self_hosted", "serverless"] {
+            // Even a server profile with SQLite injected cannot mint the local
+            // process capability. Check before any export or restore mutation.
+            let mut server = source.clone();
+            server.runtime_manifest.as_mut().unwrap().profile = profile.into();
+            let session = verify_cli_session(&config).await.unwrap();
+            assert!(VerifiedLocalWorkspace::from_verified_session(&server, session).is_err());
+            assert_eq!(
+                export(&server).unwrap_err(),
+                "workspace_local_sqlite_owner_required"
+            );
+            assert_eq!(
+                import(&server, &read_file(&bundle_path).unwrap()).unwrap_err(),
+                "workspace_local_sqlite_owner_required"
+            );
+        }
+        let mut target_config = config.clone();
+        target_config.database_path = Some(root.join("target.db").display().to_string());
+        let target = local_service(&target_config);
+        let cli = Cli::try_parse_from([
+            "tradeassembly",
+            "workspace",
+            "import",
+            "--from",
+            bundle_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(run_with_service(cli, &target, &target_config).await, 0);
+        assert!(target
+            .runtime()
+            .storage
+            .list_json("execution_activations")
+            .unwrap()
+            .is_empty());
+    }
 }

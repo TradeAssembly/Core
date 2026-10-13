@@ -378,10 +378,46 @@ fn advertised_mcp_ids_reach_real_durable_activation_and_one_bounded_paper_tick()
     );
     let summary = public::result_summary(&service, "strat_local_btc_demo").unwrap();
     assert_eq!(summary["operational"]["runs"][0]["state"], "stopped");
+    let reconciliation = service
+        .runtime()
+        .storage
+        .get_json("execution_reconciliation", "activation_bounded-public")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reconciliation["state"], "clear");
+    assert!(reconciliation.get("status").is_none());
+    for section in ["operational", "paper"] {
+        assert_eq!(
+            summary[section]["runs"][0]["reconciliationStatus"],
+            reconciliation["state"]
+        );
+    }
     assert_eq!(
         summary["paper"]["runs"][0]["metrics"]["fees"],
         serde_json::Value::Null
     );
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../contracts/strategy-result-summary.v1.schema.json"
+    ))
+    .unwrap();
+    assert!(jsonschema::validator_for(&schema)
+        .unwrap()
+        .is_valid(&summary));
+
+    // Loss of actual durable reconciliation evidence must report unavailable,
+    // rather than fabricate successful reconciliation or complete accounting.
+    service
+        .runtime()
+        .storage
+        .clear_namespace("execution_reconciliation")
+        .unwrap();
+    let unavailable = public::result_summary(&service, "strat_local_btc_demo").unwrap();
+    for section in ["operational", "paper"] {
+        assert_eq!(
+            unavailable[section]["runs"][0]["reconciliationStatus"],
+            "unavailable"
+        );
+    }
 }
 
 #[test]

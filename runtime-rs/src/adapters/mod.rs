@@ -16,3 +16,5 @@ pub mod plugin_sandbox;
 pub mod robustness_repository;
 pub mod self_hosted;
 pub mod studio_identity;
+
+pub(crate) mod execution_checkpoint;

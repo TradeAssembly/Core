@@ -100,6 +100,10 @@ pub trait StoragePort: VersionedPort {
     ) -> Result<Vec<(String, Value)>, String> {
         Err("paged storage listing is unsupported".to_string())
     }
+    /// Trusted local pre-dispatch durability barrier only. No public export route.
+    fn execution_checkpoint_snapshot(&self, _destination: &std::path::Path) -> Result<(), String> {
+        Err("execution_checkpoint_snapshot_unsupported".into())
+    }
     /// Bounded, consistent read for the public portability allowlist.
     fn public_workspace_snapshot(
         &self,

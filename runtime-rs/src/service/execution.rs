@@ -52,6 +52,9 @@ pub(crate) const RESET_NAMESPACES: &[&str] = &[
     CONTROL_OUTCOMES_NS,
     HEALTH_NS,
     STATE_NS,
+    "execution_pending_original_cycles",
+    "execution_original_cycle_recoveries",
+    "execution_original_cycle_recovery_commands",
 ];
 
 pub(crate) fn evaluate_tick_response(
@@ -346,8 +349,17 @@ pub(crate) fn evaluate_tick_response(
             else {
                 return invalid_plugin_evidence("broker_plugin_binding_missing");
             };
-            let client_order_id = format!("{activation_id}:{tick_id}:{side}");
-            let plugin_request = PluginOperationRequest {
+            let external_broker = broker_binding["pluginRef"] != "tradeassembly.simbroker";
+            let original_order_identity = format!("{activation_id}:{tick_id}:{side}");
+            let client_order_id = if external_broker {
+                format!(
+                    "ta-{}",
+                    &format!("{:x}", Sha256::digest(original_order_identity.as_bytes()))[..48]
+                )
+            } else {
+                original_order_identity
+            };
+            let mut plugin_request = PluginOperationRequest {
                 correlation_id: correlation_id_for_run(&run),
                 plugin_instance_ref: broker_binding["pluginInstanceRef"]
                     .as_str()
@@ -406,6 +418,69 @@ pub(crate) fn evaluate_tick_response(
                 }),
                 evidence_refs: observation.evidence_refs.clone(),
             };
+            if external_broker {
+                // Provider admission consumes a fresh, bound quote. A strategy
+                // bar is not interchangeable with risk-price evidence.
+                let Some(quote_binding) =
+                    selected_binding(&run, "marketdata.quote", "marketdata.quote.read")
+                else {
+                    return invalid_plugin_evidence("broker_risk_quote_binding_missing");
+                };
+                let mut quote_request = plugin_request.clone();
+                quote_request.plugin_instance_ref = quote_binding["pluginInstanceRef"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into();
+                quote_request.plugin_ref = quote_binding["pluginRef"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into();
+                quote_request.manifest_fingerprint = quote_binding["manifestFingerprint"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into();
+                quote_request.operation_id = "marketdata.quote.read".into();
+                quote_request.capability = "marketdata.quote".into();
+                quote_request.account_ref =
+                    quote_binding["accountRef"].as_str().map(str::to_string);
+                quote_request.input = json!({"symbol":intent.symbol});
+                quote_request.evidence_refs.clear();
+                let quote_context = SideEffectContext::new(
+                    AuthorityContext {
+                        actor: "local-user".into(),
+                        surface: "scheduler".into(),
+                        account_mode: mode.clone(),
+                    },
+                    IdempotencyKey::new(format!(
+                        "execution:{activation_id}:tick:{tick_id}:risk-quote"
+                    ))
+                    .expect("valid quote key"),
+                );
+                let quote = match service
+                    .runtime()
+                    .plugin_operations
+                    .invoke(&quote_request, &quote_context)
+                {
+                    Ok(quote) => quote,
+                    Err(_) => return ServiceResponse::bad_gateway("broker_risk_quote_unavailable"),
+                };
+                plugin_request.evidence_refs = quote.evidence_refs;
+                plugin_request.input = json!({"symbol":intent.symbol,"side":side,"quantityMicros":intent.quantity,
+                    "orderType":"market","timeInForce":if run["assetClass"] == "crypto" {"gtc"} else {"day"},
+                    "clientOrderId":client_order_id});
+                let canonical = match crate::broker_order_intent::CanonicalBrokerOrder::from_input(
+                    &plugin_request.input,
+                ) {
+                    Ok(canonical) => canonical,
+                    Err(_) => return invalid_plugin_evidence("broker_order_input_invalid"),
+                };
+                plugin_request
+                    .input
+                    .as_object_mut()
+                    .expect("order input")
+                    .remove("quantityMicros");
+                plugin_request.input["quantity"] = json!(canonical.canonical_quantity());
+            }
             order_intent = json!({
                 "clientOrderId": client_order_id,
                 "symbol": intent.symbol,
@@ -472,6 +547,40 @@ pub(crate) fn evaluate_tick_response(
                 "sourceObservationId": source_event_id,
                 "pluginOperationRequest": plugin_request,
             });
+            let pending_context = SideEffectContext::new(
+                AuthorityContext::local_cli(),
+                IdempotencyKey::new(format!("pending-original:{order_idempotency}"))
+                    .expect("valid pending key"),
+            );
+            let pending = json!({
+                "schemaVersion":"tradeassembly.pending_original_cycle.v1",
+                "originalIdempotencyKey":order_idempotency,
+                "run":run, "activation":activation, "body":body,
+                "decision":decision, "orderIntent":order_intent, "orderRequest":order_request,
+                "sourceObservationId":source_event_id, "observedAtMs":observation.observed_at_ms,
+                "attempt":get(service, ATTEMPTS_NS, &plugin_request.attempt_id),
+                "scheduler":get(service, STATE_NS, "current")
+            });
+            match service.runtime().storage.put_json_if_absent(
+                "execution_pending_original_cycles",
+                &order_idempotency,
+                pending.clone(),
+                &pending_context,
+            ) {
+                Ok(ImmutablePutOutcome::Created) => {}
+                Ok(ImmutablePutOutcome::AlreadyPresent)
+                    if get(
+                        service,
+                        "execution_pending_original_cycles",
+                        &order_idempotency,
+                    ) == Some(pending) => {}
+                _ => {
+                    return ServiceResponse::conflict_with_details(
+                        "original_cycle_persistence_failed",
+                        json!({"failClosed":true}),
+                    )
+                }
+            }
             order_result = orders::run_once(service, order_request.clone());
             if order_result["status"].as_str() == Some("failed") {
                 let ambiguity = json!({
@@ -5075,7 +5184,7 @@ fn append_event_with_context(
     panic!("execution event append contention exceeded retry budget")
 }
 
-fn checkpoint(
+pub(super) fn checkpoint(
     activation_id: &str,
     correlation_id: &str,
     cycle: u64,

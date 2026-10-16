@@ -38,6 +38,7 @@ mod object_authorization;
 mod onboarding;
 mod options;
 mod orders;
+mod original_cycle_recovery;
 pub mod paper_runner;
 mod plugin_lifecycle;
 mod plugin_oauth;
@@ -1027,7 +1028,10 @@ impl TradeAssemblyService {
         body: Value,
     ) -> ServiceResponse {
         if method.eq_ignore_ascii_case("POST")
-            && normalize_path(path) == "/orders/broker-recovery"
+            && matches!(
+                normalize_path(path).as_str(),
+                "/orders/broker-recovery" | "/execution/recover-original"
+            )
             && !broker_recovery::valid_request(&body)
         {
             return ServiceResponse::error(400, "broker_recovery_request_invalid", false);
@@ -1078,6 +1082,12 @@ impl TradeAssemblyService {
             return self.dispatch_http(method, path, body);
         }
 
+        // Observer authentication and immutable original authority are rechecked by
+        // this continuation. Its atomic result is the retry boundary; a generic
+        // in-progress command must not strand a crash between lookup and commit.
+        if normalized_method == "POST" && normalized_path == "/execution/recover-original" {
+            return self.dispatch_http(method, path, body);
+        }
         let body = self.enrich_control_plane_body(&normalized_path, body);
         let envelope = match control_plane::http_envelope(source_interface, method, path, &body) {
             Ok(envelope) => inherit_trusted_correlation(envelope, &body),
@@ -1829,6 +1839,7 @@ impl TradeAssemblyService {
             }
             ("POST", "/orders/reconcile") => ServiceResponse::ok(json!(orders::reconcile(self))),
             ("POST", "/orders/broker-recovery") => broker_recovery::recover(self, body),
+            ("POST", "/execution/recover-original") => original_cycle_recovery::recover(self, body),
             ("GET", "/exit-watches") => ServiceResponse::ok(json!([])),
             ("POST", "/exit-watches/process") => ServiceResponse::ok(
                 json!({"processed": 0, "submit_orders": body.get("submit_orders").and_then(Value::as_bool).unwrap_or(false)}),

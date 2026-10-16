@@ -37,6 +37,17 @@ pub trait BrokerSubmissionPort: Send + Sync {
         prepared: &BrokerPreparedBinding,
     ) -> Result<BrokerSubmissionPermit, String>;
 
+    /// Recheck a permit after a local durability wait without another effect.
+    fn revalidate_after_checkpoint(
+        &self,
+        _request: &PluginOperationRequest,
+        _context: &SideEffectContext,
+        _prepared: &BrokerPreparedBinding,
+        _permit: &BrokerSubmissionPermit,
+    ) -> Result<(), String> {
+        Err("broker_checkpoint_revalidation_unsupported".into())
+    }
+
     fn complete(
         &self,
         permit: &BrokerSubmissionPermit,

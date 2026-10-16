@@ -347,15 +347,15 @@ fn correlation_id(body: &Value) -> Value {
 }
 
 #[derive(Debug)]
-struct CanonicalOrderReceipt {
-    status: String,
-    provider_order_id: String,
-    client_order_id: String,
-    filled_quantity: f64,
-    fill_price: Option<f64>,
+pub(super) struct CanonicalOrderReceipt {
+    pub(super) status: String,
+    pub(super) provider_order_id: String,
+    pub(super) client_order_id: String,
+    pub(super) filled_quantity: f64,
+    pub(super) fill_price: Option<f64>,
 }
 
-fn canonical_order_receipt(
+pub(super) fn canonical_order_receipt(
     receipt: &PluginOperationResponse,
     expected_client_order_id: &str,
     expected_symbol: &str,
@@ -716,7 +716,7 @@ fn sample_order() -> Value {
     json!({"id": "order_local_0001", "order_id": "order_local_0001", "status": "filled", "symbol": "BTC/USD", "side": "buy", "qty": 0.0002})
 }
 
-fn slug(value: &str) -> String {
+pub(super) fn slug(value: &str) -> String {
     value
         .chars()
         .map(|ch| {

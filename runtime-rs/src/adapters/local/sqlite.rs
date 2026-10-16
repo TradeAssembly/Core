@@ -375,6 +375,18 @@ impl StoragePort for LocalSqliteStorage {
         })
     }
 
+    fn execution_checkpoint_snapshot(&self, destination: &Path) -> Result<(), String> {
+        self.connection()?
+            .execute(
+                "VACUUM INTO ?1",
+                [destination
+                    .to_str()
+                    .ok_or("execution_checkpoint_path_invalid")?],
+            )
+            .map_err(|_| "execution_checkpoint_snapshot_failed".to_string())?;
+        Ok(())
+    }
+
     fn public_workspace_snapshot(
         &self,
         namespaces: &[&str],

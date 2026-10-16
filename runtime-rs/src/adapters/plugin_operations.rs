@@ -32,6 +32,7 @@ pub struct LocalPluginOperations {
     storage: Arc<dyn StoragePort>,
     external: Option<crate::adapters::external_plugin_host::ExternalPluginHost>,
     broker_boundary: Option<Arc<dyn BrokerSubmissionPort>>,
+    checkpoint_dir: Option<std::path::PathBuf>,
 }
 
 impl LocalPluginOperations {
@@ -40,6 +41,8 @@ impl LocalPluginOperations {
             storage,
             external: None,
             broker_boundary: None,
+            checkpoint_dir: std::env::var_os("TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR")
+                .map(Into::into),
         }
     }
 
@@ -63,11 +66,19 @@ impl LocalPluginOperations {
                 ),
             ),
             broker_boundary: None,
+            checkpoint_dir: std::env::var_os("TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR")
+                .map(Into::into),
         }
     }
 
     pub fn with_broker_boundary(mut self, boundary: Arc<dyn BrokerSubmissionPort>) -> Self {
         self.broker_boundary = Some(boundary);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_checkpoint_directory(mut self, root: std::path::PathBuf) -> Self {
+        self.checkpoint_dir = Some(root);
         self
     }
 
@@ -404,6 +415,30 @@ impl PluginOperationPort for LocalPluginOperations {
         } else {
             None
         };
+
+        if permit.is_some() {
+            if let Some(root) = &self.checkpoint_dir {
+                crate::adapters::execution_checkpoint::barrier(
+                    root,
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    request,
+                )?;
+                self.broker_boundary
+                    .as_ref()
+                    .ok_or("broker_boundary_missing")?
+                    .revalidate_after_checkpoint(
+                        request,
+                        context,
+                        &external_prepared
+                            .as_ref()
+                            .ok_or("prepared_binding_missing")?
+                            .binding,
+                        permit.as_ref().ok_or("broker_permit_missing")?,
+                    )?;
+            }
+        }
 
         let response = match (request.plugin_ref.as_str(), request.operation_id.as_str()) {
             ("tradeassembly.simbroker", "marketdata.quote.read") => quote(request),

@@ -76,6 +76,7 @@ pub struct BrokerCurrentState {
     pub mandate: Option<crate::local_live_authorization::LocalLiveMandate>,
     pub actor: crate::local_live_authorization::VerifiedLiveActor,
     pub now_ms: i64,
+    pub pending_original_cycle_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +175,7 @@ pub fn build_order_intent(
         },
         "order": order,
         "dispatchQuantity": order.canonical_quantity(),
+        "pendingOriginalCycleDigest": state.pending_original_cycle_digest,
     });
     let digest = crate::spec::canonical_hash(&intent)
         .map_err(|_| "broker_order_intent_digest_invalid".to_string())?;
@@ -441,6 +443,14 @@ pub fn load_current_state(
         mandate,
         actor,
         now_ms,
+        pending_original_cycle_digest: deps
+            .storage
+            .get_json(
+                "execution_pending_original_cycles",
+                context.idempotency_key.as_str(),
+            )?
+            .map(|value| crate::spec::canonical_hash(&value))
+            .transpose()?,
     })
 }
 

@@ -73,6 +73,14 @@ its process-bound loopback capability. This route requires the local owner,
 binds the exact plugin package and durable nonsecret intent, and reconciles
 credential receipts before enabling the instance after a restart. It neither
 activates strategies nor grants Relay access. Hosted OAuth remains separate.
+A separately bound saved paper OAuth grant can be restored through the same
+process-bound local-owner companion, using explicit prepare and credential
+restore actions. Exact package, instance, onboarding attempt and prior credential
+generation are required. Existing credentials, pending OAuth handoffs and ambiguous
+writes fail closed; replay does not replace credentials. This is restoration,
+not original provider consent. The `core.onboarding.paper` contract declares
+these supported setup methods. A named but unprepared broker remains renderable;
+reading the page never creates its instance or starts a handoff.
 `auth import-session --subject-sha256 HASH --tenant-sha256 HASH` imports bounded
 provider tokens from stdin only after normal signature and Hub projection
 validation, into an absent Bitwarden session. Test-session injection is not

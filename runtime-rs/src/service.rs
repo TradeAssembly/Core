@@ -877,6 +877,65 @@ impl TradeAssemblyService {
         prior_revision_ref: &str,
         credentials: Value,
     ) -> ServiceResponse {
+        self.store_browser_local_credentials(
+            instance_ref,
+            onboarding_id,
+            package_sha256,
+            prior_revision_ref,
+            credentials,
+            "api-keys",
+        )
+    }
+
+    /// Serialize restoration with normal OAuth handoffs. Even expired or
+    /// ambiguous unacknowledged handoffs require explicit cancellation first.
+    pub(crate) fn saved_paper_token_lock(
+        &self,
+        instance_ref: &str,
+    ) -> Result<std::fs::File, String> {
+        let lock = plugin_oauth::oauth_lock(self).map_err(str::to_owned)?;
+        let attempts = self
+            .runtime
+            .storage
+            .list_json("plugin_oauth_attempts")
+            .map_err(|_| "onboarding_oauth_state_unavailable")?;
+        if attempts.iter().any(|(_, attempt)| {
+            attempt["instanceRef"] == instance_ref
+                && attempt["invalidated"] != true
+                && attempt["acknowledged"] != true
+        }) {
+            return Err("onboarding_oauth_pending".into());
+        }
+        Ok(lock)
+    }
+
+    pub(crate) fn store_browser_saved_paper_token(
+        &self,
+        instance_ref: &str,
+        onboarding_id: &str,
+        package_sha256: &str,
+        prior_revision_ref: &str,
+        access_token: String,
+    ) -> ServiceResponse {
+        self.store_browser_local_credentials(
+            instance_ref,
+            onboarding_id,
+            package_sha256,
+            prior_revision_ref,
+            json!({"access_token":access_token}),
+            "saved-paper-token",
+        )
+    }
+
+    fn store_browser_local_credentials(
+        &self,
+        instance_ref: &str,
+        onboarding_id: &str,
+        package_sha256: &str,
+        prior_revision_ref: &str,
+        credentials: Value,
+        operation: &str,
+    ) -> ServiceResponse {
         let Some(principal) = self
             .invocation_principal
             .as_ref()
@@ -889,7 +948,7 @@ impl TradeAssemblyService {
         let binding = bind_authenticated_invocation_value(
             json!({"instanceRef":instance_ref,"onboardingId":onboarding_id,
                 "packageSha256":package_sha256,"priorRevisionRef":prior_revision_ref,
-                "idempotency_key":format!("{onboarding_id}:api-keys")}),
+                "idempotency_key":format!("{onboarding_id}:{operation}")}),
             principal,
             source,
             self.invocation_actor_kind,

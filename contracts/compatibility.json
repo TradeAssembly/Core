@@ -41,6 +41,15 @@
         "strategy-summary",
         "completeness"
       ]
+    },
+    {
+      "id": "core.onboarding.paper",
+      "version": "1.0.0",
+      "capabilities": [
+        "local-api-key",
+        "hosted-oauth-consent",
+        "saved-oauth-grant-restore"
+      ]
     }
   ],
   "requires": [],

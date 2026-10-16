@@ -45,6 +45,12 @@ struct Attempt {
     api_keys_requested: bool,
     #[serde(default)]
     api_key_intent: Option<ApiKeyIntent>,
+    #[serde(default)]
+    saved_paper_token_requested: bool,
+    #[serde(default)]
+    saved_paper_token_stored: bool,
+    #[serde(default)]
+    saved_paper_token_intent: Option<ApiKeyIntent>,
 }
 
 /// Binds the operation, never the submitted credential values.
@@ -195,6 +201,9 @@ impl BrowserOnboarding {
                         api_keys_stored: false,
                         api_keys_requested: false,
                         api_key_intent: None,
+                        saved_paper_token_requested: false,
+                        saved_paper_token_stored: false,
+                        saved_paper_token_intent: None,
                     };
                     self.save(&attempt)?;
                     attempt
@@ -348,16 +357,37 @@ impl BrowserOnboarding {
             );
             return Ok(result);
         }
-        if attempt.api_keys_requested {
+        if attempt.api_keys_requested || attempt.saved_paper_token_requested {
             let mut resumed = attempt.clone();
             let service = self.bound_local_service(&resumed)?;
-            self.reconcile_api_keys(&service, &mut resumed)?;
+            let _oauth_guard = if attempt.saved_paper_token_requested {
+                Some(
+                    service.saved_paper_token_lock(
+                        attempt
+                            .instance_ref
+                            .as_deref()
+                            .ok_or("onboarding_broker_prepare_required")?,
+                    )?,
+                )
+            } else {
+                None
+            };
+            self.reconcile_local_credentials(
+                &service,
+                &mut resumed,
+                attempt.saved_paper_token_requested,
+            )?;
             let attempt = &resumed;
+            let method = if attempt.saved_paper_token_requested {
+                "saved-oauth-grant"
+            } else {
+                "api-key"
+            };
             result["hubAuthenticated"] = json!(false);
-            result["credentialMethod"] = json!("api-key");
+            result["credentialMethod"] = json!(method);
             result["relayRequested"] = json!(attempt.relay_requested);
             result["relay"] = json!({"status":if attempt.relay_requested {"unchecked"} else {"not_requested"},"permitted":false});
-            if !attempt.api_keys_stored {
+            if !attempt.api_keys_stored && !attempt.saved_paper_token_stored {
                 return Ok(result);
             }
             let instance = attempt
@@ -377,7 +407,7 @@ impl BrowserOnboarding {
             let verified = brokers["instances"][0]["accountVerified"] == true;
             result["brokerConnected"] = json!(verified);
             result["verification"] = verification;
-            result["credentialMethod"] = json!("api-key");
+            result["credentialMethod"] = json!(method);
             let warden_config = self.local_identity.configuration().clone();
             let warden_ready =
                 std::thread::spawn(move || super::preflight_api_warden(&warden_config))
@@ -521,11 +551,19 @@ impl BrowserOnboarding {
             return Err("onboarding_attempt_ended".into());
         }
         let service = self.bound_local_service(&attempt)?;
-        if !attempt.api_keys_requested || attempt.instance_ref.is_none() {
+        if (!attempt.api_keys_requested && !attempt.saved_paper_token_requested)
+            || attempt.instance_ref.is_none()
+        {
             return Ok(json!({"onboardingId":attempt.id,"mode":attempt.mode,
                 "environment":attempt.environment,"instance":null}));
         }
-        let instance = self.reconcile_api_keys(&service, &mut attempt)?;
+        let saved = attempt.saved_paper_token_requested;
+        let _oauth_guard = if saved {
+            Some(service.saved_paper_token_lock(attempt.instance_ref.as_deref().unwrap())?)
+        } else {
+            None
+        };
+        let instance = self.reconcile_local_credentials(&service, &mut attempt, saved)?;
         Ok(json!({"onboardingId":attempt.id,"mode":attempt.mode,
             "environment":attempt.environment,"instance":instance}))
     }
@@ -535,7 +573,7 @@ impl BrowserOnboarding {
         let _process_guard = self.process_lock()?;
         let mut attempt = self.read(id)?.ok_or("onboarding_not_found")?;
         let service = self.bound_local_service(&attempt)?;
-        if !attempt.api_keys_requested {
+        if !attempt.api_keys_requested || attempt.saved_paper_token_requested {
             return Err("onboarding_broker_prepare_required".into());
         }
         let fields = api_key_fields(body)?;
@@ -582,16 +620,98 @@ impl BrowserOnboarding {
         self.reconcile_api_keys(&service, &mut attempt)
     }
 
+    fn saved_paper_token(&self, id: &str, body: &[u8]) -> Result<Value, String> {
+        let _guard = self.operation.lock().map_err(|_| "onboarding_busy")?;
+        let _process_guard = self.process_lock()?;
+        let mut attempt = self.read(id)?.ok_or("onboarding_not_found")?;
+        let service = self.bound_local_service(&attempt)?;
+        if !attempt.saved_paper_token_requested || attempt.api_keys_requested {
+            return Err("onboarding_broker_prepare_required".into());
+        }
+        let fields = saved_paper_token_fields(body)?;
+        let instance = attempt
+            .instance_ref
+            .as_deref()
+            .ok_or("onboarding_broker_prepare_required")?;
+        let _oauth_guard = service.saved_paper_token_lock(instance)?;
+        let projection = api_key_connection(&service, &attempt)?;
+        if fields["onboarding_id"] != attempt.id || fields["instance_ref"] != instance {
+            return Err("onboarding_restore_binding_mismatch".into());
+        }
+        if projection["activePackageSha256"] != fields["package_sha256"] {
+            return Err("onboarding_plugin_package_mismatch".into());
+        }
+        if let Some(intent) = &attempt.saved_paper_token_intent {
+            if intent.package_sha256 != fields["package_sha256"]
+                || intent.prior_revision_ref != fields["prior_revision_ref"]
+            {
+                return Err("onboarding_restore_binding_mismatch".into());
+            }
+            let resumed = self.reconcile_local_credentials(&service, &mut attempt, true)?;
+            if attempt.saved_paper_token_stored {
+                return Ok(resumed);
+            }
+        } else {
+            if projection["credentialStatus"]["configured"] == true {
+                return Err("onboarding_credentials_already_configured".into());
+            }
+            if projection["credentialStatus"]["revisionRef"] != fields["prior_revision_ref"] {
+                return Err("onboarding_restore_binding_mismatch".into());
+            }
+            attempt.saved_paper_token_intent = Some(ApiKeyIntent {
+                package_sha256: fields["package_sha256"].clone(),
+                prior_revision_ref: fields["prior_revision_ref"].clone(),
+                enable_sequence: 0,
+            });
+            self.save(&attempt)?;
+        }
+        let intent = attempt.saved_paper_token_intent.as_ref().unwrap();
+        let stored = service.store_browser_saved_paper_token(
+            attempt.instance_ref.as_deref().unwrap(),
+            &attempt.id,
+            &intent.package_sha256,
+            &intent.prior_revision_ref,
+            fields["access_token"].clone(),
+        );
+        if stored.status != 200 {
+            return Err("onboarding_credentials_store_failed".into());
+        }
+        self.reconcile_local_credentials(&service, &mut attempt, true)
+    }
+
     fn reconcile_api_keys(
         &self,
         service: &TradeAssemblyService,
         attempt: &mut Attempt,
     ) -> Result<Value, String> {
+        self.reconcile_local_credentials(service, attempt, false)
+    }
+
+    fn reconcile_local_credentials(
+        &self,
+        service: &TradeAssemblyService,
+        attempt: &mut Attempt,
+        saved: bool,
+    ) -> Result<Value, String> {
         let projection = api_key_connection(service, attempt)?;
-        if attempt.api_keys_stored || attempt.api_key_intent.is_none() {
+        let intent = if saved {
+            &attempt.saved_paper_token_intent
+        } else {
+            &attempt.api_key_intent
+        };
+        if saved && attempt.saved_paper_token_stored && intent.is_none() {
+            return Err("onboarding_credentials_receipt_invalid".into());
+        }
+        if intent.is_none() || (!saved && attempt.api_keys_stored) {
             return Ok(projection);
         }
-        let intent = attempt.api_key_intent.as_ref().unwrap();
+        let intent = intent.as_ref().unwrap();
+        let operation = if saved {
+            "saved-paper-token"
+        } else {
+            "api-keys"
+        };
+        let method = if saved { "oauth" } else { "api-key" };
         if projection["activePackageSha256"] != intent.package_sha256 {
             return Err("onboarding_plugin_package_mismatch".into());
         }
@@ -600,7 +720,7 @@ impl BrowserOnboarding {
             "browser_onboarding_ui",
             "POST",
             &format!("/plugins/instances/{instance}/credentials"),
-            &json!({"idempotency_key":format!("{}:api-keys",attempt.id)}),
+            &json!({"idempotency_key":format!("{}:{operation}",attempt.id)}),
         )?;
         let receipt = service
             .runtime()
@@ -637,32 +757,47 @@ impl BrowserOnboarding {
             || binding["priorRevisionRef"] != intent.prior_revision_ref
             || stored["instanceRef"] != instance
             || stored["credentialStatus"]["configured"] != true
-            || stored["credentialStatus"]["authenticationMethod"] != "api-key"
+            || stored["credentialStatus"]["authenticationMethod"] != method
             || stored["credentialStatus"]["revisionRef"]
                 != projection["credentialStatus"]["revisionRef"]
             || projection["credentialStatus"]["configured"] != true
-            || projection["credentialStatus"]["authenticationMethod"] != "api-key"
+            || projection["credentialStatus"]["authenticationMethod"] != method
         {
             return Err("onboarding_credentials_receipt_mismatch".into());
+        }
+        if saved && attempt.saved_paper_token_stored {
+            return Ok(projection);
         }
         if projection["enabled"] != true {
             let sequence = intent
                 .enable_sequence
                 .checked_add(1)
                 .ok_or("onboarding_state_invalid")?;
-            attempt.api_key_intent.as_mut().unwrap().enable_sequence = sequence;
+            if saved {
+                attempt
+                    .saved_paper_token_intent
+                    .as_mut()
+                    .unwrap()
+                    .enable_sequence = sequence;
+            } else {
+                attempt.api_key_intent.as_mut().unwrap().enable_sequence = sequence;
+            }
             self.save(attempt)?;
             let enabled = service.handle_http_from_source(
                 "browser_onboarding_ui",
                 "POST",
                 &format!("/plugins/instances/{instance}:enable"),
-                json!({"idempotency_key":format!("{}:api-keys-enable:{sequence}",attempt.id)}),
+                json!({"idempotency_key":format!("{}:{operation}-enable:{sequence}",attempt.id)}),
             );
             if enabled.status != 200 {
                 return Err("onboarding_instance_enable_failed".into());
             }
         }
-        attempt.api_keys_stored = true;
+        if saved {
+            attempt.saved_paper_token_stored = true;
+        } else {
+            attempt.api_keys_stored = true;
+        }
         attempt.last_error = None;
         self.save(attempt)?;
         api_key_connection(service, attempt)
@@ -718,6 +853,7 @@ impl BrowserOnboarding {
             }
         };
         let status = progress["identity"].clone();
+        let local_credentials = attempt.api_keys_requested || attempt.saved_paper_token_requested;
         let mut links = String::new();
         if let Some(code) = attempt.last_error.as_ref() {
             links.push_str(&format!(
@@ -728,20 +864,27 @@ impl BrowserOnboarding {
         }
         // Never reload a signed-in page while the user is choosing its next
         // action. Reloading here races browser clicks and assistive controls.
-        if !attempt.api_keys_requested
+        if !local_credentials
             && (progress["hubAuthenticated"] != true
                 || (attempt.connection_id.is_some() && progress["ready"] != true))
         {
             links.push_str("<meta http-equiv=refresh content=5>");
         }
         if attempt.mode == "paper" && attempt.connection_id.is_none() {
-            if attempt.api_keys_requested {
+            if attempt.saved_paper_token_requested {
+                let service = self.bound_local_service(&attempt)?;
+                let projection = api_key_connection(&service, &attempt)?;
+                if projection["credentialStatus"]["configured"] != true {
+                    links.push_str(&saved_paper_token_form(id, &projection));
+                }
+            } else if attempt.api_keys_requested {
                 let service = self.bound_local_service(&attempt)?;
                 let projection = api_key_connection(&service, &attempt)?;
                 if projection["credentialStatus"]["configured"] != true {
                     links.push_str(&api_key_form(id, &projection));
                 }
             } else if attempt.actor.is_none() {
+                links.push_str(&format!("<form method=post action=\"{id}/paper-token-restore\"><button>Restore a saved paper OAuth grant</button></form>"));
                 links.push_str(&format!("<form method=post action=\"{id}/paper-keys\"><button>Connect with local paper API keys</button></form>"));
             }
         }
@@ -761,25 +904,15 @@ impl BrowserOnboarding {
                 escape(url)
             ));
         }
-        if let Some(instance) = attempt.instance_ref.as_ref().filter(|_| {
-            attempt.connection_id.is_none()
-                && !attempt.api_keys_stored
-                && progress["hubAuthenticated"] == true
-        }) {
+        if !local_credentials
+            && attempt.connection_id.is_none()
+            && progress["hubAuthenticated"] == true
+        {
             let (service, _) = self.bound_service(&attempt)?;
-            let descriptor = service.broker_connection_descriptor(instance)?;
-            links.push_str(&format!("<form method=post target=_blank action=\"{id}/authorize\"><fieldset><legend>Broker permissions</legend>"));
-            for scope in descriptor["scopes"].as_array().into_iter().flatten() {
-                if let (Some(key), Some(label)) = (scope["id"].as_str(), scope["label"].as_str()) {
-                    links.push_str(&format!(
-                        "<p><label><input type=checkbox name=scope value=\"{}\">{}</label></p>",
-                        escape(key),
-                        escape(label)
-                    ));
-                }
-            }
-            links.push_str("</fieldset><button>Continue to broker authorization</button></form>");
-            if attempt.mode == "paper" && !attempt.api_keys_stored {
+            let (form, prepared) =
+                broker_setup_form(&service, id, attempt.instance_ref.as_deref())?;
+            links.push_str(&form);
+            if prepared && attempt.mode == "paper" {
                 if let Ok(projection) = api_key_connection(&service, &attempt) {
                     if projection["credentialStatus"]["configured"] != true {
                         links.push_str(&api_key_form(id, &projection));
@@ -796,12 +929,8 @@ impl BrowserOnboarding {
                 escape(url)
             ));
         }
-        if !attempt.api_keys_requested && progress["hubAuthenticated"] != true {
+        if !local_credentials && progress["hubAuthenticated"] != true {
             links.push_str(&format!("<form method=post target=_blank action=\"{id}/login\"><button>Sign in to TradeAssembly</button></form>"));
-        } else if !attempt.api_keys_requested && attempt.instance_ref.is_none() {
-            links.push_str(&format!(
-                "<form method=post action=\"{id}/broker\"><button>Connect broker</button></form>"
-            ));
         }
         let controls=format!("<p>Broker account: {}. Deployment: {}.</p>{links}<form method=post action=\"{id}/cancel\"><button>Cancel setup</button></form>",escape(&attempt.mode),escape(&attempt.environment));
         Ok(document(
@@ -809,6 +938,7 @@ impl BrowserOnboarding {
                 "Connection verified. You can return to your agent."
             } else {
                 match progress["status"].as_str() {
+                    _ if attempt.saved_paper_token_requested && !attempt.saved_paper_token_stored => "Restore the saved paper OAuth grant. First broker consent is a separate operation.",
                     _ if attempt.api_keys_requested && !attempt.api_keys_stored => "Enter paper API keys. They remain in this Core installation.",
                     Some("warden_unavailable") => "Your broker is connected. Ask your agent to start the local policy service, then return here.",
                     Some("entitlement_required") => "Your broker is connected. Relay access is still required to complete this setup.",
@@ -853,7 +983,13 @@ impl BrowserOnboarding {
             "cancel" => {
                 self.cancel(&mut attempt)?;
             }
-            "paper-keys" => {
+            "paper-keys" | "paper-token-restore" => {
+                let saved = action == "paper-token-restore";
+                if (saved && attempt.api_keys_requested)
+                    || (!saved && attempt.saved_paper_token_requested)
+                {
+                    return Err("onboarding_restore_binding_mismatch".into());
+                }
                 if attempt.mode != "paper" || attempt.connection_id.is_some() {
                     return Err("onboarding_api_keys_paper_required".into());
                 }
@@ -871,12 +1007,20 @@ impl BrowserOnboarding {
                 )?;
                 attempt.instance_ref = Some(instance);
                 attempt.actor = Some(owner.stable_identity_id);
-                attempt.api_keys_requested = true;
-                self.save(&attempt)?;
+                if saved {
+                    let _oauth_guard =
+                        service.saved_paper_token_lock(attempt.instance_ref.as_deref().unwrap())?;
+                    api_key_connection(&service, &attempt)?;
+                    attempt.saved_paper_token_requested = true;
+                    self.save(&attempt)?;
+                } else {
+                    attempt.api_keys_requested = true;
+                    self.save(&attempt)?;
+                }
                 return Ok(None);
             }
             "broker" | "authorize" => {
-                if attempt.api_keys_requested {
+                if attempt.api_keys_requested || attempt.saved_paper_token_requested {
                     return Err("onboarding_credentials_already_configured".into());
                 }
                 if attempt.connection_id.is_some() {
@@ -934,6 +1078,42 @@ impl BrowserOnboarding {
         }
         Ok(None)
     }
+}
+
+/// A requested instance name is not proof that preparation has completed.
+/// Missing or inaccessible instances must offer the normal preparation action;
+/// rendering never creates an instance or starts an OAuth handoff.
+fn broker_setup_form(
+    service: &TradeAssemblyService,
+    id: &str,
+    instance: Option<&str>,
+) -> Result<(String, bool), String> {
+    let descriptor = match instance.map(|instance| service.broker_connection_descriptor(instance)) {
+        Some(Ok(descriptor)) => Some(descriptor),
+        Some(Err(code)) if code != "onboarding_instance_unavailable" => return Err(code),
+        _ => None,
+    };
+    let Some(descriptor) = descriptor else {
+        return Ok((
+            format!(
+                "<form method=post action=\"{}/broker\"><button>Connect broker</button></form>",
+                escape(id)
+            ),
+            false,
+        ));
+    };
+    let mut form = format!("<form method=post target=_blank action=\"{}/authorize\"><fieldset><legend>Broker permissions</legend>", escape(id));
+    for scope in descriptor["scopes"].as_array().into_iter().flatten() {
+        if let (Some(key), Some(label)) = (scope["id"].as_str(), scope["label"].as_str()) {
+            form.push_str(&format!(
+                "<p><label><input type=checkbox name=scope value=\"{}\">{}</label></p>",
+                escape(key),
+                escape(label)
+            ));
+        }
+    }
+    form.push_str("</fieldset><button>Continue to broker authorization</button></form>");
+    Ok((form, true))
 }
 
 fn api_key_connection(service: &TradeAssemblyService, attempt: &Attempt) -> Result<Value, String> {
@@ -1019,6 +1199,45 @@ fn api_key_fields(body: &[u8]) -> Result<std::collections::BTreeMap<String, Stri
     Ok(fields)
 }
 
+fn saved_paper_token_fields(
+    body: &[u8],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    if body.len() > 8192 {
+        return Err("onboarding_credentials_invalid".into());
+    }
+    let mut fields = std::collections::BTreeMap::new();
+    for (key, value) in url::form_urlencoded::parse(body) {
+        if !matches!(
+            key.as_ref(),
+            "access_token"
+                | "package_sha256"
+                | "instance_ref"
+                | "prior_revision_ref"
+                | "onboarding_id"
+        ) || value.is_empty()
+            || value.len() > 4096
+            || value.bytes().any(|b| b.is_ascii_control())
+            || fields
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
+        {
+            return Err("onboarding_credentials_invalid".into());
+        }
+    }
+    if fields.len() != 5
+        || fields["access_token"]
+            .bytes()
+            .any(|b| !b.is_ascii_graphic())
+    {
+        return Err("onboarding_credentials_invalid".into());
+    }
+    Ok(fields)
+}
+
+fn saved_paper_token_form(id: &str, projection: &Value) -> String {
+    format!("<form method=post action=\"{}/saved-paper-token\"><fieldset><legend>Restore a saved paper OAuth grant</legend><input type=hidden name=onboarding_id value=\"{}\"><input type=hidden name=instance_ref value=\"{}\"><input type=hidden name=package_sha256 value=\"{}\"><input type=hidden name=prior_revision_ref value=\"{}\"><p><label>Saved paper access token <input type=password name=access_token required autocomplete=off maxlength=4096></label></p></fieldset><button>Restore saved paper grant locally</button></form>", escape(id), escape(id), escape(projection["instanceRef"].as_str().unwrap_or_default()), escape(projection["activePackageSha256"].as_str().unwrap_or_default()), escape(projection["credentialStatus"]["revisionRef"].as_str().unwrap_or_default()))
+}
+
 fn api_key_form(id: &str, projection: &Value) -> String {
     format!("<form method=post action=\"{}/api-keys\"><fieldset><legend>Connect with paper API keys</legend><input type=hidden name=package_sha256 value=\"{}\"><p><label>Paper API key <input type=password name=api_key required autocomplete=off maxlength=4096></label></p><p><label>Paper API secret <input type=password name=api_secret required autocomplete=off maxlength=4096></label></p></fieldset><button>Save paper connection locally</button></form>", escape(id),escape(projection["activePackageSha256"].as_str().unwrap_or_default()))
 }
@@ -1075,7 +1294,7 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn document(message: &str, controls: &str) -> String {
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Connect TradeAssembly</title><h1>Connect TradeAssembly</h1><p>{}</p>{controls}<p>Broker API keys entered here stay in your local credential store. Never paste keys into agent chat.</p></html>",escape(message))
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Connect TradeAssembly</title><h1>Connect TradeAssembly</h1><p>{}</p>{controls}<p>Broker credentials entered here stay in your local credential store. Never paste credentials into agent chat.</p></html>",escape(message))
 }
 fn secured(html: String) -> Response {
     let mut response = Html(html).into_response();
@@ -1129,10 +1348,17 @@ async fn action(
     if body.len() > 8192 {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
-    if action == "api-keys" {
+    if action == "api-keys" || action == "saved-paper-token" {
         let wants_json =
             headers.get("accept").and_then(|v| v.to_str().ok()) == Some("application/json");
-        let result = tokio::task::spawn_blocking(move || state.api_keys(&id, &body)).await;
+        let result = tokio::task::spawn_blocking(move || {
+            if action == "saved-paper-token" {
+                state.saved_paper_token(&id, &body)
+            } else {
+                state.api_keys(&id, &body)
+            }
+        })
+        .await;
         return match result {
             Ok(Ok(value)) if wants_json => safe_json(StatusCode::OK, value),
             Ok(Ok(_)) => {
@@ -1148,6 +1374,12 @@ async fn action(
             )),
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         };
+    }
+    if action == "paper-token-restore" && !body.is_empty() {
+        return safe_json(
+            StatusCode::BAD_REQUEST,
+            json!({"error":{"code":"onboarding_credentials_invalid"}}),
+        );
     }
     let scopes = url::form_urlencoded::parse(&body)
         .filter(|(key, _)| key == "scope")
@@ -1320,10 +1552,13 @@ mod tests {
             {"id":"mode","inputType":"select","options":["paper","live"],"storageClass":"configuration","required":true},
             {"id":"tradingApiUrl","inputType":"url","storageClass":"configuration","required":true,"defaultByAccountMode":{"paper":"https://paper-api.alpaca.markets","live":"https://api.alpaca.markets"}},
             {"id":"api_key","inputType":"password","storageClass":"credential","required":true},
-            {"id":"api_secret","inputType":"password","storageClass":"credential","required":true}
+            {"id":"api_secret","inputType":"password","storageClass":"credential","required":true},
+            {"id":"access_token","inputType":"password","storageClass":"credential","required":false}
         ]});
         manifest["manifest"]["health"]["requiredConfiguration"] = json!(["tradingApiUrl"]);
-        manifest["manifest"]["health"]["requiredCredentials"] = json!(["api_key", "api_secret"]);
+        manifest["manifest"]["health"]["requiredCredentials"] = json!([]);
+        manifest["manifest"]["health"]["credentialAlternatives"] =
+            json!([["api_key", "api_secret"], ["access_token"]]);
         let context = SideEffectContext::new(
             AuthorityContext::local_cli(),
             IdempotencyKey::new("paper-manifest-fixture").unwrap(),
@@ -1393,6 +1628,430 @@ mod tests {
             .unwrap()
             .execute_batch("DROP TRIGGER onboarding_write_fault;")
             .unwrap();
+    }
+
+    fn saved_paper_attempt(c: &BrowserOnboarding) -> String {
+        install_paper_manifest(c);
+        let id = start(c)["onboardingId"].as_str().unwrap().to_owned();
+        in_runtime(|| c.browser_action(&id, "paper-token-restore", vec![])).unwrap();
+        let attempt = c.read(&id).unwrap().unwrap();
+        let service = in_runtime(|| c.bound_local_service(&attempt)).unwrap();
+        assert_eq!(
+            service
+                .handle_http_from_source(
+                    "fixture",
+                    "POST",
+                    "/plugins/instances/alpaca-paper:disable",
+                    json!({"idempotency_key":"saved-fixture-disable"})
+                )
+                .status,
+            200
+        );
+        id
+    }
+
+    fn saved_paper_form(id: &str) -> String {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("access_token", "SAVED_PAPER_TOKEN_CANARY")
+            .append_pair("package_sha256", &"a".repeat(64))
+            .append_pair("instance_ref", "alpaca-paper")
+            .append_pair("prior_revision_ref", "credential-generation:0")
+            .append_pair("onboarding_id", id)
+            .finish()
+    }
+
+    #[test]
+    fn first_consent_named_instance_renders_preparation_and_keeps_local_owner_authority() {
+        let (_dir, c) = fixture();
+        install_paper_manifest(&c);
+        let started = invoke(
+            &c,
+            "tradeassembly.onboarding.start",
+            json!({
+            "instanceRef":"fresh-consent-paper", "mode":"paper", "environment":"staging",
+            "idempotency_key":"first-consent-named-instance"}),
+        );
+        let id = started["onboardingId"].as_str().unwrap();
+        let attempt = c.read(id).unwrap().unwrap();
+        let local = in_runtime(|| c.bound_local_service(&attempt)).unwrap();
+        let owner = in_runtime(|| {
+            tokio::runtime::Handle::current().block_on(c.local_identity.current_identity())
+        })
+        .unwrap();
+        // A distinct hosted actor only selects hosted OAuth custody. It must
+        // never replace local ownership or finance authority for preparation.
+        let service = local.with_hosted_connection(
+            c.identity.configuration().clone(),
+            "test-fixture-distinct-hosted-actor".into(),
+            None,
+        );
+        for instance in [None, Some("fresh-consent-paper")] {
+            let (form, prepared) = broker_setup_form(&service, id, instance).unwrap();
+            assert!(!prepared);
+            assert!(form.contains(&format!("{id}/broker")));
+            assert!(!form.contains("/authorize"));
+        }
+        assert!(c
+            .service
+            .runtime()
+            .plugins
+            .get_instance("fresh-consent-paper")
+            .unwrap()
+            .is_none());
+        let prepared = tool_payload(&service, "tradeassembly.broker.connect", json!({
+            "instanceRef":"fresh-consent-paper", "mode":"paper", "idempotency_key":format!("{id}:prepare")})).unwrap();
+        assert_eq!(prepared["instanceRef"], "fresh-consent-paper");
+        let (form, prepared) =
+            broker_setup_form(&service, id, Some("fresh-consent-paper")).unwrap();
+        assert!(prepared);
+        assert!(form.contains(&format!("{id}/authorize")));
+        assert!(!form.contains(">Connect broker</button>"));
+        let commands =
+            crate::control_plane::list_commands(c.service.runtime().storage.as_ref()).unwrap();
+        let command = commands
+            .iter()
+            .find(|r| r.envelope.idempotency_key.as_str() == format!("{id}:prepare"))
+            .unwrap();
+        assert_eq!(command.response_status, Some(200));
+        assert_eq!(command.envelope.authority.actor, owner.stable_identity_id);
+        assert_eq!(command.envelope.authority.account_mode, "paper");
+        assert_eq!(command.envelope.source_interface, "mcp");
+        assert!(!serde_json::to_string(&commands)
+            .unwrap()
+            .contains("distinct-hosted-actor"));
+        assert!(c
+            .service
+            .runtime()
+            .storage
+            .list_json("plugin_oauth_attempts")
+            .unwrap()
+            .is_empty());
+        assert!(
+            !c.service
+                .runtime()
+                .credentials
+                .status("fresh-consent-paper")
+                .configured
+        );
+    }
+
+    #[test]
+    fn saved_paper_token_http_is_bound_local_oauth_and_replays_without_secret_evidence() {
+        let (_dir, c) = fixture();
+        let id = saved_paper_attempt(&c);
+        let url = format!("{}/{}", c.ensure_listener().unwrap(), id);
+        let origin = url::Url::parse(&url)
+            .unwrap()
+            .origin()
+            .ascii_serialization();
+        let client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let form = saved_paper_form(&id);
+        let page = client.get(&url).send().unwrap().text().unwrap();
+        assert!(page.contains("Restore a saved paper OAuth grant"));
+        assert!(page.contains("First broker consent is a separate operation"));
+        for bad_origin in ["null", "https://evil.test", ""] {
+            assert_eq!(
+                client
+                    .post(format!("{url}/saved-paper-token"))
+                    .header("origin", bad_origin)
+                    .body(form.clone())
+                    .send()
+                    .unwrap()
+                    .status(),
+                403
+            );
+        }
+        assert_eq!(
+            client
+                .post(format!("{url}/saved-paper-token"))
+                .header("origin", &origin)
+                .header("host", "evil.test")
+                .body(form.clone())
+                .send()
+                .unwrap()
+                .status(),
+            403
+        );
+        let other_capability = url.replace(
+            url::Url::parse(&url)
+                .unwrap()
+                .path()
+                .split('/')
+                .nth(1)
+                .unwrap(),
+            "not-the-capability",
+        );
+        assert_eq!(
+            client
+                .post(format!("{other_capability}/saved-paper-token"))
+                .header("origin", &origin)
+                .body(form.clone())
+                .send()
+                .unwrap()
+                .status(),
+            404
+        );
+        for invalid in [
+            form.replace(&"a".repeat(64), &"b".repeat(64)),
+            form.replace(&id, &"b".repeat(64)),
+            form.replace("alpaca-paper", "another-instance"),
+            form.replace("credential-generation%3A0", "credential-generation%3A1"),
+            format!("{form}&api_key=mixed"),
+            format!("{form}&access_token=duplicate"),
+            "access_token=only".into(),
+        ] {
+            let response = client
+                .post(format!("{url}/saved-paper-token"))
+                .header("origin", &origin)
+                .header("accept", "application/json")
+                .body(invalid)
+                .send()
+                .unwrap();
+            assert_eq!(response.status(), 400, "{}", response.text().unwrap());
+            assert!(
+                !c.service
+                    .runtime()
+                    .credentials
+                    .status("alpaca-paper")
+                    .configured
+            );
+        }
+        let response = client
+            .post(format!("{url}/saved-paper-token"))
+            .header("origin", &origin)
+            .header("accept", "application/json")
+            .body(form.clone())
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let restored: Value = response.json().unwrap();
+        assert_eq!(
+            restored["credentialStatus"]["authenticationMethod"],
+            "oauth"
+        );
+        assert_eq!(
+            restored["credentialStatus"]["revisionRef"],
+            "credential-generation:1"
+        );
+        assert_eq!(restored["enabled"], true);
+        let replay: Value = client
+            .post(format!("{url}/saved-paper-token"))
+            .header("origin", &origin)
+            .header("accept", "application/json")
+            .body(form)
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert_eq!(replay, restored);
+        let resumed = restart(&c);
+        assert_eq!(
+            in_runtime(|| resumed.connection(&id)).unwrap()["instance"],
+            restored
+        );
+        assert_eq!(
+            in_runtime(|| resumed.saved_paper_token(&id, saved_paper_form(&id).as_bytes()))
+                .unwrap(),
+            restored
+        );
+        let commands =
+            crate::control_plane::list_commands(resumed.service.runtime().storage.as_ref())
+                .unwrap();
+        let stores: Vec<_> = commands
+            .iter()
+            .filter(|r| r.envelope.idempotency_key.as_str() == format!("{id}:saved-paper-token"))
+            .collect();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].response_status, Some(200));
+        // The word token in the public operation key is conservatively
+        // redacted from previews. Restore that known, non-secret key to prove
+        // the command digest contains public bindings only.
+        let mut safe_binding = stores[0].envelope.payload_preview.clone();
+        safe_binding["idempotency_key"] = json!(format!("{id}:saved-paper-token"));
+        assert_eq!(
+            stores[0].envelope.payload_hash,
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&safe_binding).unwrap())
+            )
+        );
+        let token_hash = format!("{:x}", Sha256::digest(b"SAVED_PAPER_TOKEN_CANARY"));
+        let evidence = serde_json::to_string(&commands).unwrap();
+        assert!(!evidence.contains("CANARY") && !evidence.contains(&token_hash));
+        let conn = rusqlite::Connection::open(resumed.service.db()).unwrap();
+        let leaked: i64 = conn.query_row("SELECT count(*) FROM tradeassembly_kv WHERE value_json LIKE '%SAVED_PAPER_TOKEN_CANARY%' OR value_json LIKE ?1", [format!("%{token_hash}%")], |r| r.get(0)).unwrap();
+        assert_eq!(leaked, 0);
+        let attempt = resumed.read(&id).unwrap().unwrap();
+        assert!(attempt.saved_paper_token_stored && !attempt.api_keys_stored);
+        assert!(attempt.connection_id.is_none());
+        assert!(crate::agent_runner::deployments(&resumed.service.runtime())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn saved_paper_token_cannot_mix_setup_modes_or_race_oauth_and_rejects_malformed_input() {
+        let (_dir, c) = fixture();
+        let id = saved_paper_attempt(&c);
+        assert!(in_runtime(|| c.browser_action(&id, "paper-keys", vec![])).is_err());
+        assert!(in_runtime(|| c.api_keys(&id, paper_form().as_bytes())).is_err());
+        let service = in_runtime(|| c.bound_local_service(&c.read(&id).unwrap().unwrap())).unwrap();
+        let lock = service.saved_paper_token_lock("alpaca-paper").unwrap();
+        assert_eq!(
+            in_runtime(|| c.saved_paper_token(&id, saved_paper_form(&id).as_bytes())).unwrap_err(),
+            "plugin_oauth_lock_busy"
+        );
+        drop(lock);
+        for invalid in [
+            saved_paper_form(&id).replace("SAVED_PAPER_TOKEN_CANARY", ""),
+            saved_paper_form(&id).replace("SAVED_PAPER_TOKEN_CANARY", "has+space"),
+            saved_paper_form(&id).replace("SAVED_PAPER_TOKEN_CANARY", "%0A"),
+            saved_paper_form(&id).replace("SAVED_PAPER_TOKEN_CANARY", "%FF"),
+            saved_paper_form(&id).replace("SAVED_PAPER_TOKEN_CANARY", &"x".repeat(4097)),
+            "x".repeat(8193),
+        ] {
+            assert!(saved_paper_token_fields(invalid.as_bytes()).is_err());
+        }
+        assert!(
+            !c.service
+                .runtime()
+                .credentials
+                .status("alpaca-paper")
+                .configured
+        );
+    }
+
+    #[test]
+    fn saved_paper_token_restart_reconciles_only_a_successful_owned_receipt() {
+        for fault in [
+            "NEW.namespace='control_plane_commands' AND NEW.idempotency_key LIKE '%:saved-paper-token-enable:%'",
+            "NEW.namespace='browser_onboarding_v1' AND json_extract(NEW.value_json,'$.savedPaperTokenStored')=1",
+        ] {
+            let (_dir, c) = fixture();
+            let id = saved_paper_attempt(&c);
+            fail_write(&c, fault);
+            assert!(in_runtime(|| c.saved_paper_token(&id, saved_paper_form(&id).as_bytes())).is_err());
+            clear_write_fault(&c);
+            let resumed = restart(&c);
+            let result = in_runtime(|| resumed.connection(&id)).unwrap();
+            assert_eq!(result["instance"]["enabled"], true);
+            assert_eq!(result["instance"]["credentialStatus"]["authenticationMethod"], "oauth");
+            assert_eq!(result["instance"]["credentialStatus"]["revisionRef"], "credential-generation:1");
+            assert!(resumed.read(&id).unwrap().unwrap().saved_paper_token_stored);
+        }
+    }
+
+    #[test]
+    fn saved_paper_token_failed_intent_has_no_effect_and_unreceipted_write_fails_closed() {
+        for (fault, configured) in [
+            ("NEW.namespace='browser_onboarding_v1' AND json_type(NEW.value_json,'$.savedPaperTokenIntent')='object'", false),
+            ("NEW.namespace='control_plane_commands' AND NEW.idempotency_key LIKE '%:saved-paper-token' AND json_extract(NEW.value_json,'$.response_status')=200", true),
+        ] {
+            let (_dir, c) = fixture();
+            let id = saved_paper_attempt(&c);
+            fail_write(&c, fault);
+            assert!(in_runtime(|| c.saved_paper_token(&id, saved_paper_form(&id).as_bytes())).is_err());
+            assert_eq!(c.service.runtime().credentials.status("alpaca-paper").configured, configured);
+            clear_write_fault(&c);
+            let resumed = restart(&c);
+            let result = in_runtime(|| resumed.saved_paper_token(&id, saved_paper_form(&id).as_bytes()));
+            if configured {
+                assert_eq!(result.unwrap_err(), "onboarding_credentials_outcome_unknown");
+                assert_eq!(in_runtime(|| resumed.connection(&id)).unwrap_err(), "onboarding_credentials_outcome_unknown");
+            } else { assert!(result.is_ok()); }
+        }
+    }
+
+    #[test]
+    fn saved_paper_token_rejects_pending_handoff_configuration_and_owner_changes() {
+        for alteration in [
+            "pending",
+            "configuration",
+            "owner",
+            "live",
+            "cancelled",
+            "expired",
+            "existing",
+            "replacement",
+        ] {
+            let (_dir, c) = fixture();
+            let id = saved_paper_attempt(&c);
+            let mut attempt = c.read(&id).unwrap().unwrap();
+            let service = in_runtime(|| c.bound_local_service(&attempt)).unwrap();
+            match alteration {
+                "pending" => {
+                    c.service
+                        .runtime()
+                        .storage
+                        .put_json(
+                            "plugin_oauth_attempts",
+                            "pending-fixture",
+                            json!({"instanceRef":"alpaca-paper"}),
+                            &SideEffectContext::new(
+                                AuthorityContext::local_cli(),
+                                IdempotencyKey::new("pending-fixture").unwrap(),
+                            ),
+                        )
+                        .unwrap();
+                }
+                "configuration" => {
+                    // Simulate an incompatible on-disk configuration; normal
+                    // configuration authoring already rejects this mismatch.
+                    let mut record = c
+                        .service
+                        .runtime()
+                        .plugins
+                        .get_instance("alpaca-paper")
+                        .unwrap()
+                        .unwrap();
+                    record["configuration"]["tradingApiUrl"] = json!("https://api.alpaca.markets");
+                    c.service
+                        .runtime()
+                        .plugins
+                        .put_instance(
+                            "alpaca-paper",
+                            record,
+                            &SideEffectContext::new(
+                                AuthorityContext::local_cli(),
+                                IdempotencyKey::new("invalid-url-fixture").unwrap(),
+                            ),
+                        )
+                        .unwrap();
+                }
+                "owner" => {
+                    attempt.actor = Some("unrelated-owner".into());
+                    c.save(&attempt).unwrap();
+                }
+                "live" => {
+                    attempt.mode = "live".into();
+                    c.save(&attempt).unwrap();
+                }
+                "cancelled" => {
+                    attempt.cancelled = true;
+                    c.save(&attempt).unwrap();
+                }
+                "expired" => {
+                    attempt.expires_at_ms = 0;
+                    c.save(&attempt).unwrap();
+                }
+                "existing" | "replacement" => {
+                    if alteration == "replacement" {
+                        in_runtime(|| c.saved_paper_token(&id, saved_paper_form(&id).as_bytes()))
+                            .unwrap();
+                    }
+                    assert_eq!(service.handle_http_from_source("fixture", "POST", "/plugins/instances/alpaca-paper/credentials",
+                        json!({"credentials":{"access_token":"UNRELATED"},"idempotency_key":"unrelated-token"})).status, 200);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                in_runtime(|| c.saved_paper_token(&id, saved_paper_form(&id).as_bytes())).is_err(),
+                "{alteration}"
+            );
+        }
     }
 
     #[test]

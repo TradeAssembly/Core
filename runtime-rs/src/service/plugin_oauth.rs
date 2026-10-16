@@ -864,7 +864,7 @@ fn persist_attempt(service: &TradeAssemblyService, key: &str, value: Value) -> R
         .put_json("plugin_oauth_attempts", key, value, &context)
 }
 
-fn oauth_lock(service: &TradeAssemblyService) -> Result<std::fs::File, &'static str> {
+pub(super) fn oauth_lock(service: &TradeAssemblyService) -> Result<std::fs::File, &'static str> {
     let path = std::path::PathBuf::from(format!("{}.oauth.lock", service.db()));
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);

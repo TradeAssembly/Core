@@ -105,7 +105,7 @@ fn broker_receipt_write_failure_is_ambiguous_on_first_call_and_restart() {
             ctx: &SideEffectContext,
         ) -> Result<ImmutablePutOutcome, String> {
             if ns == RECEIPTS_NS {
-                return Err("controlled_receipt_write_failure".into());
+                return Err("controlled_receipt_write_failure:credential-canary".into());
             }
             self.0.put_json_if_absent(ns, key, value, ctx)
         }
@@ -155,6 +155,22 @@ fn broker_receipt_write_failure_is_ambiguous_on_first_call_and_restart() {
         "plugin_order_reconciliation_required"
     );
     assert!(storage.list_json(RECEIPTS_NS).unwrap().is_empty());
+    let failures = storage
+        .list_json("plugin_broker_submission_failures")
+        .unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].1["phase"], "persistence");
+    assert_eq!(failures[0].1["code"], "receipt_persistence_failed");
+    assert_eq!(
+        failures[0].1["requestHash"],
+        storage
+            .get_json(REQUESTS_NS, ctx.idempotency_key.as_str())
+            .unwrap()
+            .unwrap()["requestHash"]
+    );
+    assert!(!serde_json::to_string(&failures)
+        .unwrap()
+        .contains("credential-canary"));
     assert_eq!(
         storage
             .list_json("plugin_broker_dispatch_claims")

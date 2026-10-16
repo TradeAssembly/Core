@@ -249,6 +249,12 @@ pub(crate) fn run_once(service: &TradeAssemblyService, body: Value) -> Value {
             Err(error) if error == "plugin_order_reconciliation_required" => {
                 order["status"] = json!("reconciliation_required");
                 order["pluginError"] = json!("plugin_order_reconciliation_required");
+                if let Some(failure) = crate::adapters::plugin_submission_failure::read(
+                    service.runtime().storage.as_ref(),
+                    context.idempotency_key.as_str(),
+                ) {
+                    order["pluginFailure"] = failure;
+                }
                 order["secretsRedacted"] = json!(true);
                 persist_with_body(
                     service,

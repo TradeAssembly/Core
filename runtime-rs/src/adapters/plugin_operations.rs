@@ -1,5 +1,6 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use super::plugin_submission_failure::{self, Phase};
 use crate::ports::{
     BrokerSubmissionPort, ClockPort, CredentialPort, FailureMode, ImmutablePutOutcome,
     PluginOperationPort, PluginOperationRequest, PluginOperationResponse, PluginPackagePort,
@@ -26,6 +27,7 @@ pub(crate) const RESET_NAMESPACES: &[&str] = &[
     BROKER_DENIAL_NS,
     RECOVERY_REQUESTS_NS,
     RECOVERY_OUTCOMES_NS,
+    plugin_submission_failure::NAMESPACE,
 ];
 
 pub struct LocalPluginOperations {
@@ -458,7 +460,15 @@ impl PluginOperationPort for LocalPluginOperations {
         };
         let mut response = match response {
             Ok(response) => response,
-            Err(_) if broker_submission => {
+            Err(error) if broker_submission => {
+                plugin_submission_failure::record(
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    Phase::Execution,
+                    &error,
+                    context,
+                );
                 return Err("plugin_order_reconciliation_required".into());
             }
             Err(error) => return Err(error),
@@ -466,7 +476,15 @@ impl PluginOperationPort for LocalPluginOperations {
         if !response.reconciliation_required {
             if let (Some(boundary), Some(permit)) = (self.broker_boundary.as_ref(), permit.as_ref())
             {
-                if boundary.complete(permit, &response).is_err() {
+                if let Err(error) = boundary.complete(permit, &response) {
+                    plugin_submission_failure::record(
+                        self.storage.as_ref(),
+                        receipt_key,
+                        &request_hash,
+                        Phase::Completion,
+                        &error,
+                        context,
+                    );
                     return Err("plugin_order_reconciliation_required".into());
                 }
             }
@@ -497,7 +515,17 @@ impl PluginOperationPort for LocalPluginOperations {
         if broker_submission {
             // The sink already ran. A missing/invalid durable receipt cannot be
             // reported as an ordinary failed submission that is safe to retry.
-            persisted.map_err(|_| "plugin_order_reconciliation_required".to_string())
+            persisted.map_err(|error| {
+                plugin_submission_failure::record(
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    Phase::Persistence,
+                    &error,
+                    context,
+                );
+                "plugin_order_reconciliation_required".to_string()
+            })
         } else {
             persisted
         }

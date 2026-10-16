@@ -475,6 +475,11 @@ fn verify_native_targets<'a>(
             .join(target)
             .canonicalize()
             .map_err(|_| "evidence_root_unavailable")?;
+        // Older retained native receipts predate this owning boundary check.
+        // When present, bind and verify it exactly like every other log.
+        if receipt["checks"].get("sandboxedAlpacaSubmission").is_some() {
+            checks.push("sandboxedAlpacaSubmission");
+        }
         for check in checks {
             let proof = &receipt["checks"][check];
             let name = proof["artifact"]

@@ -295,6 +295,38 @@ pub fn qualify(
         &env,
         &out.join("sandbox.log"),
     )?;
+    #[cfg(unix)]
+    {
+        let lock = crate::read_json(&payload.join("plugins/alpaca.json"))?;
+        let plugin_name = crate::plugin::package_file(&lock, host)?;
+        let plugin_archive = payload.join("plugins").join(plugin_name);
+        if crate::digest(&plugin_archive)? != lock["packageSha256"] {
+            return Err("qualification_plugin_digest_mismatch".into());
+        }
+        let plugin = tempfile::tempdir().map_err(|_| "qualification_plugin_stage_failed")?;
+        crate::extract(&plugin_archive, plugin.path())?;
+        env.clear();
+        env.insert(
+            "ALPACA_TEST_PACKAGE_ROOT",
+            plugin.path().display().to_string(),
+        );
+        env.insert(
+            "ALPACA_TEST_SANDBOX_COMMAND",
+            payload
+                .join(executable("bin/tradeassembly-sandbox"))
+                .display()
+                .to_string(),
+        );
+        cargo_test(
+            &source,
+            "tradeassembly-runtime",
+            "alpaca_submission_sandbox",
+            "",
+            "2 passed",
+            &env,
+            &out.join("alpaca-submission-sandbox.log"),
+        )?;
+    }
     env.clear();
     env.insert(
         "F2_TEST_RUNTIME_BINARY",
@@ -379,6 +411,12 @@ pub fn qualify(
         let mut value = proof(out, log)?;
         value["exitCode"] = json!(0);
         checks.insert(name.into(), value);
+    }
+    #[cfg(unix)]
+    {
+        let mut value = proof(out, "alpaca-submission-sandbox.log")?;
+        value["exitCode"] = json!(0);
+        checks.insert("sandboxedAlpacaSubmission".into(), value);
     }
     #[cfg(windows)]
     for (name, log) in [

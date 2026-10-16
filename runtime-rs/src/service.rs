@@ -1234,13 +1234,19 @@ impl TradeAssemblyService {
                 map.insert("activationId".to_string(), json!(activation_id));
             }
         }
-        if let Some(config_id) = map_string(map, &["configId", "config_id"]) {
-            if let Ok(Some(config)) = self
-                .runtime
-                .storage
-                .get_json("execution_configs", &config_id)
-            {
-                copy_execution_context(map, &config);
+        // Configuration authoring hashes the caller's intent. Inheriting the
+        // configuration written by the first call would change an identical
+        // retry's payload and reject its original idempotency key. Runtime
+        // actions still inherit the saved configuration's authority context.
+        if path != "/product/strategy-execution-configs/save" {
+            if let Some(config_id) = map_string(map, &["configId", "config_id"]) {
+                if let Ok(Some(config)) = self
+                    .runtime
+                    .storage
+                    .get_json("execution_configs", &config_id)
+                {
+                    copy_execution_context(map, &config);
+                }
             }
         }
         if path != "/product/strategy-execution-activations/activate" {

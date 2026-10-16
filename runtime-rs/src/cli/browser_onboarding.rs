@@ -1678,7 +1678,7 @@ mod tests {
             tokio::runtime::Handle::current().block_on(c.local_identity.current_identity())
         })
         .unwrap();
-        // A distinct hosted actor only selects hosted OAuth custody. It must
+        // A distinct provider identity only selects OAuth credential custody. It must
         // never replace local ownership or finance authority for preparation.
         let service = local.with_hosted_connection(
             c.identity.configuration().clone(),

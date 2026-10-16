@@ -502,10 +502,7 @@ fn response_from_wire(
         return Err("plugin_response_schema_undeclared".to_string());
     }
     if response.status == ResponseStatus::Failed {
-        return Err(format!(
-            "plugin_operation_failed:{}",
-            response.provider_outcome.code
-        ));
+        return Err(super::plugin_provider_failure::wire_error(&response));
     }
     let reconciliation_required = response.status == ResponseStatus::ReconciliationRequired
         || response.reconciliation == Reconciliation::Required;

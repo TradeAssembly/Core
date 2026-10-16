@@ -11,6 +11,7 @@ pub mod object_authorization;
 pub mod plugin_operations;
 pub mod plugin_output_policy;
 pub mod plugin_packages;
+pub(crate) mod plugin_provider_failure;
 pub mod plugin_registry;
 pub mod plugin_sandbox;
 pub(crate) mod plugin_submission_failure;

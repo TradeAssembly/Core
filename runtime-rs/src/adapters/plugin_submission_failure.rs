@@ -220,6 +220,8 @@ pub(crate) fn record(
     error: &str,
     context: &SideEffectContext,
 ) {
+    let original_error = error;
+    let error = super::plugin_provider_failure::base_error(error);
     let record = Failure {
         schema_version: SCHEMA.into(),
         request_hash: request_hash.into(),
@@ -233,7 +235,19 @@ pub(crate) fn record(
     // If diagnostic storage also fails, the caller still returns the original
     // reconciliation-required result. Never allow another dispatch here.
     if let Ok(value) = serde_json::to_value(record) {
-        let _ = storage.put_json_if_absent(NAMESPACE, key, value, context);
+        if matches!(
+            storage.put_json_if_absent(NAMESPACE, key, value, context),
+            Ok(crate::ports::ImmutablePutOutcome::Created)
+        ) && matches!(phase, Phase::Execution)
+        {
+            super::plugin_provider_failure::record(
+                storage,
+                key,
+                request_hash,
+                original_error,
+                context,
+            );
+        }
     }
 }
 
@@ -260,6 +274,86 @@ pub(crate) fn read(storage: &dyn StoragePort, key: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_detail_is_separate_bound_and_first_write_only() {
+        use crate::ports::{AuthorityContext, IdempotencyKey};
+        use crate::service::TradeAssemblyService;
+        use serde_json::json;
+        let temp = tempfile::tempdir().unwrap();
+        let service = TradeAssemblyService::test_local(
+            temp.path()
+                .join("state.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let storage = service.runtime().storage.clone();
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("provider-diagnostic").unwrap(),
+        );
+        storage
+            .put_json(
+                "plugin_operation_requests",
+                "key",
+                json!({"requestHash":"bound"}),
+                &context,
+            )
+            .unwrap();
+        let first = "plugin_operation_failed:provider_auth_failed|provider|{\"httpStatus\":403,\"providerCode\":40310000,\"cause\":\"crypto_not_enabled\"}";
+        record(
+            storage.as_ref(),
+            "key",
+            "bound",
+            Phase::Execution,
+            first,
+            &context,
+        );
+        record(
+            storage.as_ref(),
+            "key",
+            "bound",
+            Phase::Execution,
+            &first.replace("40310000", "40310001"),
+            &context,
+        );
+        assert_eq!(
+            read(storage.as_ref(), "key"),
+            Some(
+                json!({"schemaVersion":SCHEMA,"requestHash":"bound","phase":"execution","code":"provider_auth_failed"})
+            )
+        );
+        let detail = storage
+            .get_json("plugin_broker_provider_failures", "key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail["requestHash"], "bound");
+        assert_eq!(detail["detail"]["providerCode"], 40310000);
+        assert!(storage
+            .get_json("plugin_operation_receipts", "key")
+            .unwrap()
+            .is_none());
+        record(
+            storage.as_ref(),
+            "old",
+            "bound",
+            Phase::Execution,
+            "plugin_operation_failed:provider_auth_failed",
+            &context,
+        );
+        record(
+            storage.as_ref(),
+            "old",
+            "bound",
+            Phase::Execution,
+            first,
+            &context,
+        );
+        assert!(storage
+            .get_json("plugin_broker_provider_failures", "old")
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn execution_failures_use_closed_serialized_categories() {

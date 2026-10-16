@@ -263,15 +263,18 @@ fn packaged_provider_failures_survive_core_policy_without_resubmission() {
         ("429 Too Many Requests", "provider_request_failed"),
         ("500 Internal Server Error", "provider_request_failed"),
     ] {
-        assert_eq!(
-            invoke(vec![step(
-                "POST /v2/orders ",
-                status,
-                json!({"private":"provider-canary"})
-            )])
-            .unwrap_err(),
-            format!("plugin_operation_failed:{code}")
-        );
+        let error = invoke(vec![step(
+            "POST /v2/orders ", status,
+            json!({"code":40310000,"message":"crypto trading is not enabled","private":"provider-canary"})
+        )]).unwrap_err();
+        let (primary, detail) = error
+            .split_once("|provider|")
+            .expect("bounded provider diagnostic");
+        assert_eq!(primary, format!("plugin_operation_failed:{code}"));
+        let detail: Value = serde_json::from_str(detail).unwrap();
+        assert_eq!(detail["httpStatus"], status[..3].parse::<u16>().unwrap());
+        assert_eq!(detail["providerCode"], 40310000);
+        assert!(!error.contains("canary"));
     }
     let mut invalid = receipt();
     invalid.as_object_mut().unwrap().remove("qty");
@@ -279,23 +282,27 @@ fn packaged_provider_failures_survive_core_policy_without_resubmission() {
         invoke(vec![step("POST /v2/orders ", "200 OK", invalid)]).unwrap_err(),
         "plugin_operation_failed:provider_schema_invalid"
     );
-    assert_eq!(
-        invoke(vec![
-            step(
-                "POST /v2/orders ",
-                "422 Unprocessable Entity",
-                json!({"private":"provider-canary"})
+    let error = invoke(vec![
+        step(
+            "POST /v2/orders ",
+            "422 Unprocessable Entity",
+            json!({"private":"provider-canary"}),
+        ),
+        step(
+            format!(
+                "GET /v2/orders:by_client_order_id?client_order_id={} ",
+                "f".repeat(51)
             ),
-            step(
-                format!(
-                    "GET /v2/orders:by_client_order_id?client_order_id={} ",
-                    "f".repeat(51)
-                ),
-                "404 Not Found",
-                json!({"private":"provider-canary"})
-            ),
-        ])
-        .unwrap_err(),
-        "plugin_operation_failed:provider_order_absent"
-    );
+            "404 Not Found",
+            json!({"private":"provider-canary"}),
+        ),
+    ])
+    .unwrap_err();
+    let (primary, detail) = error
+        .split_once("|provider|")
+        .expect("rejected submission diagnostic");
+    assert_eq!(primary, "plugin_operation_failed:provider_order_absent");
+    let detail: Value = serde_json::from_str(detail).unwrap();
+    assert_eq!(detail["httpStatus"], 422);
+    assert!(!error.contains("canary"));
 }

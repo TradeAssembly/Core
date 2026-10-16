@@ -50,6 +50,15 @@
         "hosted-oauth-consent",
         "saved-oauth-grant-restore"
       ]
+    },
+    {
+      "id": "core.execution.continuation",
+      "version": "1.0.0",
+      "capabilities": [
+        "pre-dispatch-checkpoint",
+        "observe-original-cycle",
+        "stopped-recovery"
+      ]
     }
   ],
   "requires": [],

@@ -717,6 +717,34 @@ fn git_sdk_tree(source: &Path, revision: &str) -> Result<String> {
     Ok(tree.to_owned())
 }
 
+fn github_plugin_lock(archive: &Path, target: &str) -> Result<Value> {
+    let mut zip =
+        zip::ZipArchive::new(File::open(archive).map_err(|_| "github_build_archive_unavailable")?)
+            .map_err(|_| "github_build_archive_invalid")?;
+    let mut entry = zip
+        .by_name("dist/tradeassembly-plugin-lock.json")
+        .map_err(|_| "github_build_member_missing")?;
+    if !entry.is_file() || entry.size() > 4_194_304 {
+        return Err("github_plugin_lock_invalid".into());
+    }
+    let mut bytes = Vec::new();
+    entry
+        .by_ref()
+        .take(4_194_305)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "github_plugin_lock_invalid")?;
+    if bytes.len() > 4_194_304 {
+        return Err("github_plugin_lock_invalid".into());
+    }
+    let lock: Value = serde_json::from_slice(&bytes).map_err(|_| "github_plugin_lock_invalid")?;
+    if lock["schemaVersion"] != "tradeassembly.plugin-lock.v1"
+        || crate::plugin::package_file(&lock, target).is_err()
+    {
+        return Err("github_plugin_lock_invalid".into());
+    }
+    Ok(lock)
+}
+
 /// Materialize only the pinned producer outputs after validating the complete
 /// GitHub run, artifact and archive chain. This is build evidence, not a
 /// qualified or installable candidate.
@@ -737,6 +765,8 @@ pub fn extract_github_builds(
     fs::create_dir_all(parent).map_err(|_| "github_build_output_invalid")?;
     let stage = tempfile::tempdir_in(parent).map_err(|_| "github_build_output_invalid")?;
     let suffix = if target == TARGETS[4] { ".exe" } else { "" };
+    let alpaca_lock = github_plugin_lock(&root.join("alpaca.zip"), target)?;
+    let alpaca_package = crate::plugin::package_file(&alpaca_lock, target)?;
     let mut outputs = serde_json::Map::new();
     for (owner, member, name) in [
         (
@@ -761,8 +791,8 @@ pub fn extract_github_builds(
         ),
         (
             "alpaca",
-            "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz".into(),
-            "tradeassembly-plugin-alpaca-0.1.17.tar.gz".into(),
+            format!("dist/{alpaca_package}"),
+            alpaca_package.into(),
         ),
         (
             "alpaca",
@@ -804,18 +834,9 @@ pub fn extract_github_builds(
             json!({"sha256":digest(&output)?,"source":owner,"member":member}),
         );
     }
-    let alpaca_lock: Value = read_json(&stage.path().join("alpaca-package-lock.json"))?;
-    let package = stage
-        .path()
-        .join("tradeassembly-plugin-alpaca-0.1.17.tar.gz");
-    if alpaca_lock["schemaVersion"] != "tradeassembly.plugin-lock.v1"
-        || alpaca_lock["target"] != target
-        || alpaca_lock["version"] != "0.1.17"
-        || alpaca_lock["packageFile"] != "tradeassembly-plugin-alpaca-0.1.17.tar.gz"
-        || alpaca_lock["packageSha256"] != digest(&package)?
-        || alpaca_lock["manifestSha256"]
-            .as_str()
-            .is_none_or(|sha| !crate::is_digest(sha))
+    if read_json::<Value>(&stage.path().join("alpaca-package-lock.json"))? != alpaca_lock
+        || alpaca_lock["packageSha256"] != digest(&stage.path().join(alpaca_package))?
+        || alpaca_lock["manifestSha256"] != digest(&stage.path().join("alpaca-manifest.json"))?
     {
         return Err("github_plugin_lock_invalid".into());
     }
@@ -882,6 +903,13 @@ fn verify_archive_member(archive: &Path, member: &str, output: &Path) -> Result<
 fn verify_build_archive_outputs(root: &Path, receipt: &Value, target: &str) -> Result<()> {
     let windows = target == TARGETS[4];
     let suffix = if windows { ".exe" } else { "" };
+    let alpaca_archive = evidence_file(root, &receipt["buildArchives"]["alpaca"])?;
+    let alpaca_lock = github_plugin_lock(&alpaca_archive, target)?;
+    let alpaca_package = crate::plugin::package_file(&alpaca_lock, target)?;
+    let alpaca_output = evidence_file(root, &receipt["buildOutputs"]["alpaca"])?;
+    if alpaca_lock["packageSha256"] != digest(&alpaca_output)? {
+        return Err("github_plugin_lock_invalid".into());
+    }
     for (owner, member, output) in [
         ("core", format!("release/tradeassembly{suffix}"), "core"),
         (
@@ -890,11 +918,7 @@ fn verify_build_archive_outputs(root: &Path, receipt: &Value, target: &str) -> R
             "sandbox",
         ),
         ("warden", format!("release/warden{suffix}"), "warden"),
-        (
-            "alpaca",
-            "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz".to_owned(),
-            "alpaca",
-        ),
+        ("alpaca", format!("dist/{alpaca_package}"), "alpaca"),
     ] {
         let archive = evidence_file(root, &receipt["buildArchives"][owner])?;
         let file = evidence_file(root, &receipt["buildOutputs"][output])?;
@@ -1509,6 +1533,12 @@ mod tests {
 
     #[test]
     fn github_output_transport_extracts_only_pinned_target_binaries() {
+        for version in ["0.1.17", "0.1.18"] {
+            assert_github_output_transport(version);
+        }
+    }
+
+    fn assert_github_output_transport(version: &str) {
         use std::io::Write;
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let core_revision = String::from_utf8(
@@ -1551,7 +1581,7 @@ mod tests {
                 ".github/workflows/native-plugin.yml",
                 "c",
                 vec![
-                    "dist/tradeassembly-plugin-alpaca-0.1.17.tar.gz",
+                    &format!("dist/tradeassembly-plugin-alpaca-{version}.tar.gz"),
                     "dist/tradeassembly-plugin-lock.json",
                     "dist/tradeassembly-plugin.json",
                 ],
@@ -1565,10 +1595,10 @@ mod tests {
                 if member == "dist/tradeassembly-plugin-lock.json" {
                     let lock = json!({
                         "schemaVersion":"tradeassembly.plugin-lock.v1",
-                        "target":"x86_64-unknown-linux-gnu","version":"0.1.17",
-                        "packageFile":"tradeassembly-plugin-alpaca-0.1.17.tar.gz",
+                        "target":"x86_64-unknown-linux-gnu","version":version,
+                        "packageFile":format!("tradeassembly-plugin-alpaca-{version}.tar.gz"),
                         "packageSha256":format!("{:x}",Sha256::digest(b"plugin")),
-                        "manifestSha256":"a".repeat(64)
+                        "manifestSha256":format!("{:x}",Sha256::digest(b"{}"))
                     });
                     zip.write_all(lock.to_string().as_bytes()).unwrap();
                 } else if member == "dist/tradeassembly-plugin.json" {
@@ -1633,6 +1663,31 @@ mod tests {
                 0o111
             );
         }
+        let mut receipt = json!({"buildArchives":{},"buildOutputs":{}});
+        for owner in ["core", "warden", "alpaca"] {
+            receipt["buildArchives"][owner] = proof(root.path(), &format!("{owner}.zip"));
+        }
+        for (owner, output) in [
+            ("core", "tradeassembly"),
+            ("sandbox", "tradeassembly-sandbox"),
+            ("warden", "warden"),
+        ] {
+            receipt["buildOutputs"][owner] = proof(root.path(), &format!("outputs/{output}"));
+        }
+        let package_name = format!("tradeassembly-plugin-alpaca-{version}.tar.gz");
+        let package_path = format!("outputs/{package_name}");
+        receipt["buildOutputs"]["alpaca"] = proof(root.path(), &package_path);
+        assert!(
+            verify_build_archive_outputs(root.path(), &receipt, "x86_64-unknown-linux-gnu").is_ok()
+        );
+        fs::write(out.join(&package_name), b"changed plugin").unwrap();
+        receipt["buildOutputs"]["alpaca"] = proof(root.path(), &package_path);
+        assert_eq!(
+            verify_build_archive_outputs(root.path(), &receipt, "x86_64-unknown-linux-gnu")
+                .unwrap_err(),
+            "github_plugin_lock_invalid"
+        );
+        fs::write(out.join(&package_name), b"plugin").unwrap();
         let inventory: Value = read_json(&out.join("build-outputs.json")).unwrap();
         assert_eq!(inventory["qualified"], false);
         assert_eq!(inventory["outputs"].as_object().unwrap().len(), 7);

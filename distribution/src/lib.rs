@@ -18,6 +18,7 @@ pub mod candidate;
 pub mod install;
 pub mod native;
 pub mod package;
+mod plugin;
 pub mod qualify;
 pub mod registry_qualify;
 

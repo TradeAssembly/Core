@@ -164,16 +164,8 @@ pub fn verify(package: &Path, bundle: &Path, release: &Release) -> Result<()> {
     {
         return Err("candidate_plugin_input_mismatch".into());
     }
-    let alpaca_lock: Value = read_json(&bundle.join("plugins/alpaca.json"))?;
-    if alpaca_lock["target"] != release.target
-        || alpaca_lock["version"] != "0.1.17"
-        || alpaca_lock["sourceRevision"] != manifest_inputs.alpaca_revision
-        || alpaca_lock["packageFile"] != manifest_inputs.alpaca_package
-        || alpaca_lock["packageSha256"] != manifest_inputs.alpaca_package_sha256
-        || alpaca_lock["manifestSha256"] != manifest_inputs.alpaca_manifest_sha256
-    {
-        return Err("candidate_plugin_lock_mismatch".into());
-    }
+    crate::native::plugin_pin(bundle, &manifest_inputs)
+        .map_err(|_| "candidate_plugin_lock_mismatch")?;
     Ok(())
 }
 
@@ -185,6 +177,12 @@ mod tests {
 
     #[test]
     fn replacement_descriptor_binds_baseline_version_source_and_payload() {
+        for version in ["0.1.17", "0.1.18"] {
+            assert_replacement_descriptor(version);
+        }
+    }
+
+    fn assert_replacement_descriptor(version: &str) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         for directory in ["bin", "runtime/node/bin", "plugins"] {
@@ -195,7 +193,10 @@ mod tests {
             ("bin/warden", b"warden".as_slice()),
             ("bin/tradeassembly-sandbox", b"sandbox".as_slice()),
             ("runtime/node/bin/node", b"node".as_slice()),
-            ("plugins/alpaca.tar.gz", b"alpaca".as_slice()),
+            (
+                &format!("plugins/tradeassembly-plugin-alpaca-{version}.tar.gz"),
+                b"alpaca".as_slice(),
+            ),
         ] {
             fs::write(root.join(name), bytes).unwrap();
         }
@@ -209,14 +210,17 @@ mod tests {
             warden_sha256: digest(&root.join("bin/warden")).unwrap(),
             launcher_sha256: digest(&root.join("bin/tradeassembly-sandbox")).unwrap(),
             node_sha256: digest(&root.join("runtime/node/bin/node")).unwrap(),
-            alpaca_package: "alpaca.tar.gz".into(),
-            alpaca_package_sha256: digest(&root.join("plugins/alpaca.tar.gz")).unwrap(),
+            alpaca_package: format!("tradeassembly-plugin-alpaca-{version}.tar.gz"),
+            alpaca_package_sha256: digest(&root.join(format!(
+                "plugins/tradeassembly-plugin-alpaca-{version}.tar.gz"
+            )))
+            .unwrap(),
             alpaca_manifest_sha256: "d".repeat(64),
         };
         atomic_json(
             &root.join("plugins/alpaca.json"),
             &serde_json::json!({"target":inputs.target,
-                "version":"0.1.17","packageFile":inputs.alpaca_package,
+                "version":version,"packageFile":inputs.alpaca_package,
                 "sourceRevision":inputs.alpaca_revision,
                 "packageSha256":inputs.alpaca_package_sha256,
                 "manifestSha256":inputs.alpaca_manifest_sha256}),
@@ -253,6 +257,25 @@ mod tests {
             connection_profile_sha256: None,
         };
         verify(root, root, &release).unwrap();
+        let lock_path = root.join("plugins/alpaca.json");
+        let lock: Value = read_json(&lock_path).unwrap();
+        for (field, value) in [
+            ("version", json!("0.1.19")),
+            ("packageFile", json!("../escape.tar.gz")),
+            ("sourceRevision", json!("f".repeat(40))),
+            ("packageSha256", json!("f".repeat(64))),
+            ("manifestSha256", json!("f".repeat(64))),
+            ("target", json!(TARGETS[4])),
+        ] {
+            let mut wrong = lock.clone();
+            wrong[field] = value;
+            atomic_json(&lock_path, &wrong).unwrap();
+            assert_eq!(
+                verify(root, root, &release).unwrap_err(),
+                "candidate_plugin_lock_mismatch"
+            );
+        }
+        atomic_json(&lock_path, &lock).unwrap();
         descriptor.deployment_environment = "staging".into();
         atomic_json(&root.join(NAME), &descriptor).unwrap();
         release.candidate_descriptor_sha256 = Some(digest(&root.join(NAME)).unwrap());

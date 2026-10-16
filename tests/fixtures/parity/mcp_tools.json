@@ -47,6 +47,7 @@
   "tradeassembly.execution.live_mandate.revoke",
   "tradeassembly.execution.live_mandate.status",
   "tradeassembly.execution.readiness",
+  "tradeassembly.execution.recover_original",
   "tradeassembly.execution.replay",
   "tradeassembly.execution.run",
   "tradeassembly.execution.scheduler.run",

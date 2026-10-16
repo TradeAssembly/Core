@@ -111,6 +111,12 @@ impl CredentialPort for LocalCredentialStore {
             .ok()
             .flatten()
             .and_then(|credential| {
+                // OAuth bearer grants are opaque secrets, not display IDs.
+                // Never expose even their prefix/suffix through projections or
+                // the durable lifecycle receipts derived from this status.
+                if let Some(token) = credential.fields.get("access_token") {
+                    return (!token.trim().is_empty()).then(|| "***redacted***".to_string());
+                }
                 credential
                     .fields
                     .get("api_key")
@@ -264,6 +270,48 @@ fn redact(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_status_masks_the_entire_token_across_reopen_and_replacement() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let db = temporary.path().join("state.db");
+        let store = LocalCredentialStore::new(db.to_str().unwrap());
+        for token in ["Q7Vk_OAUTH_CANARY_BODY_mN4p", "a2Hr_OTHER_CANARY_BODY_k3Tx"] {
+            let fields = BTreeMap::from([("access_token".into(), token.into())]);
+            let stored = store.store("alpaca-paper", &fields).unwrap();
+            assert!(stored.configured);
+            assert_eq!(stored.redacted_display.as_deref(), Some("***redacted***"));
+            let reopened = LocalCredentialStore::new(db.to_str().unwrap());
+            let status = reopened.status("alpaca-paper");
+            assert_eq!(status.redacted_display, stored.redacted_display);
+            let projection = format!("{status:?}");
+            for secret in [token, &token[..4], &token[token.len() - 4..]] {
+                assert!(!projection.contains(secret));
+            }
+            assert_eq!(
+                reopened.resolve_fields("alpaca-paper").unwrap(),
+                Some(fields)
+            );
+        }
+        store.revoke("alpaca-paper").unwrap();
+        assert!(!store.status("alpaca-paper").configured);
+    }
+
+    #[test]
+    fn api_key_display_retains_its_existing_behavior() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = LocalCredentialStore::new(temporary.path().join("state.db").to_str().unwrap());
+        let status = store
+            .store(
+                "alpaca-paper",
+                &BTreeMap::from([
+                    ("api_key".into(), "APIKEY_DISPLAY_EXAMPLE".into()),
+                    ("api_secret".into(), "API_SECRET_NEVER_DISPLAY".into()),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(status.redacted_display.as_deref(), Some("APIK...MPLE"));
+    }
 
     #[test]
     fn credential_store_survives_reopen_and_revoke() {

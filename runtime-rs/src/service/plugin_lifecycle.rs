@@ -2183,6 +2183,46 @@ mod tests {
     }
 
     #[test]
+    fn oauth_lifecycle_projections_and_persisted_metadata_exclude_token_fragments() {
+        let (service, instance_ref) = oauth_fixture(true);
+        let token = "Q7Vk_OAUTH_LIFECYCLE_CANARY_mN4p";
+        let stored = store_credentials(
+            &service,
+            &instance_ref,
+            json!({"credentials":{"access_token":token}}),
+        );
+        assert_eq!(stored.status, 200);
+        let status = credential_status_for(&service, &instance_ref);
+        let instance = get_instance(&service, &instance_ref);
+        assert_eq!(status.status, 200);
+        assert_eq!(instance.status, 200);
+        let persisted = service
+            .runtime()
+            .plugins
+            .get_instance(&instance_ref)
+            .unwrap()
+            .unwrap();
+        for projection in [&stored.body, &status.body, &instance.body, &persisted] {
+            assert_eq!(
+                projection["credentialStatus"]["redactedDisplay"],
+                "***redacted***"
+            );
+            if projection.get("credentialAuthentication").is_some() {
+                assert_eq!(projection["credentialAuthentication"]["method"], "oauth");
+            } else {
+                assert_eq!(
+                    projection["credentialStatus"]["authenticationMethod"],
+                    "oauth"
+                );
+            }
+            let serialized = projection.to_string();
+            for secret in [token, &token[..4], &token[token.len() - 4..]] {
+                assert!(!serialized.contains(secret));
+            }
+        }
+    }
+
+    #[test]
     fn authentication_method_is_unavailable_when_post_store_metadata_write_fails() {
         let (service, instance_ref) = oauth_fixture(true);
         let initial = store_credentials(

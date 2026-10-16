@@ -443,7 +443,8 @@ pub(crate) fn evaluate_tick_response(
                 quote_request.capability = "marketdata.quote".into();
                 quote_request.account_ref =
                     quote_binding["accountRef"].as_str().map(str::to_string);
-                quote_request.input = json!({"symbol":intent.symbol});
+                quote_request.input =
+                    json!({"symbol":intent.symbol,"assetClass":run["assetClass"]});
                 quote_request.evidence_refs.clear();
                 let quote_context = SideEffectContext::new(
                     AuthorityContext {
@@ -4232,7 +4233,7 @@ fn run_tick(service: &TradeAssemblyService, run: &mut Value, cycle: u64, lease: 
         return json!({
             "status": "failed",
             "reason": "evaluation_failed",
-            "error": response.body,
+            "evaluationFailure": EvaluationFailure::from_response(&response),
             "activationId": activation_id,
             "cycle": cycle,
             "lease": lease,
@@ -4243,6 +4244,110 @@ fn run_tick(service: &TradeAssemblyService, run: &mut Value, cycle: u64, lease: 
     result["executionRunId"] = run["executionRunId"].clone();
     result["lease"] = lease.clone();
     result
+}
+
+/// Durable diagnostics contain only Core-owned literals. Never copy response
+/// messages, details, identifiers or plugin text into scheduler evidence.
+#[derive(serde::Serialize)]
+struct EvaluationFailure {
+    code: &'static str,
+    reason: &'static str,
+}
+
+impl EvaluationFailure {
+    fn from_response(response: &ServiceResponse) -> Self {
+        let code = Self::owned_value(
+            &response.body["error"]["code"],
+            &[
+                "execution_tick_path_invalid",
+                "activation_not_found",
+                "activation_record_missing",
+                "external_agent_evaluation_required",
+                "activation_record_mismatch",
+                "activation_not_active",
+                "stale_tick",
+                "out_of_order_tick",
+                "capability_revision_stale",
+                "plugin_evidence_invalid",
+                "broker_risk_quote_unavailable",
+                "paper_order_intent_persistence_failed",
+                "original_cycle_persistence_failed",
+                "local_live_mandate_required",
+                "live_mandate_config_mismatch",
+                "live_mandate_stale_binding",
+                "live_mandate_actor_denied",
+                "live_mandate_expired",
+                "live_mandate_revoked",
+                "live_mandate_owner_required",
+                "internal_error",
+            ],
+            "evaluation_error_unclassified",
+        );
+        let reason = if code == "plugin_evidence_invalid" {
+            Self::owned_value(
+                &response.body["error"]["details"]["reason"],
+                &[
+                    "tick_id_required",
+                    "tick_sequence_required",
+                    "strategy_version_mismatch",
+                    "calendar_resolution_failed",
+                    "strategy_version_not_found",
+                    "strategy_spec_hash_mismatch",
+                    "strategy_spec_not_executable",
+                    "tick_sequence_out_of_range",
+                    "execution_mode_invalid",
+                    "broker_plugin_binding_missing",
+                    "broker_risk_quote_binding_missing",
+                    "broker_order_input_invalid",
+                    "observation_envelope_invalid",
+                    "observation_timestamp_invalid",
+                    "observation_event_duplicate",
+                    "observation_event_time_not_monotonic",
+                    "observation_plugin_unbound",
+                    "observation_plugin_binding_mismatch",
+                    "observation_symbol_mismatch",
+                    "observation_timeframe_mismatch",
+                    "bar_open_invalid",
+                    "bar_close_invalid",
+                    "bar_volume_invalid",
+                    "bar_shape_invalid",
+                    "observation_evidence_missing",
+                    "observation_evidence_invalid",
+                    "observation_receipt_unavailable",
+                    "observation_receipt_missing",
+                    "observation_receipt_invalid",
+                    "observation_receipt_mismatch",
+                    "observation_receipt_payload_mismatch",
+                    "required_string_missing",
+                    "market_data_plugin_binding_missing",
+                    "market_data_correlation_mismatch",
+                    "market_data_schema_mismatch",
+                    "market_data_not_fresh",
+                    "market_data_provenance_invalid",
+                    "market_data_instrument_mismatch",
+                    "market_data_bar_invalid",
+                    "market_data_evidence_missing",
+                    "market_data_freshness_policy_invalid",
+                ],
+                "evaluation_reason_unclassified",
+            )
+        } else {
+            code
+        };
+        Self { code, reason }
+    }
+
+    fn owned_value(
+        value: &Value,
+        allowed: &[&'static str],
+        fallback: &'static str,
+    ) -> &'static str {
+        allowed
+            .iter()
+            .copied()
+            .find(|owned| value.as_str() == Some(*owned))
+            .unwrap_or(fallback)
+    }
 }
 
 fn market_observation_from_response(
@@ -4889,14 +4994,24 @@ fn process_execution_tick(
     let mut tick = run_tick(service, &mut run, cycle, &lease_json);
     if tick["status"].as_str() == Some("failed") {
         let failure_reason = tick["reason"].as_str().unwrap_or("tick_processing_failed");
+        let mut detail = json!({"sourceStatus": "failed", "sourceReason": failure_reason});
+        let evaluation_failure =
+            (failure_reason == "evaluation_failed").then(|| tick["evaluationFailure"].clone());
+        if let Some(failure) = &evaluation_failure {
+            detail["evaluationFailure"] = failure.clone();
+            attempt["evaluationFailure"] = failure.clone();
+        }
         tick = complete_effect_free_cycle(
             service,
             &mut run,
             cycle,
             &lease_json,
             failure_reason,
-            json!({"sourceStatus": "failed", "sourceReason": failure_reason}),
+            detail,
         );
+        if let Some(failure) = evaluation_failure {
+            tick["evaluationFailure"] = failure;
+        }
     }
     finalize_scheduled_tick(service, &work, worker_id, interval_seconds)?;
     attempt["state"] = if tick["status"].as_str() == Some("blocked") {
@@ -6540,6 +6655,50 @@ fn slug(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evaluation_failure_redacts_unowned_response_content() {
+        // This is deliberately a syntactically valid code: character filtering
+        // is insufficient to prevent a private identifier from escaping.
+        let private_canary = "sk_live_private_diagnostic_canary_48291";
+        for (code, reason, expected) in [
+            (
+                "plugin_evidence_invalid",
+                "observation_receipt_mismatch",
+                json!({"code": "plugin_evidence_invalid", "reason": "observation_receipt_mismatch"}),
+            ),
+            (
+                "plugin_evidence_invalid",
+                private_canary,
+                json!({"code": "plugin_evidence_invalid", "reason": "evaluation_reason_unclassified"}),
+            ),
+            (
+                private_canary,
+                "observation_receipt_mismatch",
+                json!({"code": "evaluation_error_unclassified", "reason": "evaluation_error_unclassified"}),
+            ),
+        ] {
+            let response = ServiceResponse {
+                status: 422,
+                body: json!({
+                    "detail": private_canary,
+                    "error": {
+                        "code": code,
+                        "message": private_canary,
+                        "details": {
+                            "reason": reason,
+                            "activationId": private_canary,
+                            "payload": {"credential": private_canary},
+                        },
+                    },
+                }),
+            };
+            let actual = serde_json::to_value(EvaluationFailure::from_response(&response))
+                .expect("serialize owned evaluation classification");
+            assert_eq!(actual, expected);
+            assert!(!actual.to_string().contains(private_canary));
+        }
+    }
 
     #[test]
     fn execution_attempt_identity_preserves_retries_when_logical_fencing_restarts() {

@@ -60,8 +60,20 @@ const EXCLUDED_PREFIXES: &[&str] = &[
     "webapp/tests/",
 ];
 
-const SOURCE_PREFIXES: &[&str] = &["runtime-rs/src/", "runtime/src/", "webapp/"];
+const SOURCE_PREFIXES: &[&str] = &[
+    "runtime-rs/src/",
+    "strategy/src/",
+    "simulation/src/",
+    "core-binaries/src/",
+    "runtime-tools/src/",
+    "runtime/src/",
+    "webapp/",
+];
 const USER_SURFACE_PREFIXES: &[&str] = &[
+    "strategy/src/",
+    "simulation/src/",
+    "core-binaries/src/",
+    "runtime-tools/src/",
     "runtime-rs/src/",
     "runtime/src/",
     "webapp/app/",
@@ -378,7 +390,7 @@ fn rules() -> &'static [Rule] {
                 exclude_exact: vec![
                     "runtime-rs/src/attribution_journal.rs",
                     "runtime-rs/src/instrument_packs.rs",
-                    "runtime-rs/src/monte_carlo.rs",
+                    "simulation/src/monte_carlo.rs",
                 ],
                 exclude_suffixes: Vec::new(),
             },
@@ -388,7 +400,7 @@ fn rules() -> &'static [Rule] {
                     r#"(?i)(/Users/[^/\s"']+|/home/[^/\s"']+)/(?:\.local/share/tradeassembly|\.tradeassembly)(?:[/\\][^\s"']*)?"#,
                 )
                 .unwrap(),
-                include_prefixes: vec!["runtime-rs/tests/"],
+                include_prefixes: vec!["runtime-rs/tests/", "core-binaries/tests/"],
                 include_exact: Vec::new(),
                 exclude_exact: Vec::new(),
                 exclude_suffixes: Vec::new(),
@@ -466,7 +478,14 @@ fn tracked_files(root: &Path) -> Vec<PathBuf> {
 // even ignored Rust tests: ignore rules do not prevent Cargo from executing them.
 fn untracked_rust_tests(root: &Path) -> Vec<PathBuf> {
     let output = Command::new("git")
-        .args(["ls-files", "--others", "-z", "--", "runtime-rs/tests/"])
+        .args([
+            "ls-files",
+            "--others",
+            "-z",
+            "--",
+            "runtime-rs/tests/",
+            "core-binaries/tests/",
+        ])
         .current_dir(root)
         .output()
         .expect("list untracked integration tests");

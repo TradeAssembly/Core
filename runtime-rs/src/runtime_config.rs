@@ -74,6 +74,8 @@ pub struct RuntimeConfigLayer {
     pub object_store_endpoint: Option<String>,
     pub object_store_credential_ref: Option<String>,
     pub plugin_sandbox_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_sandbox_windows_proxy_port_range: Option<[u16; 2]>,
     pub plugin_sandbox_allow_local_egress: Option<bool>,
     pub telemetry_enabled: Option<bool>,
 }
@@ -138,6 +140,7 @@ impl RuntimeConfigLayer {
             object_store_endpoint: value("TRADEASSEMBLY_OBJECT_STORE_ENDPOINT"),
             object_store_credential_ref: value("TRADEASSEMBLY_OBJECT_STORE_CREDENTIAL_REF"),
             plugin_sandbox_command: value("TRADEASSEMBLY_PLUGIN_SANDBOX_COMMAND"),
+            plugin_sandbox_windows_proxy_port_range: None,
             plugin_sandbox_allow_local_egress: boolean(
                 "TRADEASSEMBLY_PLUGIN_SANDBOX_ALLOW_LOCAL_EGRESS",
             )?,
@@ -182,6 +185,7 @@ impl RuntimeConfigLayer {
         replace!(object_store_endpoint);
         replace!(object_store_credential_ref);
         replace!(plugin_sandbox_command);
+        replace!(plugin_sandbox_windows_proxy_port_range);
         replace!(plugin_sandbox_allow_local_egress);
         replace!(telemetry_enabled);
     }
@@ -219,6 +223,7 @@ pub struct RuntimeConfig {
     pub object_store_endpoint: Option<String>,
     pub object_store_credential_ref: Option<String>,
     pub plugin_sandbox_command: String,
+    pub plugin_sandbox_windows_proxy_port_range: Option<[u16; 2]>,
     pub plugin_sandbox_allow_local_egress: bool,
     pub telemetry_enabled: bool,
 }
@@ -271,6 +276,7 @@ impl RuntimeConfig {
             object_store_endpoint: None,
             object_store_credential_ref: None,
             plugin_sandbox_command: "srt".to_string(),
+            plugin_sandbox_windows_proxy_port_range: None,
             plugin_sandbox_allow_local_egress: false,
             telemetry_enabled: false,
         }
@@ -345,6 +351,7 @@ impl RuntimeConfig {
                 object_store_endpoint: None,
                 object_store_credential_ref: None,
                 plugin_sandbox_command: "srt".to_string(),
+                plugin_sandbox_windows_proxy_port_range: None,
                 plugin_sandbox_allow_local_egress: false,
                 telemetry_enabled: false,
             },
@@ -416,6 +423,9 @@ impl RuntimeConfig {
             plugin_sandbox_command: merged
                 .plugin_sandbox_command
                 .unwrap_or(defaults.plugin_sandbox_command),
+            plugin_sandbox_windows_proxy_port_range: merged
+                .plugin_sandbox_windows_proxy_port_range
+                .or(defaults.plugin_sandbox_windows_proxy_port_range),
             plugin_sandbox_allow_local_egress: merged
                 .plugin_sandbox_allow_local_egress
                 .unwrap_or(defaults.plugin_sandbox_allow_local_egress),
@@ -431,6 +441,11 @@ impl RuntimeConfig {
         }
         if self.plugin_sandbox_command.trim().is_empty() {
             return Err("plugin sandbox command is required".to_string());
+        }
+        if let Some([lo, hi]) = self.plugin_sandbox_windows_proxy_port_range {
+            if lo == 0 || hi < lo || hi - lo > 64 {
+                return Err("invalid Windows sandbox proxy port range".to_string());
+            }
         }
         if self.plugin_sandbox_allow_local_egress && self.profile != RuntimeProfile::Local {
             return Err(
@@ -915,6 +930,20 @@ fn validate_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_sandbox_range_is_opt_in_and_does_not_change_other_setup_json() {
+        let mut layer = RuntimeConfigLayer::default();
+        let plain = serde_json::to_value(&layer).unwrap();
+        assert!(plain.get("pluginSandboxWindowsProxyPortRange").is_none());
+        layer.plugin_sandbox_windows_proxy_port_range = Some([40080, 40089]);
+        let windows = serde_json::to_value(&layer).unwrap();
+        assert_eq!(
+            windows["pluginSandboxWindowsProxyPortRange"],
+            serde_json::json!([40080, 40089])
+        );
+        assert!(RuntimeConfig::local_runner(":memory:", layer).is_ok());
+    }
 
     #[test]
     fn session_store_selection_is_explicit_and_rejects_unknown_backends() {

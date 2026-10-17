@@ -116,6 +116,7 @@ fn db(name: &str) -> String {
 }
 fn deployment(id: &str) -> AgentDeployment {
     AgentDeployment {
+        executor: Default::default(),
         deployment_id: id.to_string(),
         system_project_id: "system-1".to_string(),
         agent_definition_version_id: "agent-v1".to_string(),
@@ -152,6 +153,70 @@ fn context(key: &str) -> SideEffectContext {
         AuthorityContext::local_cli(),
         IdempotencyKey::new(key).unwrap(),
     )
+}
+
+#[test]
+fn external_client_deployment_never_starts_a_supervised_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("external.db");
+    let service = TradeAssemblyService::test_local(path.to_str().unwrap());
+    let mut external = deployment("external-client");
+    let legacy_digest = agent_runner::deployment_binding_digest(&external);
+    let mut legacy = serde_json::to_value(&external).unwrap();
+    legacy.as_object_mut().unwrap().remove("executor");
+    let restored: AgentDeployment = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored.executor, agent_runner::AgentExecutor::Supervised);
+    assert_eq!(
+        agent_runner::deployment_binding_digest(&restored),
+        legacy_digest
+    );
+    external.executor = agent_runner::AgentExecutor::ExternalClient;
+    external.prompt.clear();
+    external.workspace.clear();
+    external.interval_seconds = 0;
+    assert_ne!(
+        agent_runner::deployment_binding_digest(&external),
+        legacy_digest
+    );
+    agent_runner::put_deployment(&service.runtime(), &external).unwrap();
+    let adapter = FakeAdapter {
+        calls: AtomicUsize::new(0),
+        resumes: AtomicUsize::new(0),
+    };
+    for now in [120_000, 180_000] {
+        assert!(
+            agent_runner::supervise_once(&service.runtime(), "supervisor", now, &adapter)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
+    assert!(service
+        .runtime()
+        .storage
+        .list_json(agent_runner::SCHEDULES_NS)
+        .unwrap()
+        .is_empty());
+    assert!(service
+        .runtime()
+        .storage
+        .list_json(agent_runner::RUNS_NS)
+        .unwrap()
+        .is_empty());
+    let restarted = TradeAssemblyService::test_local(path.to_str().unwrap());
+    assert!(
+        agent_runner::supervise_once(&restarted.runtime(), "restart", 240_000, &adapter)
+            .unwrap()
+            .is_empty()
+    );
+    external.executor = agent_runner::AgentExecutor::Supervised;
+    external.prompt = "Read owner-provided evidence.".into();
+    external.workspace = temp.path().display().to_string();
+    external.interval_seconds = 60;
+    assert_eq!(
+        agent_runner::put_deployment(&restarted.runtime(), &external).unwrap_err(),
+        "agent_deployment_binding_immutable"
+    );
 }
 
 #[test]

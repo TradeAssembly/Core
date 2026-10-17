@@ -1,0 +1,52 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+# Explicit one-time platform bootstrap; never a daily test prerequisite build.
+name: Linux compatibility baseline bootstrap
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/f2-npm-distribution]
+    paths: [.github/workflows/linux-baseline.yml]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 55421b40d2329e7d27d048b80628f8b9ed2bdae8
+          fetch-depth: 0
+          persist-credentials: false
+      - run: rustup toolchain install 1.98.0 --profile minimal --no-self-update
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-baseline-55421b4-rust1.98-debug0
+      - name: Build recorded baseline once
+        run: |
+          set -euo pipefail
+          mkdir -p target/baseline-proof
+          cargo build --locked -p tradeassembly-runtime --bin tradeassembly-core-runner 2>&1 | tee target/baseline-proof/build.log
+          cp target/debug/tradeassembly-core-runner target/baseline-proof/core-runner
+          target/baseline-proof/core-runner --build-identity > target/baseline-proof/identity.json
+          jq -e '.schemaVersion == "tradeassembly.core-runner.build-identity/v1" and .coreRevision == "55421b40d2329e7d27d048b80628f8b9ed2bdae8"' target/baseline-proof/identity.json
+          file target/baseline-proof/core-runner > target/baseline-proof/platform.txt
+          sha256sum target/baseline-proof/core-runner > target/baseline-proof/SHA256SUMS
+          rustc --version --verbose > target/baseline-proof/rustc.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: linux-baseline-55421b40d2329e7d27d048b80628f8b9ed2bdae8
+          path: target/baseline-proof/
+          retention-days: 90
+          if-no-files-found: error

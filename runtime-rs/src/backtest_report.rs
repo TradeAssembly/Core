@@ -1257,9 +1257,17 @@ fn trades_csv(report: &BacktestReport) -> String {
     output
 }
 fn orders_fills_csv(report: &BacktestReport) -> String {
-    let mut output = "record_type,fill_id,symbol,side,quantity_micros,price_micros,fee_micros,execution_timestamp\n".to_string();
+    let has_notional = report
+        .orders
+        .iter()
+        .any(|order| order.get("notionalMicros").is_some());
+    let mut output = "record_type,fill_id,symbol,side,quantity_micros,price_micros,fee_micros,execution_timestamp".to_string();
+    if has_notional {
+        output.push_str(",notional_micros");
+    }
+    output.push('\n');
     for order in &report.orders {
-        output.push_str(&csv_row(&[
+        let mut row = vec![
             "order".to_string(),
             String::new(),
             csv_value(&order["symbol"]),
@@ -1268,10 +1276,14 @@ fn orders_fills_csv(report: &BacktestReport) -> String {
             String::new(),
             String::new(),
             csv_value(&order["executionTimestamp"]),
-        ]));
+        ];
+        if has_notional {
+            row.push(csv_value(&order["notionalMicros"]));
+        }
+        output.push_str(&csv_row(&row));
     }
     for fill in &report.fills {
-        output.push_str(&csv_row(&[
+        let mut row = vec![
             "fill".to_string(),
             csv_value(&fill["fillId"]),
             csv_value(&fill["symbol"]),
@@ -1280,7 +1292,11 @@ fn orders_fills_csv(report: &BacktestReport) -> String {
             csv_value(&fill["priceMicros"]),
             csv_value(&fill["feeMicros"]),
             csv_value(&fill["executionTimestamp"]),
-        ]));
+        ];
+        if has_notional {
+            row.push(String::new());
+        }
+        output.push_str(&csv_row(&row));
     }
     output
 }
@@ -1387,6 +1403,8 @@ mod tests {
                     low: 99.0,
                     close: 100.5,
                     volume: 10.0,
+                    vwap: None,
+                    session: None,
                 }),
             }],
         );

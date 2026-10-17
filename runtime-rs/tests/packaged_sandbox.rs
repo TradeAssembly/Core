@@ -52,12 +52,42 @@ fn bounded_input(mut command: Command, input: Option<&[u8]>) -> Output {
 }
 
 fn sandbox(bundle: &Path, settings: &Path) -> Command {
-    let mut command = Command::new(bundle.join("bin/tradeassembly-sandbox"));
+    let mut command = Command::new(bundle.join(executable("bin/tradeassembly-sandbox")));
     command
         .env_clear()
         .current_dir(bundle)
         .arg("--settings")
         .arg(settings);
+    #[cfg(windows)]
+    for name in [
+        "SystemRoot",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
+        "ProgramData",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+}
+
+fn executable(path: &str) -> String {
+    if cfg!(windows) {
+        format!("{path}.exe")
+    } else {
+        path.into()
+    }
+}
+
+fn node_probe(bundle: &Path, settings: &Path, script: &str) -> Command {
+    let mut command = sandbox(bundle, settings);
+    command
+        .arg(bundle.join(executable("runtime/node/bin/node")))
+        .args(["--eval", script]);
     command
 }
 
@@ -67,22 +97,48 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     let bundle = PathBuf::from(std::env::var_os("F2_TEST_BUNDLE_PATH").expect("select bundle"))
         .canonicalize()
         .unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("bundle.json")).unwrap()).unwrap();
+    let target = tradeassembly_plugin_sdk::host_target();
+    assert_eq!(manifest["target"], target, "native host required");
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
     let restricted = root.join("restricted");
     let forbidden_write = root.join("forbidden-write");
     std::fs::write(&restricted, "private fixture, not a credential").unwrap();
     let settings = root.join("settings.json");
-    std::fs::write(&settings, serde_json::to_vec(&json!({
+    // SRT's Windows child is a different OS account. Grant it only the
+    // packaged runtime and isolated fixture root; the explicit deny below
+    // must still override the fixture-root read grant.
+    let allow_read: Vec<&Path> = if cfg!(windows) {
+        vec![bundle.as_path(), root.as_path()]
+    } else {
+        Vec::new()
+    };
+    let settings_json = json!({
         "network":{"allowedDomains":[],"deniedDomains":[],"allowUnixSockets":[],"allowLocalBinding":false},
-        "filesystem":{"denyRead":[restricted],"allowRead":[],"allowWrite":[],"denyWrite":[forbidden_write]},
+        "filesystem":{"denyRead":[restricted],"allowRead":allow_read,"allowWrite":[],"denyWrite":[forbidden_write]},
         "enableWeakerNestedSandbox":false,"enableWeakerNetworkIsolation":false,"allowAppleEvents":false
-    })).unwrap()).unwrap();
-    let mut allowed = sandbox(&bundle, &settings);
-    allowed
-        .arg("/usr/bin/printf")
-        .arg("%s")
-        .arg("argument with spaces & ; intact");
+    });
+    #[cfg(windows)]
+    let settings_json = {
+        let helper = bundle.join(
+            "runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
+        );
+        let mut command = Command::new(helper);
+        command.arg("status");
+        let status = bounded(command);
+        assert!(status.status.success(), "native SRT status required");
+        let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        let range = status["wfp"]["port_range"].as_array().expect("WFP range");
+        assert_eq!(range.len(), 2, "WFP range endpoints");
+        let mut settings_json = settings_json;
+        settings_json["windows"] = json!({"proxyPortRange":range});
+        settings_json
+    };
+    std::fs::write(&settings, serde_json::to_vec(&settings_json).unwrap()).unwrap();
+    let mut allowed = node_probe(&bundle, &settings, "process.stdout.write(process.argv[1])");
+    allowed.arg("argument with spaces & ; intact");
     let output = bounded(allowed);
     assert!(
         output.status.success(),
@@ -93,14 +149,106 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
         String::from_utf8(output.stdout).unwrap(),
         "argument with spaces & ; intact"
     );
-    let mut read = sandbox(&bundle, &settings);
-    read.arg("/bin/cat").arg(&restricted);
+    #[cfg(windows)]
+    {
+        let helper = bundle.join(
+            "runtime/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
+        );
+        let mut status = Command::new(helper);
+        status.arg("status");
+        let status = bounded(status);
+        assert!(status.status.success(), "native SRT status required");
+        let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        assert_eq!(
+            status["user"]["user"]["exists"], true,
+            "sandbox account required"
+        );
+        assert_eq!(
+            status["user"]["cred_present"], true,
+            "sandbox credential required"
+        );
+        let sid = status["user"]["user"]["sid"]
+            .as_str()
+            .expect("sandbox account SID");
+        assert!(sid.starts_with("S-1-5-21-"), "local sandbox account SID");
+        assert_eq!(
+            status["user"]["user"]["in_sandbox_group"], true,
+            "sandbox account must have the dedicated group"
+        );
+        assert!(
+            matches!(
+                status["wfp"]["state"].as_str(),
+                Some("installed" | "cannot-read")
+            ),
+            "WFP status must not be absent"
+        );
+        if status["wfp"]["state"] == "installed" {
+            assert!(
+                status["wfp"]["filters"].as_u64().unwrap_or(0) >= 2,
+                "installed WFP fence needs its actual filters"
+            );
+        }
+        let whoami =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/whoami.exe");
+        let mut inside = sandbox(&bundle, &settings);
+        inside.arg(&whoami).args(["/user", "/fo", "csv", "/nh"]);
+        let inside = bounded(inside);
+        assert!(inside.status.success(), "sandbox identity probe required");
+        assert!(
+            String::from_utf8_lossy(&inside.stdout)
+                .to_ascii_lowercase()
+                .contains(&sid.to_ascii_lowercase()),
+            "child must run under SRT sandbox SID"
+        );
+        let mut outside = Command::new(whoami);
+        outside.args(["/user", "/fo", "csv", "/nh"]);
+        let outside = bounded(outside);
+        assert!(outside.status.success(), "caller identity probe required");
+        assert!(
+            !String::from_utf8_lossy(&outside.stdout)
+                .to_ascii_lowercase()
+                .contains(&sid.to_ascii_lowercase()),
+            "sandbox identity must differ from caller"
+        );
+    }
+    // The outside-sandbox control proves the target exists and is readable.
+    // A missing executable/file or arbitrary failure cannot prove denial.
+    let read_script = "try { process.stdout.write(require('fs').readFileSync(process.argv[1])); } catch (e) { process.exit(['EACCES','EPERM'].includes(e.code) ? 77 : 78); }";
+    let mut control = Command::new(bundle.join(executable("runtime/node/bin/node")));
+    control
+        .env_clear()
+        .args(["--eval", read_script])
+        .arg(&restricted);
+    assert!(bounded(control).status.success(), "outside read control");
+    let mut read = node_probe(&bundle, &settings, read_script);
+    read.arg(&restricted);
     let output = bounded(read);
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(77), "OS read denial required");
     assert!(!String::from_utf8_lossy(&output.stdout).contains("private fixture"));
-    let mut write = sandbox(&bundle, &settings);
-    write.arg("/usr/bin/touch").arg(&forbidden_write);
-    assert!(!bounded(write).status.success());
+    #[cfg(windows)]
+    if let Some(state) = std::env::var_os("F2_TEST_PRIVATE_STATE_ROOT") {
+        let owner_secret = PathBuf::from(state).join("signing.seed");
+        assert!(std::fs::read(&owner_secret).is_ok(), "owner read control");
+        let mut sandbox_read = node_probe(&bundle, &settings, read_script);
+        sandbox_read.arg(owner_secret);
+        let output = bounded(sandbox_read);
+        assert_eq!(
+            output.status.code(),
+            Some(77),
+            "dedicated sandbox account must not read installed owner secret"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "owner secret must not reach output"
+        );
+    }
+    let mut write = node_probe(&bundle, &settings, "try { require('fs').writeFileSync(process.argv[1], 'fixture'); } catch (e) { process.exit(['EACCES','EPERM'].includes(e.code) ? 77 : 78); }");
+    write.arg(&forbidden_write);
+    assert_eq!(
+        bounded(write).status.code(),
+        Some(77),
+        "OS write denial required"
+    );
     assert!(!forbidden_write.exists());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     // Prove the destination is reachable outside the sandbox, then drain it.
@@ -108,11 +256,13 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     let _ = listener.accept().unwrap();
     drop(control);
     listener.set_nonblocking(true).unwrap();
-    let mut network = sandbox(&bundle, &settings);
-    network
-        .args(["/usr/bin/curl", "--fail", "--silent", "--max-time", "3"])
-        .arg(format!("http://{}", listener.local_addr().unwrap()));
-    assert!(!bounded(network).status.success());
+    let mut network = node_probe(&bundle, &settings, "const socket = require('net').connect(Number(process.argv[1]), '127.0.0.1'); const timer = setTimeout(() => { socket.destroy(); process.exit(77); }, 3000); socket.on('connect', () => { clearTimeout(timer); socket.destroy(); process.exit(0); }); socket.on('error', e => { clearTimeout(timer); process.exit(['EACCES','EPERM','ECONNREFUSED','ECONNRESET','ENETUNREACH','EHOSTUNREACH','ETIMEDOUT'].includes(e.code) ? 77 : 78); });");
+    network.arg(listener.local_addr().unwrap().port().to_string());
+    assert_eq!(
+        bounded(network).status.code(),
+        Some(77),
+        "network denial required"
+    );
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
@@ -121,8 +271,14 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
     // Execute the real pinned plugin's local discovery operation through the
     // bundled sandbox. No broker credentials or network access are needed.
     use sha2::{Digest, Sha256};
-    let pin: serde_json::Value =
-        serde_json::from_str(include_str!("../../packaging/alpaca.json")).unwrap();
+    let pin_bytes = std::fs::read(bundle.join("plugins/alpaca.json")).unwrap();
+    let pin: serde_json::Value = serde_json::from_slice(&pin_bytes).unwrap();
+    assert_eq!(pin["target"], target);
+    assert_eq!(
+        manifest["files"]["plugins/alpaca.json"]["sha256"],
+        format!("{:x}", Sha256::digest(&pin_bytes)),
+        "bundle pin binding required"
+    );
     let package = std::fs::read(
         bundle
             .join("plugins")
@@ -133,14 +289,18 @@ fn packaged_sandbox_runs_and_denies_files_and_network_without_host_node() {
         format!("{:x}", Sha256::digest(&package)),
         pin["packageSha256"]
     );
+    assert_eq!(
+        manifest["files"][format!("plugins/{}", pin["packageFile"].as_str().unwrap())]["sha256"],
+        pin["packageSha256"],
+        "bundle package binding required"
+    );
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(package.as_slice()));
-    let plugin = root.join("tradeassembly-plugin-alpaca");
+    let plugin = root.join(executable("tradeassembly-plugin-alpaca"));
+    let binary_path = executable(&format!("bin/{target}/tradeassembly-plugin-alpaca"));
     let mut found = false;
     for entry in archive.entries().unwrap() {
         let mut entry = entry.unwrap();
-        if entry.path().unwrap()
-            == Path::new("bin/aarch64-apple-darwin/tradeassembly-plugin-alpaca")
-        {
+        if entry.path().unwrap() == Path::new(&binary_path) {
             assert!(entry.header().entry_type().is_file());
             assert!(!found);
             entry.unpack(&plugin).unwrap();

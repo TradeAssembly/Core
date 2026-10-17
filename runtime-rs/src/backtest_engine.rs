@@ -10,8 +10,11 @@ use crate::backtest_contracts::{
 };
 use crate::historical_data::{DatasetSnapshot, HistoricalDataKind, HistoricalObservationData};
 use crate::strategy_kernel::{
-    calculate_fee_micros, run, CompiledStrategy, ExecutionTiming, KernelMode, MarketObservation,
-    OrderSide, PartialFillPolicy, SimulationConfig,
+    calculate_fee_micros, run, ExecutionTiming, KernelMode, MarketObservation, OrderSide,
+    PartialFillPolicy, SimulationConfig,
+};
+use crate::strategy_kernel::{
+    portfolio_program::ResearchProgram, portfolio_vwap, timeline::BarTime,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -33,10 +36,11 @@ pub fn execute(
         || configuration.capital.maximum_leverage_micros != UNIT
         || !configuration.execution.reject_on_insufficient_capital
         || !configuration.execution.reject_on_insufficient_liquidity
-        || configuration.instruments.len() != 1
-        || configuration.risk.maximum_open_positions != 1
         || configuration.risk.maximum_loss_micros < configuration.capital.starting_cash_micros
-        || configuration.instruments[0].contract_multiplier_micros != UNIT
+        || configuration
+            .instruments
+            .iter()
+            .any(|instrument| instrument.contract_multiplier_micros != UNIT)
     {
         return Err("backtest_account_model_unsupported".to_string());
     }
@@ -44,17 +48,87 @@ pub fn execute(
     let spec = strategy_version
         .get("spec")
         .ok_or_else(|| "backtest_strategy_version_required".to_string())?;
-    let compiled = CompiledStrategy::compile_json(spec).map_err(kernel_error)?;
-    let observations = normalized_bars(snapshot, configuration.liquidity.minimum_volume_micros)?;
+    let compiled = ResearchProgram::compile_json(spec).map_err(kernel_error)?;
+    let portfolio = matches!(&compiled, ResearchProgram::Portfolio(..));
     let simulation = simulation_config(manifest)?;
-    let kernel =
-        run(KernelMode::Backtest, &compiled, &observations, simulation).map_err(kernel_error)?;
+    let (kernel, observations) = match compiled {
+        ResearchProgram::Price(compiled) => {
+            if configuration.instruments.len() != 1
+                || configuration.risk.maximum_open_positions != 1
+            {
+                return Err("backtest_account_model_unsupported".into());
+            }
+            let observations =
+                normalized_bars(snapshot, configuration.liquidity.minimum_volume_micros)?;
+            (
+                run(KernelMode::Backtest, &compiled, &observations, simulation)
+                    .map_err(kernel_error)?,
+                observations,
+            )
+        }
+        ResearchProgram::Portfolio(compiled, instruments) => {
+            let preserved = spec
+                .pointer("/stages/exit_policy/policy/end_of_data")
+                .and_then(Value::as_str);
+            let end_matches = matches!(
+                (preserved, &configuration.end_of_data),
+                (
+                    Some("preserve_open_positions"),
+                    EndOfDataPolicy::MarkToMarket
+                ) | (
+                    Some("close_synthetic_positions"),
+                    EndOfDataPolicy::ForceClose
+                )
+            );
+            if configuration.risk.maximum_open_positions as usize
+                != compiled.policy.maximum_positions
+                || configuration.execution.evaluation_timing
+                    != crate::backtest_contracts::EvaluationTiming::BarClose
+                || configuration
+                    .instruments
+                    .iter()
+                    .any(|i| !matches!(i.instrument_family.as_str(), "equity" | "etf"))
+                || !configuration.variable_overrides.is_empty()
+                || !end_matches
+                || snapshot
+                    .content
+                    .instruments
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    != instruments
+            {
+                return Err("backtest_portfolio_policy_mismatch".into());
+            }
+            let bars = portfolio_bars(snapshot, configuration.liquidity.minimum_volume_micros)?;
+            let result = portfolio_vwap::simulate(&bars, &compiled.policy, simulation)
+                .map_err(kernel_error)?;
+            (result, bars.into_iter().map(|bar| bar.market).collect())
+        }
+    };
 
     let timestamps = snapshot
         .content
         .observations
         .iter()
         .map(|row| row.timestamp.as_str())
+        .collect::<Vec<_>>();
+    let decision_times = timestamps
+        .iter()
+        .map(|value| {
+            if !portfolio {
+                return Ok((*value).to_string());
+            }
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .and_then(|time| time.checked_add_signed(chrono::Duration::minutes(1)))
+                .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .ok_or_else(|| "backtest_decision_time_invalid".to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let decision_times = decision_times
+        .iter()
+        .map(String::as_str)
         .collect::<Vec<_>>();
     let mut fills = kernel
         .fills
@@ -96,31 +170,37 @@ pub fn execute(
             crate::strategy_kernel::Decision::NoSignal { bar_index } => json!({
                 "kind": "no_signal",
                 "barIndex": bar_index,
-                "timestamp": timestamp(&timestamps, *bar_index),
+                "timestamp": timestamp(&decision_times, *bar_index),
             }),
-            crate::strategy_kernel::Decision::OrderIntent(intent) => json!({
-                "kind": "order_intent",
-                "barIndex": intent.decision_bar_index,
-                "timestamp": timestamp(&timestamps, intent.decision_bar_index),
-                "symbol": intent.symbol,
-                "side": side_name(intent.side),
-                "quantityMicros": intent.quantity,
-            }),
+            crate::strategy_kernel::Decision::OrderIntent(intent) => with_notional(
+                json!({
+                    "kind": "order_intent",
+                    "barIndex": intent.decision_bar_index,
+                    "timestamp": timestamp(&decision_times, intent.decision_bar_index),
+                    "symbol": intent.symbol,
+                    "side": side_name(intent.side),
+                    "quantityMicros": intent.quantity,
+                }),
+                intent.notional_micros,
+            ),
         })
         .collect();
     let orders = kernel
         .orders
         .iter()
         .map(|order| {
-            json!({
-                "decisionBarIndex": order.intent.decision_bar_index,
-                "decisionTimestamp": timestamp(&timestamps, order.intent.decision_bar_index),
-                "executionBarIndex": order.execution_bar_index,
-                "executionTimestamp": timestamp(&timestamps, order.execution_bar_index),
-                "symbol": order.intent.symbol,
-                "side": side_name(order.intent.side),
-                "quantityMicros": order.intent.quantity,
-            })
+            with_notional(
+                json!({
+                    "decisionBarIndex": order.intent.decision_bar_index,
+                    "decisionTimestamp": timestamp(&decision_times, order.intent.decision_bar_index),
+                    "executionBarIndex": order.execution_bar_index,
+                    "executionTimestamp": timestamp(&timestamps, order.execution_bar_index),
+                    "symbol": order.intent.symbol,
+                    "side": side_name(order.intent.side),
+                    "quantityMicros": order.intent.quantity,
+                }),
+                order.intent.notional_micros,
+            )
         })
         .collect();
     let result_fills = kernel
@@ -131,7 +211,7 @@ pub fn execute(
             json!({
                 "fillId": fills[index].fill_id,
                 "decisionBarIndex": fill.order.intent.decision_bar_index,
-                "decisionTimestamp": timestamp(&timestamps, fill.order.intent.decision_bar_index),
+                "decisionTimestamp": timestamp(&decision_times, fill.order.intent.decision_bar_index),
                 "executionBarIndex": fill.order.execution_bar_index,
                 "executionTimestamp": timestamp(&timestamps, fill.order.execution_bar_index),
                 "symbol": fill.order.intent.symbol,
@@ -289,6 +369,75 @@ fn normalized_bars(
             })
         })
         .collect()
+}
+
+fn with_notional(mut value: Value, notional: Option<i64>) -> Value {
+    if let Some(notional) = notional {
+        value
+            .as_object_mut()
+            .expect("order evidence object")
+            .remove("quantityMicros");
+        value["notionalMicros"] = json!(notional);
+    }
+    value
+}
+
+fn portfolio_bars(
+    snapshot: &DatasetSnapshot,
+    minimum_volume: i64,
+) -> Result<Vec<portfolio_vwap::Bar>, String> {
+    if !matches!(snapshot.content.granularity.as_str(), "1m" | "1min")
+        || snapshot.content.calendar != "XNYS"
+        || snapshot.content.timezone != "America/New_York"
+    {
+        return Err("backtest_portfolio_dataset_unsupported".into());
+    }
+    let markets = normalized_bars(snapshot, 0)?;
+    let mut result = Vec::new();
+    for (row, market) in snapshot.content.observations.iter().zip(markets) {
+        let HistoricalObservationData::Bar(bar) = &row.data else {
+            return Err("backtest_data_kind_unsupported".into());
+        };
+        let session = bar
+            .session
+            .as_ref()
+            .ok_or("backtest_session_evidence_required")?;
+        let parse = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|_| "backtest_session_evidence_invalid".to_string())
+        };
+        let time = parse(&row.timestamp)?;
+        let start = parse(&session.start)?;
+        let end = parse(&session.end)?;
+        if time.with_timezone(start.offset()).date_naive() != start.date_naive()
+            || start.date_naive() != end.with_timezone(start.offset()).date_naive()
+        {
+            return Err("backtest_session_evidence_invalid".into());
+        }
+        if time < start || time >= end {
+            continue;
+        }
+        let vwap = bar.vwap.ok_or("backtest_provider_vwap_required")?;
+        result.push(portfolio_vwap::Bar {
+            time: BarTime {
+                symbol: row.instrument_id.clone(),
+                start_ms: time.timestamp_millis(),
+                session_start_ms: start.timestamp_millis(),
+                session_end_ms: end.timestamp_millis(),
+            },
+            available_volume_micros: if market.volume < minimum_volume {
+                0
+            } else {
+                market.volume
+            },
+            market,
+            provider_vwap_micros: micros(vwap, "backtest_provider_vwap_invalid")?,
+        });
+    }
+    if result.is_empty() {
+        return Err("backtest_regular_session_data_required".into());
+    }
+    Ok(result)
 }
 
 fn simulation_config(manifest: &BacktestRunManifest) -> Result<SimulationConfig, String> {

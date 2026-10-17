@@ -1,0 +1,57 @@
+[package]
+name = "tradeassembly-core-binaries"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license-file = "../LICENSE"
+build = "build.rs"
+
+[[bin]]
+name = "tradeassembly"
+path = "src/bin/tradeassembly.rs"
+
+[[bin]]
+name = "tradeassembly-core-runner"
+path = "src/bin/tradeassembly_core_runner.rs"
+
+[[bin]]
+name = "tradeassembly-connected-runner"
+path = "src/bin/tradeassembly_connected_runner.rs"
+
+[[bin]]
+name = "tradeassembly-reach-node"
+path = "src/bin/tradeassembly_reach_node.rs"
+
+[[bin]]
+name = "tradeassembly-sandbox"
+path = "src/bin/tradeassembly_sandbox.rs"
+
+[dependencies]
+tradeassembly-runtime = { path = "../runtime-rs" }
+aes-gcm = "0.10"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+getrandom = "0.3"
+hex = "0.4"
+windows-permissions = "0.2.4"
+winapi-util = "0.1.11"
+
+[target.'cfg(windows)'.dev-dependencies]
+fs2 = "0.4"
+
+[dev-dependencies]
+openidconnect = "4.0.1"
+rsa = "0.9.8"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

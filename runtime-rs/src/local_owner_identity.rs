@@ -7,9 +7,13 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::path::{Component, Path, PathBuf};
+#[cfg(not(windows))]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
 const STATE_VERSION: u8 = 1;
 const STATE_FILE: &str = "local-owner.json";
@@ -69,34 +73,41 @@ impl LocalOwnerIdentity {
 }
 
 fn ensure_private_directory(path: &Path) -> Result<(), String> {
-    reject_symlink_components(path)?;
-    if !path.exists() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
+    #[cfg(windows)]
+    return crate::windows_private::ensure_directory(path)
+        .map_err(|_| "local_owner_state_directory_insecure".into());
+    #[cfg(not(windows))]
+    {
+        reject_symlink_components(path)?;
+        if !path.exists() {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(path)
+                .map_err(|_| "local_owner_state_unavailable".to_string())?;
+        }
+        let metadata =
+            fs::symlink_metadata(path).map_err(|_| "local_owner_state_unavailable".to_string())?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err("local_owner_state_directory_invalid".to_string());
+        }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err("local_owner_state_directory_insecure".to_string());
+            }
         }
-        builder
-            .create(path)
-            .map_err(|_| "local_owner_state_unavailable".to_string())?;
+        Ok(())
     }
-    let metadata =
-        fs::symlink_metadata(path).map_err(|_| "local_owner_state_unavailable".to_string())?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err("local_owner_state_directory_invalid".to_string());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("local_owner_state_directory_insecure".to_string());
-        }
-    }
-    Ok(())
 }
 
+#[cfg(not(windows))]
 fn reject_symlink_components(path: &Path) -> Result<(), String> {
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -128,30 +139,41 @@ fn create_state(path: &Path) -> Result<StoredIdentity, String> {
     validate_stored(&stored)?;
     let encoded =
         serde_json::to_vec(&stored).map_err(|_| "local_owner_state_unavailable".to_string())?;
-    let temp_path = path.with_file_name(format!(".local-owner.{}.tmp", stored.owner_id));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temp_path)
-            .map_err(|_| "local_owner_state_unavailable".to_string())?;
-        std::io::Write::write_all(&mut file, &encoded)
-            .map_err(|_| "local_owner_state_unavailable".to_string())?;
-        file.sync_all()
-            .map_err(|_| "local_owner_state_unavailable".to_string())?;
-        match fs::hard_link(&temp_path, path) {
-            Ok(()) => Ok(stored.clone()),
+    #[cfg(windows)]
+    {
+        match crate::windows_private::write_new(path, &encoded) {
+            Ok(()) => Ok(stored),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => read_state(path),
-            Err(_) => Err("local_owner_state_unavailable".to_string()),
+            Err(_) => Err("local_owner_state_unavailable".into()),
         }
-    })();
-    let _ = fs::remove_file(&temp_path);
-    result
+    }
+    #[cfg(not(windows))]
+    {
+        let temp_path = path.with_file_name(format!(".local-owner.{}.tmp", stored.owner_id));
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(&temp_path)
+                .map_err(|_| "local_owner_state_unavailable".to_string())?;
+            std::io::Write::write_all(&mut file, &encoded)
+                .map_err(|_| "local_owner_state_unavailable".to_string())?;
+            file.sync_all()
+                .map_err(|_| "local_owner_state_unavailable".to_string())?;
+            match fs::hard_link(&temp_path, path) {
+                Ok(()) => Ok(stored.clone()),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => read_state(path),
+                Err(_) => Err("local_owner_state_unavailable".to_string()),
+            }
+        })();
+        let _ = fs::remove_file(&temp_path);
+        result
+    }
 }
 
 fn read_state(path: &Path) -> Result<StoredIdentity, String> {
@@ -175,6 +197,10 @@ fn read_state(path: &Path) -> Result<StoredIdentity, String> {
             return Err("local_owner_state_file_insecure".to_string());
         }
     }
+    #[cfg(windows)]
+    let bytes = crate::windows_private::read(path)
+        .map_err(|_| "local_owner_state_file_insecure".to_string())?;
+    #[cfg(not(windows))]
     let bytes = fs::read(path).map_err(|_| "local_owner_state_unavailable".to_string())?;
     serde_json::from_slice(&bytes).map_err(|_| "local_owner_state_invalid".to_string())
 }

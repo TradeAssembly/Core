@@ -1,0 +1,447 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "tradeassembly.strategy-result-summary.v1"
+    },
+    "strategyId": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "core_durable_state"
+        },
+        "schema": {
+          "const": "tradeassembly.strategy-result-summary.v1"
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "localArchiveCursor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "schema": {
+                  "const": "tradeassembly.local-archive-cursor.v1"
+                },
+                "stream": {
+                  "const": "local.journal"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "recordHash": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "scope": {
+                  "const": "authenticated_owner"
+                }
+              },
+              "required": [
+                "schema",
+                "stream",
+                "sequence",
+                "recordHash",
+                "scope"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cursorCompleteness": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "schema",
+        "contentHash",
+        "localArchiveCursor",
+        "cursorCompleteness"
+      ]
+    },
+    "operational": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runs": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "period": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "start": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "end": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ]
+              },
+              "reconciliationStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "runId",
+              "mode",
+              "state",
+              "period",
+              "reconciliationStatus"
+            ]
+          }
+        },
+        "completeness": {
+          "const": "observed_state"
+        }
+      },
+      "required": [
+        "runs",
+        "completeness"
+      ]
+    },
+    "paper": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runs": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "period": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "start": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "end": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ]
+              },
+              "provenance": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "snapshotHash": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "source": {
+                    "const": "tradeassembly.execution_ledger.v2"
+                  },
+                  "scope": {
+                    "const": "since_run_start"
+                  }
+                },
+                "required": [
+                  "snapshotHash",
+                  "source",
+                  "scope"
+                ]
+              },
+              "metrics": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "realizedPnl": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "unrealizedPnl": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "totalPnl": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "currency": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "fees": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "realizedPnl",
+                  "unrealizedPnl",
+                  "totalPnl",
+                  "currency",
+                  "fees"
+                ]
+              },
+              "reconciliationStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "completeness": {
+                "enum": [
+                  "partial",
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "runId",
+              "period",
+              "provenance",
+              "metrics",
+              "reconciliationStatus",
+              "completeness",
+              "reason"
+            ]
+          }
+        },
+        "completeness": {
+          "enum": [
+            "partial",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runs",
+        "completeness",
+        "reason"
+      ]
+    },
+    "backtests": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "period": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "end": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "start",
+              "end"
+            ]
+          },
+          "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "reportHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "strategyVersionId": {
+                "type": "string"
+              },
+              "strategySpecHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "datasetId": {
+                "type": "string"
+              },
+              "datasetHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "reportHash",
+              "strategyVersionId",
+              "strategySpecHash",
+              "datasetId",
+              "datasetHash"
+            ]
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "grossPnlMicros": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "netPnlMicros": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "feesMicros": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realizedPnlMicros": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unrealizedPnlMicros": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "returnBps": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "grossPnlMicros",
+              "netPnlMicros",
+              "feesMicros",
+              "realizedPnlMicros",
+              "unrealizedPnlMicros",
+              "returnBps"
+            ]
+          },
+          "reconciliation": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "residualMicros": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "residualMicros"
+            ]
+          },
+          "completeness": {
+            "const": "completed_report"
+          }
+        },
+        "required": [
+          "runId",
+          "period",
+          "provenance",
+          "metrics",
+          "reconciliation",
+          "completeness"
+        ]
+      }
+    },
+    "noAdvice": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "strategyId",
+    "source",
+    "operational",
+    "paper",
+    "backtests",
+    "noAdvice"
+  ]
+}

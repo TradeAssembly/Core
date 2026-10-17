@@ -1,0 +1,19 @@
+{
+  "ack": {
+    "checkpointId": "checkpoint_0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5",
+    "requestDigest": "71fc738170257b9653d2508d6129e501802f9287ccb2a522a0af0a1e80b64464",
+    "schemaVersion": "tradeassembly.execution_checkpoint_ack.v1",
+    "snapshotSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "status": "durable"
+  },
+  "request": {
+    "activationId": "activation",
+    "checkpointId": "checkpoint_0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5",
+    "originalIdempotencyKey": "original",
+    "requestHash": "111111111111111111111111",
+    "schemaVersion": "tradeassembly.execution_checkpoint.v1",
+    "snapshotFile": "runtime.sqlite",
+    "snapshotSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "tickId": "tick"
+  }
+}

@@ -21,6 +21,11 @@ pub const TRADEASSEMBLY_PEP_MANIFEST: &str =
     include_str!("../config/warden/tradeassembly-core-peps.json");
 
 pub trait FinanceAuthorityPort: Send + Sync {
+    /// Availability only; callers must not treat this as an order permit.
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        Err("broker_submission_authority_unavailable".into())
+    }
+
     /// Separate from control-plane authorization. Implementations that do not
     /// support a broker-boundary PEP must never inherit a control-plane allow.
     fn prepare_broker_submission(
@@ -892,6 +897,10 @@ impl WardenSidecarAuthority {
 }
 
 impl FinanceAuthorityPort for WardenSidecarAuthority {
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        self.preflight()
+    }
+
     fn prepare_broker_submission(
         &self,
         storage: &dyn StoragePort,
@@ -1090,16 +1099,30 @@ impl EnforcementPoint {
     }
 }
 
-fn validate_broker_envelope(envelope: &ControlPlaneCommandEnvelope) -> Result<(), String> {
-    if envelope.command_name != "order.submit.live"
-        || envelope.side_effect_class != "live_order"
-        || envelope.authority.account_mode != "live"
-        || envelope.target_object.as_deref().is_none_or(str::is_empty)
+fn validate_broker_envelope(
+    envelope: &ControlPlaneCommandEnvelope,
+) -> Result<&'static AuthorityActionDefinition, String> {
+    let definition = match envelope.authority.account_mode.as_str() {
+        "live"
+            if envelope.command_name == "order.submit.live"
+                && envelope.side_effect_class == "live_order" =>
+        {
+            &ORDER_SUBMIT_LIVE
+        }
+        "paper"
+            if envelope.command_name == "order.submit.paper"
+                && envelope.side_effect_class == "paper_order" =>
+        {
+            &ORDER_SUBMIT_PAPER
+        }
+        _ => return Err("broker_submission_envelope_invalid".into()),
+    };
+    if envelope.target_object.as_deref().is_none_or(str::is_empty)
         || envelope.payload_hash.is_empty()
     {
         return Err("broker_submission_envelope_invalid".into());
     }
-    Ok(())
+    Ok(definition)
 }
 
 /// Validate original durable C5 evidence without contacting Warden or writing
@@ -1108,13 +1131,13 @@ pub(crate) fn validate_stored_broker_authorization(
     storage: &dyn StoragePort,
     envelope: &ControlPlaneCommandEnvelope,
 ) -> Result<(), String> {
-    validate_broker_envelope(envelope)?;
+    let definition = validate_broker_envelope(envelope)?;
     let stored = storage
         .get_json(DECISION_NS, &envelope.command_id)?
         .ok_or("broker_authorization_evidence_missing")?;
     if stored["request"]["pep_id"] != EnforcementPoint::BrokerSubmission.id()
-        || stored["request"]["action"] != ORDER_SUBMIT_LIVE.action
-        || stored["request"]["resource"] != resource_ref(envelope, &ORDER_SUBMIT_LIVE)
+        || stored["request"]["action"] != definition.action
+        || stored["request"]["resource"] != resource_ref(envelope, definition)
         || stored["request"]["idempotency_key"] != envelope.idempotency_key.as_str()
         || stored["decision"]["decision"] != "allow"
         || stored["request"]["context"]["context_digest"]
@@ -1127,7 +1150,7 @@ pub(crate) fn validate_stored_broker_authorization(
     }
     validate_decision(
         envelope,
-        &ORDER_SUBMIT_LIVE,
+        definition,
         &stored["decision"],
         EnforcementPoint::BrokerSubmission,
     )?;
@@ -1804,7 +1827,10 @@ mod tests {
         let peps: Vec<PepPackEntry> =
             serde_json::from_str(TRADEASSEMBLY_PEP_MANIFEST).expect("peps");
         assert_eq!(peps.len(), 2);
-        assert_eq!(peps[1].actions, vec!["order.submit.live"]);
+        assert_eq!(
+            peps[1].actions,
+            vec!["order.submit.paper", "order.submit.live"]
+        );
         assert_eq!(peps[1].resources, vec!["brokerage_account"]);
         let registrations: Value = serde_json::from_str(TRADEASSEMBLY_PEP_MANIFEST).unwrap();
         assert_eq!(registrations[0]["coverage_class"], "c3");
@@ -2071,6 +2097,49 @@ mod tests {
                 .complete_broker_submission(&storage, &envelope, 202)
                 .unwrap_err(),
             "broker_authorization_evidence_mismatch"
+        );
+    }
+
+    #[test]
+    fn paper_broker_authority_uses_paper_action_without_live_policy_downgrade() {
+        let server = spawn_mock_warden(MockBehavior::Allow);
+        let authority = WardenSidecarAuthority::new(
+            &server.base_url,
+            TEST_TOKEN,
+            REQUIRED_WARDEN_SERVICE_VERSION,
+        )
+        .unwrap();
+        let (_directory, storage) = test_storage("paper-broker-pep");
+        let mut envelope = broker_envelope("paper-broker-pep");
+        envelope.command_name = "order.submit.paper".into();
+        envelope.side_effect_class = "paper_order".into();
+        envelope.authority.account_mode = "paper".into();
+        authority
+            .prepare_broker_submission(&storage, &envelope)
+            .unwrap();
+        let request = server.state.request.lock().unwrap().clone().unwrap();
+        assert_eq!(request["pep_id"], "pep-tradeassembly-broker-submission");
+        assert_eq!(request["action"], "order.submit.paper");
+        validate_stored_broker_authorization(&storage, &envelope).unwrap();
+        authority
+            .complete_broker_submission(&storage, &envelope, 202)
+            .unwrap();
+
+        let mut forged = envelope.clone();
+        forged.authority.account_mode = "live".into();
+        assert_eq!(
+            authority
+                .prepare_broker_submission(&storage, &forged)
+                .unwrap_err(),
+            "broker_submission_envelope_invalid"
+        );
+        forged = envelope;
+        forged.command_name = "order.submit.live".into();
+        assert_eq!(
+            authority
+                .prepare_broker_submission(&storage, &forged)
+                .unwrap_err(),
+            "broker_submission_envelope_invalid"
         );
     }
 

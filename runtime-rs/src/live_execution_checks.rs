@@ -40,6 +40,18 @@ pub(crate) fn live_account_observation_matches(
     selected: &Value,
     now_ms: i64,
 ) -> bool {
+    account_observation_matches(record, selected, now_ms, "live")
+}
+
+pub(crate) fn account_observation_matches(
+    record: &Value,
+    selected: &Value,
+    now_ms: i64,
+    mode: &str,
+) -> bool {
+    if !matches!(mode, "paper" | "live") {
+        return false;
+    }
     let Some(checked_at) = record["health"]["checkedAtMs"].as_i64() else {
         return false;
     };
@@ -58,8 +70,8 @@ pub(crate) fn live_account_observation_matches(
     (0..=LIVE_ACCOUNT_OBSERVATION_MAX_AGE_MS).contains(&age)
         && record["health"]["evidenceCurrent"] == true
         && record["credentialStatus"]["configured"] == true
-        && record["accountMode"] == "live"
-        && record["health"]["account"]["mode"] == "live"
+        && record["accountMode"] == mode
+        && record["health"]["account"]["mode"] == mode
         && record["health"]["account"]["status"] == "ACTIVE"
         && ["tradingBlocked", "accountBlocked", "tradeSuspendedByUser"]
             .iter()
@@ -122,8 +134,36 @@ pub(crate) fn live_health_evidence_current(record: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::within_execution_limits;
+    use super::{account_observation_matches, within_execution_limits};
     use serde_json::json;
+
+    #[test]
+    fn paper_account_observation_cannot_be_replayed_as_live() {
+        let selected = json!({"pluginInstanceRef":"broker-paper", "pluginRef":"broker", "accountRef":"account://broker-paper/a1"});
+        let record = json!({
+            "instanceRef":"broker-paper", "pluginRef":"broker",
+            "accountRef":"account://broker-paper/a1", "accountMode":"paper",
+            "credentialStatus":{"configured":true},
+            "health":{"checkedAtMs":1_000,"evidenceCurrent":true,
+                "account":{"id":"a1","mode":"paper","status":"ACTIVE",
+                    "tradingBlocked":false,"accountBlocked":false,
+                    "tradeSuspendedByUser":false}}
+        });
+        assert!(account_observation_matches(
+            &record, &selected, 1_000, "paper"
+        ));
+        assert!(!account_observation_matches(
+            &record, &selected, 1_000, "live"
+        ));
+        assert!(!account_observation_matches(
+            &record, &selected, 1_000, "research"
+        ));
+        let mut wrong = record;
+        wrong["health"]["account"]["mode"] = json!("live");
+        assert!(!account_observation_matches(
+            &wrong, &selected, 1_000, "paper"
+        ));
+    }
 
     #[test]
     fn execution_limits_require_finite_positive_quantity_and_price() {

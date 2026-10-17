@@ -27,6 +27,8 @@ pub mod cli_identity;
 pub mod conformance;
 pub mod connection_profile;
 pub mod control_plane;
+#[path = "../../platform/control_plane_redaction.rs"]
+mod control_plane_redaction;
 pub mod demos;
 pub mod derivatives_analysis;
 pub mod domain;
@@ -50,6 +52,9 @@ pub(crate) mod live_execution_checks;
 pub mod local_install;
 pub mod local_live_authorization;
 pub mod local_owner_identity;
+#[doc(hidden)]
+#[path = "../../platform/workspace_bootstrap.rs"]
+pub mod workspace_bootstrap;
 
 pub mod marketdata;
 pub mod mcp;

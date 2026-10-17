@@ -25,6 +25,40 @@
       "capabilities": [
         "owner-bound-export"
       ]
+    },
+    {
+      "id": "core.workspace",
+      "version": "1.0.0",
+      "capabilities": [
+        "export-research",
+        "restore-stopped"
+      ]
+    },
+    {
+      "id": "core.results",
+      "version": "1.0.0",
+      "capabilities": [
+        "strategy-summary",
+        "completeness"
+      ]
+    },
+    {
+      "id": "core.onboarding.paper",
+      "version": "1.0.0",
+      "capabilities": [
+        "local-api-key",
+        "hosted-oauth-consent",
+        "saved-oauth-grant-restore"
+      ]
+    },
+    {
+      "id": "core.execution.continuation",
+      "version": "1.0.0",
+      "capabilities": [
+        "pre-dispatch-checkpoint",
+        "observe-original-cycle",
+        "stopped-recovery"
+      ]
     }
   ],
   "requires": [],

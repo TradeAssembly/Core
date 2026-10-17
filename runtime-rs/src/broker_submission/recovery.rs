@@ -120,6 +120,12 @@ fn validate_records(
     {
         return Err("recovery_intent_invalid".into());
     }
+    if !intent["pendingOriginalCycleDigest"].is_null() {
+        let pending = get(deps, "execution_pending_original_cycles", key)?;
+        if intent["pendingOriginalCycleDigest"] != crate::spec::canonical_hash(&pending)? {
+            return Err("recovery_pending_cycle_changed".into());
+        }
+    }
     let request = &records["request"];
     if request["correlationId"] != intent["correlationId"]
         || request["requestHash"].as_str().is_none()

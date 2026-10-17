@@ -408,8 +408,9 @@ fn execution_revision(
         requirement.capability == "market_data.bars.read@1"
             && !bindings.contains_key(&requirement.requirement_id)
     });
-    let needs_quote =
-        mode.eq_ignore_ascii_case("live") || config["orchestrator"] == "external_agent";
+    let needs_quote = mode.eq_ignore_ascii_case("live")
+        || config["orchestrator"] == "external_agent"
+        || broker_binding.plugin_ref.as_deref() != Some("tradeassembly.simbroker");
     let mut additional_requirements = vec![execution_broker_requirement(config)];
     if needs_quote {
         additional_requirements.push(execution_quote_requirement(config));

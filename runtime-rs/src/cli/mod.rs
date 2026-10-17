@@ -67,6 +67,16 @@ pub enum Command {
         #[command(subcommand)]
         command: StrategyCommand,
     },
+    /// Export/import public research records without execution authority.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+    /// Describe durable strategy results; absent metrics remain unavailable.
+    ResultSummary {
+        #[arg(long)]
+        strategy_id: String,
+    },
     Journal {
         #[command(subcommand)]
         command: JournalCommand,
@@ -222,6 +232,22 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum WorkspaceCommand {
+    Export {
+        #[arg(long, required_unless_present = "stdout", conflicts_with = "stdout")]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        stdout: bool,
+    },
+    Import {
+        #[arg(long, required_unless_present = "stdin", conflicts_with = "stdin")]
+        from: Option<PathBuf>,
+        #[arg(long)]
+        stdin: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum PolicyCommand {
     /// Run in the foreground; does not activate strategies or start an agent.
     Serve {
@@ -370,6 +396,13 @@ pub enum AuthCommand {
     Logout,
     /// Copy the current WorkOS session to Bitwarden, verify it, and retain Keychain.
     MigrateToBitwarden,
+    /// Verify stdin provider tokens against the packaged profile and Hub, then store in Bitwarden.
+    ImportSession {
+        #[arg(long)]
+        subject_sha256: String,
+        #[arg(long)]
+        tenant_sha256: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1153,6 +1186,38 @@ pub async fn run_with_service(
         }
         Command::Auth { command } => {
             let response = match command {
+                AuthCommand::ImportSession {
+                    subject_sha256,
+                    tenant_sha256,
+                } => {
+                    let result = async {
+                        use std::io::Read;
+                        let mut raw = Vec::new();
+                        std::io::stdin()
+                            .take(32769)
+                            .read_to_end(&mut raw)
+                            .map_err(|_| "workos_import_input_invalid".to_string())?;
+                        let profile_path = std::env::current_exe()
+                            .map_err(|_| "connection_profile_unavailable".to_string())?
+                            .parent()
+                            .ok_or("connection_profile_unavailable")?
+                            .join("connection-profile.json");
+                        let hosted = if profile_path.exists() {
+                            crate::connection_profile::ConnectionProfile::read(&profile_path)?
+                                .configure(config)
+                        } else {
+                            config.clone()
+                        };
+                        crate::workos_identity::WorkosAuthManager::new(hosted)
+                            .import_session(&raw, &subject_sha256, &tenant_sha256)
+                            .await
+                    }
+                    .await;
+                    match result {
+                        Ok(identity) => identity.redacted_status(),
+                        Err(code) => json!({"authenticated":false,"error":{"code":code}}),
+                    }
+                }
                 AuthCommand::MigrateToBitwarden => {
                     match crate::workos_identity::WorkosAuthManager::new(config.clone())
                         .migrate_to_bitwarden()
@@ -1277,6 +1342,40 @@ pub async fn run_with_service(
         Command::Agent {
             command: AgentCommand::Uninstall(args),
         } => print_launchd_response(agent_launchd_uninstall(config, cli.config.as_deref(), args)),
+        Command::Workspace { command } => {
+            let result = async {
+                let session = crate::cli_identity::verify_cli_session(config).await?;
+                let workspace = crate::service::public_workspace::VerifiedLocalWorkspace::from_verified_session(
+                    service, session,
+                )?;
+                match command {
+                    WorkspaceCommand::Export { out: Some(out), .. } => workspace.export_file(&out),
+                    WorkspaceCommand::Export { stdout: true, .. } => workspace.export().and_then(|bundle| {
+                        serde_json::to_value(bundle).map_err(|_| "workspace_bundle_invalid".to_string())
+                    }),
+                    WorkspaceCommand::Import { from: Some(from), .. } => {
+                        crate::service::public_workspace::read_file(&from).and_then(|raw| workspace.import(&raw))
+                    }
+                    WorkspaceCommand::Import { stdin: true, .. } => {
+                        crate::service::public_workspace::read_stdin().and_then(|raw| workspace.import(&raw))
+                    }
+                    _ => Err("workspace_io_required".to_string()),
+                }
+            }
+            .await;
+            let response = result.unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}));
+            let failed = command_response_failed(&response);
+            let output = if failed {
+                output::failure(response, "workspace")
+            } else {
+                output::success(response, "workspace")
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).expect("CLI output JSON")
+            );
+            i32::from(failed)
+        }
         command => {
             let authenticated =
                 match require_authenticated_service(service, &identity_manager).await {
@@ -1961,6 +2060,33 @@ fn execute_command_with_agent(
     agent: Option<&crate::agent_runner::CodexCliAdapter>,
 ) -> Value {
     match command {
+        Command::Workspace { command } => {
+            let result = match command {
+                WorkspaceCommand::Export { out: Some(out), .. } => {
+                    crate::service::public_workspace::export_file(service, &out)
+                }
+                WorkspaceCommand::Export { stdout: true, .. } => {
+                    crate::service::public_workspace::export(service).and_then(|bundle| {
+                        serde_json::to_value(bundle)
+                            .map_err(|_| "workspace_bundle_invalid".to_string())
+                    })
+                }
+                WorkspaceCommand::Import {
+                    from: Some(from), ..
+                } => crate::service::public_workspace::read_file(&from)
+                    .and_then(|raw| crate::service::public_workspace::import(service, &raw)),
+                WorkspaceCommand::Import { stdin: true, .. } => {
+                    crate::service::public_workspace::read_stdin()
+                        .and_then(|raw| crate::service::public_workspace::import(service, &raw))
+                }
+                _ => Err("workspace_io_required".to_string()),
+            };
+            result.unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}))
+        }
+        Command::ResultSummary { strategy_id } => {
+            crate::service::public_workspace::result_summary(service, &strategy_id)
+                .unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}))
+        }
         Command::Strategy { command } => match command {
             StrategyCommand::List => {
                 service
@@ -3514,6 +3640,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Mcp { .. } => "mcp",
         Command::Strategy { .. } => "strategy",
         Command::Journal { .. } => "journal",
+        Command::Workspace { .. } => "workspace",
+        Command::ResultSummary { .. } => "result-summary",
         Command::Providers { .. } => "providers",
         Command::Credentials { .. } => "credentials",
         Command::Account { .. } => "account",

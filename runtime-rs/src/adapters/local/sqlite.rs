@@ -53,6 +53,184 @@ impl LocalSqliteStorage {
         self.connection().map(drop)
     }
 
+    fn import_public_workspace_at(
+        &self,
+        writes: &[StorageWrite],
+        digest: &str,
+        bootstrap: &[StorageExpectation],
+        executable: &Path,
+    ) -> Result<ImmutablePutOutcome, String> {
+        let mut expected = std::collections::BTreeMap::new();
+        for baseline in bootstrap {
+            if baseline.namespace != "object_authorization_scopes_v1"
+                || ![
+                    "strategy:strat_local_btc_demo",
+                    "strategy:strat_local_crypto_replay",
+                    "plugin_instance:sim",
+                    "plugin_instance:local-data",
+                    "plugin_instance:alpaca-paper",
+                    "credential_reference:sim",
+                    "credential_reference:local-data",
+                    "credential_reference:alpaca-paper",
+                ]
+                .contains(&baseline.key.as_str())
+            {
+                return Err("workspace_bootstrap_invalid".to_string());
+            }
+            let value = baseline
+                .value
+                .as_ref()
+                .ok_or("workspace_bootstrap_invalid")?;
+            expected.insert(
+                (baseline.namespace.clone(), baseline.key.clone()),
+                serde_json::to_string(value).map_err(|_| "workspace_record_invalid".to_string())?,
+            );
+        }
+        let sealed = crate::workspace_bootstrap::load(Path::new(&self.db_path), executable)?;
+        let mut installation_baseline = expected.clone();
+        for row in &sealed {
+            let key = (row.namespace.clone(), row.key.clone());
+            let value =
+                serde_json::to_string(&row.value).map_err(|_| "workspace_bootstrap_invalid")?;
+            if row.namespace == "object_authorization_scopes_v1" {
+                if expected.get(&key) != Some(&value) {
+                    return Err("workspace_not_empty".into());
+                }
+            } else {
+                if installation_baseline
+                    .insert(key.clone(), value.clone())
+                    .is_some()
+                {
+                    return Err("workspace_bootstrap_invalid".into());
+                }
+                expected.insert(key, value);
+            }
+        }
+        let serialized = writes
+            .iter()
+            .map(|write| {
+                validate_key(&write.namespace, &write.key)?;
+                let value = serde_json::to_string(&write.value)
+                    .map_err(|_| "workspace_record_invalid".to_string())?;
+                if let Some(baseline) = expected.get(&(write.namespace.clone(), write.key.clone()))
+                {
+                    if baseline != &value {
+                        return Err("workspace_bootstrap_conflict".to_string());
+                    }
+                }
+                expected.insert((write.namespace.clone(), write.key.clone()), value.clone());
+                Ok((write, value))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut connection = self.connection()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(redacted_sqlite_error)?;
+        let receipt: Option<String> = tx.query_row("SELECT value_json FROM tradeassembly_kv WHERE namespace='public_workspace_imports_v1' AND item_key='current'", [], |row| row.get(0)).optional().map_err(redacted_sqlite_error)?;
+        let count: usize = tx
+            .query_row("SELECT COUNT(*) FROM tradeassembly_kv", [], |row| {
+                row.get(0)
+            })
+            .map_err(redacted_sqlite_error)?;
+        // Recheck every exact sealed value and its authority metadata inside the
+        // same transaction as the empty-target/replay fence and import writes.
+        for row in &sealed {
+            let current: Option<(String, String, String, i64)> = tx.query_row(
+                "SELECT value_json,idempotency_key,authority_actor,updated_at_ms FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2",
+                params![row.namespace,row.key],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+            ).optional().map_err(redacted_sqlite_error)?;
+            let value =
+                serde_json::to_string(&row.value).map_err(|_| "workspace_bootstrap_invalid")?;
+            if current
+                != Some((
+                    value,
+                    row.idempotency_key.clone(),
+                    row.authority_actor.clone(),
+                    row.updated_at_ms,
+                ))
+            {
+                return Err("workspace_not_empty".into());
+            }
+        }
+        // Tables contain local execution work, evidence, and broker activity. None
+        // may predate a restore, even if the public key/value allowlist is empty.
+        for table in [
+            "journal_events",
+            "runtime_queue",
+            "runtime_events",
+            "runtime_schedules",
+            "runtime_outbox",
+            "runtime_inbox",
+            "runtime_leases",
+            "runtime_evidence",
+        ] {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(redacted_sqlite_error)?;
+            if exists {
+                let occupied: bool = tx
+                    .query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table})"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(redacted_sqlite_error)?;
+                if occupied {
+                    return Err("workspace_not_empty".to_string());
+                }
+            }
+        }
+        if let Some(receipt) = receipt {
+            if receipt
+                != serde_json::to_string(
+                    &serde_json::json!({"bundleHash":digest,"recordCount":expected.len()}),
+                )
+                .map_err(|_| "workspace_record_invalid")?
+                || count != expected.len() + 1
+            {
+                return Err("workspace_not_empty".to_string());
+            }
+            for ((namespace, key), expected_value) in &expected {
+                let current: Option<String> = tx.query_row("SELECT value_json FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2", params![namespace,key], |row| row.get(0)).optional().map_err(redacted_sqlite_error)?;
+                if current.as_ref() != Some(expected_value) {
+                    return Err("workspace_import_replay_conflict".to_string());
+                }
+            }
+            return Ok(ImmutablePutOutcome::AlreadyPresent);
+        }
+        if count != installation_baseline.len() {
+            return Err("workspace_not_empty".to_string());
+        }
+        for ((namespace, key), expected_value) in &installation_baseline {
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT value_json FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2",
+                    params![namespace, key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(redacted_sqlite_error)?;
+            if current.as_ref() != Some(expected_value) {
+                return Err("workspace_not_empty".to_string());
+            }
+        }
+        for (write, value) in serialized {
+            tx.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES(?1,?2,?3,?4,?5,unixepoch('subsec')*1000) ON CONFLICT(namespace,item_key) DO NOTHING", params![write.namespace,write.key,value,write.context.idempotency_key.as_str(),write.context.authority.actor]).map_err(redacted_sqlite_error)?;
+        }
+        let receipt = serde_json::to_string(
+            &serde_json::json!({"bundleHash":digest,"recordCount":expected.len()}),
+        )
+        .map_err(|_| "workspace_record_invalid")?;
+        tx.execute("INSERT INTO tradeassembly_kv(namespace,item_key,value_json,idempotency_key,authority_actor,updated_at_ms) VALUES('public_workspace_imports_v1','current',?1,?2,'local-user',unixepoch('subsec')*1000)", params![receipt,digest]).map_err(redacted_sqlite_error)?;
+        tx.commit().map_err(redacted_sqlite_error)?;
+        Ok(ImmutablePutOutcome::Created)
+    }
+
     fn connection(&self) -> Result<Connection, String> {
         if self.db_path != ":memory:" {
             if let Some(parent) = Path::new(&self.db_path)
@@ -375,6 +553,65 @@ impl StoragePort for LocalSqliteStorage {
         })
     }
 
+    fn execution_checkpoint_snapshot(&self, destination: &Path) -> Result<(), String> {
+        self.connection()?
+            .execute(
+                "VACUUM INTO ?1",
+                [destination
+                    .to_str()
+                    .ok_or("execution_checkpoint_path_invalid")?],
+            )
+            .map_err(|_| "execution_checkpoint_snapshot_failed".to_string())?;
+        Ok(())
+    }
+
+    fn public_workspace_snapshot(
+        &self,
+        namespaces: &[&str],
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<(String, String, Value)>, String> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction().map_err(redacted_sqlite_error)?;
+        let mut values = Vec::new();
+        let mut bytes = 0usize;
+        for namespace in namespaces {
+            let mut statement = tx.prepare("SELECT item_key, CASE namespace WHEN 'dataset_snapshots_v1' THEN json_remove(value_json,'$.content.observations') WHEN 'research_datasets' THEN json_remove(value_json,'$.records') WHEN 'backtests' THEN json_object('id',item_key) ELSE value_json END FROM tradeassembly_kv WHERE namespace=?1 ORDER BY item_key LIMIT ?2").map_err(redacted_sqlite_error)?;
+            let rows = statement
+                .query_map(params![namespace, (max_rows + 1) as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(redacted_sqlite_error)?;
+            for row in rows {
+                let (key, body) = row.map_err(redacted_sqlite_error)?;
+                bytes = bytes
+                    .checked_add(body.len())
+                    .ok_or("workspace_size_limit")?;
+                if values.len() >= max_rows || bytes > max_bytes {
+                    return Err("workspace_size_limit".to_string());
+                }
+                let value = serde_json::from_str(&body)
+                    .map_err(|_| "workspace_record_invalid".to_string())?;
+                values.push((namespace.to_string(), key, value));
+            }
+        }
+        Ok(values)
+    }
+
+    fn import_public_workspace(
+        &self,
+        writes: &[StorageWrite],
+        digest: &str,
+        bootstrap: &[StorageExpectation],
+    ) -> Result<ImmutablePutOutcome, String> {
+        self.import_public_workspace_at(
+            writes,
+            digest,
+            bootstrap,
+            &std::env::current_exe().map_err(|_| "workspace_bootstrap_invalid")?,
+        )
+    }
+
     fn put_json_batch(
         &self,
         writes: &[StorageWrite],
@@ -546,6 +783,144 @@ fn redacted_sqlite_error(error: rusqlite::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn installed_workspace_bootstrap_replay_rejects_later_runtime_and_journal_activity() {
+        use crate::workspace_bootstrap::{load, test_fixture::Fixture};
+        for table in ["runtime_events", "journal_events"] {
+            let fixture = Fixture::new();
+            fixture.seal();
+            let sealed = load(&fixture.database, &fixture.binary).unwrap();
+            let bootstrap: Vec<_> = sealed
+                .iter()
+                .filter(|row| row.namespace == "object_authorization_scopes_v1")
+                .map(|row| {
+                    StorageExpectation::new(&row.namespace, &row.key, Some(row.value.clone()))
+                })
+                .collect();
+            let storage = LocalSqliteStorage::new(fixture.database.to_str().unwrap());
+            let writes = [StorageWrite::new(
+                "strategies",
+                "restored",
+                serde_json::json!({"status":"stopped"}),
+                context(),
+            )];
+            assert_eq!(
+                storage
+                    .import_public_workspace_at(
+                        &writes,
+                        "bundle-fixture",
+                        &bootstrap,
+                        &fixture.binary
+                    )
+                    .unwrap(),
+                ImmutablePutOutcome::Created
+            );
+            let connection = rusqlite::Connection::open(&fixture.database).unwrap();
+            connection
+                .execute_batch(&format!(
+                    "CREATE TABLE {table}(id TEXT); INSERT INTO {table} VALUES('later-activity')"
+                ))
+                .unwrap();
+            assert_eq!(
+                storage
+                    .import_public_workspace_at(
+                        &writes,
+                        "bundle-fixture",
+                        &bootstrap,
+                        &fixture.binary
+                    )
+                    .unwrap_err(),
+                "workspace_not_empty"
+            );
+            assert_eq!(connection.query_row("SELECT COUNT(*) FROM tradeassembly_kv WHERE namespace='public_workspace_imports_v1'", [], |row| row.get::<_,usize>(0)).unwrap(),1);
+        }
+    }
+    #[test]
+    fn installed_workspace_bootstrap_restores_replays_and_rejects_changed_state() {
+        use crate::workspace_bootstrap::{load, test_fixture::Fixture};
+        for mutation in ["none", "row", "authority", "customer", "activity", "owner"] {
+            let fixture = Fixture::new();
+            fixture.seal();
+            let sealed = load(&fixture.database, &fixture.binary).unwrap();
+            let mut bootstrap: Vec<_> = sealed
+                .iter()
+                .filter(|row| row.namespace == "object_authorization_scopes_v1")
+                .map(|row| {
+                    super::StorageExpectation::new(
+                        &row.namespace,
+                        &row.key,
+                        Some(row.value.clone()),
+                    )
+                })
+                .collect();
+            let storage = super::LocalSqliteStorage::new(fixture.database.to_str().unwrap());
+            let writes = [super::StorageWrite::new(
+                "strategies",
+                "restored",
+                serde_json::json!({"status":"stopped"}),
+                context(),
+            )];
+            let connection = rusqlite::Connection::open(&fixture.database).unwrap();
+            match mutation {
+                "row" => {
+                    connection.execute("UPDATE tradeassembly_kv SET value_json=json_set(value_json,'$.changed',true) WHERE namespace='plugin_manifests'", []).unwrap();
+                }
+                "authority" => {
+                    connection.execute("UPDATE tradeassembly_kv SET authority_actor='different' WHERE namespace='finance_receipts'", []).unwrap();
+                }
+                "customer" => {
+                    connection.execute("INSERT INTO tradeassembly_kv VALUES('strategy_drafts','customer','{}','customer','customer',1)", []).unwrap();
+                }
+                "activity" => {
+                    connection.execute_batch("CREATE TABLE runtime_events(id TEXT); INSERT INTO runtime_events VALUES('activity')").unwrap();
+                }
+                "owner" => {
+                    bootstrap[0].value.as_mut().unwrap()["owner"]["subject"] =
+                        serde_json::json!("different");
+                }
+                _ => {}
+            }
+            let result = storage.import_public_workspace_at(
+                &writes,
+                "bundle-fixture",
+                &bootstrap,
+                &fixture.binary,
+            );
+            if mutation == "none" {
+                assert_eq!(result.unwrap(), super::ImmutablePutOutcome::Created);
+                assert_eq!(
+                    storage
+                        .import_public_workspace_at(
+                            &writes,
+                            "bundle-fixture",
+                            &bootstrap,
+                            &fixture.binary
+                        )
+                        .unwrap(),
+                    super::ImmutablePutOutcome::AlreadyPresent
+                );
+                connection.execute("UPDATE tradeassembly_kv SET value_json=json_set(value_json,'$.changed',true) WHERE namespace='plugin_manifests'", []).unwrap();
+                assert_eq!(
+                    storage
+                        .import_public_workspace_at(
+                            &writes,
+                            "bundle-fixture",
+                            &bootstrap,
+                            &fixture.binary
+                        )
+                        .unwrap_err(),
+                    "workspace_not_empty"
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    "workspace_not_empty",
+                    "case {mutation}"
+                );
+                assert_eq!(connection.query_row("SELECT COUNT(*) FROM tradeassembly_kv WHERE namespace IN ('strategies','public_workspace_imports_v1')", [], |row| row.get::<_,usize>(0)).unwrap(),0);
+            }
+        }
+    }
     use super::*;
     use crate::ports::{AuthorityContext, IdempotencyKey};
     use std::time::{SystemTime, UNIX_EPOCH};

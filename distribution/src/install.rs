@@ -780,6 +780,10 @@ fn prepare(
     let runtime = payload.join(executable("bin/tradeassembly"));
     let state = root.join("state/local");
     let config_path = state.join("runtime.json");
+    let fresh_configuration = !config_path.exists();
+    if fresh_configuration && state.join("runtime.db").exists() {
+        return Err("workspace_bootstrap_existing_database".into());
+    }
     let authority = root.join(executable("authority/bin/warden"));
     let port = port.to_string();
     #[cfg(windows)]
@@ -895,6 +899,13 @@ fn prepare(
     let (success, response) = bounded_output(&mut plugin)?;
     if !success || response.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err("offline_plugin_install_failed_no_pointer_changed".into());
+    }
+    if fresh_configuration {
+        crate::workspace_bootstrap::seal_fresh_install(
+            root,
+            serde_json::to_value(release).map_err(|_| "workspace_bootstrap_invalid")?,
+            &response,
+        )?;
     }
     Ok(())
 }

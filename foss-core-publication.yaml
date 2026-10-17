@@ -35,6 +35,8 @@ publicFiles:
   - Cargo.lock
   - Cargo.toml
   - contracts/compatibility.json
+  - contracts/public-workspace.v1.schema.json
+  - contracts/strategy-result-summary.v1.schema.json
   - GEMINI.md
   - Justfile
   - LICENSE
@@ -47,6 +49,8 @@ publicFiles:
   - foss-core-publication.yaml
   - render.yaml
   - platform/windows_private.rs
+  - platform/control_plane_redaction.rs
+  - platform/workspace_bootstrap.rs
 
 metadataOnlyPathPrefixes:
   - .sdlc/evidence/

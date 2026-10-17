@@ -131,6 +131,23 @@ for this local gate, and passing it is not production release readiness.
 The Core runner exposes read-only `--compatibility` without altering the existing
 `--build-identity` response. Core remains independent of private repositories.
 
+`core.execution.continuation` v1 adds an optional trusted-local checkpoint before
+an admitted broker operation is dispatched. With
+`TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR` configured, Core publishes a consistent
+database snapshot and digest-bound request in the private owner directory, then
+waits at most 30 seconds for its exact durable acknowledgment. Missing or invalid
+acknowledgment prevents dispatch. Core has no storage-provider or remote-key
+dependency for this boundary.
+
+Authenticated `tradeassembly.execution.recover_original` (HTTP
+`POST /execution/recover-original`) observes the original admitted order and
+finalizes its bound pending cycle and accounting idempotently. It leaves the
+activation stopped and reports recovery separately from scheduler confirmation.
+It cannot evaluate a new decision, submit an order or reactivate execution. A
+missing broker order remains unresolved. Recovery still verifies exact owner,
+account, artifact, credential-generation, intent and receipt bindings. Customer
+workspace exports do not include these execution-authority checkpoints.
+
 ## Targeted Rust build boundaries
 
 `tradeassembly-strategy` owns StrategySpec, strategy evaluation and backtest
@@ -148,3 +165,12 @@ move with their modules. Publication and source scanners cover every new crate.
 `just build-target PACKAGE BINARY` and `just test-package PACKAGE` are targeted
 iteration commands; `just build-artifacts` selects the CLI and Core runner.
 Full verification and distribution qualification retain their existing gates.
+
+Fresh distribution installs record their exact verified default-plugin bootstrap
+under the existing private local-owner trust root. Workspace import verifies that
+record against installed payload/owner/database bindings and checks every row
+and its authority metadata in the import transaction. It preserves bootstrap
+state, rejects customer/runtime activity, and restores strategies stopped.
+Registry manifests remain exact; their command-receipt projection is compared
+through the same redactor used by the owning control plane. Redacted receipts
+are not treated as copies of the private registry rows.

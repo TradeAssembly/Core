@@ -219,6 +219,51 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         Ok(BrokerSubmissionPermit { envelope })
     }
 
+    fn revalidate_after_checkpoint(
+        &self,
+        request: &PluginOperationRequest,
+        context: &SideEffectContext,
+        prepared: &BrokerPreparedBinding,
+        permit: &BrokerSubmissionPermit,
+    ) -> Result<(), String> {
+        let current = load_current_state(&self.deps, request, context)?;
+        let (fresh_base, _) = build_order_intent(&current, request, context, prepared)?;
+        let mut original_base = permit.envelope.payload_preview.clone();
+        original_base
+            .as_object_mut()
+            .ok_or("broker_checkpoint_intent_invalid")?
+            .remove("priceEvidence");
+        original_base
+            .as_object_mut()
+            .ok_or("broker_checkpoint_intent_invalid")?
+            .remove("riskEvidence");
+        if !same_authority_during_renewal(
+            &original_base,
+            &fresh_base,
+            self.deps.clock.trusted_now_ms()?,
+        ) {
+            return Err("broker_checkpoint_authority_changed".into());
+        }
+        let (_, receipt_id) = Self::receipt_reference(request)?;
+        let symbol = required_value(&fresh_base["order"], "symbol")?;
+        let fresh_price = prices::load_price_evidence(&self.deps, &current, symbol, &receipt_id)?;
+        let fresh_risk = risk::enforce_order_limits(
+            fresh_base["order"]["quantityMicros"]
+                .as_i64()
+                .ok_or("invalid_order_quantity")?,
+            fresh_price["priceMicros"]
+                .as_i64()
+                .ok_or("invalid_order_price")?,
+            &current.config["riskLimits"],
+        )?;
+        if fresh_price != permit.envelope.payload_preview["priceEvidence"]
+            || fresh_risk != permit.envelope.payload_preview["riskEvidence"]
+        {
+            return Err("broker_checkpoint_evidence_changed".into());
+        }
+        Ok(())
+    }
+
     fn complete(
         &self,
         permit: &BrokerSubmissionPermit,

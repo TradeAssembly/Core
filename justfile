@@ -18,6 +18,9 @@ build:
 contract-test:
     cargo test --locked -p tradeassembly-core-binaries --test runner_compatibility
     cargo test --locked -p tradeassembly-runtime --test journal_read_contract
+    cargo test --locked -p tradeassembly-runtime --test public_workspace
+    cargo test --locked -p tradeassembly-runtime --test backtest_engine public_workspace_roundtrip
+    cargo test --locked -p tradeassembly-runtime --lib authentication_method_is_
 
 # Targeted iteration. Cargo selects dependencies; no clean, provider, or install.
 build-target package binary:

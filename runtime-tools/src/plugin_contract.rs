@@ -1445,6 +1445,41 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn yaml_reader_rejects_duplicate_keys_malformed_and_multiple_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.yaml");
+        for text in [
+            "id: first\nid: second\n",
+            "id: [unterminated\n",
+            "---\nid: first\n---\nid: second\n",
+        ] {
+            fs::write(&path, text).unwrap();
+            let error = read_yaml(path.clone()).unwrap_err();
+            assert!(error.starts_with("invalid yaml in "), "{error}");
+            assert!(error.contains("manifest.yaml"), "{error}");
+        }
+    }
+
+    #[test]
+    fn yaml_reader_preserves_scalar_types_aliases_and_round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.yaml");
+        fs::write(
+            &path,
+            "name: &name 'true'\ncopy: *name\nenabled: true\ncount: 7\noptional: null\n",
+        )
+        .unwrap();
+        let value = read_yaml(path.clone()).unwrap();
+        assert_eq!(value["name"].as_str(), Some("true"));
+        assert_eq!(value["copy"], value["name"]);
+        assert_eq!(value["enabled"].as_bool(), Some(true));
+        assert_eq!(value["count"].as_u64(), Some(7));
+        assert!(value["optional"].is_null());
+        fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
+        assert_eq!(read_yaml(path).unwrap(), value);
+    }
+
+    #[test]
     fn external_git_locator_resolves_manifest_from_repo() {
         let root = temp_path("plugin_locator");
         let source = root.join("source");

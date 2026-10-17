@@ -165,3 +165,10 @@ iteration commands; `just build-artifacts` selects the CLI and Core runner.
 Full verification and distribution qualification retain their existing gates.
 
 The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.
+
+- Installed workspace recovery distinguishes the exact initial offline plugin
+  registration from customer data using create-only private bootstrap evidence.
+  Reinstall, upgrade and rollback never reseal existing state. Legacy installs
+  without that evidence retain the strict empty-target behavior; there is no
+  general state migration. Altered rows/authority, unrelated activity and changed
+  replay state reject import before writes.

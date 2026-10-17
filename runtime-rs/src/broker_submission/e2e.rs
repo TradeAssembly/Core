@@ -1684,3 +1684,300 @@ fn run_scenario(scenario: Scenario) {
         );
     }
 }
+
+/// Disposable native fixture process; never used by a production adapter.
+#[cfg(unix)]
+struct OriginalCycleFixtureSandbox;
+#[cfg(unix)]
+impl crate::ports::VersionedPort for OriginalCycleFixtureSandbox {
+    fn descriptors(&self) -> Vec<crate::ports::PortDescriptor> {
+        vec![]
+    }
+}
+#[cfg(unix)]
+impl PluginProcessSandboxPort for OriginalCycleFixtureSandbox {
+    fn spawn(&self, request: &PluginSandboxRequest) -> Result<SandboxedPluginProcess, String> {
+        let child = Command::new(&request.executable)
+            .current_dir(&request.install_root)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "controlled fixture unavailable")?;
+        Ok(SandboxedPluginProcess::new(child, None))
+    }
+}
+
+// Deterministic opt-in owner proof (no provider, Node or SRT dependency):
+// F2_TEST_WARDEN_BINARY=/absolute/warden F2_TEST_CONTROLLED_BROKER_BINARY=/absolute/f2_controlled_broker
+// cargo test --locked -p tradeassembly-runtime --lib scheduler_original_cycle_real_adapter_restore --offline -- --ignored
+#[cfg(unix)]
+#[test]
+#[ignore = "requires explicit real Warden and controlled broker fixture binaries"]
+fn scheduler_original_cycle_real_adapter_restore_never_resubmits() {
+    use sha2::Digest;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    for accepted in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let db = root.join("runtime.db");
+        let base = TradeAssemblyService::test_local(db.to_str().unwrap());
+        let owner = LocalOwnerIdentity::for_database(&db).unwrap();
+        let service = base.for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+        let mut warden = controlled_warden::ControlledWarden::start(&root);
+        warden.allow_controlled_submission_for_mode("paper");
+        let package = controlled_broker_package::install_controlled_package_for_mode(
+            &service,
+            &root,
+            &PathBuf::from(
+                std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY").expect("controlled broker"),
+            ),
+            "paper",
+        );
+        if accepted {
+            std::fs::write(
+                package
+                    .install_root
+                    .join(".f2-controlled-broker-lose-response"),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let checkpoint_dir = root.join("checkpoint-handshake");
+        std::fs::create_dir(&checkpoint_dir).unwrap();
+        std::fs::set_permissions(&checkpoint_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let deps = super::BrokerSubmissionDependencies {
+            storage: service.runtime().storage.clone(),
+            plugins: service.runtime().plugins.clone(),
+            plugin_packages: service.runtime().plugin_packages.clone(),
+            credentials: service.runtime().credentials.clone(),
+            capability_resolver: service.runtime().capability_resolver.clone(),
+            clock: service.runtime().clock.clone(),
+            leases: service.runtime().leases.clone(),
+            owner: owner.clone(),
+        };
+        let make_operations = || {
+            crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+                deps.storage.clone(),
+                deps.plugins.clone(),
+                deps.credentials.clone(),
+                deps.plugin_packages.clone(),
+                deps.clock.clone(),
+                Arc::new(OriginalCycleFixtureSandbox),
+            )
+            .with_broker_boundary(Arc::new(super::LocalBrokerSubmissionBoundary::new(
+                deps.clone(),
+                Arc::new(warden.authority.clone()),
+            )))
+        };
+        let operations = make_operations().with_checkpoint_directory(checkpoint_dir.clone());
+        let mut runtime = service.runtime().as_ref().clone();
+        runtime.plugin_operations = Arc::new(operations);
+        let service = service.with_test_runtime(runtime);
+        let saved=service.handle_http("POST","/product/strategy-execution-configs/save",json!({
+            "strategyId":"strat_local_btc_demo","mode":"paper","providerRef":"mandate-paper","accountRef":"account://mandate-paper/controlled",
+            "dataProviderRef":"mandate-paper","dataAccountRef":"account://mandate-paper/controlled",
+            "riskLimits":{"max_notional":25.0,"max_order_quantity":0.001},
+            "capabilityBindings":{"req_bars":{"pluginInstanceRef":"sim","pluginRef":"tradeassembly.simbroker","operationId":"marketdata.bars.read_v1"}}}));
+        assert_eq!(saved.status, 200, "{saved:?}");
+        let activated=service.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":saved.body["body"]["configId"],
+            "idempotencyKey":"original-cycle-activation","acknowledgementIds":["user_logic","user_risk","no_advice"]}));
+        assert_eq!(activated.status, 200, "{activated:?}");
+        let activation_id = activated.body["body"]["activationId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let watcher_dir = checkpoint_dir.clone();
+        let watcher = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let request_path = loop {
+                let request = std::fs::read_dir(&watcher_dir)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path().join("request.json"))
+                    .find(|path| path.is_file());
+                if let Some(path) = request {
+                    break path;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "admission checkpoint missing"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let bytes = std::fs::read(&request_path).unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            let ack = json!({"schemaVersion":"tradeassembly.execution_checkpoint_ack.v1","checkpointId":request["checkpointId"],
+                "snapshotSha256":request["snapshotSha256"],"requestDigest":format!("{:x}",sha2::Sha256::digest(&bytes)),"status":if accepted {"durable"} else {"failed"}});
+            let path = request_path.parent().unwrap().join("ack.pending");
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            file.write_all(&serde_json::to_vec(&ack).unwrap()).unwrap();
+            file.sync_all().unwrap();
+            std::fs::rename(path, request_path.parent().unwrap().join("ack.json")).unwrap();
+            request_path.parent().unwrap().join("runtime.sqlite")
+        });
+        let result=service.handle_http_from_source("scheduler","POST","/scheduler/run",json!({"activationId":activation_id,"workerId":"original-cycle","maxCycles":1,"leaseTtlSeconds":60}));
+        assert_eq!(result.status, 200, "{result:?}");
+        assert!(
+            result.body["body"]["ticks"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty()),
+            "{result:?}"
+        );
+        let snapshot = watcher.join().unwrap_or_else(|_| {
+            panic!(
+                "missing checkpoint: tick={} denials={:?}",
+                result.body["body"]["ticks"],
+                service
+                    .runtime()
+                    .storage
+                    .list_json("plugin_broker_submission_denials")
+                    .unwrap()
+            )
+        });
+        let original_records = service
+            .runtime()
+            .storage
+            .list_json("execution_pending_original_cycles")
+            .unwrap();
+        assert_eq!(original_records.len(), 1, "{result:?}");
+        let original_key = original_records[0].0.clone();
+        let sink = package.install_root.join(".f2-controlled-broker.sqlite");
+        if accepted {
+            assert!(sink.exists(), "order was not accepted");
+            let conn = rusqlite::Connection::open(&sink).unwrap();
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "original order never reached accepted state");
+        } else {
+            assert!(
+                !sink.exists(),
+                "dispatch happened without durability acknowledgement"
+            );
+        }
+        // Reopen the exact owned fixture from its admitted pre-dispatch snapshot.
+        std::fs::copy(&snapshot, &db).unwrap();
+        let base = TradeAssemblyService::test_local(db.to_str().unwrap());
+        let mut runtime = base.runtime().as_ref().clone();
+        runtime.plugin_operations = Arc::new(
+            crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+                runtime.storage.clone(),
+                runtime.plugins.clone(),
+                runtime.credentials.clone(),
+                runtime.plugin_packages.clone(),
+                runtime.clock.clone(),
+                Arc::new(OriginalCycleFixtureSandbox),
+            ),
+        );
+        let restored = TradeAssemblyService::from_runtime(db.to_str().unwrap(), runtime)
+            .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+        let body = json!({"originalIdempotencyKey":original_key,"recoveryIdempotencyKey":"original-cycle-recovery"});
+        let wrong = restored.for_authenticated_invocation(&owner.issuer, "wrong-owner", None, None);
+        assert_eq!(
+            wrong
+                .handle_http("POST", "/execution/recover-original", body.clone())
+                .status,
+            403
+        );
+        if accepted {
+            for (field, replacement) in [
+                ("accountRef", json!("wrong-account")),
+                ("activePackageSha256", json!("wrong-package")),
+                ("credentialRevision", json!(99)),
+            ] {
+                let current = restored
+                    .runtime()
+                    .plugins
+                    .get_instance("mandate-paper")
+                    .unwrap()
+                    .unwrap();
+                let mut changed = current.clone();
+                changed[field] = replacement;
+                let context = SideEffectContext::new(
+                    AuthorityContext::local_cli(),
+                    IdempotencyKey::new(format!("corrupt-{field}")).unwrap(),
+                );
+                restored
+                    .runtime()
+                    .plugins
+                    .put_instance("mandate-paper", changed, &context)
+                    .unwrap();
+                assert_eq!(
+                    restored
+                        .handle_http("POST", "/execution/recover-original", body.clone())
+                        .status,
+                    403,
+                    "{field}"
+                );
+                restored
+                    .runtime()
+                    .plugins
+                    .put_instance("mandate-paper", current, &context)
+                    .unwrap();
+            }
+            // A transaction interruption after lookup must leave the whole cycle pending.
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TRIGGER cycle_fault BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='execution_original_cycle_recoveries' BEGIN SELECT RAISE(ABORT,'controlled interruption'); END;").unwrap();
+            assert_eq!(
+                restored
+                    .handle_http("POST", "/execution/recover-original", body.clone())
+                    .status,
+                409
+            );
+            assert_eq!(
+                restored
+                    .runtime()
+                    .storage
+                    .get_json("execution_runs", &format!("run_{activation_id}"))
+                    .unwrap()
+                    .unwrap()["cycle"],
+                0
+            );
+            conn.execute_batch("DROP TRIGGER cycle_fault;").unwrap();
+            let recovered =
+                restored.handle_http("POST", "/execution/recover-original", body.clone());
+            assert_eq!(recovered.status, 200, "{recovered:?}");
+            assert_eq!(recovered.body["state"], "recovered");
+            assert_eq!(recovered.body["activationState"], "stopped");
+            assert_eq!(recovered.body["schedulerConfirmed"], false);
+            assert_eq!(
+                recovered.body,
+                restored
+                    .handle_http("POST", "/execution/recover-original", body.clone())
+                    .body
+            );
+            assert_eq!(
+                restored
+                    .runtime()
+                    .storage
+                    .list_json("execution_ticks")
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let conn = rusqlite::Connection::open(&sink).unwrap();
+            let counts: (i64, i64) = conn
+                .query_row("SELECT COUNT(*),SUM(submissions) FROM orders", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(counts, (1, 1));
+        } else {
+            assert_eq!(
+                restored
+                    .handle_http("POST", "/execution/recover-original", body)
+                    .status,
+                409
+            );
+            assert!(!sink.exists(), "recovery dispatched an absent order");
+        }
+        warden.stop();
+    }
+}

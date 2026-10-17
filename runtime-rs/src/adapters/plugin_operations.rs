@@ -1,5 +1,6 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use super::plugin_submission_failure::{self, Phase};
 use crate::ports::{
     BrokerSubmissionPort, ClockPort, CredentialPort, FailureMode, ImmutablePutOutcome,
     PluginOperationPort, PluginOperationRequest, PluginOperationResponse, PluginPackagePort,
@@ -26,12 +27,14 @@ pub(crate) const RESET_NAMESPACES: &[&str] = &[
     BROKER_DENIAL_NS,
     RECOVERY_REQUESTS_NS,
     RECOVERY_OUTCOMES_NS,
+    plugin_submission_failure::NAMESPACE,
 ];
 
 pub struct LocalPluginOperations {
     storage: Arc<dyn StoragePort>,
     external: Option<crate::adapters::external_plugin_host::ExternalPluginHost>,
     broker_boundary: Option<Arc<dyn BrokerSubmissionPort>>,
+    checkpoint_dir: Option<std::path::PathBuf>,
 }
 
 impl LocalPluginOperations {
@@ -40,6 +43,8 @@ impl LocalPluginOperations {
             storage,
             external: None,
             broker_boundary: None,
+            checkpoint_dir: std::env::var_os("TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR")
+                .map(Into::into),
         }
     }
 
@@ -63,11 +68,19 @@ impl LocalPluginOperations {
                 ),
             ),
             broker_boundary: None,
+            checkpoint_dir: std::env::var_os("TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR")
+                .map(Into::into),
         }
     }
 
     pub fn with_broker_boundary(mut self, boundary: Arc<dyn BrokerSubmissionPort>) -> Self {
         self.broker_boundary = Some(boundary);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_checkpoint_directory(mut self, root: std::path::PathBuf) -> Self {
+        self.checkpoint_dir = Some(root);
         self
     }
 
@@ -405,6 +418,30 @@ impl PluginOperationPort for LocalPluginOperations {
             None
         };
 
+        if permit.is_some() {
+            if let Some(root) = &self.checkpoint_dir {
+                crate::adapters::execution_checkpoint::barrier(
+                    root,
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    request,
+                )?;
+                self.broker_boundary
+                    .as_ref()
+                    .ok_or("broker_boundary_missing")?
+                    .revalidate_after_checkpoint(
+                        request,
+                        context,
+                        &external_prepared
+                            .as_ref()
+                            .ok_or("prepared_binding_missing")?
+                            .binding,
+                        permit.as_ref().ok_or("broker_permit_missing")?,
+                    )?;
+            }
+        }
+
         let response = match (request.plugin_ref.as_str(), request.operation_id.as_str()) {
             ("tradeassembly.simbroker", "marketdata.quote.read") => quote(request),
             ("tradeassembly.simbroker", "marketdata.bars.read")
@@ -423,7 +460,15 @@ impl PluginOperationPort for LocalPluginOperations {
         };
         let mut response = match response {
             Ok(response) => response,
-            Err(_) if broker_submission => {
+            Err(error) if broker_submission => {
+                plugin_submission_failure::record(
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    Phase::Execution,
+                    &error,
+                    context,
+                );
                 return Err("plugin_order_reconciliation_required".into());
             }
             Err(error) => return Err(error),
@@ -431,7 +476,15 @@ impl PluginOperationPort for LocalPluginOperations {
         if !response.reconciliation_required {
             if let (Some(boundary), Some(permit)) = (self.broker_boundary.as_ref(), permit.as_ref())
             {
-                if boundary.complete(permit, &response).is_err() {
+                if let Err(error) = boundary.complete(permit, &response) {
+                    plugin_submission_failure::record(
+                        self.storage.as_ref(),
+                        receipt_key,
+                        &request_hash,
+                        Phase::Completion,
+                        &error,
+                        context,
+                    );
                     return Err("plugin_order_reconciliation_required".into());
                 }
             }
@@ -462,7 +515,17 @@ impl PluginOperationPort for LocalPluginOperations {
         if broker_submission {
             // The sink already ran. A missing/invalid durable receipt cannot be
             // reported as an ordinary failed submission that is safe to retry.
-            persisted.map_err(|_| "plugin_order_reconciliation_required".to_string())
+            persisted.map_err(|error| {
+                plugin_submission_failure::record(
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    Phase::Persistence,
+                    &error,
+                    context,
+                );
+                "plugin_order_reconciliation_required".to_string()
+            })
         } else {
             persisted
         }

@@ -81,6 +81,83 @@ impl WorkosAuthManager {
         Self { config }
     }
 
+    /// Import genuine provider tokens through the normal signature and Hub
+    /// projection gates. The caller supplies tokens on stdin, never as flags.
+    pub async fn import_session(
+        &self,
+        raw: &[u8],
+        subject_sha256: &str,
+        tenant_sha256: &str,
+    ) -> Result<CliIdentity, String> {
+        self.validate_configuration()?;
+        if self.config.oidc_profile != "workos" || self.config.oidc_session_store != "bitwarden" {
+            return Err("workos_import_configuration_invalid".into());
+        }
+        let _lock = self.session_lock()?;
+        match self.bitwarden_store().load() {
+            Err(code) if code == "oidc_session_required" => {}
+            Ok(_) => return Err("workos_import_session_exists".into()),
+            Err(code) => return Err(code),
+        }
+        self.import_and_save(raw, subject_sha256, tenant_sha256, |session| {
+            self.save_session(session)
+        })
+        .await
+    }
+
+    async fn import_and_save(
+        &self,
+        raw: &[u8],
+        subject_sha256: &str,
+        tenant_sha256: &str,
+        save: impl FnOnce(&WorkosSession) -> Result<(), String>,
+    ) -> Result<CliIdentity, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Import {
+            access_token: String,
+            refresh_token: String,
+        }
+        let digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if raw.len() > 32768 || !digest(subject_sha256) || !digest(tenant_sha256) {
+            return Err("workos_import_input_invalid".into());
+        }
+        let input: Import =
+            serde_json::from_slice(raw).map_err(|_| "workos_import_input_invalid")?;
+        for value in [&input.access_token, &input.refresh_token] {
+            if value.is_empty()
+                || value.len() > 16384
+                || value
+                    .bytes()
+                    .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+            {
+                return Err("workos_import_input_invalid".into());
+            }
+        }
+        let session = self
+            .session_from_token(
+                TokenResponse {
+                    access_token: input.access_token,
+                    refresh_token: Some(input.refresh_token),
+                },
+                None,
+                None,
+            )
+            .await?;
+        if format!("{:x}", Sha256::digest(session.identity.subject.as_bytes())) != subject_sha256
+            || format!("{:x}", Sha256::digest(session.tenant_id.as_bytes())) != tenant_sha256
+        {
+            return Err("workos_identity_binding_invalid".into());
+        }
+        save(&session)?;
+        Ok(session.identity)
+    }
+
     pub async fn login(&self) -> Result<CliIdentity, String> {
         self.login_with_browser_opener(|url| {
             webbrowser::open(&url).map_err(|_| "workos_browser_open_failed".to_string())
@@ -1142,6 +1219,95 @@ mod tests {
         assert_eq!(manager.session_lock().unwrap_err(), "workos_session_busy");
         drop(lock);
         assert!(manager.session_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn import_signature_client_expiry_and_hub_failures_never_save_custody() {
+        use axum::{routing::get, Json, Router};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut config, key, jwks) = setup();
+        config.oidc_issuer = format!("http://{}", listener.local_addr().unwrap());
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.hub_base_url = format!("https://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let keys = serde_json::json!({"keys":[{"kty":"RSA","kid":jwks.keys[0].kid,"alg":"RS256","n":jwks.keys[0].n,"e":jwks.keys[0].e}]});
+        let router = Router::new().route(
+            "/sso/jwks/client_test",
+            get(move || {
+                let keys = keys.clone();
+                async move { Json(keys) }
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let manager = WorkosAuthManager::new(config.clone());
+        let hash = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
+        let now = (now_ms() / 1000) as usize;
+        let wrong_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+        for (key, client, exp, expected) in [
+            (
+                &key,
+                "other_client",
+                now + 3600,
+                "workos_token_client_mismatch",
+            ),
+            (
+                &wrong_key,
+                "client_test",
+                now + 3600,
+                "workos_token_signature_invalid",
+            ),
+            (&key, "client_test", now - 120, "workos_token_expired"),
+            (&key, "client_test", now + 3600, "hub_unavailable"),
+        ] {
+            let access = token(
+                key,
+                TestClaims {
+                    iss: &config.oidc_issuer,
+                    sub: "subject-1",
+                    client_id: client,
+                    exp,
+                    nbf: None,
+                },
+            );
+            let raw =
+                serde_json::json!({"access_token":access,"refresh_token":"IMPORT_PRIVATE_CANARY"})
+                    .to_string();
+            let saved = std::cell::Cell::new(false);
+            let result = manager
+                .import_and_save(
+                    raw.as_bytes(),
+                    &hash("subject-1"),
+                    &hash("user:subject-1"),
+                    |_| {
+                        saved.set(true);
+                        Ok(())
+                    },
+                )
+                .await;
+            assert_eq!(result.unwrap_err(), expected);
+            assert!(!saved.get());
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn import_rejects_unbounded_or_extra_fields_before_verification() {
+        let manager = WorkosAuthManager::new(RuntimeConfig::local(":memory:"));
+        let digest = "1".repeat(64);
+        for raw in [
+            vec![b'x'; 32769],
+            br#"{"access_token":"IMPORT_PRIVATE_CANARY","refresh_token":"r","trusted":true}"#
+                .to_vec(),
+        ] {
+            let result = manager
+                .import_and_save(&raw, &digest, &digest, |_| {
+                    panic!("invalid import must not save")
+                })
+                .await;
+            assert_eq!(result.unwrap_err(), "workos_import_input_invalid");
+        }
     }
 
     #[derive(Serialize)]

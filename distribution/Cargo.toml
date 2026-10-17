@@ -18,7 +18,10 @@ sysinfo = "0.33"
 tar = "0.4"
 tempfile = "3"
 walkdir = "2"
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "0.4.4"

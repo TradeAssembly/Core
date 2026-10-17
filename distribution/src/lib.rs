@@ -15,11 +15,17 @@ use std::{
 use walkdir::WalkDir;
 
 pub mod candidate;
+#[path = "../../platform/control_plane_redaction.rs"]
+mod control_plane_redaction;
 pub mod install;
 pub mod native;
 pub mod package;
+mod plugin;
 pub mod qualify;
 pub mod registry_qualify;
+#[doc(hidden)]
+#[path = "../../platform/workspace_bootstrap.rs"]
+pub mod workspace_bootstrap;
 
 #[cfg(windows)]
 #[path = "../../platform/windows_private.rs"]

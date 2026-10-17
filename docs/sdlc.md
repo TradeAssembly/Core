@@ -94,3 +94,10 @@ Full verification and distribution qualification retain their existing gates.
 Routine GitHub CI runs the owning Linux gate through `just setup`, `just verify`, `just contract-test` and `just build-artifacts`. Native release packaging is separate; public CI never accesses private products.
 
 The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.
+
+Native candidate qualification also runs
+`installed_default_plugin_bootstrap_allows_restore_and_exact_replay_only` from
+`distribution/tests/workspace_restore.rs` against its exact packaged installer,
+Core CLI and Warden. The `workspaceRecovery` receipt check binds its log.
+Ordinary component tests cover real SQLite, bootstrap tampering and replay
+rejection without package builds, hosted services or credentials.

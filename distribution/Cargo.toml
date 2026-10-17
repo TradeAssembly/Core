@@ -20,6 +20,9 @@ tempfile = "3"
 walkdir = "2"
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "0.4.4"
 getrandom = "0.3"

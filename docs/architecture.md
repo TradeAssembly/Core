@@ -165,3 +165,9 @@ move with their modules. Publication and source scanners cover every new crate.
 `just build-target PACKAGE BINARY` and `just test-package PACKAGE` are targeted
 iteration commands; `just build-artifacts` selects the CLI and Core runner.
 Full verification and distribution qualification retain their existing gates.
+
+Fresh distribution installs record their exact verified default-plugin bootstrap
+under the existing private local-owner trust root. Workspace import verifies that
+record against installed payload/owner/database bindings and checks every row
+and its authority metadata in the import transaction. It preserves bootstrap
+state, rejects customer/runtime activity, and restores strategies stopped.

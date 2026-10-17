@@ -21,6 +21,9 @@ pub mod package;
 mod plugin;
 pub mod qualify;
 pub mod registry_qualify;
+#[doc(hidden)]
+#[path = "../../platform/workspace_bootstrap.rs"]
+pub mod workspace_bootstrap;
 
 #[cfg(windows)]
 #[path = "../../platform/windows_private.rs"]

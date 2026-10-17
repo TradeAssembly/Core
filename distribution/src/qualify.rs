@@ -246,6 +246,15 @@ pub fn qualify(
         &env,
         &out.join("packaged-install.log"),
     )?;
+    cargo_test(
+        &source,
+        "tradeassembly-distribution",
+        "workspace_restore",
+        "installed_default_plugin_bootstrap_allows_restore_and_exact_replay_only",
+        "1 passed",
+        &env,
+        &out.join("workspace-restore.log"),
+    )?;
     if let Some(baseline) = baseline {
         env.insert(
             "TRADEASSEMBLY_DISTRIBUTION_BASELINE_PACKAGE",
@@ -383,6 +392,7 @@ pub fn qualify(
         ("npmLocalIgnoreScripts", "package-managers.log"),
         ("pnpmLocalIgnoreScripts", "package-managers.log"),
         ("sourceFreeSetup", "packaged-install.log"),
+        ("workspaceRecovery", "workspace-restore.log"),
         ("offlineAlpaca", "sandbox.log"),
         (
             "stoppedUpgradeRollback",

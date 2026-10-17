@@ -80,3 +80,7 @@ authorized rollout may publish and merge passing source/workflow changes under t
 coordinator's hosted CI policy. No automatic agent review or deployment is required.
 
 The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.
+
+Native distribution qualification must execute the installed workspace recovery
+regression and retain `workspaceRecovery` proof. Fresh-install bootstrap evidence
+is immutable; never retrofit/reseal an existing workspace to make import pass.

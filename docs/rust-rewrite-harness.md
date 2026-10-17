@@ -158,3 +158,9 @@ iteration commands; `just build-artifacts` selects the CLI and Core runner.
 Full verification and distribution qualification retain their existing gates.
 
 The owning nextest pass uses `--no-fail-fast` to report all failures in one execution. Any failed test still rejects the gate; this does not add retries or skip coverage.
+
+Native distribution qualification includes exact installed workspace export,
+second-installation stopped restore and replay, plus changed bootstrap/customer
+data rejection (`workspace-restore.log`, receipt check `workspaceRecovery`).
+This extends the current candidate gate; retained historical baseline evidence
+is not retroactively relabelled or rebuilt.

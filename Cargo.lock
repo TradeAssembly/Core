@@ -4397,6 +4397,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "rusqlite",
+ "rustix 1.1.4",
  "semver",
  "serde",
  "serde_json",

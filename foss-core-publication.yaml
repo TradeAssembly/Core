@@ -49,6 +49,7 @@ publicFiles:
   - foss-core-publication.yaml
   - render.yaml
   - platform/windows_private.rs
+  - platform/workspace_bootstrap.rs
 
 metadataOnlyPathPrefixes:
   - .sdlc/evidence/

@@ -870,7 +870,10 @@ fn verify_archive_member(archive: &Path, member: &str, output: &Path) -> Result<
         let entry = zip
             .by_index(index)
             .map_err(|_| "experimental_build_archive_invalid")?;
-        let name = entry.name().trim_end_matches('/');
+        let decoded_name = entry
+            .name()
+            .map_err(|_| "experimental_build_archive_invalid")?;
+        let name = decoded_name.trim_end_matches('/');
         if name.is_empty()
             || name.starts_with('/')
             || name.contains('\\')

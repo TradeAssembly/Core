@@ -15,6 +15,8 @@ use std::{
 use walkdir::WalkDir;
 
 pub mod candidate;
+#[path = "../../platform/control_plane_redaction.rs"]
+mod control_plane_redaction;
 pub mod install;
 pub mod native;
 pub mod package;

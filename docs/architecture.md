@@ -171,3 +171,6 @@ under the existing private local-owner trust root. Workspace import verifies tha
 record against installed payload/owner/database bindings and checks every row
 and its authority metadata in the import transaction. It preserves bootstrap
 state, rejects customer/runtime activity, and restores strategies stopped.
+Registry manifests remain exact; their command-receipt projection is compared
+through the same redactor used by the owning control plane. Redacted receipts
+are not treated as copies of the private registry rows.

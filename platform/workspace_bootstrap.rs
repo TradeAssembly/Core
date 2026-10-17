@@ -250,7 +250,12 @@ fn validate(material: &Material) -> Result<(), String> {
             && manifest["package"]["manifestSha256"] == *manifest_digest
             && command["response_body"]["package"] == manifest["package"],
     )?;
-    check(by_namespace["plugin_manifests"] == ("tradeassembly.alpaca".into(), manifest))?;
+    let (stored_key, stored_manifest) = &by_namespace["plugin_manifests"];
+    check(
+        stored_key == "tradeassembly.alpaca"
+            && crate::control_plane_redaction::redact_sensitive_payload((*stored_manifest).clone())
+                == *manifest,
+    )?;
     check(
         by_namespace["plugin_manifest_revisions"]
             == (
@@ -258,7 +263,7 @@ fn validate(material: &Material) -> Result<(), String> {
                     "tradeassembly.alpaca@{}",
                     manifest_digest.as_str().ok_or(ERROR)?
                 ),
-                manifest,
+                *stored_manifest,
             ),
     )?;
     for namespace in [
@@ -369,7 +374,7 @@ pub fn seal_fresh_install(root: &Path, release: Value, response: &Value) -> Resu
             .find(|r| r.namespace == "control_plane_commands")
             .ok_or(ERROR)?
             .value["response_body"]
-            == response["data"],
+            == crate::control_plane_redaction::redact_sensitive_payload(response["data"].clone()),
     )?;
     let seal = Seal {
         sha256: material_hash(&material)?,
@@ -582,7 +587,7 @@ pub(crate) mod test_fixture {
             let idempotency = format!(
                 "cli-install-default:plugin-package:{package_hash}:{manifest_digest}:fixture"
             );
-            let manifest = json!({"pluginRef":"tradeassembly.alpaca","manifestDigest":manifest_digest,"package":{"packageSha256":package_hash,"manifestSha256":manifest_digest}});
+            let manifest = json!({"pluginRef":"tradeassembly.alpaca","manifestDigest":manifest_digest,"package":{"packageSha256":package_hash,"manifestSha256":manifest_digest},"manifest":{"configuration":{"api_secret":{"type":"string"},"label":"paper fixture"}}});
             let response = json!({"ok":true,"data":{"ok":true,"manifest":manifest,"package":manifest["package"]}});
             let envelope = json!({"command_id":"cmd_fixture","correlation_id":"cmd_fixture","command_name":"plugin.package.install","source_interface":"cli","authority":{"actor":owner,"account_mode":"paper"},"idempotency_key":idempotency,"payload_hash":"fixture-payload","payload_preview":{"integrity":{"packageSha256":package_hash,"manifestSha256":manifest_digest},"offline":true,"source":{"locator":package,"package":{"type":"file","locator":package}}}});
             let receipt =
@@ -591,7 +596,7 @@ pub(crate) mod test_fixture {
                 (
                     "control_plane_commands".to_string(),
                     "cmd_fixture".to_string(),
-                    json!({"envelope":envelope,"duplicate":false,"response_status":200,"response_body":response["data"]}),
+                    json!({"envelope":envelope,"duplicate":false,"response_status":200,"response_body":crate::control_plane_redaction::redact_sensitive_payload(response["data"].clone())}),
                 ),
                 (
                     "plugin_manifests".into(),

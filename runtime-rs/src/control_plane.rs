@@ -1,30 +1,16 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use crate::control_plane_redaction::{is_sensitive_text, redact_sensitive_payload};
 use crate::finance_authority::FinanceAuthorityPort;
 use crate::ports::{AuthorityContext, IdempotencyKey, SideEffectContext, StoragePort};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const COMMAND_NS: &str = "control_plane_commands";
 pub const SEQUENCE_NS: &str = "control_plane_sequences";
 const SCHEMA_VERSION: &str = "tradeassembly.control_plane.command.v1";
-
-const SENSITIVE_KEYS: &[&str] = &[
-    "access_token",
-    "api_key",
-    "api_secret",
-    "authorization",
-    "bearer",
-    "client_secret",
-    "code_verifier",
-    "password",
-    "private_key",
-    "refresh_token",
-    "secret",
-    "token",
-];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlPlaneCommandEnvelope {
@@ -1618,56 +1604,6 @@ fn graphql_is_mutation(request: &Value) -> bool {
         .and_then(Value::as_str)
         .map(|query| query.trim_start().starts_with("mutation"))
         .unwrap_or(false)
-}
-
-fn redact_sensitive_payload(value: Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, value)| {
-                    if is_sensitive_key(&key) {
-                        (key, Value::String("[REDACTED]".to_string()))
-                    } else {
-                        (key, redact_sensitive_payload(value))
-                    }
-                })
-                .collect::<Map<_, _>>(),
-        ),
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(redact_sensitive_payload).collect())
-        }
-        Value::String(text) if is_sensitive_text(&text) => Value::String("[REDACTED]".to_string()),
-        other => other,
-    }
-}
-
-fn is_sensitive_key(key: &str) -> bool {
-    let normalized = key.replace('-', "_").to_ascii_lowercase();
-    let compact = normalized.replace('_', "");
-    SENSITIVE_KEYS.contains(&normalized.as_str())
-        || normalized.ends_with("_token")
-        || normalized.ends_with("_secret")
-        || compact.contains("token")
-        || compact.contains("secret")
-        || compact == "apikey"
-        || compact == "privatekey"
-        || compact == "authorizationurl"
-        || compact == "handoffverifier"
-        || compact == "verifier"
-}
-
-fn is_sensitive_text(value: &str) -> bool {
-    let normalized = value.to_ascii_lowercase();
-    normalized.contains("api_secret")
-        || normalized.contains("apisecret")
-        || normalized.contains("api_key")
-        || normalized.contains("apikey")
-        || normalized.contains("access_key")
-        || normalized.contains("private_key")
-        || normalized.contains("password")
-        || normalized.contains("secret")
-        || normalized.contains("token")
-        || normalized.contains("bearer ")
 }
 
 fn hash_json(value: &Value) -> Result<String, String> {

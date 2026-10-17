@@ -49,6 +49,7 @@ publicFiles:
   - foss-core-publication.yaml
   - render.yaml
   - platform/windows_private.rs
+  - platform/control_plane_redaction.rs
   - platform/workspace_bootstrap.rs
 
 metadataOnlyPathPrefixes:

@@ -634,6 +634,12 @@ impl WorkosAuthManager {
             return Err("workos_migration_destination_invalid".into());
         }
         let _lock = self.session_lock()?;
+        let target = LocalWorkosStore::new(&self.config);
+        let existing = match target.load() {
+            Ok(raw) => Some(raw),
+            Err(code) if code == "oidc_session_required" => None,
+            Err(code) => return Err(code),
+        };
         let raw = match source {
             "keyring" => self
                 .keyring_entry()?
@@ -648,8 +654,7 @@ impl WorkosAuthManager {
         let session: WorkosSession =
             serde_json::from_str(&raw).map_err(|_| "oidc_session_invalid")?;
         self.validate_stored_session(&session)?;
-        let target = LocalWorkosStore::new(&self.config);
-        if let Ok(existing) = target.load() {
+        if let Some(existing) = existing {
             if existing != raw {
                 return Err("oidc_session_conflict".into());
             }
@@ -732,12 +737,24 @@ impl LocalWorkosStore {
         }
         let file = options
             .open(&self.session)
-            .map_err(|_| "oidc_session_required")?;
+            .map_err(|_| "oidc_session_store_unavailable")?;
         ensure_private_file(&file)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let held = file
+                .metadata()
+                .map_err(|_| "oidc_session_store_unavailable")?;
+            let named = fs::symlink_metadata(&self.session)
+                .map_err(|_| "oidc_session_store_unavailable")?;
+            if held.dev() != named.dev() || held.ino() != named.ino() {
+                return Err("oidc_session_store_unavailable".into());
+            }
+        }
         let mut bytes = Vec::new();
         file.take(LOCAL_SESSION_LIMIT + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| "oidc_session_required")?;
+            .map_err(|_| "oidc_session_store_unavailable")?;
         if bytes.is_empty() || bytes.len() as u64 > LOCAL_SESSION_LIMIT {
             return Err("oidc_session_invalid".into());
         }
@@ -2003,6 +2020,23 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+
+    #[test]
+    fn legacy_migration_rejects_an_empty_destination_before_consulting_a_manager() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().canonicalize().unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_session_store = "file".into();
+        config.oidc_session_path = path.join("session.json").display().to_string();
+        create_private(Path::new(&config.oidc_session_path), b"").unwrap();
+        let manager = WorkosAuthManager::new(config.clone());
+        assert_eq!(
+            manager.migrate_to_local_file("bitwarden").unwrap_err(),
+            "oidc_session_invalid"
+        );
+        assert!(fs::read(&config.oidc_session_path).unwrap().is_empty());
     }
 
     #[test]

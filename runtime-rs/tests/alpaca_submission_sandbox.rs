@@ -167,7 +167,9 @@ fn invoke(steps: Vec<Step>) -> Result<PluginOperationResponse, String> {
                 }
             };
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                // Match the invocation deadline so a loaded host does not reject
+                // a valid sandbox connection before its request is sent.
+                .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             let mut input = BufReader::new(&stream);
             let mut line = String::new();

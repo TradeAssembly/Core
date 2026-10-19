@@ -23,6 +23,7 @@ jsonwebtoken = "9"
 keyring = { version = "3.6.3", default-features = false, features = [
     "apple-native",
     "linux-native-sync-persistent",
+    "vendored",
     "windows-native",
 ] }
 libc = "0.2"

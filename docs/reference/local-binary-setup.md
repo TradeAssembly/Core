@@ -118,7 +118,16 @@ The CLI reports fixed error codes, never token contents:
 These errors do not prove their underlying cause without further verification.
 They do not authorize changing broker credentials or activating a strategy.
 
-## Optional Bitwarden custody for hosted sign-in
+## Optional external custody for hosted sign-in
+
+The default WorkOS session store is an encrypted application-state file under
+the installation directory. It requires no Bitwarden, keyring, helper, or
+network service. The session and key are private files (directory mode 0700,
+file mode 0600), are atomically replaced, and reject malformed or symlinked
+state. Refresh rotation is checkpointed so a restart cannot reuse a consumed
+refresh grant.
+
+Bitwarden custody remains an explicit opt-in for customers who need it.
 
 WorkOS sessions can use the customer's Bitwarden vault instead of the desktop
 keyring. This does not change broker permissions or require a Hub account for

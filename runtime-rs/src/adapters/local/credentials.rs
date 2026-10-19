@@ -9,6 +9,8 @@ use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::io::Write;
 #[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::path::Path;
@@ -41,9 +43,19 @@ impl LocalCredentialStore {
     }
 
     fn read(&self, credential_ref: &str) -> Result<Option<StoredCredential>, String> {
+        ensure_secure_directory(&self.credentials_dir)?;
         let path = self.credential_path(credential_ref)?;
-        if !path.exists() {
-            return Ok(None);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(format!("read local credential {credential_ref} failed")),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(format!("read local credential {credential_ref} failed"));
+        }
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(format!("read local credential {credential_ref} failed"));
         }
         #[cfg(windows)]
         let body = String::from_utf8(
@@ -154,12 +166,20 @@ impl CredentialPort for LocalCredentialStore {
         }
         #[cfg(not(windows))]
         {
-            std::fs::create_dir_all(&self.credentials_dir)
-                .map_err(|_| "create local credential directory failed".to_string())?;
-            set_owner_only_directory(&self.credentials_dir)?;
-            let temporary = path.with_extension("json.tmp");
+            ensure_secure_directory(&self.credentials_dir)?;
+            let temporary = path.with_extension(format!("json.tmp-{}", rand::random::<u64>()));
+            let lock_path = self.credentials_dir.join(".credentials.lock");
+            let lock = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(&lock_path)
+                .map_err(|_| format!("write local credential {credential_ref} failed"))?;
+            lock.try_lock()
+                .map_err(|_| format!("write local credential {credential_ref} failed"))?;
             let mut options = OpenOptions::new();
-            options.create(true).write(true).truncate(true);
+            options.create_new(true).write(true);
             options.mode(0o600);
             let mut file = options
                 .open(&temporary)
@@ -234,17 +254,41 @@ fn validate_credential_ref(value: &str) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn set_owner_only_directory(path: &Path) -> Result<(), String> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| "secure local credential directory failed".to_string())?;
-    Ok(())
-}
-
-#[cfg(unix)]
 fn set_owner_only_file(path: &Path) -> Result<(), String> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|_| "secure local credential file failed".to_string())?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_secure_directory(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path)
+        .map_err(|_| "create local credential directory failed".to_string())?;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "secure local credential directory failed".to_string())?;
+    if !metadata.file_type().is_dir()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.nlink() < 2
+        || metadata.uid() != unsafe { libc::geteuid() } as u32
+    {
+        return Err("secure local credential directory failed".to_string());
+    }
+    let mut ancestor = path.parent();
+    while let Some(parent) = ancestor {
+        let meta = std::fs::symlink_metadata(parent)
+            .map_err(|_| "secure local credential directory failed".to_string())?;
+        if !meta.file_type().is_dir() {
+            return Err("secure local credential directory failed".to_string());
+        }
+        ancestor = parent.parent();
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_secure_directory(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path)
+        .map_err(|_| "create local credential directory failed".to_string())
 }
 
 fn redact(value: &str) -> Option<String> {

@@ -11,7 +11,14 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 use tokio::net::TcpListener;
 use url::Url;
 
@@ -90,7 +97,7 @@ impl WorkosAuthManager {
         tenant_sha256: &str,
     ) -> Result<CliIdentity, String> {
         self.validate_configuration()?;
-        if self.config.oidc_profile != "workos" || self.config.oidc_session_store != "bitwarden" {
+        if self.config.oidc_profile != "workos" || self.config.oidc_session_store == "keyring" {
             return Err("workos_import_configuration_invalid".into());
         }
         let _lock = self.session_lock()?;
@@ -370,6 +377,9 @@ impl WorkosAuthManager {
         if self.config.oidc_session_store == "bitwarden" {
             return self.bitwarden_store().delete();
         }
+        if self.config.oidc_session_store == "file" {
+            return LocalWorkosStore::new(&self.config).delete();
+        }
         let entry = self.keyring_entry()?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -385,6 +395,7 @@ impl WorkosAuthManager {
             .with_extension("workos.lock");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
+            ensure_private_parent(parent)?;
         }
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -392,10 +403,12 @@ impl WorkosAuthManager {
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
+            options.custom_flags(libc::O_NOFOLLOW);
         }
         let file = options
-            .open(path)
+            .open(&path)
             .map_err(|_| "oidc_session_store_unavailable")?;
+        ensure_private(&path)?;
         file.try_lock().map_err(|_| "workos_session_busy")?;
         Ok(file)
     }
@@ -557,6 +570,8 @@ impl WorkosAuthManager {
             .map_err(|_| "oidc_session_store_unavailable".to_string())?;
         if self.config.oidc_session_store == "bitwarden" {
             self.bitwarden_store().save(&raw)?;
+        } else if self.config.oidc_session_store == "file" {
+            LocalWorkosStore::new(&self.config).save(&raw)?;
         } else {
             self.keyring_entry()?
                 .set_password(&raw)
@@ -598,6 +613,57 @@ impl WorkosAuthManager {
         self.bitwarden_store().migrate(&raw)
     }
 
+    /// Explicitly copy a legacy vault record into the default local file.
+    /// The source is never deleted and the destination is read back before
+    /// returning success.
+    pub fn migrate_to_local_file(&self, source: &str) -> Result<(), String> {
+        if self.config.oidc_session_store != "file" {
+            return Err("workos_migration_destination_invalid".into());
+        }
+        let _lock = self.session_lock()?;
+        let raw = match source {
+            "keyring" => self
+                .keyring_entry()?
+                .get_password()
+                .map_err(|_| "oidc_session_required")?,
+            "bitwarden" => self
+                .bitwarden_store()
+                .load()
+                .map_err(|_| "oidc_session_required")?,
+            _ => return Err("workos_migration_source_invalid".into()),
+        };
+        let session: WorkosSession =
+            serde_json::from_str(&raw).map_err(|_| "oidc_session_invalid")?;
+        self.validate_stored_session(&session)?;
+        let target = LocalWorkosStore::new(&self.config);
+        if let Ok(existing) = target.load() {
+            if existing != raw {
+                return Err("oidc_session_conflict".into());
+            }
+        } else {
+            target.save(&raw)?;
+        }
+        if target.load()? != raw {
+            return Err("oidc_session_store_unavailable".into());
+        }
+        Ok(())
+    }
+
+    fn validate_stored_session(&self, session: &WorkosSession) -> Result<(), String> {
+        if session.client_id != self.config.oidc_client_id
+            || session.issuer != configured_issuer(&self.config)
+            || session.identity.issuer != session.issuer
+            || session.identity.stable_identity_id
+                != stable_actor(&session.issuer, &session.identity.subject)
+            || session.identity.audience != vec![self.config.oidc_client_id.clone()]
+            || session.identity.subject.is_empty()
+            || session.tenant_id.is_empty()
+        {
+            return Err("workos_identity_binding_invalid".into());
+        }
+        Ok(())
+    }
+
     fn keyring_entry(&self) -> Result<keyring::Entry, String> {
         keyring::Entry::new("tradeassembly-workos", &self.session_account())
             .map_err(|_| "oidc_session_store_unavailable".to_string())
@@ -606,6 +672,8 @@ impl WorkosAuthManager {
     fn load_session(&self) -> Result<WorkosSession, String> {
         let raw = if self.config.oidc_session_store == "bitwarden" {
             self.bitwarden_store().load()?
+        } else if self.config.oidc_session_store == "file" {
+            LocalWorkosStore::new(&self.config).load()?
         } else {
             self.keyring_entry()?
                 .get_password()
@@ -623,6 +691,126 @@ impl WorkosAuthManager {
             .validate()
             .map_err(|_| "workos_configuration_invalid".to_string())
     }
+}
+
+/// Default local custody. The record is protected by the installation state
+/// directory and file permissions; external vaults remain explicit options.
+struct LocalWorkosStore {
+    session: PathBuf,
+}
+
+impl LocalWorkosStore {
+    fn new(config: &RuntimeConfig) -> Self {
+        Self {
+            session: PathBuf::from(&config.oidc_session_path),
+        }
+    }
+
+    fn load(&self) -> Result<String, String> {
+        ensure_private(&self.session)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options
+            .open(&self.session)
+            .map_err(|_| "oidc_session_required")?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|_| "oidc_session_required")?;
+        String::from_utf8(bytes).map_err(|_| "oidc_session_invalid".into())
+    }
+
+    fn save(&self, raw: &str) -> Result<(), String> {
+        atomic_private(&self.session, raw.as_bytes())
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        match fs::remove_file(&self.session) {
+            Ok(()) => Ok(()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("oidc_session_store_unavailable".into()),
+        }
+    }
+}
+
+fn ensure_private(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "oidc_session_required"
+        } else {
+            "oidc_session_store_unavailable"
+        }
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err("oidc_session_store_unavailable".into());
+    }
+    ensure_private_parent(path.parent().ok_or("oidc_session_store_unavailable")?)?;
+    #[cfg(unix)]
+    if std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o077 != 0 {
+        return Err("oidc_session_permissions_invalid".into());
+    }
+    Ok(())
+}
+
+fn ensure_private_parent(path: &Path) -> Result<(), String> {
+    let direct = fs::symlink_metadata(path).map_err(|_| "oidc_session_store_unavailable")?;
+    #[cfg(unix)]
+    if direct.permissions().mode() & 0o077 != 0 {
+        return Err("oidc_session_permissions_invalid".into());
+    }
+    let mut current = Some(path);
+    while let Some(dir) = current {
+        let metadata = fs::symlink_metadata(dir).map_err(|_| "oidc_session_store_unavailable")?;
+        if !metadata.file_type().is_dir() {
+            return Err("oidc_session_store_unavailable".into());
+        }
+        current = dir.parent();
+    }
+    Ok(())
+}
+
+fn create_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
+        ensure_private_parent(parent)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| "oidc_session_store_unavailable")?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "oidc_session_store_unavailable")?;
+    ensure_private(path)
+}
+
+fn atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
+        ensure_private_parent(parent)?;
+    }
+    if fs::symlink_metadata(path).is_ok() {
+        ensure_private(path)?;
+    }
+    let mut suffix = [0u8; 8];
+    OsRng.fill_bytes(&mut suffix);
+    let temporary = path.with_extension(format!("tmp-{}", URL_SAFE_NO_PAD.encode(suffix)));
+    create_private(&temporary, bytes)?;
+    fs::rename(&temporary, path).map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+        String::from("oidc_session_store_unavailable")
+    })?;
+    ensure_private(path)
 }
 
 fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<(), String> {
@@ -1661,5 +1849,27 @@ mod tests {
         assert_eq!(entry.get_password().unwrap(), "synthetic-session-only");
         entry.delete_credential().unwrap();
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+
+    #[test]
+    fn local_file_round_trip_restart_and_rejects_corrupt_or_symlinked_state() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_session_path = root_path.join("session.json").display().to_string();
+        let store = LocalWorkosStore::new(&config);
+        store.save("{\"session\":true}").unwrap();
+        assert_eq!(
+            LocalWorkosStore::new(&config).load().unwrap(),
+            "{\"session\":true}"
+        );
+        std::fs::write(&store.session, b"not-json").unwrap();
+        assert!(serde_json::from_str::<WorkosSession>(&store.load().unwrap()).is_err());
+        std::fs::remove_file(&store.session).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.path().join("missing"), &store.session).unwrap();
+        #[cfg(unix)]
+        assert_eq!(store.load().unwrap_err(), "oidc_session_store_unavailable");
     }
 }

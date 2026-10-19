@@ -259,7 +259,7 @@ impl RuntimeConfig {
                 "offline_access".to_string(),
             ],
             oidc_session_path: ".tradeassembly/auth/cli-session.bin".to_string(),
-            oidc_session_store: "keyring".to_string(),
+            oidc_session_store: "file".to_string(),
             oidc_session_key_path: ".tradeassembly/auth/cli-session.key".to_string(),
             oidc_callback_timeout_seconds: 600,
             studio_core_token_ref: None,
@@ -334,7 +334,7 @@ impl RuntimeConfig {
                     "offline_access".to_string(),
                 ],
                 oidc_session_path: ".tradeassembly/auth/cli-session.bin".to_string(),
-                oidc_session_store: "keyring".to_string(),
+                oidc_session_store: "file".to_string(),
                 oidc_session_key_path: ".tradeassembly/auth/cli-session.key".to_string(),
                 oidc_callback_timeout_seconds: 600,
                 studio_core_token_ref: None,
@@ -436,7 +436,10 @@ impl RuntimeConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.oidc_session_store.as_str(), "keyring" | "bitwarden") {
+        if !matches!(
+            self.oidc_session_store.as_str(),
+            "file" | "keyring" | "bitwarden"
+        ) {
             return Err("unsupported OIDC session store".into());
         }
         if self.plugin_sandbox_command.trim().is_empty() {
@@ -948,7 +951,7 @@ mod tests {
     #[test]
     fn session_store_selection_is_explicit_and_rejects_unknown_backends() {
         let mut config = RuntimeConfig::local(":memory:");
-        assert_eq!(config.oidc_session_store, "keyring");
+        assert_eq!(config.oidc_session_store, "file");
         config.oidc_session_store = "bitwarden".into();
         assert!(config.validate().is_ok());
         assert_eq!(

@@ -396,6 +396,11 @@ pub enum AuthCommand {
     Logout,
     /// Copy the current WorkOS session to Bitwarden, verify it, and retain Keychain.
     MigrateToBitwarden,
+    /// Copy a legacy keyring or Bitwarden session into protected local state.
+    MigrateToLocalFile {
+        #[arg(long, value_parser = ["keyring", "bitwarden"])]
+        source: String,
+    },
     /// Verify stdin provider tokens against the packaged profile and Hub, then store in Bitwarden.
     ImportSession {
         #[arg(long)]
@@ -1225,6 +1230,16 @@ pub async fn run_with_service(
                     {
                         Ok(()) => {
                             json!({"ok":true,"copied":true,"verified":true,"legacyEntryPreserved":true,"nextConfiguration":{"oidcSessionStore":"bitwarden"}})
+                        }
+                        Err(error) => json!({"ok":false,"error":{"code":error}}),
+                    }
+                }
+                AuthCommand::MigrateToLocalFile { source } => {
+                    match crate::workos_identity::WorkosAuthManager::new(config.clone())
+                        .migrate_to_local_file(&source)
+                    {
+                        Ok(()) => {
+                            json!({"ok":true,"copied":true,"verified":true,"legacyEntryPreserved":true,"source":source})
                         }
                         Err(error) => json!({"ok":false,"error":{"code":error}}),
                     }

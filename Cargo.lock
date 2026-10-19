@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "tradeassembly-core-binaries"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "atomicwrites",
@@ -4380,7 +4380,7 @@ dependencies = [
 
 [[package]]
 name = "tradeassembly-distribution"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomicwrites",
  "base64 0.22.1",
@@ -4433,7 +4433,7 @@ dependencies = [
 
 [[package]]
 name = "tradeassembly-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "async-graphql",

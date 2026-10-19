@@ -87,7 +87,7 @@ is immutable; never retrofit/reseal an existing workspace to make import pass.
 
 ## Local credential custody
 
-Local Core defaults to encrypted application-state files under the selected
+Local Core defaults to protected application-state files under the selected
 installation state directory. Bitwarden and OS keyrings are optional explicit
 adapters only; no developer, test, CI, or operator path may require them.
 Private directories are mode 0700 and secret files mode 0600. Reject symlinks,
@@ -96,3 +96,7 @@ replacement. Use exclusive creation, atomic replacement, and process locks.
 Never regenerate an established installation identity or copy Core sessions into
 Relay. Explicit migration verifies current identity and readback, preserves the
 legacy entry, and retains refresh and authority bindings.
+Do not invent encryption with a neighboring key file. This policy applies to
+customer installation/execution, development, tests, CI and local deployment
+tooling, and supersedes older mandatory local Bitwarden or keyring guidance.
+Existing server-side secret stores remain unchanged.

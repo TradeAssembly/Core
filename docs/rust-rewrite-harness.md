@@ -83,7 +83,7 @@ these supported setup methods. A named but unprepared broker remains renderable;
 reading the page never creates its instance or starts a handoff.
 `auth import-session --subject-sha256 HASH --tenant-sha256 HASH` imports bounded
 provider tokens from stdin only after normal signature and Hub projection
-validation, into an absent Bitwarden session. Test-session injection is not
+validation, into an absent session in the selected credential store. Test-session injection is not
 signup, Magic Auth or native PKCE proof.
 
 No skipped, zero-test or mock-only result is end-to-end evidence. Ignored real

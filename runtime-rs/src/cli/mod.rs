@@ -401,7 +401,7 @@ pub enum AuthCommand {
         #[arg(long, value_parser = ["keyring", "bitwarden"])]
         source: String,
     },
-    /// Verify stdin provider tokens against the packaged profile and Hub, then store in Bitwarden.
+    /// Verify stdin provider tokens against the packaged profile and Hub, then store in the selected credential store.
     ImportSession {
         #[arg(long)]
         subject_sha256: String,

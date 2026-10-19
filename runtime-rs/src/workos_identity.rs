@@ -12,7 +12,6 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     fs,
@@ -101,7 +100,7 @@ impl WorkosAuthManager {
             return Err("workos_import_configuration_invalid".into());
         }
         let _lock = self.session_lock()?;
-        match self.bitwarden_store().load() {
+        match self.load_session() {
             Err(code) if code == "oidc_session_required" => {}
             Ok(_) => return Err("workos_import_session_exists".into()),
             Err(code) => return Err(code),
@@ -394,7 +393,6 @@ impl WorkosAuthManager {
             .map_err(|_| "oidc_session_store_unavailable")?
             .with_extension("workos.lock");
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
             ensure_private_parent(parent)?;
         }
         let mut options = std::fs::OpenOptions::new();
@@ -571,7 +569,22 @@ impl WorkosAuthManager {
         if self.config.oidc_session_store == "bitwarden" {
             self.bitwarden_store().save(&raw)?;
         } else if self.config.oidc_session_store == "file" {
-            LocalWorkosStore::new(&self.config).save(&raw)?;
+            let store = LocalWorkosStore::new(&self.config);
+            match store.load() {
+                Ok(existing) => {
+                    let prior: WorkosSession =
+                        serde_json::from_str(&existing).map_err(|_| "oidc_session_invalid")?;
+                    self.validate_stored_session(&prior)?;
+                    if prior.identity.subject != session.identity.subject
+                        || prior.tenant_id != session.tenant_id
+                    {
+                        return Err("workos_identity_binding_invalid".into());
+                    }
+                }
+                Err(e) if e == "oidc_session_required" => (),
+                Err(e) => return Err(e),
+            }
+            store.save(&raw)?;
         } else {
             self.keyring_entry()?
                 .set_password(&raw)
@@ -699,6 +712,8 @@ struct LocalWorkosStore {
     session: PathBuf,
 }
 
+const LOCAL_SESSION_LIMIT: u64 = 1_048_576;
+
 impl LocalWorkosStore {
     fn new(config: &RuntimeConfig) -> Self {
         Self {
@@ -715,12 +730,17 @@ impl LocalWorkosStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NOFOLLOW);
         }
-        let mut file = options
+        let file = options
             .open(&self.session)
             .map_err(|_| "oidc_session_required")?;
+        ensure_private_file(&file)?;
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
+        file.take(LOCAL_SESSION_LIMIT + 1)
+            .read_to_end(&mut bytes)
             .map_err(|_| "oidc_session_required")?;
+        if bytes.is_empty() || bytes.len() as u64 > LOCAL_SESSION_LIMIT {
+            return Err("oidc_session_invalid".into());
+        }
         String::from_utf8(bytes).map_err(|_| "oidc_session_invalid".into())
     }
 
@@ -729,6 +749,9 @@ impl LocalWorkosStore {
     }
 
     fn delete(&self) -> Result<(), String> {
+        if self.session.exists() {
+            ensure_private(&self.session)?;
+        }
         match fs::remove_file(&self.session) {
             Ok(()) => Ok(()),
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -750,16 +773,90 @@ fn ensure_private(path: &Path) -> Result<(), String> {
     }
     ensure_private_parent(path.parent().ok_or("oidc_session_store_unavailable")?)?;
     #[cfg(unix)]
-    if std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o077 != 0 {
-        return Err("oidc_session_permissions_invalid".into());
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err("oidc_session_permissions_invalid".into());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_private_file(file: &std::fs::File) -> Result<(), String> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| "oidc_session_store_unavailable")?;
+    if !metadata.file_type().is_file() {
+        return Err("oidc_session_store_unavailable".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err("oidc_session_permissions_invalid".into());
+        }
     }
     Ok(())
 }
 
 fn ensure_private_parent(path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err("oidc_session_store_unavailable".into());
+    }
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if !metadata.file_type().is_dir() => {
+                return Err("oidc_session_store_unavailable".into())
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err("oidc_session_store_unavailable".into())
+            }
+            _ => (),
+        }
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or("oidc_session_store_unavailable")?;
+            if !parent.exists() {
+                ensure_private_parent(parent)?;
+            }
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(path)
+                .map_err(|_| "oidc_session_store_unavailable")?;
+            fs::File::open(parent)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| "oidc_session_store_unavailable")?;
+        }
+        Err(_) => return Err("oidc_session_store_unavailable".into()),
+    }
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    #[cfg(unix)]
     let direct = fs::symlink_metadata(path).map_err(|_| "oidc_session_store_unavailable")?;
     #[cfg(unix)]
-    if direct.permissions().mode() & 0o077 != 0 {
+    if direct.uid() != rustix::process::geteuid().as_raw()
+        || direct.permissions().mode() & 0o777 != 0o700
+    {
         return Err("oidc_session_permissions_invalid".into());
     }
     let mut current = Some(path);
@@ -775,7 +872,6 @@ fn ensure_private_parent(path: &Path) -> Result<(), String> {
 
 fn create_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
         ensure_private_parent(parent)?;
     }
     let mut options = fs::OpenOptions::new();
@@ -796,7 +892,6 @@ fn create_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
         ensure_private_parent(parent)?;
     }
     if fs::symlink_metadata(path).is_ok() {
@@ -810,7 +905,13 @@ fn atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let _ = fs::remove_file(&temporary);
         String::from("oidc_session_store_unavailable")
     })?;
-    ensure_private(path)
+    ensure_private(path)?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "oidc_session_store_unavailable")?;
+    }
+    Ok(())
 }
 
 fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<(), String> {
@@ -1044,6 +1145,9 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
     use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey};
@@ -1400,8 +1504,16 @@ mod tests {
     #[test]
     fn credential_rotation_is_exclusive_and_releases_on_drop() {
         let root = tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = RuntimeConfig::local(":memory:");
-        config.oidc_session_path = root.path().join("session.bin").display().to_string();
+        config.oidc_session_path = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("session.bin")
+            .display()
+            .to_string();
         let manager = WorkosAuthManager::new(config);
         let lock = manager.session_lock().unwrap();
         assert_eq!(manager.session_lock().unwrap_err(), "workos_session_busy");
@@ -1849,6 +1961,48 @@ mod tests {
         assert_eq!(entry.get_password().unwrap(), "synthetic-session-only");
         entry.delete_credential().unwrap();
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+
+    #[tokio::test]
+    async fn file_import_checks_the_selected_store_without_a_vault_and_preserves_corrupt_state() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_profile = "workos".into();
+        config.oidc_issuer = "https://identity.example".into();
+        config.oidc_client_id = "client_test".into();
+        config.oidc_session_store = "file".into();
+        config.oidc_session_path = root.join("new/auth/session.json").display().to_string();
+        let manager = WorkosAuthManager::new(config);
+        let digest = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
+        assert_eq!(
+            manager
+                .import_session(b"{}", &digest("subject-1"), &digest("user:subject-1"))
+                .await
+                .unwrap_err(),
+            "workos_import_input_invalid"
+        );
+        let path = Path::new(&manager.config.oidc_session_path);
+        assert!(!path.exists());
+        create_private(path, b"corrupt-session").unwrap();
+        let original = fs::read(path).unwrap();
+        assert_eq!(
+            manager
+                .import_session(b"{}", &digest("subject-1"), &digest("user:subject-1"))
+                .await
+                .unwrap_err(),
+            "oidc_session_invalid"
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
     }
 
     #[test]

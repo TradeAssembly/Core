@@ -1979,12 +1979,11 @@ mod tests {
         .is_err());
     }
 
-    fn oauth_fixture(alternatives: bool) -> (TradeAssemblyService, String) {
+    fn oauth_fixture(alternatives: bool) -> (tempfile::TempDir, TradeAssemblyService, String) {
         let nonce = rand::random::<u128>();
-        let database = std::env::temp_dir().join(format!(
-            "tradeassembly-oauth-lifecycle-{}-{nonce}.db",
-            std::process::id(),
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let database = root.join("runtime.db");
         let service = TradeAssemblyService::test_local(database.to_string_lossy().to_string());
         let plugin_ref = "fixture.oauth".to_string();
         let instance_ref = format!("fixture-instance-{nonce}");
@@ -2030,7 +2029,7 @@ mod tests {
             }),
         );
         assert_eq!(created.status, 200, "{created:?}");
-        (service, instance_ref)
+        (directory, service, instance_ref)
     }
 
     fn resolved(service: &TradeAssemblyService, instance_ref: &str) -> BTreeMap<String, String> {
@@ -2044,7 +2043,7 @@ mod tests {
 
     #[test]
     fn credential_alternatives_replace_atomically_and_reject_mixed_or_partial_values() {
-        let (service, instance_ref) = oauth_fixture(true);
+        let (_directory, service, instance_ref) = oauth_fixture(true);
         let pair = store_credentials(
             &service,
             &instance_ref,
@@ -2101,7 +2100,7 @@ mod tests {
 
     #[test]
     fn legacy_required_credentials_remain_backward_compatible() {
-        let (service, instance_ref) = oauth_fixture(false);
+        let (_directory, service, instance_ref) = oauth_fixture(false);
         let missing = store_credentials(
             &service,
             &instance_ref,
@@ -2118,7 +2117,7 @@ mod tests {
 
     #[test]
     fn authentication_method_is_generation_bound_and_only_exposes_safe_enum() {
-        let (service, instance_ref) = oauth_fixture(true);
+        let (_directory, service, instance_ref) = oauth_fixture(true);
         let missing = credential_status_for(&service, &instance_ref);
         assert_eq!(
             missing.body["credentialStatus"]["authenticationMethod"],
@@ -2184,7 +2183,7 @@ mod tests {
 
     #[test]
     fn oauth_lifecycle_projections_and_persisted_metadata_exclude_token_fragments() {
-        let (service, instance_ref) = oauth_fixture(true);
+        let (_directory, service, instance_ref) = oauth_fixture(true);
         let token = "Q7Vk_OAUTH_LIFECYCLE_CANARY_mN4p";
         let stored = store_credentials(
             &service,
@@ -2224,7 +2223,7 @@ mod tests {
 
     #[test]
     fn authentication_method_is_unavailable_when_post_store_metadata_write_fails() {
-        let (service, instance_ref) = oauth_fixture(true);
+        let (_directory, service, instance_ref) = oauth_fixture(true);
         let initial = store_credentials(
             &service,
             &instance_ref,

@@ -84,20 +84,7 @@ fn assemble(args: &[String], root: &Path) -> Result<PathBuf, String> {
             .map_err(|_| "bundle_binary_copy_failed")?;
     }
     let bitwarden_helper = root.join("scripts/bitwarden-session-exec");
-    if !bitwarden_helper.is_file() {
-        return Err("bitwarden_helper_missing".into());
-    }
-    fs::copy(
-        &bitwarden_helper,
-        destination.join("bin/tradeassembly-bitwarden"),
-    )
-    .map_err(|_| "bitwarden_helper_copy_failed")?;
-    #[cfg(unix)]
-    fs::set_permissions(
-        destination.join("bin/tradeassembly-bitwarden"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .map_err(|_| "bitwarden_helper_permission_failed")?;
+    copy_optional_bitwarden_helper(&bitwarden_helper, destination)?;
     unpack_node(
         &options["--node-archive"],
         &destination.join("runtime/node"),
@@ -373,6 +360,40 @@ fn copy_core_notices(root: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_optional_bitwarden_helper(helper: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(helper) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("bitwarden_helper_unreadable".into()),
+    };
+    if !metadata.file_type().is_file() {
+        return Err("bitwarden_helper_not_regular_file".into());
+    }
+    let root = helper.parent().ok_or("bitwarden_helper_path_invalid")?;
+    let canonical = helper
+        .canonicalize()
+        .map_err(|_| "bitwarden_helper_unreadable")?;
+    if !canonical.starts_with(
+        root.canonicalize()
+            .map_err(|_| "bitwarden_helper_path_invalid")?,
+    ) {
+        return Err("bitwarden_helper_path_escape".into());
+    }
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode();
+        if mode & 0o022 != 0 || mode & 0o111 == 0 {
+            return Err("bitwarden_helper_permissions_invalid".into());
+        }
+    }
+    let target = destination.join("bin/tradeassembly-bitwarden");
+    fs::copy(helper, &target).map_err(|_| "bitwarden_helper_copy_failed")?;
+    #[cfg(unix)]
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755))
+        .map_err(|_| "bitwarden_helper_permission_failed")?;
+    Ok(())
+}
+
 fn inventory(root: &Path) -> Result<BTreeMap<String, Value>, String> {
     let canonical = root.canonicalize().map_err(|_| "bundle_inventory_failed")?;
     let mut files = BTreeMap::new();
@@ -493,6 +514,41 @@ mod tests {
         assert!(verify_arm64(&file).is_err());
         assert!(verify_digest(&file, &"0".repeat(64)).is_err());
         verify_digest(&file, &digest(&file).unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn optional_bitwarden_helper_supports_absent_safe_and_unsafe_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts = root.path().join("scripts");
+        let destination = root.path().join("bundle");
+        fs::create_dir_all(destination.join("bin")).unwrap();
+        let helper = scripts.join("bitwarden-session-exec");
+        copy_optional_bitwarden_helper(&helper, &destination).unwrap();
+        assert!(!destination.join("bin/tradeassembly-bitwarden").exists());
+
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(&helper, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        copy_optional_bitwarden_helper(&helper, &destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("bin/tradeassembly-bitwarden")).unwrap(),
+            fs::read(&helper).unwrap()
+        );
+
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(
+            copy_optional_bitwarden_helper(&helper, &destination).unwrap_err(),
+            "bitwarden_helper_permissions_invalid"
+        );
+        fs::remove_file(&helper).unwrap();
+        let outside = root.path().join("outside-helper");
+        fs::write(&outside, b"#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(&outside, &helper).unwrap();
+        assert_eq!(
+            copy_optional_bitwarden_helper(&helper, &destination).unwrap_err(),
+            "bitwarden_helper_not_regular_file"
+        );
     }
 
     #[test]

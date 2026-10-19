@@ -1965,6 +1965,7 @@ impl TradeAssemblyService {
                 Ok(events) => ServiceResponse::ok(json!(events)),
                 Err(response) => response,
             },
+            ("GET", "/journal/cursor") => journal_view::cursor(self),
             ("GET", "/journal/export") => journal_view::export(self),
             ("POST", "/journal/replay") => replay::journal_replay(self),
             ("POST", "/journal/replay-report") => replay::journal_replay(self),

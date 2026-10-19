@@ -453,6 +453,8 @@ pub enum JournalCommand {
     Export,
     /// Replay owner-scoped journal events and return deterministic counts.
     Replay,
+    /// Return the authenticated owner's durable journal cursor.
+    Cursor,
 }
 
 #[derive(Subcommand)]
@@ -2154,6 +2156,11 @@ fn execute_command_with_agent(
             JournalCommand::Replay => {
                 service
                     .handle_http_from_source("cli", "POST", "/journal/replay-report", json!({}))
+                    .body
+            }
+            JournalCommand::Cursor => {
+                service
+                    .handle_http_from_source("cli", "GET", "/journal/cursor", json!({}))
                     .body
             }
         },

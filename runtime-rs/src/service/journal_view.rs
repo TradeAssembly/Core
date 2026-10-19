@@ -79,3 +79,34 @@ pub(super) fn export(service: &TradeAssemblyService) -> ServiceResponse {
         "events": events,
     }))
 }
+
+pub(super) fn cursor(service: &TradeAssemblyService) -> ServiceResponse {
+    let owner = match service.invocation_owner() {
+        Some(owner) => owner,
+        None => return ServiceResponse::error(401, "journal_owner_required", false),
+    };
+    let runtime = service.runtime();
+    let cursor = match runtime.journal.try_owner_cursor(&owner) {
+        Ok(Some(cursor)) => cursor,
+        Ok(None) => match runtime.journal.try_events() {
+            Ok(events) if events.is_empty() => crate::ports::journal::LocalArchiveCursor {
+                schema: "tradeassembly.local-archive-cursor.v1".to_string(),
+                stream: "local.journal".to_string(),
+                sequence: 0,
+                record_hash: format!("sha256:{:x}", Sha256::digest(b"[]")),
+                scope: "authenticated_owner".to_string(),
+            },
+            Ok(_) => return ServiceResponse::error(503, "journal_cursor_unavailable", true),
+            Err(_) => return ServiceResponse::error(503, "journal_read_unavailable", true),
+        },
+        Err(_) => return ServiceResponse::error(503, "journal_cursor_unavailable", true),
+    };
+    ServiceResponse::ok(json!({
+        "schema": cursor.schema,
+        "stream": cursor.stream,
+        "scope": cursor.scope,
+        "sequence": cursor.sequence,
+        "recordHash": cursor.record_hash,
+        "completeness": if cursor.sequence == 0 {"empty"} else {"available"}
+    }))
+}

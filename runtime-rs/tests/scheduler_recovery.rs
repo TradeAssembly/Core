@@ -1,9 +1,25 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use tradeassembly_runtime::ports::{
-    AuthorityContext, EventAppend, IdempotencyKey, OutboxRecord, ScheduledWork, SideEffectContext,
+    AuthorityContext, ClockPort, EventAppend, IdempotencyKey, OutboxRecord, PortDescriptor,
+    PortKind, ScheduledWork, SideEffectContext, VersionedPort,
 };
 use tradeassembly_runtime::service::TradeAssemblyService;
+
+struct RecoveryClock(i64);
+
+impl VersionedPort for RecoveryClock {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        vec![PortDescriptor::new(PortKind::Clock, "test.recovery-clock")]
+    }
+}
+
+impl ClockPort for RecoveryClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
 
 fn db(name: &str) -> String {
     format!(".tradeassembly/test-gc14-{name}-{}.db", std::process::id())
@@ -54,6 +70,10 @@ fn checkpoint_before_ack_recovers_without_repeating_the_tick() {
     let db = db("checkpoint-recovery");
     let _ = std::fs::remove_file(&db);
     let service = TradeAssemblyService::test_local(&db);
+    // Recovery tests lease ownership, not elapsed wall time under parallel load.
+    let mut runtime = (*service.runtime()).clone();
+    runtime.clock = Arc::new(RecoveryClock(runtime.clock.now_ms()));
+    let service = TradeAssemblyService::from_runtime(&db, runtime);
     let (activation_id, run) = activate(&service, "checkpoint");
     let checkpoint_id = format!("checkpoint_{}_1", activation_id.replace('-', "_"));
     let checkpoint_state = json!({

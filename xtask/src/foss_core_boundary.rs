@@ -753,7 +753,9 @@ impl Drop for ProcessGuard {
         // Each child owns a fresh process group; terminate build grandchildren too.
         #[cfg(unix)]
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &format!("-{}", self.child.id())])
+            // End option parsing before the negative process-group operand.
+            // GNU kill otherwise interprets it as another signal option.
+            .args(["-KILL", "--", &format!("-{}", self.child.id())])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

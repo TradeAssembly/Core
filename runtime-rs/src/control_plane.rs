@@ -1,30 +1,16 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use crate::control_plane_redaction::{is_sensitive_text, redact_sensitive_payload};
 use crate::finance_authority::FinanceAuthorityPort;
 use crate::ports::{AuthorityContext, IdempotencyKey, SideEffectContext, StoragePort};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const COMMAND_NS: &str = "control_plane_commands";
 pub const SEQUENCE_NS: &str = "control_plane_sequences";
 const SCHEMA_VERSION: &str = "tradeassembly.control_plane.command.v1";
-
-const SENSITIVE_KEYS: &[&str] = &[
-    "access_token",
-    "api_key",
-    "api_secret",
-    "authorization",
-    "bearer",
-    "client_secret",
-    "code_verifier",
-    "password",
-    "private_key",
-    "refresh_token",
-    "secret",
-    "token",
-];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlPlaneCommandEnvelope {
@@ -109,6 +95,22 @@ pub fn graphql_envelope(request: &Value) -> Result<ControlPlaneCommandEnvelope, 
 }
 
 pub fn mcp_envelope(name: &str, arguments: &Value) -> Result<ControlPlaneCommandEnvelope, String> {
+    // Each implicit OAuth poll must observe the provider again. It remains a
+    // protected credential command because a ready handoff installs credentials.
+    // The OAuth attempt lock/receipt makes that installation duplicate-safe;
+    // explicit caller keys still replay the exact invocation they identify.
+    let mut poll_arguments;
+    let arguments = if name == "tradeassembly.plugin.oauth.status"
+        && arguments.get("idempotency_key").is_none()
+        && arguments.get("idempotencyKey").is_none()
+    {
+        poll_arguments = arguments.clone();
+        poll_arguments["idempotency_key"] =
+            json!(format!("oauth-poll:{:032x}", rand::random::<u128>()));
+        &poll_arguments
+    } else {
+        arguments
+    };
     let command_name = mcp_command_name(name);
     let route_path = mcp_route_path(name, &command_name);
     let side_effect_class = if mcp_is_read(name) {
@@ -1214,6 +1216,7 @@ fn mcp_is_read(name: &str) -> bool {
         || name.ends_with(".report")
         || name.ends_with(".replay")
         || name == "tradeassembly.health"
+        || name == "tradeassembly.strategy.schema"
         || name == "tradeassembly.setup.status"
         || name == "tradeassembly.studio.link"
 }
@@ -1603,56 +1606,6 @@ fn graphql_is_mutation(request: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn redact_sensitive_payload(value: Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, value)| {
-                    if is_sensitive_key(&key) {
-                        (key, Value::String("[REDACTED]".to_string()))
-                    } else {
-                        (key, redact_sensitive_payload(value))
-                    }
-                })
-                .collect::<Map<_, _>>(),
-        ),
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(redact_sensitive_payload).collect())
-        }
-        Value::String(text) if is_sensitive_text(&text) => Value::String("[REDACTED]".to_string()),
-        other => other,
-    }
-}
-
-fn is_sensitive_key(key: &str) -> bool {
-    let normalized = key.replace('-', "_").to_ascii_lowercase();
-    let compact = normalized.replace('_', "");
-    SENSITIVE_KEYS.contains(&normalized.as_str())
-        || normalized.ends_with("_token")
-        || normalized.ends_with("_secret")
-        || compact.contains("token")
-        || compact.contains("secret")
-        || compact == "apikey"
-        || compact == "privatekey"
-        || compact == "authorizationurl"
-        || compact == "handoffverifier"
-        || compact == "verifier"
-}
-
-fn is_sensitive_text(value: &str) -> bool {
-    let normalized = value.to_ascii_lowercase();
-    normalized.contains("api_secret")
-        || normalized.contains("apisecret")
-        || normalized.contains("api_key")
-        || normalized.contains("apikey")
-        || normalized.contains("access_key")
-        || normalized.contains("private_key")
-        || normalized.contains("password")
-        || normalized.contains("secret")
-        || normalized.contains("token")
-        || normalized.contains("bearer ")
-}
-
 fn hash_json(value: &Value) -> Result<String, String> {
     let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     Ok(hash_bytes(&bytes))
@@ -1681,6 +1634,44 @@ mod tests {
     use crate::finance_authority::TestFinanceAuthority;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn oauth_status_poll_does_not_replay_pending_response() {
+        let directory = tempdir().unwrap();
+        let storage = LocalSqliteStorage::new(directory.path().join("poll.db").to_string_lossy());
+        let args = json!({"instanceRef":"alpaca-paper","connectionId":"connection"});
+        let first = mcp_envelope("tradeassembly.plugin.oauth.status", &args).unwrap();
+        assert_eq!(first.command_name, "credential.store");
+        assert_ne!(first.side_effect_class, "read");
+        prepare_command(&storage, &TestFinanceAuthority, first.clone()).unwrap();
+        complete_command_with_body(
+            &storage,
+            &TestFinanceAuthority,
+            &first,
+            200,
+            Some(json!({"status":"pending"})),
+        )
+        .unwrap();
+        let next = mcp_envelope("tradeassembly.plugin.oauth.status", &args).unwrap();
+        assert_eq!(first.authority, next.authority);
+        let next = prepare_command(&storage, &TestFinanceAuthority, next).unwrap();
+        assert!(
+            !next.duplicate,
+            "a fresh poll must reach the relay instead of replaying pending"
+        );
+        for key in ["idempotency_key", "idempotencyKey"] {
+            let mut explicit = args.clone();
+            explicit[key] = json!("explicit-poll");
+            assert_eq!(
+                mcp_envelope("tradeassembly.plugin.oauth.status", &explicit)
+                    .unwrap()
+                    .command_id,
+                mcp_envelope("tradeassembly.plugin.oauth.status", &explicit)
+                    .unwrap()
+                    .command_id
+            );
+        }
+    }
 
     fn plugin_package_body(locator: &str, offline: bool) -> Value {
         json!({

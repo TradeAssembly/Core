@@ -1,5 +1,6 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use super::plugin_submission_failure::{self, Phase};
 use crate::ports::{
     BrokerSubmissionPort, ClockPort, CredentialPort, FailureMode, ImmutablePutOutcome,
     PluginOperationPort, PluginOperationRequest, PluginOperationResponse, PluginPackagePort,
@@ -26,12 +27,14 @@ pub(crate) const RESET_NAMESPACES: &[&str] = &[
     BROKER_DENIAL_NS,
     RECOVERY_REQUESTS_NS,
     RECOVERY_OUTCOMES_NS,
+    plugin_submission_failure::NAMESPACE,
 ];
 
 pub struct LocalPluginOperations {
     storage: Arc<dyn StoragePort>,
     external: Option<crate::adapters::external_plugin_host::ExternalPluginHost>,
     broker_boundary: Option<Arc<dyn BrokerSubmissionPort>>,
+    checkpoint_dir: Option<std::path::PathBuf>,
 }
 
 impl LocalPluginOperations {
@@ -40,6 +43,8 @@ impl LocalPluginOperations {
             storage,
             external: None,
             broker_boundary: None,
+            checkpoint_dir: std::env::var_os("TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR")
+                .map(Into::into),
         }
     }
 
@@ -63,11 +68,19 @@ impl LocalPluginOperations {
                 ),
             ),
             broker_boundary: None,
+            checkpoint_dir: std::env::var_os("TRADEASSEMBLY_EXECUTION_CHECKPOINT_DIR")
+                .map(Into::into),
         }
     }
 
     pub fn with_broker_boundary(mut self, boundary: Arc<dyn BrokerSubmissionPort>) -> Self {
         self.broker_boundary = Some(boundary);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_checkpoint_directory(mut self, root: std::path::PathBuf) -> Self {
+        self.checkpoint_dir = Some(root);
         self
     }
 
@@ -121,6 +134,16 @@ impl VersionedPort for LocalPluginOperations {
 }
 
 impl PluginOperationPort for LocalPluginOperations {
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        if self.external.is_none() {
+            return Err("external_broker_host_unavailable".into());
+        }
+        self.broker_boundary
+            .as_ref()
+            .ok_or_else(|| "broker_submission_boundary_unavailable".to_string())?
+            .verify_available()
+    }
+
     fn recover_ambiguous_broker_order(
         &self,
         plan: &crate::broker_submission::BrokerOrderRecoveryPlan,
@@ -184,6 +207,9 @@ impl PluginOperationPort for LocalPluginOperations {
                 json!({"state":"found", "originalKey":plan.original_key, "response":response})
             }
             // Do not persist provider diagnostics or credentials in failure evidence.
+            Err(error) if error == "plugin_operation_failed:provider_order_absent" => {
+                json!({"state":"absent", "originalKey":plan.original_key})
+            }
             Err(_) => json!({"state":"unresolved", "originalKey":plan.original_key}),
         };
         if self
@@ -219,7 +245,7 @@ impl PluginOperationPort for LocalPluginOperations {
         validate_request(request)?;
         // An unavailable boundary has made no attempt. Do not create a
         // dispatch claim that would turn its next retry into an ambiguity.
-        if is_live_submission(request) && self.broker_boundary.is_none() {
+        if is_guarded_submission(request) && self.broker_boundary.is_none() {
             return Err("plugin_operation_mode_unsupported".into());
         }
         let mut hash_request = serde_json::to_value(request)
@@ -257,12 +283,17 @@ impl PluginOperationPort for LocalPluginOperations {
                     .map_err(|_| "plugin_request_binding_invalid".to_string())?,
             },
         });
-        if self.storage.put_json_if_absent(
-            REQUESTS_NS,
-            receipt_key,
-            request_record.clone(),
-            context,
-        )? == ImmutablePutOutcome::AlreadyPresent
+        if self
+            .storage
+            .put_json_if_absent(REQUESTS_NS, receipt_key, request_record.clone(), context)
+            .map_err(|error| {
+                if error == "immutable_storage_conflict" {
+                    "plugin_operation_idempotency_conflict".to_string()
+                } else {
+                    error
+                }
+            })?
+            == ImmutablePutOutcome::AlreadyPresent
         {
             let existing = self
                 .storage
@@ -291,7 +322,7 @@ impl PluginOperationPort for LocalPluginOperations {
 
         let broker_submission = request.operation_id.starts_with("broker.")
             || request.capability.starts_with("broker.");
-        let live_submission = is_live_submission(request);
+        let guarded_submission = is_guarded_submission(request);
         if broker_submission {
             // A request record is not an exclusive dispatch claim. A matching
             // concurrent call, or a restart after an uncertain effect, must not
@@ -356,7 +387,7 @@ impl PluginOperationPort for LocalPluginOperations {
             }
         };
 
-        let permit = if live_submission {
+        let permit = if guarded_submission {
             let Some(boundary) = self.broker_boundary.as_ref() else {
                 self.record_terminal_denial(
                     receipt_key,
@@ -387,6 +418,30 @@ impl PluginOperationPort for LocalPluginOperations {
             None
         };
 
+        if permit.is_some() {
+            if let Some(root) = &self.checkpoint_dir {
+                crate::adapters::execution_checkpoint::barrier(
+                    root,
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    request,
+                )?;
+                self.broker_boundary
+                    .as_ref()
+                    .ok_or("broker_boundary_missing")?
+                    .revalidate_after_checkpoint(
+                        request,
+                        context,
+                        &external_prepared
+                            .as_ref()
+                            .ok_or("prepared_binding_missing")?
+                            .binding,
+                        permit.as_ref().ok_or("broker_permit_missing")?,
+                    )?;
+            }
+        }
+
         let response = match (request.plugin_ref.as_str(), request.operation_id.as_str()) {
             ("tradeassembly.simbroker", "marketdata.quote.read") => quote(request),
             ("tradeassembly.simbroker", "marketdata.bars.read")
@@ -405,15 +460,31 @@ impl PluginOperationPort for LocalPluginOperations {
         };
         let mut response = match response {
             Ok(response) => response,
-            Err(_) if broker_submission => {
-                return Err("plugin_order_reconciliation_required".into())
+            Err(error) if broker_submission => {
+                plugin_submission_failure::record(
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    Phase::Execution,
+                    &error,
+                    context,
+                );
+                return Err("plugin_order_reconciliation_required".into());
             }
             Err(error) => return Err(error),
         };
         if !response.reconciliation_required {
             if let (Some(boundary), Some(permit)) = (self.broker_boundary.as_ref(), permit.as_ref())
             {
-                if boundary.complete(permit, &response).is_err() {
+                if let Err(error) = boundary.complete(permit, &response) {
+                    plugin_submission_failure::record(
+                        self.storage.as_ref(),
+                        receipt_key,
+                        &request_hash,
+                        Phase::Completion,
+                        &error,
+                        context,
+                    );
                     return Err("plugin_order_reconciliation_required".into());
                 }
             }
@@ -444,7 +515,17 @@ impl PluginOperationPort for LocalPluginOperations {
         if broker_submission {
             // The sink already ran. A missing/invalid durable receipt cannot be
             // reported as an ordinary failed submission that is safe to retry.
-            persisted.map_err(|_| "plugin_order_reconciliation_required".to_string())
+            persisted.map_err(|error| {
+                plugin_submission_failure::record(
+                    self.storage.as_ref(),
+                    receipt_key,
+                    &request_hash,
+                    Phase::Persistence,
+                    &error,
+                    context,
+                );
+                "plugin_order_reconciliation_required".to_string()
+            })
         } else {
             persisted
         }
@@ -467,9 +548,13 @@ fn validated_stored_response(
 }
 
 fn validate_request(request: &PluginOperationRequest) -> Result<(), String> {
-    if request.operation_id == "broker.order_lookup"
-        || request.capability == "broker.order_lookup.live"
-    {
+    if matches!(
+        request.operation_id.as_str(),
+        "broker.order_lookup" | "broker.order_lookup.paper"
+    ) || matches!(
+        request.capability.as_str(),
+        "broker.order_lookup.live" | "broker.order_lookup.paper"
+    ) {
         return Err("broker_order_recovery_plan_required".into());
     }
     if [
@@ -543,6 +628,15 @@ fn is_live_submission(request: &PluginOperationRequest) -> bool {
         && request.capability == "broker.order_submit.live"
         && request.operation_id == "broker.live_order_submit"
         && request.purpose == "live_order_submission"
+}
+
+fn is_guarded_submission(request: &PluginOperationRequest) -> bool {
+    is_live_submission(request)
+        || (request.mode == "paper"
+            && request.capability == "broker.order_submit.paper"
+            && request.operation_id == "broker.paper_order_submit"
+            && request.purpose == "paper_trading"
+            && request.plugin_ref != "tradeassembly.simbroker")
 }
 
 fn contains_secret_shaped_field(value: &Value) -> bool {

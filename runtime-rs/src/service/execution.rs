@@ -52,6 +52,9 @@ pub(crate) const RESET_NAMESPACES: &[&str] = &[
     CONTROL_OUTCOMES_NS,
     HEALTH_NS,
     STATE_NS,
+    "execution_pending_original_cycles",
+    "execution_original_cycle_recoveries",
+    "execution_original_cycle_recovery_commands",
 ];
 
 pub(crate) fn evaluate_tick_response(
@@ -77,6 +80,12 @@ pub(crate) fn evaluate_tick_response(
             json!({"activationId": activation_id, "failClosed": true}),
         );
     };
+    if external_agent(&run) || external_agent(&activation) {
+        return ServiceResponse::conflict_with_details(
+            "external_agent_evaluation_required",
+            json!({"activationId":activation_id,"failClosed":true}),
+        );
+    }
     if activation["state"].as_str() != Some("active")
         || activation["mode"] != run["mode"]
         || (run["mode"] == "live" && activation["localLiveAuthority"] != run["localLiveAuthority"])
@@ -340,8 +349,17 @@ pub(crate) fn evaluate_tick_response(
             else {
                 return invalid_plugin_evidence("broker_plugin_binding_missing");
             };
-            let client_order_id = format!("{activation_id}:{tick_id}:{side}");
-            let plugin_request = PluginOperationRequest {
+            let external_broker = broker_binding["pluginRef"] != "tradeassembly.simbroker";
+            let original_order_identity = format!("{activation_id}:{tick_id}:{side}");
+            let client_order_id = if external_broker {
+                format!(
+                    "ta-{}",
+                    &format!("{:x}", Sha256::digest(original_order_identity.as_bytes()))[..48]
+                )
+            } else {
+                original_order_identity
+            };
+            let mut plugin_request = PluginOperationRequest {
                 correlation_id: correlation_id_for_run(&run),
                 plugin_instance_ref: broker_binding["pluginInstanceRef"]
                     .as_str()
@@ -400,6 +418,70 @@ pub(crate) fn evaluate_tick_response(
                 }),
                 evidence_refs: observation.evidence_refs.clone(),
             };
+            if external_broker {
+                // Provider admission consumes a fresh, bound quote. A strategy
+                // bar is not interchangeable with risk-price evidence.
+                let Some(quote_binding) =
+                    selected_binding(&run, "marketdata.quote", "marketdata.quote.read")
+                else {
+                    return invalid_plugin_evidence("broker_risk_quote_binding_missing");
+                };
+                let mut quote_request = plugin_request.clone();
+                quote_request.plugin_instance_ref = quote_binding["pluginInstanceRef"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into();
+                quote_request.plugin_ref = quote_binding["pluginRef"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into();
+                quote_request.manifest_fingerprint = quote_binding["manifestFingerprint"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into();
+                quote_request.operation_id = "marketdata.quote.read".into();
+                quote_request.capability = "marketdata.quote".into();
+                quote_request.account_ref =
+                    quote_binding["accountRef"].as_str().map(str::to_string);
+                quote_request.input =
+                    json!({"symbol":intent.symbol,"assetClass":run["assetClass"]});
+                quote_request.evidence_refs.clear();
+                let quote_context = SideEffectContext::new(
+                    AuthorityContext {
+                        actor: "local-user".into(),
+                        surface: "scheduler".into(),
+                        account_mode: mode.clone(),
+                    },
+                    IdempotencyKey::new(format!(
+                        "execution:{activation_id}:tick:{tick_id}:risk-quote"
+                    ))
+                    .expect("valid quote key"),
+                );
+                let quote = match service
+                    .runtime()
+                    .plugin_operations
+                    .invoke(&quote_request, &quote_context)
+                {
+                    Ok(quote) => quote,
+                    Err(_) => return ServiceResponse::bad_gateway("broker_risk_quote_unavailable"),
+                };
+                plugin_request.evidence_refs = quote.evidence_refs;
+                plugin_request.input = json!({"symbol":intent.symbol,"side":side,"quantityMicros":intent.quantity,
+                    "orderType":"market","timeInForce":if run["assetClass"] == "crypto" {"gtc"} else {"day"},
+                    "clientOrderId":client_order_id});
+                let canonical = match crate::broker_order_intent::CanonicalBrokerOrder::from_input(
+                    &plugin_request.input,
+                ) {
+                    Ok(canonical) => canonical,
+                    Err(_) => return invalid_plugin_evidence("broker_order_input_invalid"),
+                };
+                plugin_request
+                    .input
+                    .as_object_mut()
+                    .expect("order input")
+                    .remove("quantityMicros");
+                plugin_request.input["quantity"] = json!(canonical.canonical_quantity());
+            }
             order_intent = json!({
                 "clientOrderId": client_order_id,
                 "symbol": intent.symbol,
@@ -466,6 +548,40 @@ pub(crate) fn evaluate_tick_response(
                 "sourceObservationId": source_event_id,
                 "pluginOperationRequest": plugin_request,
             });
+            let pending_context = SideEffectContext::new(
+                AuthorityContext::local_cli(),
+                IdempotencyKey::new(format!("pending-original:{order_idempotency}"))
+                    .expect("valid pending key"),
+            );
+            let pending = json!({
+                "schemaVersion":"tradeassembly.pending_original_cycle.v1",
+                "originalIdempotencyKey":order_idempotency,
+                "run":run, "activation":activation, "body":body,
+                "decision":decision, "orderIntent":order_intent, "orderRequest":order_request,
+                "sourceObservationId":source_event_id, "observedAtMs":observation.observed_at_ms,
+                "attempt":get(service, ATTEMPTS_NS, &plugin_request.attempt_id),
+                "scheduler":get(service, STATE_NS, "current")
+            });
+            match service.runtime().storage.put_json_if_absent(
+                "execution_pending_original_cycles",
+                &order_idempotency,
+                pending.clone(),
+                &pending_context,
+            ) {
+                Ok(ImmutablePutOutcome::Created) => {}
+                Ok(ImmutablePutOutcome::AlreadyPresent)
+                    if get(
+                        service,
+                        "execution_pending_original_cycles",
+                        &order_idempotency,
+                    ) == Some(pending) => {}
+                _ => {
+                    return ServiceResponse::conflict_with_details(
+                        "original_cycle_persistence_failed",
+                        json!({"failClosed":true}),
+                    )
+                }
+            }
             order_result = orders::run_once(service, order_request.clone());
             if order_result["status"].as_str() == Some("failed") {
                 let ambiguity = json!({
@@ -938,6 +1054,25 @@ fn quantity_value(quantity_micros: i64) -> f64 {
 }
 
 pub(crate) fn save_config(service: &TradeAssemblyService, body: Value) -> Value {
+    if body
+        .get("orchestrator")
+        .is_some_and(|value| !matches!(value.as_str(), Some("deterministic" | "external_agent")))
+    {
+        return json!({"status":"blocked","error":{"code":"execution_orchestrator_invalid"}});
+    }
+    let mut universe_request = body.clone();
+    if let Some(symbols) = body.get("allowed_symbols") {
+        if body
+            .get("allowedSymbols")
+            .is_some_and(|other| other != symbols)
+        {
+            return json!({"status":"blocked","error":{"code":"execution_universe_alias_conflict"}});
+        }
+        universe_request["allowedSymbols"] = symbols.clone();
+    }
+    if let Err(code) = crate::broker_submission::validate_execution_universe(&universe_request) {
+        return json!({"status":"blocked","error":{"code":code}});
+    }
     let requested_strategy_id = string_field(&body, &["strategyId", "strategy_id"])
         .unwrap_or_else(|| "strat_local_btc_demo".to_string());
     if let Err(response) = service.require_object("strategy", &requested_strategy_id) {
@@ -1014,6 +1149,7 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
             .to_string()
     });
     let mode = execution_mode_from(body);
+    let orchestrator = body["orchestrator"].as_str().unwrap_or("deterministic");
     let account_ref = string_field(body, &["accountRef", "account_ref"]);
     let data_provider_ref = string_field(body, &["dataProviderRef", "data_provider_ref"])
         .unwrap_or_else(|| provider_ref.clone());
@@ -1023,13 +1159,22 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
                 .then(|| account_ref.clone())
                 .flatten()
         });
+    let allowed_symbols = body
+        .get("allowedSymbols")
+        .or_else(|| body.get("allowed_symbols"));
     let symbol = string_field(body, &["symbol"])
         .or_else(|| {
             body.pointer("/params/symbol")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| strategy["symbol"].as_str().unwrap_or("BTC/USD").to_string());
+        .unwrap_or_else(|| {
+            if allowed_symbols.is_some() {
+                String::new()
+            } else {
+                strategy["symbol"].as_str().unwrap_or("BTC/USD").to_string()
+            }
+        });
     let timeframe = string_field(body, &["timeframe"])
         .or_else(|| {
             body.pointer("/params/timeframe")
@@ -1066,17 +1211,21 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         });
     let legal_receipt_ref = string_field(body, &["legalReceiptRef", "legal_receipt_ref"]);
     let responsible_human = service.responsible_human_identity();
+    let universe_suffix = allowed_symbols
+        .map(|symbols| format!(":{symbols}"))
+        .unwrap_or_default();
     let config_id = string_field(body, &["configId", "config_id"]).unwrap_or_else(|| {
         format!(
             "cfg_{}",
             short_hash(&format!(
-                "{strategy_id}:{version_id}:{provider_ref}:{data_provider_ref}:{mode}:{account_ref:?}:{data_account_ref:?}:{symbol}:{timeframe}:{calendar_ref:?}:{scheduler_interval_seconds}:{legal_receipt_ref:?}:{responsible_human:?}"
+                "{strategy_id}:{version_id}:{provider_ref}:{data_provider_ref}:{mode}:{account_ref:?}:{data_account_ref:?}:{symbol}:{timeframe}:{calendar_ref:?}:{scheduler_interval_seconds}:{legal_receipt_ref:?}:{responsible_human:?}:{orchestrator}{universe_suffix}"
             ))
         )
     });
     let mut config = json!({
         "schemaVersion": "tradeassembly.execution_config.v1",
         "kind": "StrategyExecutionConfig",
+        "orchestrator": orchestrator,
         "id": config_id,
         "configId": config_id,
         "strategyId": strategy_id,
@@ -1102,7 +1251,7 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         },
         "warmup": {
             "requiredBars": 0,
-            "source": "compiled_strategy_kernel",
+            "source": if orchestrator == "external_agent" { "external_agent" } else { "compiled_strategy_kernel" },
         },
         "riskLimits": risk_limits,
         "risk_limits": risk_limits,
@@ -1138,6 +1287,9 @@ fn build_config(service: &TradeAssemblyService, body: &Value, persist_revision: 
         "status": "configured",
         "noAdvice": LEGAL_BOUNDARY,
     });
+    if let Some(symbols) = allowed_symbols {
+        config["allowedSymbols"] = symbols.clone();
+    }
     let revision = if persist_revision {
         capability_graph::save_execution_revision(service, body, &config)
     } else {
@@ -1169,11 +1321,22 @@ pub(crate) fn activation_readiness(service: &TradeAssemblyService, body: Value) 
         Ok(config) => config,
         Err(response) => return object_unavailable(response),
     };
-    let mut readiness = readiness_for_config(service, &config);
-    if config["mode"] == "live"
+    let authority = if config["mode"] == "live"
         && (body.get("localLiveMandateId").is_some() || body.get("local_live_mandate_id").is_some())
     {
-        match super::live_authorization::activation_authority(service, &config, &body) {
+        Some(super::live_authorization::activation_authority(
+            service, &config, &body,
+        ))
+    } else {
+        None
+    };
+    let mut readiness = readiness_for_config_with_authority(
+        service,
+        &config,
+        authority.as_ref().is_some_and(Result::is_ok),
+    );
+    if let Some(authority) = authority {
+        match authority {
             Ok(authority) => readiness["localLiveAuthority"] = authority,
             Err(response) => {
                 readiness["ready"] = json!(false);
@@ -1245,7 +1408,8 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     } else {
         Value::Null
     };
-    let readiness = readiness_for_config(service, &config);
+    let readiness =
+        readiness_for_config_with_authority(service, &config, !live_authority.is_null());
     if !readiness["ready"].as_bool().unwrap_or(false) {
         return activation_blocked_response(readiness);
     }
@@ -1355,7 +1519,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "timeframe": config["timeframe"],
         "calendarRef": config["calendarRef"],
         "cursor": 0,
-        "state": "active",
+        "state": if external_agent(&config) { "externally_managed" } else { "active" },
     });
     let reconciliation = json!({
         "schemaVersion": "tradeassembly.execution_reconciliation.v1",
@@ -1371,6 +1535,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     let activation_record = json!({
         "schemaVersion": "tradeassembly.activation_record.v1",
         "kind": "ActivationRecord",
+        "orchestrator": orchestrator_kind(&config),
         "localLiveAuthority": live_authority,
         "activationId": activation_id,
         "correlationId": correlation_id,
@@ -1451,6 +1616,8 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "warnings": [LEGAL_BOUNDARY, "Local-only execution evidence remains on this device unless exported."],
     });
     run["localLiveAuthority"] = live_authority;
+    run["orchestrator"] = json!(orchestrator_kind(&config));
+    run["immutableInput"]["orchestrator"] = json!(orchestrator_kind(&config));
     run["correlationId"] = json!(correlation_id);
     run["health"]["correlationId"] = json!(correlation_id);
     run["calendarRef"] = config["calendarRef"].clone();
@@ -1458,6 +1625,10 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     run["dataFreshnessPolicy"] = config["dataFreshnessPolicy"].clone();
     run["checkpointHash"] = checkpoint["checkpointHash"].clone();
     run["watchRefs"] = json!([watch_id]);
+    if external_agent(&config) {
+        run["health"]["status"] = json!("awaiting_external_agent");
+        run["replayRefs"][0]["deterministic"] = json!(false);
+    }
     let interval_seconds = config["schedulerIntervalSeconds"]
         .as_u64()
         .unwrap_or(60)
@@ -1588,7 +1759,6 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         ),
         write(RUNS_NS, &run_id, run.clone(), "run"),
         write(HEALTH_NS, &activation_id, run["health"].clone(), "health"),
-        write(STATE_NS, "current", scheduler.clone(), "scheduler"),
         write(
             TRUSTED_CLOCK_NS,
             ACTIVATION_CLOCK_KEY,
@@ -1596,6 +1766,9 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
             "clock",
         ),
     ];
+    if !external_agent(&config) {
+        writes.push(write(STATE_NS, "current", scheduler.clone(), "scheduler"));
+    }
     let mut expectations = vec![StorageExpectation::new(
         TRUSTED_CLOCK_NS,
         ACTIVATION_CLOCK_KEY,
@@ -1663,7 +1836,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
     if service
         .runtime()
         .evidence
-        .append(EvidenceRecord {
+        .append_verified(EvidenceRecord {
             evidence_id,
             evidence_type: "execution.activation.commit_authorized".to_string(),
             aggregate_id: activation_id.clone(),
@@ -1713,6 +1886,11 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
             return activation_dependency_failure("activation_commit_conflict");
         }
         Err(_) => return activation_dependency_failure("activation_storage_unavailable"),
+    }
+    if external_agent(&config) {
+        let mut response = activation_response(service, run, false);
+        response["scheduler"] = json!({"running":false,"state":"external_agent","publicationStatus":"not_applicable","continuousExecution":false});
+        return response;
     }
     let schedule_published =
         schedule_execution_tick(service, &activation_id, next_cycle, now_ms).is_ok();
@@ -2066,6 +2244,7 @@ pub(crate) fn control(service: &TradeAssemblyService, body: Value) -> Value {
     if matches!(action.as_str(), "stop" | "emergency_stop") {
         stop_scheduler_for_activation(service, &activation_id);
     } else if action == "resume_entries"
+        && !external_agent(&run)
         && matches!(
             prior_run_state.as_str(),
             Some("stopped" | "emergency_stopped")
@@ -3184,6 +3363,14 @@ fn sorted_execution_runs(service: &TradeAssemblyService, strategy_id: Option<&st
 }
 
 fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value {
+    readiness_for_config_with_authority(service, config, false)
+}
+
+fn readiness_for_config_with_authority(
+    service: &TradeAssemblyService,
+    config: &Value,
+    mandate_verified: bool,
+) -> Value {
     let mode = config["mode"]
         .as_str()
         .unwrap_or("paper")
@@ -3240,9 +3427,13 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
     let strategy_hash_matches = strategy_version
         .as_ref()
         .is_some_and(|version| hash_strategy_spec(&version["spec"]) == config["strategySpecHash"]);
-    let strategy_executable = strategy_version
-        .as_ref()
-        .is_some_and(|version| CompiledStrategy::compile_json(&version["spec"]).is_ok());
+    let strategy_executable = strategy_version.as_ref().is_some_and(|version| {
+        if external_agent(config) {
+            crate::spec::validate_strategy_spec_report(&version["spec"]).valid
+        } else {
+            CompiledStrategy::compile_json(&version["spec"]).is_ok()
+        }
+    });
     let market_data_ready = selected_capability(&capability_resolution, "market_data.bars.read@1");
     let calendar_ready = selected_capability(&capability_resolution, "calendar.session.resolve@1")
         && config["calendarRef"]
@@ -3258,7 +3449,7 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
     );
     let entitlement_ready = required_selections_are_entitled(&capability_resolution);
     let account_bindings_ready = required_account_bindings_present(&capability_resolution);
-    let identity_ready = service
+    let oidc_identity_ready = service
         .runtime()
         .identity
         .descriptors()
@@ -3269,6 +3460,31 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
                 .iter()
                 .any(|capability| capability == "oidc.session.resolve")
         });
+    let local_owner_ready =
+        service
+            .responsible_human_identity()
+            .is_some_and(|(issuer, subject)| {
+                issuer == "local-owner"
+                    && service
+                        .runtime()
+                        .clock
+                        .trusted_now_ms()
+                        .ok()
+                        .is_some_and(|now| {
+                            service
+                                .runtime()
+                                .identity
+                                .resolve(subject, now)
+                                .ok()
+                                .is_some_and(|claims| {
+                                    claims.issuer == issuer
+                                        && claims.subject == subject
+                                        && claims.assurance.as_deref() == Some("local-process")
+                                        && claims.expires_at_ms > now
+                                })
+                        })
+            });
+    let identity_ready = oidc_identity_ready || local_owner_ready;
     let freshness_ready = config["dataFreshnessPolicy"]["maxAgeMs"]
         .as_u64()
         .is_some_and(|max_age_ms| max_age_ms > 0);
@@ -3277,6 +3493,23 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
     let legal_receipt = live.then(|| verify_live_legal_receipt(service, config));
     let legal_receipt_ready = legal_receipt.as_ref().is_some_and(|result| result.is_ok());
     let mut checks = vec![
+        check(
+            "execution_universe_valid",
+            "Explicit instrument universe is valid for its orchestration owner",
+            crate::broker_submission::validate_execution_universe(config).is_ok(),
+            true,
+            "execution.allowedSymbols",
+        ),
+        check(
+            "execution_orchestrator_supported",
+            "Recognized orchestration owner",
+            matches!(
+                orchestrator_kind(config),
+                "deterministic" | "external_agent"
+            ),
+            true,
+            "execution.orchestrator",
+        ),
         check(
             "execution_mode_supported",
             "Recognized execution mode",
@@ -3293,10 +3526,18 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         ),
         check(
             "strategy_spec_executable",
-            "StrategySpec compiles through the shared execution kernel",
+            if external_agent(config) {
+                "Owner-published StrategySpec is structurally valid; external agent owns evaluation"
+            } else {
+                "StrategySpec compiles through the shared execution kernel"
+            },
             strategy_executable,
             true,
-            "strategy.compiler",
+            if external_agent(config) {
+                "strategy.schema"
+            } else {
+                "strategy.compiler"
+            },
         ),
         check(
             "capability_graph_revision",
@@ -3308,9 +3549,11 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         check(
             "symbol_tradable",
             "Instrument identity present",
-            config["symbol"]
+            if config.get("allowedSymbols").is_some() {
+                crate::broker_submission::validate_execution_universe(config).is_ok()
+            } else { config["symbol"]
                 .as_str()
-                .is_some_and(|value| !value.trim().is_empty()),
+                .is_some_and(|value| !value.trim().is_empty()) },
             true,
             "instrument.resolve",
         ),
@@ -3344,14 +3587,18 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         ),
         check(
             "warmup_available",
-            "Compiled strategy warmup requirements resolved",
+            if external_agent(config) {
+                "External agent owns signal warmup; Core does not attest agent evaluation"
+            } else {
+                "Compiled strategy warmup requirements resolved"
+            },
             warmup_ready,
             true,
             "runtime.warmup",
         ),
         check(
             "risk_limits",
-            "Positive finite risk limits set",
+            "Positive finite risk limits set; Live controls must be supported by the broker boundary",
             risk_limits_ready,
             true,
             "risk.limits",
@@ -3381,10 +3628,14 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         ),
         check(
             "local_identity",
-            "OIDC identity adapter configured",
+            "OIDC adapter configured or authenticated installation owner verified",
             identity_ready,
             true,
-            "identity.oidc",
+            if local_owner_ready {
+                "identity.local_owner"
+            } else {
+                "identity.oidc"
+            },
         ),
     ];
     if live {
@@ -3393,6 +3644,13 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
             capability_ready,
             legal_receipt_ready,
             live_credential_posture(service, &capability_resolution),
+            service
+                .runtime()
+                .plugin_operations
+                .verify_broker_boundary()
+                .is_ok(),
+            mandate_verified,
+            service.runtime().evidence.verify_durable().is_ok(),
         ));
     }
     let mut blocked = checks
@@ -3413,8 +3671,15 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
         }
     }
     let live_preflight = if live {
-        let mut preflight =
-            live_preflight_report(config, &capability_resolution, &checks, &blocked);
+        let mut preflight = live_preflight_report(
+            config,
+            &capability_resolution,
+            &checks,
+            &blocked,
+            service
+                .runtime_manifest()
+                .is_some_and(|manifest| manifest.profile == "local"),
+        );
         if let Some(cloud_blocked) = preflight["cloudProfile"]["blockedReasons"].as_array() {
             for reason in cloud_blocked.iter().filter_map(Value::as_str) {
                 let prefixed = format!("cloud_{reason}");
@@ -3453,6 +3718,9 @@ fn readiness_for_config(service: &TradeAssemblyService, config: &Value) -> Value
             Err(failure) => json!({"status": "blocked", "reason": failure.code()}),
         }),
         "localOnlyDurabilityWarning": "Legal and audit evidence is stored locally unless exported.",
+        "riskLimitsError": if live {
+            crate::broker_submission::validate_order_limits(&config["riskLimits"]).err()
+        } else { None },
     });
     if let Some(live_preflight) = live_preflight {
         readiness["livePreflight"] = live_preflight;
@@ -3512,6 +3780,9 @@ fn valid_execution_risk_limits(config: &Value) -> bool {
     let Some(limits) = limits.filter(|value| value.is_object()) else {
         return false;
     };
+    if config["mode"] == "live" {
+        return crate::broker_submission::validate_order_limits(limits).is_ok();
+    }
     ["max_notional", "max_order_quantity"].iter().all(|field| {
         limits[*field]
             .as_f64()
@@ -3610,6 +3881,9 @@ fn live_activation_checks(
     capability_ready: bool,
     legal_receipt_ready: bool,
     credential_posture_ready: bool,
+    broker_boundary_available: bool,
+    mandate_verified: bool,
+    durable_evidence_ready: bool,
 ) -> Vec<Value> {
     let kill_switch_ready = config["killSwitch"]["emergencyStop"]
         .as_bool()
@@ -3631,10 +3905,10 @@ fn live_activation_checks(
         ),
         check(
             "hosted_evidence_policy",
-            "Hosted or external evidence receipt policy",
-            false,
+            "Durable local evidence available; activation receipt required at commit",
+            durable_evidence_ready,
             true,
-            "evidence.hosted_or_external",
+            "evidence.durable_activation_receipt",
         ),
         check(
             "live_credential_posture",
@@ -3673,22 +3947,22 @@ fn live_activation_checks(
         ),
         check(
             "downstream_pep_coverage_c5",
-            "C5 downstream broker authority coverage",
-            false,
+            "Enforcing C5 broker dispatch path available; order authorization still required",
+            broker_boundary_available,
             true,
             "broker.pep_coverage.c5",
         ),
         check(
             "confirm_before_send",
-            "Human confirm-before-send approval",
-            false,
+            "Current owner-issued execution mandate verified for this configuration",
+            mandate_verified,
             true,
-            "approval.confirm_before_send",
+            "approval.local_live_mandate",
         ),
         check(
             "downstream_live_order_adapter",
             "Live broker adapter requires downstream authority",
-            false,
+            broker_boundary_available,
             true,
             "broker.downstream_authority",
         ),
@@ -3724,6 +3998,7 @@ fn live_preflight_report(
     capability_resolution: &Value,
     checks: &[Value],
     blocked: &[String],
+    local_profile: bool,
 ) -> Value {
     json!({
         "schemaVersion": "tradeassembly.live_activation_preflight.v1",
@@ -3766,7 +4041,9 @@ fn live_preflight_report(
         "capabilityResolution": capability_resolution,
         "checks": checks,
         "blockedReasons": blocked,
-        "cloudProfile": live_cloud_preflight_report(&DEFAULT_FOSS_DEPLOYMENT),
+        "cloudProfile": if local_profile {
+            json!({"status":"not_applicable","profile":"local","blockedReasons":[],"notes":["Local execution requires durable local evidence; it does not claim serverless availability."]})
+        } else { live_cloud_preflight_report(&DEFAULT_FOSS_DEPLOYMENT) },
         "noAdvice": LEGAL_BOUNDARY,
     })
 }
@@ -3956,7 +4233,7 @@ fn run_tick(service: &TradeAssemblyService, run: &mut Value, cycle: u64, lease: 
         return json!({
             "status": "failed",
             "reason": "evaluation_failed",
-            "error": response.body,
+            "evaluationFailure": EvaluationFailure::from_response(&response),
             "activationId": activation_id,
             "cycle": cycle,
             "lease": lease,
@@ -3967,6 +4244,110 @@ fn run_tick(service: &TradeAssemblyService, run: &mut Value, cycle: u64, lease: 
     result["executionRunId"] = run["executionRunId"].clone();
     result["lease"] = lease.clone();
     result
+}
+
+/// Durable diagnostics contain only Core-owned literals. Never copy response
+/// messages, details, identifiers or plugin text into scheduler evidence.
+#[derive(serde::Serialize)]
+struct EvaluationFailure {
+    code: &'static str,
+    reason: &'static str,
+}
+
+impl EvaluationFailure {
+    fn from_response(response: &ServiceResponse) -> Self {
+        let code = Self::owned_value(
+            &response.body["error"]["code"],
+            &[
+                "execution_tick_path_invalid",
+                "activation_not_found",
+                "activation_record_missing",
+                "external_agent_evaluation_required",
+                "activation_record_mismatch",
+                "activation_not_active",
+                "stale_tick",
+                "out_of_order_tick",
+                "capability_revision_stale",
+                "plugin_evidence_invalid",
+                "broker_risk_quote_unavailable",
+                "paper_order_intent_persistence_failed",
+                "original_cycle_persistence_failed",
+                "local_live_mandate_required",
+                "live_mandate_config_mismatch",
+                "live_mandate_stale_binding",
+                "live_mandate_actor_denied",
+                "live_mandate_expired",
+                "live_mandate_revoked",
+                "live_mandate_owner_required",
+                "internal_error",
+            ],
+            "evaluation_error_unclassified",
+        );
+        let reason = if code == "plugin_evidence_invalid" {
+            Self::owned_value(
+                &response.body["error"]["details"]["reason"],
+                &[
+                    "tick_id_required",
+                    "tick_sequence_required",
+                    "strategy_version_mismatch",
+                    "calendar_resolution_failed",
+                    "strategy_version_not_found",
+                    "strategy_spec_hash_mismatch",
+                    "strategy_spec_not_executable",
+                    "tick_sequence_out_of_range",
+                    "execution_mode_invalid",
+                    "broker_plugin_binding_missing",
+                    "broker_risk_quote_binding_missing",
+                    "broker_order_input_invalid",
+                    "observation_envelope_invalid",
+                    "observation_timestamp_invalid",
+                    "observation_event_duplicate",
+                    "observation_event_time_not_monotonic",
+                    "observation_plugin_unbound",
+                    "observation_plugin_binding_mismatch",
+                    "observation_symbol_mismatch",
+                    "observation_timeframe_mismatch",
+                    "bar_open_invalid",
+                    "bar_close_invalid",
+                    "bar_volume_invalid",
+                    "bar_shape_invalid",
+                    "observation_evidence_missing",
+                    "observation_evidence_invalid",
+                    "observation_receipt_unavailable",
+                    "observation_receipt_missing",
+                    "observation_receipt_invalid",
+                    "observation_receipt_mismatch",
+                    "observation_receipt_payload_mismatch",
+                    "required_string_missing",
+                    "market_data_plugin_binding_missing",
+                    "market_data_correlation_mismatch",
+                    "market_data_schema_mismatch",
+                    "market_data_not_fresh",
+                    "market_data_provenance_invalid",
+                    "market_data_instrument_mismatch",
+                    "market_data_bar_invalid",
+                    "market_data_evidence_missing",
+                    "market_data_freshness_policy_invalid",
+                ],
+                "evaluation_reason_unclassified",
+            )
+        } else {
+            code
+        };
+        Self { code, reason }
+    }
+
+    fn owned_value(
+        value: &Value,
+        allowed: &[&'static str],
+        fallback: &'static str,
+    ) -> &'static str {
+        allowed
+            .iter()
+            .copied()
+            .find(|owned| value.as_str() == Some(*owned))
+            .unwrap_or(fallback)
+    }
 }
 
 fn market_observation_from_response(
@@ -4233,6 +4614,9 @@ fn activation_response(service: &TradeAssemblyService, run: Value, duplicate: bo
 }
 
 fn activation_matches_config(run: &Value, config: &Value) -> bool {
+    if orchestrator_kind(run) != orchestrator_kind(config) {
+        return false;
+    }
     [
         "configId",
         "strategyId",
@@ -4244,6 +4628,14 @@ fn activation_matches_config(run: &Value, config: &Value) -> bool {
     ]
     .into_iter()
     .all(|field| run[field] == config[field])
+}
+
+fn orchestrator_kind(value: &Value) -> &str {
+    value["orchestrator"].as_str().unwrap_or("deterministic")
+}
+
+fn external_agent(value: &Value) -> bool {
+    orchestrator_kind(value) == "external_agent"
 }
 
 fn active_runs(service: &TradeAssemblyService) -> Vec<Value> {
@@ -4293,6 +4685,12 @@ fn start_local_scheduler_worker(
     worker_id: String,
     interval_seconds: u64,
 ) {
+    if get(&service, RUNS_NS, &run_id_for_activation(&activation_id))
+        .as_ref()
+        .is_some_and(external_agent)
+    {
+        return;
+    }
     let worker_key = format!(
         "{}:{activation_id}",
         service.runtime().storage.adapter_name()
@@ -4396,6 +4794,12 @@ fn schedule_execution_tick(
     cycle: u64,
     due_at_ms: i64,
 ) -> Result<(), String> {
+    if get(service, RUNS_NS, &run_id_for_activation(activation_id))
+        .as_ref()
+        .is_some_and(external_agent)
+    {
+        return Err("external_agent_scheduler_not_applicable".to_string());
+    }
     let schedule_key = execution_schedule_key(activation_id, cycle);
     service.runtime().scheduler.schedule(ScheduledWork {
         schedule_key: schedule_key.clone(),
@@ -4590,14 +4994,24 @@ fn process_execution_tick(
     let mut tick = run_tick(service, &mut run, cycle, &lease_json);
     if tick["status"].as_str() == Some("failed") {
         let failure_reason = tick["reason"].as_str().unwrap_or("tick_processing_failed");
+        let mut detail = json!({"sourceStatus": "failed", "sourceReason": failure_reason});
+        let evaluation_failure =
+            (failure_reason == "evaluation_failed").then(|| tick["evaluationFailure"].clone());
+        if let Some(failure) = &evaluation_failure {
+            detail["evaluationFailure"] = failure.clone();
+            attempt["evaluationFailure"] = failure.clone();
+        }
         tick = complete_effect_free_cycle(
             service,
             &mut run,
             cycle,
             &lease_json,
             failure_reason,
-            json!({"sourceStatus": "failed", "sourceReason": failure_reason}),
+            detail,
         );
+        if let Some(failure) = evaluation_failure {
+            tick["evaluationFailure"] = failure;
+        }
     }
     finalize_scheduled_tick(service, &work, worker_id, interval_seconds)?;
     attempt["state"] = if tick["status"].as_str() == Some("blocked") {
@@ -4885,7 +5299,7 @@ fn append_event_with_context(
     panic!("execution event append contention exceeded retry budget")
 }
 
-fn checkpoint(
+pub(super) fn checkpoint(
     activation_id: &str,
     correlation_id: &str,
     cycle: u64,
@@ -6243,6 +6657,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn evaluation_failure_redacts_unowned_response_content() {
+        // This is deliberately a syntactically valid code: character filtering
+        // is insufficient to prevent a private identifier from escaping.
+        let private_canary = "sk_live_private_diagnostic_canary_48291";
+        for (code, reason, expected) in [
+            (
+                "plugin_evidence_invalid",
+                "observation_receipt_mismatch",
+                json!({"code": "plugin_evidence_invalid", "reason": "observation_receipt_mismatch"}),
+            ),
+            (
+                "plugin_evidence_invalid",
+                private_canary,
+                json!({"code": "plugin_evidence_invalid", "reason": "evaluation_reason_unclassified"}),
+            ),
+            (
+                private_canary,
+                "observation_receipt_mismatch",
+                json!({"code": "evaluation_error_unclassified", "reason": "evaluation_error_unclassified"}),
+            ),
+        ] {
+            let response = ServiceResponse {
+                status: 422,
+                body: json!({
+                    "detail": private_canary,
+                    "error": {
+                        "code": code,
+                        "message": private_canary,
+                        "details": {
+                            "reason": reason,
+                            "activationId": private_canary,
+                            "payload": {"credential": private_canary},
+                        },
+                    },
+                }),
+            };
+            let actual = serde_json::to_value(EvaluationFailure::from_response(&response))
+                .expect("serialize owned evaluation classification");
+            assert_eq!(actual, expected);
+            assert!(!actual.to_string().contains(private_canary));
+        }
+    }
+
+    #[test]
     fn execution_attempt_identity_preserves_retries_when_logical_fencing_restarts() {
         let first = execution_attempt_id("activation-1", 27, 1, 1);
         let retried = execution_attempt_id("activation-1", 27, 2, 1);
@@ -6418,11 +6876,59 @@ mod tests {
     }
 
     #[test]
+    fn available_broker_boundary_does_not_grant_live_approval_or_evidence_policy() {
+        let checks = live_activation_checks(&json!({}), true, true, true, true, false, false);
+        for id in [
+            "downstream_pep_coverage_c5",
+            "downstream_live_order_adapter",
+        ] {
+            assert!(checks
+                .iter()
+                .any(|check| check["id"] == id && check["status"] == "pass"));
+        }
+        for id in ["confirm_before_send", "hosted_evidence_policy"] {
+            assert!(checks
+                .iter()
+                .any(|check| check["id"] == id && check["status"] == "blocked"));
+        }
+    }
+
+    #[test]
+    fn local_preflight_does_not_require_cloud_services_but_other_profiles_do() {
+        let local = live_preflight_report(&json!({}), &json!({}), &[], &[], true);
+        assert_eq!(local["cloudProfile"]["status"], "not_applicable");
+        assert!(local["cloudProfile"]["blockedReasons"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let other = live_preflight_report(&json!({}), &json!({}), &[], &[], false);
+        assert!(!other["cloudProfile"]["blockedReasons"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn live_readiness_rejects_risk_controls_the_broker_cannot_enforce() {
+        let mut config =
+            json!({"mode":"live","riskLimits":{"max_notional":10,"max_order_quantity":2}});
+        assert!(valid_execution_risk_limits(&config));
+        for key in ["max_daily_loss", "max_concurrent_positions", "stop_loss"] {
+            config["riskLimits"][key] = json!(1);
+            assert!(!valid_execution_risk_limits(&config));
+            config["riskLimits"].as_object_mut().unwrap().remove(key);
+        }
+    }
+
+    #[test]
     fn verified_legal_receipt_clears_only_legal_live_gates() {
         let checks = live_activation_checks(
             &json!({"killSwitch": {"emergencyStop": true}}),
             true,
             true,
+            false,
+            false,
+            false,
             false,
         );
         for legal_check in ["legal_acknowledgement", "legal_document_version"] {
@@ -6489,7 +6995,7 @@ mod tests {
         }
         wrong["accountRef"] = json!("account://broker/two");
         assert!(!live_account_observation_matches(&record, &wrong, 1000));
-        let checks = live_activation_checks(&json!({}), true, false, true);
+        let checks = live_activation_checks(&json!({}), true, false, true, false, false, false);
         assert!(checks
             .iter()
             .any(|check| check["id"] == "live_credential_posture" && check["status"] == "pass"));

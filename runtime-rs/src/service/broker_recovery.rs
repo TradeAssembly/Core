@@ -71,11 +71,15 @@ pub(super) fn recover(service: &TradeAssemblyService, body: Value) -> ServiceRes
             return ServiceResponse::error(403, "broker_recovery_not_authorized_or_bound", false)
         }
     };
+    let mode = match plan.mode() {
+        Ok(mode) => mode,
+        Err(_) => return ServiceResponse::error(403, "broker_recovery_mode_invalid", false),
+    };
     let context = SideEffectContext::new(
         AuthorityContext {
             actor: "authenticated_broker_observer".into(),
             surface: "broker_recovery".into(),
-            account_mode: "live".into(),
+            account_mode: mode.into(),
         },
         key,
     );

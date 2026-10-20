@@ -4,11 +4,19 @@ use crate::ports::credentials::{BrokerCredentials, CredentialPort, CredentialSta
 use crate::ports::{FailureMode, PortDescriptor, PortKind, VersionedPort};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::fs::OpenOptions;
-use std::io::Write;
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct LocalCredentialStore {
@@ -37,12 +45,28 @@ impl LocalCredentialStore {
     }
 
     fn read(&self, credential_ref: &str) -> Result<Option<StoredCredential>, String> {
+        ensure_secure_directory(&self.credentials_dir)?;
         let path = self.credential_path(credential_ref)?;
-        if !path.exists() {
-            return Ok(None);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(format!("read local credential {credential_ref} failed")),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(format!("read local credential {credential_ref} failed"));
         }
-        let body = std::fs::read_to_string(&path)
-            .map_err(|_| format!("read local credential {credential_ref} failed"))?;
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(format!("read local credential {credential_ref} failed"));
+        }
+        #[cfg(windows)]
+        let body = String::from_utf8(
+            crate::windows_private::read(&path)
+                .map_err(|_| format!("read local credential {credential_ref} failed"))?,
+        )
+        .map_err(|_| format!("read local credential {credential_ref} failed"))?;
+        #[cfg(not(windows))]
+        let body = read_secure_file(&path, credential_ref)?;
         let value: serde_json::Value = serde_json::from_str(&body)
             .map_err(|_| format!("parse local credential {credential_ref} failed"))?;
         let stored = if value.get("fields").is_some() {
@@ -100,6 +124,12 @@ impl CredentialPort for LocalCredentialStore {
             .ok()
             .flatten()
             .and_then(|credential| {
+                // OAuth bearer grants are opaque secrets, not display IDs.
+                // Never expose even their prefix/suffix through projections or
+                // the durable lifecycle receipts derived from this status.
+                if let Some(token) = credential.fields.get("access_token") {
+                    return (!token.trim().is_empty()).then(|| "***redacted***".to_string());
+                }
                 credential
                     .fields
                     .get("api_key")
@@ -123,37 +153,73 @@ impl CredentialPort for LocalCredentialStore {
             return Err(format!("credential {credential_ref} is incomplete"));
         }
         let path = self.credential_path(credential_ref)?;
-        std::fs::create_dir_all(&self.credentials_dir)
-            .map_err(|_| "create local credential directory failed".to_string())?;
-        set_owner_only_directory(&self.credentials_dir)?;
-        let temporary = path.with_extension("json.tmp");
-        let mut options = OpenOptions::new();
-        options.create(true).write(true).truncate(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options
-            .open(&temporary)
-            .map_err(|_| format!("write local credential {credential_ref} failed"))?;
         let payload = serde_json::to_vec(&StoredCredential {
             credential_ref: credential_ref.to_string(),
             fields: fields.clone(),
         })
         .map_err(|_| format!("serialize local credential {credential_ref} failed"))?;
-        file.write_all(&payload)
-            .map_err(|_| format!("write local credential {credential_ref} failed"))?;
-        file.sync_all()
-            .map_err(|_| format!("sync local credential {credential_ref} failed"))?;
-        std::fs::rename(&temporary, &path)
-            .map_err(|_| format!("commit local credential {credential_ref} failed"))?;
-        set_owner_only_file(&path)?;
+        #[cfg(windows)]
+        {
+            crate::windows_private::ensure_directory(&self.credentials_dir)
+                .map_err(|_| "create local credential directory failed".to_string())?;
+            crate::windows_private::write_atomic(&path, &payload)
+                .map_err(|_| format!("write local credential {credential_ref} failed"))?;
+        }
+        #[cfg(not(windows))]
+        {
+            ensure_secure_directory(&self.credentials_dir)?;
+            let lock_path = self.credentials_dir.join(".credentials.lock");
+            let lock = open_lock(&lock_path, credential_ref)?;
+            lock.try_lock()
+                .map_err(|_| format!("write local credential {credential_ref} failed"))?;
+            if std::fs::symlink_metadata(&path).is_ok() {
+                self.read(credential_ref)?
+                    .ok_or_else(|| format!("write local credential {credential_ref} failed"))?;
+            }
+            let temporary = path.with_extension(format!("json.tmp-{}", rand::random::<u64>()));
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            options.mode(0o600);
+            options.custom_flags(libc::O_NOFOLLOW);
+            let mut file = options
+                .open(&temporary)
+                .map_err(|_| format!("write local credential {credential_ref} failed"))?;
+            let result = file
+                .write_all(&payload)
+                .and_then(|_| file.sync_all())
+                .and_then(|_| std::fs::rename(&temporary, &path))
+                .and_then(|_| sync_directory(&self.credentials_dir));
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temporary);
+            }
+            result.map_err(|_| format!("commit local credential {credential_ref} failed"))?;
+            set_owner_only_file(&path)?;
+        }
         Ok(self.status(credential_ref))
     }
 
     fn revoke(&self, credential_ref: &str) -> Result<bool, String> {
         let path = self.credential_path(credential_ref)?;
-        if !path.exists() {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err(format!("revoke local credential {credential_ref} failed")),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(format!("revoke local credential {credential_ref} failed"));
+        }
+        #[cfg(unix)]
+        {
+            read_secure_file(&path, credential_ref)?;
+        }
+        #[cfg(windows)]
+        if !path.is_file() {
             return Ok(false);
         }
+        #[cfg(windows)]
+        crate::windows_private::remove_durable(&path)
+            .map_err(|_| format!("revoke local credential {credential_ref} failed"))?;
+        #[cfg(not(windows))]
         std::fs::remove_file(path)
             .map_err(|_| format!("revoke local credential {credential_ref} failed"))?;
         Ok(true)
@@ -203,18 +269,110 @@ fn validate_credential_ref(value: &str) -> Result<(), String> {
     }
 }
 
-fn set_owner_only_directory(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| "secure local credential directory failed".to_string())?;
-    Ok(())
-}
-
+#[cfg(unix)]
 fn set_owner_only_file(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|_| "secure local credential file failed".to_string())?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn read_secure_file(path: &Path, credential_ref: &str) -> Result<String, String> {
+    let mut options = OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let file = options
+        .open(path)
+        .map_err(|_| format!("read local credential {credential_ref} failed"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| format!("read local credential {credential_ref} failed"))?;
+    if !metadata.is_file()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() } as u32
+        || metadata.len() > 1024 * 1024
+    {
+        return Err(format!("read local credential {credential_ref} failed"));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| format!("read local credential {credential_ref} failed"))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(format!("read local credential {credential_ref} failed"));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("read local credential {credential_ref} failed"))
+}
+
+#[cfg(unix)]
+fn open_lock(path: &Path, credential_ref: &str) -> Result<std::fs::File, String> {
+    let mut options = OpenOptions::new();
+    options
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW);
+    let file = options
+        .open(path)
+        .map_err(|_| format!("write local credential {credential_ref} failed"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| format!("write local credential {credential_ref} failed"))?;
+    if !metadata.is_file()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() } as u32
+    {
+        return Err(format!("write local credential {credential_ref} failed"));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    OpenOptions::new().read(true).open(path)?.sync_all()
+}
+
+#[cfg(unix)]
+fn ensure_secure_directory(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let metadata = std::fs::symlink_metadata(parent)
+            .map_err(|_| "secure local credential directory failed".to_string())?;
+        if !metadata.file_type().is_dir() {
+            return Err("secure local credential directory failed".to_string());
+        }
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("secure local credential directory failed".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder
+                .create(path)
+                .map_err(|_| "create local credential directory failed".to_string())?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| "secure local credential directory failed".to_string())?;
+        }
+        Err(_) => return Err("secure local credential directory failed".to_string()),
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "secure local credential directory failed".to_string())?;
+    if !metadata.file_type().is_dir()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.uid() != unsafe { libc::geteuid() } as u32
+    {
+        return Err("secure local credential directory failed".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_secure_directory(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path)
+        .map_err(|_| "create local credential directory failed".to_string())
 }
 
 fn redact(value: &str) -> Option<String> {
@@ -235,4 +393,140 @@ fn redact(value: &str) -> Option<String> {
         .rev()
         .collect::<String>();
     Some(format!("{prefix}...{suffix}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_status_masks_the_entire_token_across_reopen_and_replacement() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let db = temporary.path().join("state.db");
+        let store = LocalCredentialStore::new(db.to_str().unwrap());
+        for token in ["Q7Vk_OAUTH_CANARY_BODY_mN4p", "a2Hr_OTHER_CANARY_BODY_k3Tx"] {
+            let fields = BTreeMap::from([("access_token".into(), token.into())]);
+            let stored = store.store("alpaca-paper", &fields).unwrap();
+            assert!(stored.configured);
+            assert_eq!(stored.redacted_display.as_deref(), Some("***redacted***"));
+            let reopened = LocalCredentialStore::new(db.to_str().unwrap());
+            let status = reopened.status("alpaca-paper");
+            assert_eq!(status.redacted_display, stored.redacted_display);
+            let projection = format!("{status:?}");
+            for secret in [token, &token[..4], &token[token.len() - 4..]] {
+                assert!(!projection.contains(secret));
+            }
+            assert_eq!(
+                reopened.resolve_fields("alpaca-paper").unwrap(),
+                Some(fields)
+            );
+        }
+        store.revoke("alpaca-paper").unwrap();
+        assert!(!store.status("alpaca-paper").configured);
+    }
+
+    #[test]
+    fn api_key_display_retains_its_existing_behavior() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = LocalCredentialStore::new(temporary.path().join("state.db").to_str().unwrap());
+        let status = store
+            .store(
+                "alpaca-paper",
+                &BTreeMap::from([
+                    ("api_key".into(), "APIKEY_DISPLAY_EXAMPLE".into()),
+                    ("api_secret".into(), "API_SECRET_NEVER_DISPLAY".into()),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(status.redacted_display.as_deref(), Some("APIK...MPLE"));
+    }
+
+    #[test]
+    fn credential_store_survives_reopen_and_revoke() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("private");
+        #[cfg(windows)]
+        crate::windows_private::create_directory(&root).expect("private root");
+        #[cfg(not(windows))]
+        std::fs::create_dir(&root).expect("private root");
+        let store = LocalCredentialStore::new(root.join("state.db").to_str().expect("path"));
+        let fields = BTreeMap::from([
+            ("api_key".to_string(), "test-key".to_string()),
+            ("api_secret".to_string(), "test-secret".to_string()),
+            (
+                "base_url".to_string(),
+                "https://example.invalid".to_string(),
+            ),
+        ]);
+        store.store("alpaca-paper", &fields).expect("store");
+        let path = store.credential_path("alpaca-paper").expect("path");
+        #[cfg(windows)]
+        crate::windows_private::open_read(&path).expect("private ACL");
+        let reopened = LocalCredentialStore::new(root.join("state.db").to_str().expect("path"));
+        assert_eq!(
+            reopened.resolve_fields("alpaca-paper").expect("reopen"),
+            Some(fields)
+        );
+        assert!(reopened.revoke("alpaca-paper").expect("revoke"));
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_directory_and_record_hardlinks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let real = temporary.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = temporary.path().join("credentials");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let store = LocalCredentialStore::new(alias.join("state.db").to_str().unwrap());
+        assert!(store
+            .store(
+                "alpaca-paper",
+                &BTreeMap::from([("api_key".into(), "key".into())])
+            )
+            .is_err());
+
+        let store = LocalCredentialStore::new(real.join("state.db").to_str().unwrap());
+        store
+            .store(
+                "alpaca-paper",
+                &BTreeMap::from([("api_key".into(), "key".into())]),
+            )
+            .unwrap();
+        let path = store.credential_path("alpaca-paper").unwrap();
+        let hardlink = real.join("copy");
+        std::fs::hard_link(&path, &hardlink).unwrap();
+        assert!(!store.status("alpaca-paper").configured);
+        assert!(store.revoke("alpaca-paper").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_corrupt_and_mismatched_records_without_overwriting() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = LocalCredentialStore::new(temporary.path().join("state.db").to_str().unwrap());
+        store
+            .store(
+                "alpaca-paper",
+                &BTreeMap::from([("api_key".into(), "key".into())]),
+            )
+            .unwrap();
+        let path = store.credential_path("alpaca-paper").unwrap();
+        std::fs::write(&path, b"not-json").unwrap();
+        assert!(store
+            .store(
+                "alpaca-paper",
+                &BTreeMap::from([("api_key".into(), "replacement".into())])
+            )
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"not-json");
+
+        std::fs::write(
+            &path,
+            br#"{"credential_ref":"other","fields":{"api_key":"key"}}"#,
+        )
+        .unwrap();
+        assert!(store.status("alpaca-paper").redacted_display.is_none());
+    }
 }

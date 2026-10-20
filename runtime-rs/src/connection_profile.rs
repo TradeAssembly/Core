@@ -159,7 +159,8 @@ impl ConnectionProfile {
     pub(crate) fn configure(&self, base: &RuntimeConfig) -> RuntimeConfig {
         let mut config = base.clone();
         config.oidc_profile = "workos".into();
-        config.oidc_session_store = "bitwarden".into();
+        // Keep the application-state file default. External custody is an
+        // explicit customer choice in the profile/configuration.
         config.oidc_issuer = self.issuer.clone();
         config.oidc_client_id = self.client_id.clone();
         config.oidc_organization_id = self.organization_id.clone();

@@ -118,7 +118,30 @@ The CLI reports fixed error codes, never token contents:
 These errors do not prove their underlying cause without further verification.
 They do not authorize changing broker credentials or activating a strategy.
 
-## Optional Bitwarden custody for hosted sign-in
+## Optional external custody for hosted sign-in
+
+The default WorkOS session store is a protected application-state file under
+the installation directory. It requires no Bitwarden, keyring, helper, or
+secret-storage network service. Local storage must enforce private directories
+(0700), secret files (0600), atomic replacement, locking and rejection of unsafe
+paths, malformed records, symlinks and identity mismatches. Do not encrypt a
+session with a neighboring key file or regenerate identity after a load failure.
+Refresh rotation and restart must preserve the original grant bindings.
+
+This policy covers customer, developer, test, CI and local operator/deployment
+workflows. Older vault-specific procedures are optional; remaining implementation
+gaps are tracked in the coordinator's current correction result and do not
+establish new mandatory custody rules. Server-side secret stores are unchanged.
+
+Existing vault-backed sessions can be migrated explicitly with
+`tradeassembly --config CONFIG auth migrate-to-local-file --source bitwarden`
+(or `--source keyring`). Select `oidcSessionStore: file` for the destination.
+Migration checks the original issuer, client, subject and stable identity,
+rejects an existing conflicting or corrupt destination, verifies readback and
+leaves the source untouched. Run `auth status` in a new process afterward to
+verify the provider grant; migration does not create or borrow a new grant.
+
+Bitwarden custody remains an explicit opt-in for customers who need it.
 
 WorkOS sessions can use the customer's Bitwarden vault instead of the desktop
 keyring. This does not change broker permissions or require a Hub account for

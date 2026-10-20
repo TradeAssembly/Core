@@ -7,6 +7,16 @@ it is not a competing execution plan. Full pre-adoption text and exact older
 source/evidence pointers remain in [distribution history](distribution-history-2026-10-02.md).
 Operational state lives only in the coordinator `RELEASE_CURRENT.md`.
 
+## First-run correction
+
+The customer entrypoint is now one guided installation package. Core and the
+private Relay companion keep independent credentials in protected local state;
+Bitwarden and helpers are optional for every local workflow. Setup owns services,
+pairing/enrollment, notification choices, optional backup/recovery and selected
+agent configuration. Installation and validation require no LLM. The coordinator's
+canonical runbook and current result own qualification/publication status. Older
+vault-specific observations below describe retained evidence, not prerequisites.
+
 ## Frozen customer outcome
 
 - A new customer installs one pinned unsigned/ad-hoc Core version, signs into

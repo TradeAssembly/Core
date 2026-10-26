@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/openidconnect-4.0.1"]
 members = [
   "strategy",
   "simulation",
@@ -12,3 +13,6 @@ members = [
   "sightline-sidecar",
   "xtask",
 ]
+
+[patch.crates-io]
+openidconnect = { path = "vendor/openidconnect-4.0.1" }

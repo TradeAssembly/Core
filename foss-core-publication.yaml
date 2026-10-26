@@ -27,6 +27,10 @@ publicPathPrefixes:
   - xtask/
 
 publicFiles:
+  - tools/prepare-crypto-consumers.rs
+  - patches/crypto-consumers/openidconnect-4.0.1.patch
+  - patches/crypto-consumers/provenance.json
+  - test-support/rsa_fixture.rs
   - .dockerignore
   - .gitignore
   - .gitleaksignore

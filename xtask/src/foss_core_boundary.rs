@@ -570,6 +570,15 @@ fn run_archive_smoke(root: &Path) -> Result<(), String> {
         return Err("archived Core source has no Cargo.toml at archive root".to_string());
     }
     validate_archive_paths(&source_root)?;
+    run_isolated(
+        &source_root,
+        temp.path(),
+        "prepare pinned OIDC source",
+        "just",
+        &["prepare-crypto-consumers"],
+        ARCHIVE_BUILD_TIMEOUT,
+        &revision,
+    )?;
 
     run_isolated(
         &source_root,

@@ -60,6 +60,7 @@ pub mod marketdata;
 pub mod mcp;
 pub mod messages;
 pub use tradeassembly_simulation::monte_carlo;
+mod native_keyring;
 pub mod onboarding;
 pub mod openapi;
 pub mod order_updates;

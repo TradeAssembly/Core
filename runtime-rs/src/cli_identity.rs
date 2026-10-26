@@ -710,10 +710,13 @@ mod tests {
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use chrono::Utc;
-    use openidconnect::core::{CoreJsonWebKeySet, CoreRsaPrivateSigningKey};
-    use openidconnect::{JsonWebKeyId, PrivateSigningKey};
-    use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, LineEnding};
-    use rsa::{Pkcs1v15Sign, RsaPrivateKey};
+    mod rsa_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test-support/rsa_fixture.rs"
+        ));
+    }
+    use rsa_fixture::SyntheticRsa;
     use serde::Deserialize;
     use sha2::{Digest, Sha256};
     use std::sync::{Mutex, OnceLock};
@@ -768,7 +771,7 @@ mod tests {
 
     #[derive(Clone)]
     struct MockKey {
-        pem: String,
+        key: std::sync::Arc<SyntheticRsa>,
         kid: String,
     }
 
@@ -817,11 +820,10 @@ mod tests {
         }))
     }
 
-    async fn mock_jwks(State(state): State<MockIssuerState>) -> Json<CoreJsonWebKeySet> {
+    async fn mock_jwks(State(state): State<MockIssuerState>) -> Json<Value> {
         let key = state.0.lock().unwrap().key.clone();
-        Json(CoreJsonWebKeySet::new(vec![
-            mock_signing_key(&key).as_verification_key()
-        ]))
+        let (n, e) = key.key.public_components();
+        Json(json!({"keys":[{"kty":"RSA","use":"sig","kid":key.kid,"n":n,"e":e}]}))
     }
 
     async fn mock_token(
@@ -881,25 +883,16 @@ mod tests {
         );
         let claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
         let signing_input = format!("{header}.{claims}");
-        let private_key = RsaPrivateKey::from_pkcs1_pem(&key.pem).unwrap();
-        let digest = Sha256::digest(signing_input.as_bytes());
-        let signature = private_key
-            .sign_with_rng(&mut OsRng, Pkcs1v15Sign::new::<Sha256>(), digest.as_slice())
-            .unwrap();
+        let signature = key.key.sign_rs256(&signing_input);
         format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature))
-    }
-
-    fn mock_signing_key(key: &MockKey) -> CoreRsaPrivateSigningKey {
-        CoreRsaPrivateSigningKey::from_pem(&key.pem, Some(JsonWebKeyId::new(key.kid.clone())))
-            .unwrap()
     }
 
     fn mock_key() -> &'static MockKey {
         static KEY: OnceLock<MockKey> = OnceLock::new();
         KEY.get_or_init(|| {
-            let key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+            let key = std::sync::Arc::new(SyntheticRsa::generate());
             MockKey {
-                pem: key.to_pkcs1_pem(LineEnding::LF).unwrap().to_string(),
+                key,
                 kid: "runtime-key-1".to_string(),
             }
         })

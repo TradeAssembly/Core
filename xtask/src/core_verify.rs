@@ -14,6 +14,10 @@ struct Check {
 
 const VERIFY_CHECKS: &[Check] = &[
     Check {
+        program: "just",
+        args: &["verify-crypto-consumers"],
+    },
+    Check {
         program: "cargo",
         args: &["fmt", "--check"],
     },
@@ -59,7 +63,7 @@ const VERIFY_CHECKS: &[Check] = &[
     },
     Check {
         program: "cargo",
-        args: &["audit", "--ignore", "RUSTSEC-2023-0071"],
+        args: &["audit"],
     },
     Check {
         program: "cargo-machete",
@@ -390,13 +394,14 @@ mod tests {
         assert_eq!(
             commands,
             vec![
+                "just verify-crypto-consumers",
                 "cargo fmt --check",
                 "cargo clippy --workspace --all-targets -- -D warnings",
                 "npm ci --prefix packaging/sandbox --ignore-scripts --no-audit --no-fund",
                 "cargo test --workspace --doc --locked",
                 "cargo nextest run --workspace --locked --no-fail-fast",
                 "cargo deny check",
-                "cargo audit --ignore RUSTSEC-2023-0071",
+                "cargo audit",
                 "cargo-machete .",
                 "cargo xtask check-whitelist --repo .",
                 "cargo xtask plugin-contract",

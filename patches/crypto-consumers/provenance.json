@@ -1,0 +1,16 @@
+[
+  {
+    "crate": "openidconnect-4.0.1",
+    "registryArchiveSha256": "0d8c6709ba2ea764bbed26bce1adf3c10517113ddea6f2d4196e4851757ef2b2",
+    "sourceVcs": {
+      "git": {
+        "sha1": "b639b5d39eac6903238867aeb2b29326502e6b26"
+      },
+      "path_in_vcs": ""
+    },
+    "patchSha256": "97c1d611054d8e0ba5823f4f2c55effd6dc8f923aa3e90e2c166533439f12eab",
+    "upstreamLicense": "MIT",
+    "consumerBackend": "ring 0.17.14 (Apache License version 2.0 AND ISC); public RSA verification; private signing test-only",
+    "apiRestriction": "CoreRsaPrivateSigningKey removed from release exports; RSA verification keys 2048-8192 bits"
+  }
+]

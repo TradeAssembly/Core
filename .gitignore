@@ -38,3 +38,7 @@ target/
 
 !core-binaries/src/bin/
 !core-binaries/src/bin/*.rs
+
+# Generated checksum-verified consumer source; retained patch is authoritative.
+/vendor/
+/vendor.prepare-*/

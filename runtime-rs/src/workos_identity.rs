@@ -683,7 +683,7 @@ impl WorkosAuthManager {
     }
 
     fn keyring_entry(&self) -> Result<keyring::Entry, String> {
-        keyring::Entry::new("tradeassembly-workos", &self.session_account())
+        crate::native_keyring::entry("tradeassembly-workos", &self.session_account())
             .map_err(|_| "oidc_session_store_unavailable".to_string())
     }
 
@@ -1166,8 +1166,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-    use jsonwebtoken::{encode, EncodingKey, Header};
-    use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey};
+    mod rsa_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test-support/rsa_fixture.rs"
+        ));
+    }
+    use rsa_fixture::SyntheticRsa;
     use serde::Serialize;
     use tempfile::tempdir;
 
@@ -1561,7 +1566,7 @@ mod tests {
         let manager = WorkosAuthManager::new(config.clone());
         let hash = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
         let now = (now_ms() / 1000) as usize;
-        let wrong_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+        let wrong_key = SyntheticRsa::generate();
         for (key, client, exp, expected) in [
             (
                 &key,
@@ -1637,39 +1642,33 @@ mod tests {
         nbf: Option<usize>,
     }
 
-    fn setup() -> (RuntimeConfig, RsaPrivateKey, Jwks) {
+    fn setup() -> (RuntimeConfig, SyntheticRsa, Jwks) {
         let dir = tempdir().unwrap();
         let mut config = RuntimeConfig::local(dir.path().join("runtime.db").display().to_string());
         config.oidc_issuer = "https://identity.example".to_string();
         config.oidc_client_id = "client_test".to_string();
-        let key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
-        let public = key.to_public_key();
+        let key = SyntheticRsa::generate();
+        let (n, e) = key.public_components();
         let jwks = Jwks {
             keys: vec![Jwk {
                 kty: "RSA".to_string(),
                 kid: Some("test".to_string()),
-                n: URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
-                e: URL_SAFE_NO_PAD.encode(public.e().to_bytes_be()),
+                n,
+                e,
                 alg: Some("RS256".to_string()),
             }],
         };
         (config, key, jwks)
     }
 
-    fn token(key: &RsaPrivateKey, claims: TestClaims<'_>) -> String {
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some("test".to_string());
-        encode(
-            &header,
-            &claims,
-            &EncodingKey::from_rsa_pem(
-                key.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-                    .unwrap()
-                    .as_bytes(),
-            )
-            .unwrap(),
-        )
-        .unwrap()
+    fn token(key: &SyntheticRsa, claims: TestClaims<'_>) -> String {
+        let header = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({"alg":"RS256","kid":"test","typ":"JWT"}))
+                .unwrap(),
+        );
+        let claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+        let input = format!("{header}.{claims}");
+        format!("{input}.{}", URL_SAFE_NO_PAD.encode(key.sign_rs256(&input)))
     }
 
     #[test]
@@ -1973,7 +1972,7 @@ mod tests {
     #[ignore = "requires desktop OS credential store"]
     fn native_keyring_round_trip_uses_os_store() {
         let account = format!("test-{}", random_string(16));
-        let entry = keyring::Entry::new("tradeassembly-workos-test", &account).unwrap();
+        let entry = crate::native_keyring::entry("tradeassembly-workos-test", &account).unwrap();
         entry.set_password("synthetic-session-only").unwrap();
         assert_eq!(entry.get_password().unwrap(), "synthetic-session-only");
         entry.delete_credential().unwrap();

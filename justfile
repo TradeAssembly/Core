@@ -2,10 +2,10 @@
 default:
     @just --list
 
-verify:
+verify: verify-crypto-consumers
     cargo xtask verify
 
-setup:
+setup: prepare-crypto-consumers
     cargo xtask setup
 
 check:
@@ -33,3 +33,15 @@ test-package package:
 build-artifacts:
     cargo build --locked --package tradeassembly-core-binaries --bin tradeassembly
     cargo build --locked --package tradeassembly-core-binaries --bin tradeassembly-core-runner
+
+prepare-crypto-consumers cache="target/dependency-preparation/cache" output="vendor":
+    @mkdir -p target/dependency-preparation
+    @rustc --edition=2021 tools/prepare-crypto-consumers.rs -o target/dependency-preparation/prepare-crypto-consumers
+    @target/dependency-preparation/prepare-crypto-consumers '{{cache}}' '{{output}}' --fetch
+
+verify-crypto-consumers:
+    @mkdir -p target/dependency-preparation
+    @rustc --edition=2021 --test tools/prepare-crypto-consumers.rs -o target/dependency-preparation/source-tests
+    @target/dependency-preparation/source-tests
+    @rustc --edition=2021 tools/prepare-crypto-consumers.rs -o target/dependency-preparation/prepare-crypto-consumers
+    @target/dependency-preparation/prepare-crypto-consumers target/dependency-preparation/cache vendor

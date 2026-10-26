@@ -7,11 +7,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::Utc;
-use openidconnect::core::{CoreJsonWebKeySet, CoreRsaPrivateSigningKey};
-use openidconnect::{JsonWebKeyId, PrivateSigningKey};
-use rand::rngs::OsRng;
-use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, LineEnding};
-use rsa::{Pkcs1v15Sign, RsaPrivateKey};
+mod rsa_fixture {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test-support/rsa_fixture.rs"
+    ));
+}
+use rsa_fixture::SyntheticRsa;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -42,11 +44,13 @@ enum TokenFault {
     AccessTokenSubstitution,
     OversizedDiscovery,
     RefreshSubjectChanged,
+    RsaModulusTooSmall,
+    RsaModulusTooLarge,
 }
 
 #[derive(Clone)]
 struct KeyMaterial {
-    pem: String,
+    key: std::sync::Arc<SyntheticRsa>,
     kid: String,
 }
 
@@ -163,12 +167,18 @@ async fn discovery(State(state): State<SharedIssuer>) -> Json<Value> {
     Json(metadata)
 }
 
-async fn jwks(State(state): State<SharedIssuer>) -> Json<CoreJsonWebKeySet> {
-    let key = state.0.lock().unwrap().published_key.clone();
-    let signing_key = signing_key(&key);
-    Json(CoreJsonWebKeySet::new(vec![
-        signing_key.as_verification_key()
-    ]))
+async fn jwks(State(state): State<SharedIssuer>) -> Json<Value> {
+    let (key, fault) = {
+        let state = state.0.lock().unwrap();
+        (state.published_key.clone(), state.fault)
+    };
+    let (mut n, e) = key.key.public_components();
+    if matches!(fault, TokenFault::RsaModulusTooSmall) {
+        n = URL_SAFE_NO_PAD.encode([0x80_u8; 128]);
+    } else if matches!(fault, TokenFault::RsaModulusTooLarge) {
+        n = URL_SAFE_NO_PAD.encode([0x80_u8; 1025]);
+    }
+    Json(json!({"keys":[{"kty":"RSA","use":"sig","kid":key.kid,"n":n,"e":e}]}))
 }
 
 #[derive(Deserialize)]
@@ -303,16 +313,8 @@ fn encode_id_token(key: &KeyMaterial, algorithm: &str, claims: &Value) -> String
     let header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
     let claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
     let signing_input = format!("{header}.{claims}");
-    let private_key = RsaPrivateKey::from_pkcs1_pem(&key.pem).unwrap();
-    let digest = Sha256::digest(signing_input.as_bytes());
-    let signature = private_key
-        .sign_with_rng(&mut OsRng, Pkcs1v15Sign::new::<Sha256>(), digest.as_slice())
-        .unwrap();
+    let signature = key.key.sign_rs256(&signing_input);
     format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature))
-}
-
-fn signing_key(key: &KeyMaterial) -> CoreRsaPrivateSigningKey {
-    CoreRsaPrivateSigningKey::from_pem(&key.pem, Some(JsonWebKeyId::new(key.kid.clone()))).unwrap()
 }
 
 fn test_keys() -> &'static (KeyMaterial, KeyMaterial) {
@@ -321,9 +323,9 @@ fn test_keys() -> &'static (KeyMaterial, KeyMaterial) {
 }
 
 fn generate_key(kid: &str) -> KeyMaterial {
-    let key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+    let key = std::sync::Arc::new(SyntheticRsa::generate());
     KeyMaterial {
-        pem: key.to_pkcs1_pem(LineEnding::LF).unwrap().to_string(),
+        key,
         kid: kid.to_string(),
     }
 }
@@ -347,6 +349,48 @@ async fn authorization_code_flow_validates_pkce_and_returns_normalized_identity(
     );
     assert_eq!(vec!["pwd"], identity.authentication_methods);
     assert_eq!(1, issuer.token_calls());
+}
+
+#[tokio::test]
+async fn rsa_upper_boundary_verifies_through_the_core_oidc_caller() {
+    let issuer = TestIssuer::start(TokenFault::None).await;
+    let key = KeyMaterial {
+        key: Arc::new(SyntheticRsa::generate_with_size(
+            aws_lc_rs::rsa::KeySize::Rsa8192,
+        )),
+        kid: "upper-boundary".to_string(),
+    };
+    {
+        let mut state = issuer.state.0.lock().unwrap();
+        state.published_key = key.clone();
+        state.signing_key = key;
+    }
+    let (state, code) = issuer.begin().await;
+    let identity = issuer
+        .service
+        .complete_authorization(AuthorizationCallback::new(code, state))
+        .await
+        .unwrap();
+    assert_eq!(identity.subject, "user-123");
+}
+
+#[tokio::test]
+async fn out_of_range_rsa_jwks_never_return_an_authenticated_identity() {
+    for fault in [
+        TokenFault::RsaModulusTooSmall,
+        TokenFault::RsaModulusTooLarge,
+    ] {
+        let issuer = TestIssuer::start(fault).await;
+        let (state, code) = issuer.begin().await;
+        assert!(
+            issuer
+                .service
+                .complete_authorization(AuthorizationCallback::new(code, state))
+                .await
+                .is_err(),
+            "{fault:?} unexpectedly authenticated"
+        );
+    }
 }
 
 #[tokio::test]

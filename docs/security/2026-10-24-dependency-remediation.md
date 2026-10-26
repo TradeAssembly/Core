@@ -1,0 +1,9 @@
+# Core dependency remediation
+
+Compatible transport and root-certificate dependencies are updated through Cargo's lock resolver. Existing yaml_serde aliases use the maintained parser and retain scalar, alias, malformed and duplicate-key regression cases. Optional native-keyring adapters retain service/username identity and fail-closed unavailable-store behavior; default protected-file custody is unchanged. No credential migration or actual keyring operation is part of this change.
+
+The remaining mandatory openidconnect 4.0.1 crypto-bigint dependency is removed by the existing bounded consumer backend patch. The released archive and retained patch are checksum-bound by patches/crypto-consumers/provenance.json. Original notices remain. No new crypto arithmetic is authored and no advisory suppression is introduced; the prior RSA exception is removed.
+
+Core issuer compatibility changes from the previous RSA constructor's acceptance range to the ring backend's 2048–8192-bit range. Existing sub-2048-bit issuer keys will fail verification. This policy choice must be acknowledged before merge. Core's own OIDC service exports and persisted identity schema are unchanged. Test-only callers use supported synthetic signing instead of the removed upstream private-signing export.
+
+Qualification: Core identity package tests pass 9 units and 13 integration cases, including the existing 2048-bit flow, a real signed 8192-bit issuer flow and out-of-range JWK rejection. Existing callback replay, PKCE, token security-fault, refresh and key-rotation cases remain unchanged. Retained upstream/backend evidence is supporting provenance only; full Core owning CI, native adapter/platform compilation and real configured-issuer compatibility remain separate requirements. No production activation, provider configuration, hosted implementation or deployment.

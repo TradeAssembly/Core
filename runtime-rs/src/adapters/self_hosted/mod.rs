@@ -1336,6 +1336,26 @@ impl JournalPort for SelfHostedPostgresState {
 }
 
 impl SchedulerPort for SelfHostedPostgresState {
+    fn observe(
+        &self,
+        schedule_key: &str,
+    ) -> Result<Option<crate::schedule_observation::ScheduleObservation>, String> {
+        self.with_client(|client| {
+            client
+                .query_opt(
+                    "SELECT state, due_at_ms FROM runtime_schedules WHERE schedule_key=$1",
+                    &[&schedule_key],
+                )
+                .map(|row| {
+                    row.map(|row| crate::schedule_observation::ScheduleObservation {
+                        state: row.get(0),
+                        due_at_ms: row.get(1),
+                    })
+                })
+                .map_err(redacted_pg_error)
+        })
+    }
+
     fn schedule(&self, work: ScheduledWork) -> Result<(), String> {
         self.with_client(|client| {
             client.execute(

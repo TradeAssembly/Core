@@ -66,6 +66,85 @@ fn storage_context(key: &str) -> SideEffectContext {
 }
 
 #[test]
+fn schedule_observation_survives_restart_without_claiming_or_advancing_work() {
+    let db = db("read-only-observation");
+    let _ = std::fs::remove_file(&db);
+    let service = TradeAssemblyService::test_local(&db);
+    let key = "observation:pending";
+    service
+        .runtime()
+        .scheduler
+        .schedule(ScheduledWork {
+            schedule_key: key.to_string(),
+            queue: "execution-ticks".to_string(),
+            payload: json!({"activationId":"observation-only","cycle":1}),
+            due_at_ms: 1_000,
+            idempotency_key: IdempotencyKey::new("observation:pending").expect("key"),
+            fencing_token: 0,
+        })
+        .expect("schedule");
+    let before = service
+        .runtime()
+        .scheduler
+        .observe(key)
+        .expect("observe")
+        .expect("work");
+    assert_eq!(before.next_due_at_ms(), Some(1_000));
+    drop(service);
+    let reopened = TradeAssemblyService::test_local(&db);
+    assert_eq!(
+        reopened.runtime().scheduler.observe(key).expect("observe"),
+        Some(before)
+    );
+    assert_eq!(
+        reopened
+            .runtime()
+            .scheduler
+            .observe("missing")
+            .expect("observe"),
+        None
+    );
+    let work = reopened
+        .runtime()
+        .scheduler
+        .claim_key(key, "real-worker", 1_000, 10_000)
+        .expect("claim")
+        .expect("read did not claim work");
+    assert_eq!(
+        work.fencing_token, 1,
+        "observing must not increment fencing"
+    );
+    assert_eq!(work.due_at_ms, 1_000);
+    assert_eq!(
+        reopened
+            .runtime()
+            .scheduler
+            .observe(key)
+            .expect("observe")
+            .expect("leased")
+            .next_due_at_ms(),
+        Some(1_000)
+    );
+    reopened
+        .runtime()
+        .scheduler
+        .complete(key, "real-worker", work.fencing_token, 1_001)
+        .expect("complete");
+    assert_eq!(
+        reopened
+            .runtime()
+            .scheduler
+            .observe(key)
+            .expect("observe")
+            .expect("completed")
+            .next_due_at_ms(),
+        None
+    );
+    drop(reopened);
+    let _ = std::fs::remove_file(db);
+}
+
+#[test]
 fn checkpoint_before_ack_recovers_without_repeating_the_tick() {
     let db = db("checkpoint-recovery");
     let _ = std::fs::remove_file(&db);

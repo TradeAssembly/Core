@@ -114,6 +114,15 @@ pub struct ScheduledWork {
 }
 
 pub trait SchedulerPort: VersionedPort {
+    /// Observe existing work without claiming, renewing, completing or creating it.
+    /// Adapters without this optional read capability report unavailable.
+    fn observe(
+        &self,
+        _schedule_key: &str,
+    ) -> Result<Option<crate::schedule_observation::ScheduleObservation>, String> {
+        Err("schedule observation unavailable".to_string())
+    }
+
     fn schedule(&self, work: ScheduledWork) -> Result<(), String>;
     fn cancel(&self, schedule_key: &str) -> Result<bool, String>;
     fn claim_key(

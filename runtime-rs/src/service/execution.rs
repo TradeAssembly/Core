@@ -6168,10 +6168,38 @@ fn chart_from_evidence(
 }
 
 fn scheduler_for_activation(service: &TradeAssemblyService, activation_id: &str) -> Value {
-    let scheduler = scheduler_status(service);
+    let mut scheduler = scheduler_status(service);
     let selected = scheduler["activationId"].as_str() == Some(activation_id)
         || scheduler["activation_id"].as_str() == Some(activation_id);
     if selected {
+        scheduler["nextEvaluationAt"] = Value::Null;
+        scheduler["timingStatus"] = json!("unavailable");
+        if let Some(run) = get(service, RUNS_NS, &run_id_for_activation(activation_id)) {
+            use crate::schedule_observation::{execution_timing, ExecutionTiming};
+            let timing = execution_timing(
+                run["state"].as_str().unwrap_or(""),
+                orchestrator_kind(&run),
+                scheduler["running"].as_bool() == Some(true),
+                || {
+                    let cycle = run["cycle"]
+                        .as_u64()
+                        .and_then(|cycle| cycle.checked_add(1))
+                        .ok_or_else(|| "execution cycle unavailable".to_string())?;
+                    service
+                        .runtime()
+                        .scheduler
+                        .observe(&execution_schedule_key(activation_id, cycle))
+                },
+            );
+            match timing {
+                ExecutionTiming::Scheduled(due_at_ms) => {
+                    scheduler["nextEvaluationAt"] = json!(due_at_ms);
+                    scheduler["timingStatus"] = json!("scheduled");
+                }
+                ExecutionTiming::NotScheduled => scheduler["timingStatus"] = json!("not_scheduled"),
+                ExecutionTiming::Unavailable => {}
+            }
+        }
         scheduler
     } else {
         json!({

@@ -570,6 +570,14 @@ impl EventStreamPort for LocalSqliteOperations {
 }
 
 impl SchedulerPort for LocalSqliteOperations {
+    fn observe(
+        &self,
+        schedule_key: &str,
+    ) -> Result<Option<crate::schedule_observation::ScheduleObservation>, String> {
+        super::schedule_observation::observe(&self.connection()?, schedule_key)
+            .map_err(sqlite_error)
+    }
+
     fn schedule(&self, work: ScheduledWork) -> Result<(), String> {
         let connection = self.connection()?;
         connection

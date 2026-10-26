@@ -80,6 +80,7 @@ pub mod robustness_contracts;
 pub use tradeassembly_simulation::robustness_engine;
 pub mod robustness_projection;
 pub mod runtime_config;
+pub mod schedule_observation;
 pub mod scheduler;
 pub mod seed;
 pub mod selector;

@@ -3,6 +3,7 @@
 pub mod credentials;
 pub mod journal;
 pub mod operations;
+mod schedule_observation;
 pub mod schema;
 pub mod sqlite;
 pub mod system;

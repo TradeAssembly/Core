@@ -6729,6 +6729,177 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_projection_retains_due_time_and_fencing_across_reopen() {
+        let db = format!(
+            ".tradeassembly/test-scheduler-projection-{}-{}.db",
+            std::process::id(),
+            epoch_nanos()
+        );
+        let service = TradeAssemblyService::test_local(&db);
+        let activation = "projection-selected";
+        let key = execution_schedule_key(activation, 1);
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("projection-fixture").unwrap(),
+        );
+        // Paused entry policy still has a next due time, but does not start a
+        // background worker when this fixture's service is reopened.
+        service.runtime().storage.put_json(
+            RUNS_NS,
+            &run_id_for_activation(activation),
+            json!({"activationId": activation, "state": "paused", "orchestrator": "deterministic", "cycle": 0}),
+            &context,
+        ).unwrap();
+        service.runtime().storage.put_json(
+            STATE_NS, "current",
+            json!({"activationId": activation, "running": true, "scheduleKey": "foreign-schedule"}),
+            &context,
+        ).unwrap();
+        let work = |schedule_key: &str, due_at_ms| ScheduledWork {
+            schedule_key: schedule_key.to_string(),
+            queue: EXECUTION_TICK_QUEUE.to_string(),
+            payload: json!({"activationId": activation, "cycle": 1}),
+            due_at_ms,
+            idempotency_key: IdempotencyKey::new(format!("schedule:{schedule_key}")).unwrap(),
+            fencing_token: 0,
+        };
+        service
+            .runtime()
+            .scheduler
+            .schedule(work(&key, 1_000))
+            .unwrap();
+        service
+            .runtime()
+            .scheduler
+            .schedule(work("foreign-schedule", 9_000))
+            .unwrap();
+        // Redelivery does not move an existing pending schedule to read time.
+        service
+            .runtime()
+            .scheduler
+            .schedule(work(&key, 5_000))
+            .unwrap();
+        for _ in 0..3 {
+            let projection = scheduler_for_activation(&service, activation);
+            assert_eq!(projection["nextEvaluationAt"], 1_000);
+            assert_eq!(projection["timingStatus"], "scheduled");
+        }
+        let first = service
+            .runtime()
+            .scheduler
+            .claim_key(&key, "original-owner", 1_000, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.fencing_token, 1, "reads must not acquire ownership");
+        assert_eq!(
+            scheduler_for_activation(&service, activation)["nextEvaluationAt"],
+            1_000
+        );
+        drop(service);
+
+        let reopened = TradeAssemblyService::test_local(&db);
+        for _ in 0..3 {
+            assert_eq!(
+                scheduler_for_activation(&reopened, activation)["nextEvaluationAt"],
+                1_000
+            );
+        }
+        let replacement = reopened
+            .runtime()
+            .scheduler
+            .claim_key(&key, "replacement-owner", 1_011, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            replacement.fencing_token, 2,
+            "repeated reads must not change fencing"
+        );
+        assert!(reopened
+            .runtime()
+            .scheduler
+            .complete(&key, "original-owner", first.fencing_token, 1_012)
+            .is_err());
+        reopened
+            .runtime()
+            .scheduler
+            .complete(&key, "replacement-owner", replacement.fencing_token, 1_012)
+            .unwrap();
+        let finished = scheduler_for_activation(&reopened, activation);
+        assert!(finished["nextEvaluationAt"].is_null());
+        assert_eq!(finished["timingStatus"], "not_scheduled");
+        assert_eq!(
+            reopened
+                .runtime()
+                .scheduler
+                .observe("foreign-schedule")
+                .unwrap()
+                .unwrap()
+                .next_due_at_ms(),
+            Some(9_000)
+        );
+        drop(reopened);
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
+    fn scheduler_projection_suppresses_external_terminal_and_unbound_evidence() {
+        let db = format!(
+            ".tradeassembly/test-scheduler-projection-boundary-{}-{}.db",
+            std::process::id(),
+            epoch_nanos()
+        );
+        let service = TradeAssemblyService::test_local(&db);
+        let activation = "projection-boundary";
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("projection-boundary-fixture").unwrap(),
+        );
+        service
+            .runtime()
+            .storage
+            .put_json(
+                STATE_NS,
+                "current",
+                json!({"activationId": activation, "running": true}),
+                &context,
+            )
+            .unwrap();
+        for (state, orchestrator) in [("active", "external_agent"), ("stopped", "deterministic")] {
+            service.runtime().storage.put_json(
+                RUNS_NS, &run_id_for_activation(activation),
+                json!({"activationId": activation, "state": state, "orchestrator": orchestrator, "cycle": 0}),
+                &context,
+            ).unwrap();
+            let projection = scheduler_for_activation(&service, activation);
+            assert!(projection["nextEvaluationAt"].is_null());
+            assert_eq!(projection["timingStatus"], "not_scheduled");
+        }
+        service.runtime().storage.put_json(
+            RUNS_NS, &run_id_for_activation(activation),
+            json!({"activationId": activation, "state": "paused", "orchestrator": "deterministic", "cycle": u64::MAX}),
+            &context,
+        ).unwrap();
+        assert_eq!(
+            scheduler_for_activation(&service, activation)["timingStatus"],
+            "unavailable"
+        );
+        let unbound = scheduler_for_activation(&service, "another-activation");
+        assert_eq!(unbound["available"], false);
+        assert_eq!(unbound["reason"], "scheduler_state_not_bound_to_activation");
+        assert!(
+            service
+                .runtime()
+                .scheduler
+                .observe(&execution_schedule_key(activation, 1))
+                .unwrap()
+                .is_none(),
+            "projection must not create schedules"
+        );
+        drop(service);
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
     fn execution_attempt_identity_preserves_retries_when_logical_fencing_restarts() {
         let first = execution_attempt_id("activation-1", 27, 1, 1);
         let retried = execution_attempt_id("activation-1", 27, 2, 1);

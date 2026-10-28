@@ -236,10 +236,24 @@ async fn documented_http_routes_are_served_by_rust_axum_api() {
             continue;
         }
         if route == "POST /product/strategies/share-snapshots/create" {
-            assert_eq!(status.as_u16(), 501);
-            assert_eq!(body["error"]["code"], "durable_share_snapshots_unavailable");
+            // Sharing is implemented, but the route inventory's generic body is
+            // not a reviewed creation intent. Reject it before creating content.
+            assert_eq!(status.as_u16(), 400);
+            assert_eq!(body["error"]["code"], "snapshot_idempotency_key_required");
             assert_eq!(body["error"]["retryable"], false);
             assert!(body.get("snapshot").is_none());
+            let mut unreviewed = default_body();
+            unreviewed["idempotencyKey"] = json!("http-route-unreviewed-share");
+            let response = client
+                .post(format!("{base_url}{path}"))
+                .json(&unreviewed)
+                .send()
+                .await
+                .expect("unreviewed share response");
+            assert_eq!(response.status().as_u16(), 400);
+            let rejected: Value = response.json().await.expect("unreviewed share error");
+            assert_eq!(rejected["error"]["code"], "snapshot_preview_required");
+            assert!(rejected.get("snapshot").is_none());
             continue;
         }
         assert!(

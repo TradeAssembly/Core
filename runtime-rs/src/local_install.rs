@@ -397,6 +397,19 @@ fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
         {
             return Err("local_install_state_symlink".into());
         }
+        if name == "credentials" {
+            // The credential adapter creates this installation-local directory
+            // even for read-only plugin discovery. Recognize it without reading,
+            // adopting, deleting or repairing its private contents.
+            validate_state_root(&entry.path())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if symlink_metadata(&entry.path())?.uid() != unsafe { libc::geteuid() } {
+                    return Err("local_install_state_insecure".into());
+                }
+            }
+        }
         if !recognized(name.to_string_lossy().as_ref()) {
             return Err("local_install_state_unrecognized".into());
         }
@@ -465,6 +478,7 @@ fn recognized(name: &str) -> bool {
             | "agent-runner.out.log"
             | "agent-runner.err.log"
             | "artifacts"
+            | "credentials"
             | "legal"
             | ".local-owner"
             | "runtime.db.local-owner"
@@ -763,6 +777,50 @@ mod tests {
             "local_install_state_unrecognized"
         );
         assert!(!state.join("installation.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_install_preserves_generated_private_credentials_and_rejects_unsafe_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let state = prepare_state_root(&root.path().canonicalize().unwrap().join("state")).unwrap();
+        let credentials = state.join("credentials");
+        fs::create_dir(&credentials).unwrap();
+        fs::set_permissions(&credentials, fs::Permissions::from_mode(0o700)).unwrap();
+        let material = credentials.join("fixture.json");
+        fs::write(&material, b"private fixture bytes").unwrap();
+        assert_eq!(prepare_state_root(&state).unwrap(), state);
+        assert_eq!(fs::read(&material).unwrap(), b"private fixture bytes");
+        // Recognizing generated state never adopts an unmarked installation.
+        let binary = root.path().join("warden");
+        fs::write(&binary, b"not executed").unwrap();
+        assert_eq!(
+            prepare(&state, &binary, 8181).unwrap_err(),
+            "local_install_state_unrecognized"
+        );
+        fs::set_permissions(&credentials, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            prepare_state_root(&state).unwrap_err(),
+            "local_install_state_insecure"
+        );
+        assert_eq!(
+            fs::metadata(&credentials).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        fs::remove_file(&material).unwrap();
+        fs::remove_dir(&credentials).unwrap();
+        fs::write(&credentials, b"wrong entry type").unwrap();
+        assert_eq!(
+            prepare_state_root(&state).unwrap_err(),
+            "local_install_state_invalid"
+        );
+        fs::remove_file(&credentials).unwrap();
+        std::os::unix::fs::symlink(root.path(), &credentials).unwrap();
+        assert_eq!(
+            prepare_state_root(&state).unwrap_err(),
+            "local_install_state_symlink"
+        );
     }
 
     #[test]

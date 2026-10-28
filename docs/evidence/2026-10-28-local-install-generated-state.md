@@ -19,5 +19,13 @@ symlink substitutions, while retaining unmarked-install rejection. The existing
 real-binary installation fixture remains the owning end-to-end repeat check; no
 assertion is skipped or changed to accommodate the failure.
 
+The real-binary fixture now initializes that directory through the actual local
+credential adapter, without storing credentials or using a broker. It passes
+against the release-profile Core and real Warden with source/PATH cleared. A
+separate explicit `F2_TEST_SETUP_ONLY_BINARY` selector permits bare-binary setup
+qualification; it is mutually exclusive with the existing bundled selector.
+The latter still requires its original sandbox/offline-install/plugin assertions.
+Standalone setup success does not qualify a full distribution bundle.
+
 This is a local producer fix. It does not alter a consumer's immutable producer
 pin or establish publication, complete owning CI, signing or release readiness.

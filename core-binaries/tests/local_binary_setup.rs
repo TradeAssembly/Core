@@ -7,7 +7,14 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn executable() -> std::path::PathBuf {
-    std::env::var_os("F2_TEST_TRADEASSEMBLY_BINARY")
+    let bundled = std::env::var_os("F2_TEST_TRADEASSEMBLY_BINARY");
+    let setup_only = std::env::var_os("F2_TEST_SETUP_ONLY_BINARY");
+    assert!(
+        bundled.is_none() || setup_only.is_none(),
+        "select one explicit fixture surface"
+    );
+    setup_only
+        .or(bundled)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tradeassembly").into())
 }
@@ -820,6 +827,15 @@ fn real_binary_setup_and_policy_service_work_without_source_or_path() {
     assert_eq!(runner["ok"], true);
     assert_eq!(runner["data"]["receipts"], json!([]));
     drop(policy);
+    // Read-only discovery initializes the same private directory as plugin
+    // credential lookup, without introducing credentials or contacting a broker.
+    use tradeassembly_runtime::ports::CredentialPort;
+    let credentials =
+        tradeassembly_runtime::adapters::local::credentials::LocalCredentialStore::new(
+            state.join("runtime.db").to_str().unwrap(),
+        );
+    assert!(!credentials.status("repeat-install-fixture").configured);
+    assert!(state.join("credentials").is_dir());
     prepare(&state, &warden, port);
     assert_eq!(std::fs::read(token_path).unwrap(), token_before);
 }

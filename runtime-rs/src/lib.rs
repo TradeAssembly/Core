@@ -96,4 +96,5 @@ pub mod warden_launchd;
 #[cfg(windows)]
 #[path = "../../platform/windows_private.rs"]
 pub mod windows_private;
+pub mod worker_observation;
 pub mod workos_identity;

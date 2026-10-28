@@ -33,6 +33,8 @@ const CONTROLS_NS: &str = "execution_controls";
 const CONTROL_OUTCOMES_NS: &str = "execution_control_outcomes";
 const HEALTH_NS: &str = "execution_health";
 const STATE_NS: &str = "scheduler_state";
+const WORKER_OBSERVATIONS_NS: &str = "execution_worker_observations_v1";
+const WORKER_LATEST_NS: &str = "execution_worker_latest_v1";
 const EXECUTION_TICK_QUEUE: &str = "execution-ticks";
 const EXECUTION_TICK_STREAM: &str = "execution-scheduler";
 const PLUGIN_OPERATION_RECEIPTS_NS: &str = "plugin_operation_receipts";
@@ -4702,10 +4704,33 @@ fn start_local_scheduler_worker(
             return;
         }
     }
+    let session_id = format!(
+        "{}:{}",
+        super::broker_onboarding::process_boot_id(),
+        epoch_nanos()
+    );
+    let worker_id = format!("{worker_id}:{session_id}");
     let worker_name = format!("tradeassembly-scheduler-{}", slug(&activation_id));
     let worker_key_for_thread = worker_key.clone();
     let spawn = thread::Builder::new().name(worker_name).spawn(move || {
+        let _registration = WorkerRegistration(worker_key_for_thread);
+        let mut sequence = 0_u64;
+        let mut observe = |state: &str| {
+            sequence = sequence.saturating_add(1);
+            // Observation failures do not grant or revoke execution authority.
+            // The last successful observation ages out using its trusted clock.
+            let _ = record_worker_observation(
+                &service,
+                &activation_id,
+                &worker_id,
+                &session_id,
+                sequence,
+                interval_seconds,
+                state,
+            );
+        };
         loop {
+            observe("waiting");
             let wake = service.runtime().scheduler_wake.clone();
             let observed = wake.generation();
             let (_, changed) = wake.wait(observed, Duration::from_secs(interval_seconds));
@@ -4733,6 +4758,7 @@ fn start_local_scheduler_worker(
             if current_activation != activation_id {
                 break;
             }
+            observe("evaluating");
             let _ = service.handle_http_from_source(
                 "scheduler",
                 "POST",
@@ -4745,16 +4771,135 @@ fn start_local_scheduler_worker(
                 }),
             );
         }
-        scheduler_worker_registry()
-            .lock()
-            .expect("scheduler worker registry lock")
-            .remove(&worker_key_for_thread);
+        observe("stopped");
     });
     if spawn.is_err() {
         registry
             .lock()
             .expect("scheduler worker registry lock")
             .remove(&worker_key);
+    }
+}
+
+fn record_worker_observation(
+    service: &TradeAssemblyService,
+    activation_id: &str,
+    worker_id: &str,
+    session_id: &str,
+    sequence: u64,
+    interval_seconds: u64,
+    state: &str,
+) -> Result<(), String> {
+    let now = service.runtime().clock.now_ms();
+    let window_ms = interval_seconds
+        .saturating_mul(2)
+        .saturating_add(5)
+        .saturating_mul(1_000);
+    let observation_id = format!("worker-observation:{activation_id}:{session_id}:{sequence}");
+    let observation = crate::worker_observation::WorkerObservation {
+        schema_version: "tradeassembly.worker_observation.v1".into(),
+        observation_id: observation_id.clone(),
+        activation_id: activation_id.into(),
+        process_boot_id: super::broker_onboarding::process_boot_id().into(),
+        worker_id: worker_id.into(),
+        state: state.into(),
+        observed_at_ms: now,
+        expires_at_ms: now.saturating_add(i64::try_from(window_ms).unwrap_or(i64::MAX)),
+    };
+    let value = serde_json::to_value(observation).map_err(|error| error.to_string())?;
+    let context = SideEffectContext::new(
+        AuthorityContext::local_cli(),
+        IdempotencyKey::new(observation_id.clone())?,
+    );
+    service.runtime().storage.put_json_if_absent(
+        WORKER_OBSERVATIONS_NS,
+        &observation_id,
+        value.clone(),
+        &context,
+    )?;
+    // The latest pointer can only reference an already persisted immutable
+    // observation; a failed pointer write leaves older, expiring evidence.
+    service.runtime().storage.put_json(
+        WORKER_LATEST_NS,
+        activation_id,
+        json!({"observationId":observation_id}),
+        &context,
+    )?;
+    service
+        .runtime()
+        .record_side_effect("execution.worker.observed", value, &context)?;
+    Ok(())
+}
+
+fn worker_for_activation(
+    service: &TradeAssemblyService,
+    activation_id: &str,
+    run: &Value,
+) -> Value {
+    if orchestrator_kind(run) == "external_agent" {
+        return json!({"status":"not_applicable","reason":"external_agent_owns_evaluation"});
+    }
+    if matches!(
+        run["state"].as_str(),
+        Some("stopped" | "failed" | "emergency_stopped")
+    ) {
+        return json!({"status":"stopped","reason":"execution_stopped"});
+    }
+    if orchestrator_kind(run) != "deterministic"
+        || !matches!(run["state"].as_str(), Some("active" | "paused"))
+    {
+        return json!({"status":"unavailable","reason":"execution_state_unavailable"});
+    }
+    let observation = (|| {
+        let Some(pointer) = service
+            .runtime()
+            .storage
+            .get_json(WORKER_LATEST_NS, activation_id)?
+        else {
+            return Ok(None);
+        };
+        let key = pointer["observationId"]
+            .as_str()
+            .ok_or("worker observation pointer invalid")?;
+        service
+            .runtime()
+            .storage
+            .get_json(WORKER_OBSERVATIONS_NS, key)?
+            .map(|value| {
+                let record: crate::worker_observation::WorkerObservation =
+                    serde_json::from_value(value).map_err(|error| error.to_string())?;
+                if record.observation_id != key {
+                    return Err("worker observation identity mismatch".to_string());
+                }
+                Ok(record)
+            })
+            .transpose()
+    })();
+    let resource = run["cycle"]
+        .as_u64()
+        .and_then(|cycle| cycle.checked_add(1))
+        .map(|cycle| execution_lease_resource(activation_id, cycle));
+    let lease = resource
+        .as_deref()
+        .ok_or_else(|| "execution cycle unavailable".to_string())
+        .and_then(|resource| service.runtime().leases.current(resource));
+    crate::worker_observation::project_worker(
+        activation_id,
+        super::broker_onboarding::process_boot_id(),
+        service.runtime().clock.now_ms(),
+        resource.as_deref().unwrap_or(""),
+        observation,
+        lease,
+    )
+}
+
+struct WorkerRegistration(String);
+impl Drop for WorkerRegistration {
+    fn drop(&mut self) {
+        scheduler_worker_registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
     }
 }
 
@@ -6174,7 +6319,9 @@ fn scheduler_for_activation(service: &TradeAssemblyService, activation_id: &str)
     if selected {
         scheduler["nextEvaluationAt"] = Value::Null;
         scheduler["timingStatus"] = json!("unavailable");
+        scheduler["workerObservation"] = json!({"status":"unavailable"});
         if let Some(run) = get(service, RUNS_NS, &run_id_for_activation(activation_id)) {
+            scheduler["workerObservation"] = worker_for_activation(service, activation_id, &run);
             use crate::schedule_observation::{execution_timing, ExecutionTiming};
             let timing = execution_timing(
                 run["state"].as_str().unwrap_or(""),
@@ -7214,5 +7361,187 @@ mod tests {
             strategy_spec_version_ref(&format!("sha256:{canonical_hash}")),
             Err(crate::ports::LegalReceiptFailure::Invalid)
         );
+    }
+    #[test]
+    fn worker_observation_durable_history_and_lease_recovery_are_read_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let service =
+            TradeAssemblyService::test_local(directory.path().join("worker.db").to_string_lossy());
+        let activation = "worker-observation-fixture";
+        let run = json!({"state":"paused","orchestrator":"deterministic","cycle":0});
+        record_worker_observation(
+            &service,
+            activation,
+            "current-worker",
+            "fixture-session",
+            1,
+            30,
+            "waiting",
+        )
+        .unwrap();
+        let history = service
+            .runtime()
+            .storage
+            .list_json(WORKER_OBSERVATIONS_NS)
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        let now = service.runtime().clock.now_ms();
+        let resource = execution_lease_resource(activation, 1);
+        let old = service
+            .runtime()
+            .leases
+            .acquire(&resource, "old-worker", now - 100, 1)
+            .unwrap()
+            .unwrap();
+        let observed = worker_for_activation(&service, activation, &run);
+        assert_eq!(observed["status"], "observed");
+        assert_eq!(observed["evaluationLease"]["status"], "expired");
+        assert_eq!(
+            service
+                .runtime()
+                .storage
+                .list_json(WORKER_OBSERVATIONS_NS)
+                .unwrap(),
+            history
+        );
+        // Existing lease fencing owns recovery; inspecting freshness did not
+        // renew or acquire a lease and cannot rescue an expired owner.
+        assert_eq!(
+            service.runtime().leases.current(&resource).unwrap(),
+            Some(old.clone())
+        );
+        let replacement = service
+            .runtime()
+            .leases
+            .acquire(&resource, "current-worker", now, 30_000)
+            .unwrap()
+            .unwrap();
+        assert!(replacement.fencing_token > old.fencing_token);
+        assert!(service.runtime().leases.release(&old).is_err());
+        record_worker_observation(
+            &service,
+            activation,
+            "current-worker",
+            "fixture-session",
+            2,
+            30,
+            "evaluating",
+        )
+        .unwrap();
+        assert_eq!(
+            worker_for_activation(&service, activation, &run)["status"],
+            "evaluating"
+        );
+        service.runtime().leases.release(&replacement).unwrap();
+        assert_eq!(
+            worker_for_activation(&service, activation, &run)["status"],
+            "observed"
+        );
+        assert_eq!(
+            service
+                .runtime()
+                .storage
+                .list_json(WORKER_OBSERVATIONS_NS)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            service
+                .runtime()
+                .storage
+                .get_json(WORKER_OBSERVATIONS_NS, &history[0].0)
+                .unwrap(),
+            Some(history[0].1.clone())
+        );
+        drop(service);
+        let reopened =
+            TradeAssemblyService::test_local(directory.path().join("worker.db").to_string_lossy());
+        assert_eq!(
+            worker_for_activation(&reopened, activation, &run)["status"],
+            "observed"
+        );
+        assert_eq!(
+            worker_for_activation(&reopened, "foreign", &run)["status"],
+            "unavailable"
+        );
+        assert_eq!(
+            worker_for_activation(
+                &reopened,
+                activation,
+                &json!({"state":"active","orchestrator":"external_agent"})
+            )["status"],
+            "not_applicable"
+        );
+    }
+
+    #[test]
+    fn worker_observation_previous_process_is_recovering_until_current_loop_checks_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("restart.db");
+        let service = TradeAssemblyService::test_local(path.to_string_lossy());
+        let activation = "worker-restart-fixture";
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("old-observation").unwrap(),
+        );
+        service.runtime().storage.put_json_if_absent(WORKER_OBSERVATIONS_NS, "old-observation", json!({
+            "schemaVersion":"tradeassembly.worker_observation.v1", "observationId":"old-observation", "activationId":activation,
+            "processBootId":"previous-process", "workerId":"previous-worker", "state":"waiting", "observedAtMs":1,"expiresAtMs":i64::MAX,
+        }), &context).unwrap();
+        service
+            .runtime()
+            .storage
+            .put_json(
+                WORKER_LATEST_NS,
+                activation,
+                json!({"observationId":"old-observation"}),
+                &context,
+            )
+            .unwrap();
+        drop(service);
+        let reopened = TradeAssemblyService::test_local(path.to_string_lossy());
+        let run = json!({"state":"paused","orchestrator":"deterministic","cycle":0});
+        let previous = worker_for_activation(&reopened, activation, &run);
+        assert_eq!(previous["status"], "recovering");
+        assert!(previous.get("workerId").is_none());
+        record_worker_observation(
+            &reopened,
+            activation,
+            "new-worker",
+            "new-session",
+            1,
+            30,
+            "waiting",
+        )
+        .unwrap();
+        assert_eq!(
+            worker_for_activation(&reopened, activation, &run)["status"],
+            "observed"
+        );
+        assert_eq!(
+            reopened
+                .runtime()
+                .storage
+                .list_json(WORKER_OBSERVATIONS_NS)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn worker_registration_is_released_on_unwind() {
+        let key = format!("worker-unwind-fixture:{}", epoch_nanos());
+        scheduler_worker_registry()
+            .lock()
+            .unwrap()
+            .insert(key.clone());
+        let result = std::panic::catch_unwind(|| {
+            let _registration = WorkerRegistration(key.clone());
+            panic!("fixture worker failure");
+        });
+        assert!(result.is_err());
+        assert!(!scheduler_worker_registry().lock().unwrap().contains(&key));
     }
 }

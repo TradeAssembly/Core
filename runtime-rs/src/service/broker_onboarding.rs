@@ -27,6 +27,10 @@ pub(super) fn initialize_process_observation() {
     let _ = process_observation();
 }
 
+pub(super) fn process_boot_id() -> &'static str {
+    &process_observation().boot_id
+}
+
 fn process_observation() -> &'static ProcessObservation {
     PROCESS_OBSERVATION.get_or_init(|| {
         let started_at_ms = now_ms();

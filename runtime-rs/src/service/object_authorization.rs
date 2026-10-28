@@ -10,6 +10,22 @@ pub(super) fn authorize_private_request(
     path: &str,
     body: &Value,
 ) -> Option<ServiceResponse> {
+    let sharing_route = matches!(
+        super::normalize_path(path).as_str(),
+        "/product/strategies/share-workspace"
+            | "/product/strategies/share-snapshots/create"
+            | "/product/strategies/share-snapshots/revoke"
+            | "/product/share-snapshots/view"
+            | "/product/share-snapshots/export"
+    );
+    if sharing_route {
+        if service.invocation_owner().is_none() {
+            return Some(ServiceResponse::error(404, "snapshot_unavailable", false));
+        }
+        if service.invocation_actor_kind != "user" {
+            return Some(ServiceResponse::forbidden("snapshot_owner_user_required"));
+        }
+    }
     service.invocation_owner()?;
     let body = body
         .get("request")
@@ -17,6 +33,15 @@ pub(super) fn authorize_private_request(
         .unwrap_or(body);
     let method = method.to_ascii_uppercase();
     let path = super::normalize_path(path);
+
+    if path == "/product/strategies/share-snapshots/revoke" {
+        let Some(id) = string_field(body, &["snapshotId"]) else {
+            return Some(ServiceResponse::object_unavailable());
+        };
+        if let Err(response) = service.require_object("share_snapshot", &id) {
+            return Some(response);
+        }
+    }
 
     let nested_strategy_id = body
         .get("scope")

@@ -1341,6 +1341,7 @@ fn is_read_http_route(method: &str, path: &str) -> bool {
             | "/orders/status-stream/watch"
             | "/plugins/capabilities/resolve"
             | "/product/share-snapshots/view"
+            | "/product/share-snapshots/export"
             | "/product/strategies/validate-draft"
             | "/product/strategies/validate-expression"
             | "/providers/broker-conformance"

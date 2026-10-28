@@ -1409,3 +1409,118 @@ fn text(value: &Value, key: &str) -> String {
         .unwrap_or_else(|| panic!("missing {key}: {value:#}"))
         .to_string()
 }
+
+#[test]
+fn local_sharing_uses_owned_verified_research_without_granting_source_access() {
+    use tradeassembly_runtime::ports::{ObjectOwner, ObjectScope};
+    let fixture = fixture("local-sharing-research");
+    let created = fixture
+        .service
+        .handle_http("POST", "/backtests", fixture.request.clone());
+    assert_eq!(created.status, 202, "{created:#?}");
+    let run_id = text(&created.body, "runId");
+    let completed = fixture.service.handle_http(
+        "POST",
+        "/backtests:process",
+        json!({"worker":"local-share-fixture-worker"}),
+    );
+    assert_eq!(completed.body["status"], "completed", "{completed:#?}");
+    let issuer = "https://share-fixture.example";
+    let owner = ObjectOwner {
+        issuer: issuer.into(),
+        subject: "owner".into(),
+        tenant_ref: format!("personal:{issuer}:owner"),
+    };
+    for (kind, id) in [
+        ("strategy", "strategy-1"),
+        ("backtest_run", run_id.as_str()),
+    ] {
+        fixture
+            .service
+            .runtime()
+            .object_authorization
+            .bind(
+                &ObjectScope {
+                    object_type: kind.into(),
+                    object_id: id.into(),
+                    owner: owner.clone(),
+                    parent_type: None,
+                    parent_id: None,
+                },
+                &context(&format!("share-scope-{kind}")),
+            )
+            .unwrap();
+    }
+    let alice = fixture
+        .service
+        .for_authenticated_invocation(issuer, "owner", None, None);
+    let bob = fixture
+        .service
+        .for_authenticated_invocation(issuer, "recipient", None, None);
+    let preview = alice.handle_http(
+        "POST",
+        "/product/strategies/share-workspace",
+        json!({"strategyId":"strategy-1","researchRunId":run_id}),
+    );
+    assert_eq!(preview.status, 200, "{preview:#?}");
+    assert_eq!(preview.body["researchOptions"].as_array().unwrap().len(), 1);
+    let created=alice.handle_http("POST","/product/strategies/share-snapshots/create",json!({"strategyId":"strategy-1","researchRunId":run_id,"expectedContentHash":preview.body["preview"]["contentHash"],"idempotencyKey":"owned-research-share","acknowledgeSnapshot":true,"acknowledgeRecipients":true,"recipientSubjects":["recipient"]}));
+    assert_eq!(created.status, 201, "{created:#?}");
+    let id = created.body["body"]["id"].as_str().unwrap();
+    let read = bob.handle_http(
+        "POST",
+        "/product/share-snapshots/export",
+        json!({"snapshotId":id}),
+    );
+    assert_eq!(read.status, 200, "{read:#?}");
+    assert_eq!(read.body["content"]["research"]["status"], "completed");
+    assert!(
+        read.body["content"]["research"]["simulationFillCount"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        read.body["content"]["research"]["manifestHash"],
+        fixture
+            .service
+            .runtime()
+            .backtests
+            .get_run(&run_id)
+            .unwrap()
+            .unwrap()
+            .manifest_hash
+    );
+    assert_eq!(
+        bob.handle_http("GET", &format!("/backtests/{run_id}"), json!({}))
+            .status,
+        404
+    );
+    assert!(!read.body.to_string().contains("share-fixture-worker"));
+    assert!(read.body["content"].get("orders").is_none());
+    let refreshed = alice.handle_http(
+        "POST",
+        "/product/strategies/share-workspace",
+        json!({"strategyId":"strategy-1","researchRunId":run_id}),
+    );
+    assert_eq!(
+        refreshed.body["snapshots"].as_array().unwrap().len(),
+        1,
+        "{refreshed:#?}"
+    );
+    let revoked = alice.handle_http(
+        "POST",
+        "/product/strategies/share-snapshots/revoke",
+        json!({"snapshotId":id,"idempotencyKey":"revoke-owned-research"}),
+    );
+    assert_eq!(revoked.status, 200, "{revoked:#?}");
+    let denied = bob.handle_http(
+        "POST",
+        "/product/share-snapshots/export",
+        json!({"snapshotId":id}),
+    );
+    assert_eq!(
+        denied.status, 404,
+        "cached authorized response must not survive revocation: {denied:#?}"
+    );
+}

@@ -53,6 +53,7 @@ mod risk;
 mod robustness;
 pub mod robustness_lifecycle;
 mod scheduler;
+mod sharing;
 mod sightline;
 mod strategy;
 mod workers;
@@ -1098,6 +1099,19 @@ impl TradeAssemblyService {
             self.runtime.finance_authority.as_ref(),
             envelope.clone(),
         ) {
+            Ok(record)
+                if record.duplicate
+                    && envelope.side_effect_class.as_str() == "read"
+                    && matches!(
+                        normalized_path.as_str(),
+                        "/product/strategies/share-workspace"
+                            | "/product/share-snapshots/view"
+                            | "/product/share-snapshots/export"
+                    ) =>
+            {
+                // Preserve normal authentication/authority preparation, but
+                // recheck current grants and revocation on every snapshot read.
+            }
             Ok(record) if record.duplicate => {
                 return record
                     .response_status
@@ -2081,19 +2095,11 @@ impl TradeAssemblyService {
             ("POST", "/product/discover-workspace") => ServiceResponse::ok(
                 json!({"starters": demos::demo_descriptors().into_iter().map(|item| json!({"id": item.id, "title": item.title})).collect::<Vec<_>>(), "proofPackages": []}),
             ),
-            ("POST", "/product/strategies/share-workspace") => ServiceResponse::ok(
-                json!({"strategy": self.strategy_value(&strategy_id_from(&body)), "snapshots": [], "evidence": workspace_evidence(self)}),
-            ),
-            ("POST", "/product/strategies/share-snapshots/create") => {
-                ServiceResponse::error(501, "durable_share_snapshots_unavailable", false)
-            }
-            ("POST", "/product/strategies/share-snapshots/revoke") => {
-                ServiceResponse::error(404, "snapshot_unavailable", false)
-            }
+            ("POST", "/product/strategies/share-workspace") => sharing::workspace(self, body),
+            ("POST", "/product/strategies/share-snapshots/create") => sharing::create(self, body),
+            ("POST", "/product/strategies/share-snapshots/revoke") => sharing::revoke(self, body),
             ("POST", "/product/share-snapshots/view")
-            | ("POST", "/product/share-snapshots/export") => {
-                ServiceResponse::error(404, "snapshot_unavailable", false)
-            }
+            | ("POST", "/product/share-snapshots/export") => sharing::view(self, body),
             ("POST", "/product/reports/envelope") => {
                 let kind = body
                     .get("kind")

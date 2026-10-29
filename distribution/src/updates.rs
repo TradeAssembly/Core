@@ -178,7 +178,10 @@ pub(crate) fn authenticate(
 fn validate(release: &BinaryRelease) -> Result<()> {
     let version = Version::parse(&release.version).map_err(|_| "update_version_invalid")?;
     if release.schema_version != 1
-        || !matches!(release.product.as_str(), "core-bundle" | "studio-local")
+        || !matches!(
+            release.product.as_str(),
+            "core-relay-customer" | "core-standalone" | "studio-local"
+        )
         || release.channel != "stable"
         || !version.pre.is_empty()
         || !version.build.is_empty()
@@ -207,7 +210,7 @@ fn validate(release: &BinaryRelease) -> Result<()> {
     // Only immutable assets from the product's release repositories are supported.
     // Downloaders must validate every redirect and never forward credentials.
     let repository = match release.product.as_str() {
-        "core-bundle" => "Core",
+        "core-relay-customer" | "core-standalone" => "Core",
         "studio-local" => "Studio",
         _ => unreachable!(),
     };
@@ -216,6 +219,23 @@ fn validate(release: &BinaryRelease) -> Result<()> {
         release.version
     );
     let asset = url.path().strip_prefix(&prefix).unwrap_or("");
+    if release.product == "core-relay-customer"
+        && !["production", "staging"].iter().any(|environment| {
+            asset
+                == format!(
+                    "TradeAssembly-{}-{environment}-{}.tar.gz",
+                    release.version, release.target
+                )
+        })
+    {
+        return Err("update_customer_archive_kind_mismatch".into());
+    }
+    if release.product == "core-standalone"
+        && (release.target != TARGETS[0]
+            || asset != format!("tradeassembly-core-{}-macos-arm64.tar.gz", release.version))
+    {
+        return Err("update_standalone_archive_kind_or_target_mismatch".into());
+    }
     if release.archive_url.len() > 2048
         || url.scheme() != "https"
         || url.host_str() != Some("github.com")
@@ -243,7 +263,7 @@ mod tests {
         (
             Installation {
                 profile: UpdateProfile::Stable {},
-                product: "core-bundle".into(),
+                product: "core-relay-customer".into(),
                 version: "0.2.0".into(),
                 target: "aarch64-apple-darwin".into(),
                 state_compatibility: "f2-local-v1".into(),
@@ -253,7 +273,7 @@ mod tests {
             },
             BinaryRelease {
                 schema_version: 1,
-                product: "core-bundle".into(),
+                product: "core-relay-customer".into(),
                 channel: "stable".into(),
                 version: "0.3.0".into(),
                 target: "aarch64-apple-darwin".into(),
@@ -262,7 +282,7 @@ mod tests {
                 expires_at: 200,
                 state_compatibility: "f2-local-v1".into(),
                 archive_url:
-                    "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/core.tar.gz"
+                    "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/TradeAssembly-0.3.0-production-aarch64-apple-darwin.tar.gz"
                         .into(),
                 archive_sha256: "a".repeat(64),
                 bundle_manifest_sha256: "b".repeat(64),
@@ -299,6 +319,39 @@ mod tests {
             matches!(result, UpdateDecision::Stage { components, archive_sha256, .. }
             if components == release.components && archive_sha256 == release.archive_sha256)
         );
+    }
+
+    #[test]
+    fn customer_and_standalone_archive_identities_cannot_be_confused() {
+        let (mut installed, mut release, key) = fixture();
+        release.archive_url = "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/tradeassembly-core-0.3.0-macos-arm64.tar.gz".into();
+        assert!(plan(
+            &installed,
+            &signed(&release, &key),
+            &key.verifying_key().to_bytes(),
+            150
+        )
+        .is_err());
+        installed.product = "core-standalone".into();
+        release.product = installed.product.clone();
+        assert!(matches!(
+            plan(
+                &installed,
+                &signed(&release, &key),
+                &key.verifying_key().to_bytes(),
+                150
+            )
+            .unwrap(),
+            UpdateDecision::Stage { .. }
+        ));
+        release.archive_url = "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/TradeAssembly-0.3.0-production-aarch64-apple-darwin.tar.gz".into();
+        assert!(plan(
+            &installed,
+            &signed(&release, &key),
+            &key.verifying_key().to_bytes(),
+            150
+        )
+        .is_err());
     }
 
     #[test]
@@ -407,7 +460,7 @@ mod tests {
             "http://github.com/x",
             "https://evil.example/core.tar.gz",
             "https://github.com/TradeAssembly/Core/releases/latest/core.tar.gz",
-            "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/core.tar.gz?token=x",
+            "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/TradeAssembly-0.3.0-production-aarch64-apple-darwin.tar.gz?token=x",
             "https://github.com/TradeAssembly/Studio/releases/download/v0.3.0/core.tar.gz",
         ] {
             case!(archive_url, url.into());

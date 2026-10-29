@@ -104,15 +104,19 @@ impl UpdateCache {
         if !matches!(installed.profile, UpdateProfile::Stable {}) {
             return plan(installed, &[], &self.identity.public_key, now);
         }
-        let repo = match self.identity.product.as_str() {
-            "core-bundle" => "Core",
-            "studio-local" => "Studio",
+        let (repo, feed) = match self.identity.product.as_str() {
+            "core-relay-customer" => ("Core", "tradeassembly-customer-update"),
+            "core-standalone" => ("Core", "tradeassembly-core-update"),
+            "studio-local" => ("Studio", "tradeassembly-studio-update"),
             _ => return Err("update_feed_product_invalid".into()),
         };
         if !crate::TARGETS.contains(&self.identity.target.as_str()) {
             return Err("update_feed_target_invalid".into());
         }
-        let url = format!("https://github.com/TradeAssembly/{repo}/releases/latest/download/tradeassembly-update-{}.json",self.identity.target);
+        let url = format!(
+            "https://github.com/TradeAssembly/{repo}/releases/latest/download/{feed}-{}.json",
+            self.identity.target
+        );
         let response = transport.get(&url)?;
         if response.size.is_some_and(|n| n > 65_536) {
             return Err("update_metadata_limit".into());
@@ -530,7 +534,7 @@ mod tests {
         let profile = UpdateProfile::Stable {};
         let identity = TrustIdentity {
             installation_root: parent.canonicalize().unwrap(),
-            product: "core-bundle".into(),
+            product: "core-relay-customer".into(),
             target: "aarch64-apple-darwin".into(),
             profile: profile.clone(),
             public_key: key.verifying_key().to_bytes(),
@@ -556,7 +560,7 @@ mod tests {
             expires_at: 200,
             state_compatibility: "f2-local-v1".into(),
             archive_url:
-                "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/core.tar.gz".into(),
+                "https://github.com/TradeAssembly/Core/releases/download/v0.3.0/TradeAssembly-0.3.0-production-aarch64-apple-darwin.tar.gz".into(),
             archive_sha256: format!("{:x}", Sha256::digest(b"archive")),
             bundle_manifest_sha256: "b".repeat(64),
             components: BTreeMap::from([("core".into(), "c".repeat(64))]),
@@ -586,7 +590,7 @@ mod tests {
             fn get(&self, url: &str) -> Result<Response> {
                 self.calls.set(self.calls.get() + 1);
                 let bytes = if url.ends_with(".json") {
-                    assert_eq!(url,"https://github.com/TradeAssembly/Core/releases/latest/download/tradeassembly-update-aarch64-apple-darwin.json");
+                    assert_eq!(url,"https://github.com/TradeAssembly/Core/releases/latest/download/tradeassembly-customer-update-aarch64-apple-darwin.json");
                     self.envelope.clone()
                 } else {
                     b"archive".to_vec()

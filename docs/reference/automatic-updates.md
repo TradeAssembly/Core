@@ -17,7 +17,7 @@ an explicit future installer operation, never an environment-variable override
 of a customer's running process. Development and stable installations must have
 distinct roots, application identities and service registrations.
 
-The descriptor also names `product` (`core-bundle` or `studio-local`), `version`,
+The descriptor also names `product` (`core-relay-customer` or `studio-local`), `version`,
 `target`, `state_compatibility`, `accepted_sequence`, `archive_sha256`, and
 `bundle_manifest_sha256`. The CLI currently reads this descriptor from a file;
 it does not mint trusted installed-state receipts or persist update freshness.
@@ -145,3 +145,29 @@ asset `tradeassembly-update-TARGET.json` under that product's GitHub latest rele
 It bounds metadata to 64 KiB before verifying its signature and downloading the
 immutable artifact. Dev/pinned checks make no request. Publishing/refreshed signing
 of that feed and installing a schedule remain explicit gated release operations.
+
+## Delivery kind and archive identity
+
+Customer pairing uses product `core-relay-customer` and feed
+`tradeassembly-customer-update-TARGET.json`. It accepts only the combined
+`TradeAssembly-VERSION-ENVIRONMENT-TARGET.tar.gz` naming contract and then the
+owning customer-delivery manifest/inventory checks. A standalone CLI uses the
+separate `core-standalone` product and `tradeassembly-core-update-TARGET.json`;
+its initial supported archive identity is Apple Silicon
+`tradeassembly-core-VERSION-macos-arm64.tar.gz`. Neither product can substitute
+its archive for the other. These metadata identities are unreleased contract
+refinements; no existing installed updater receipts are migrated implicitly.
+
+The retained v0.2.0 artifacts are distinct:
+
+| Kind | Exact filename | SHA-256 |
+| --- | --- | --- |
+| Combined customer archive, capture-owner verified | `TradeAssembly-0.2.0-production-aarch64-apple-darwin.tar.gz` | `6f15d7f734e0cb388564ef4c8fb31f1599d5f0f34a35e5f12f20982042124690` |
+| Separate Core-only archive, published checksum and HTTPS probe verified | `tradeassembly-core-0.2.0-macos-arm64.tar.gz` | `24623167b43a6e13233ddf7ff5b13d86dc9a2129ae1f7f260d4cf96f0ca5c0a0` |
+
+Both hashes are valid for their own files. The Core-only transport probe was not
+combined-installation qualification and its fixture metadata is not production
+update authority. Existing releases lack the new embedded public-key trust root;
+an independently authenticated, normally signed/notarized bridge installer must
+establish that pin before an old installation can trust automatic update metadata.
+Removing old downloads cannot perform that migration.

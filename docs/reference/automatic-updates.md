@@ -113,7 +113,7 @@ advisory gate. The lock is narrowly advanced to patched `rustls-webpki 0.103.16`
 Windows resolution edges and product/source pins. The updater's 50 library tests
 still pass. This is not a claim that the complete gate passes after the repair.
 
-A remaining blocker is [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html):
+The initial remaining blocker was [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html):
 `openidconnect 4.0.1` unconditionally uses `p256/p384 0.13`, whose
 `elliptic-curve 0.13.8` requires `crypto-bigint 0.5.5`; the advisory's patched
 version is 0.7.6, outside that dependency range. The current upstream
@@ -121,3 +121,27 @@ version is 0.7.6, outside that dependency range. The current upstream
 backport is needed; this change adds no advisory exception or bypass. The existing
 RSA exception does not cover this separate elliptic-curve advisory. Do not merge
 or declare updater/release readiness while the owning gate remains blocked.
+
+
+### Official upstream OIDC fix selected
+
+The three owning OIDC declarations now pin official upstream commit
+[`4e5d6725d51cee04848c440ad7fba82e5e4f5385`](https://github.com/ramosbugs/openidconnect-rs/commit/4e5d6725d51cee04848c440ad7fba82e5e4f5385),
+which upgrades p256/p384 specifically for that advisory. This is the unpublished
+4.1.0 development snapshot, not a newly published producer release. Its locked
+closure selects crypto-bigint 0.7.10 and ctutils 0.4.6. Unknown Git sources remain
+denied; only this official repository is explicitly permitted and every consumer
+pins the same immutable revision. No new advisory ignore was added. The existing
+RSA public-verification/test-only exception is unchanged. No account access changes.
+
+The existing identity unit tests (9) and real loopback OIDC contract tests (10)
+pass with unchanged RS256, issuer, audience, nonce, PKCE, replay, rotation and refresh
+policies. Hosted owning gates still decide integration; local tests are not native
+release qualification. Replace the Git snapshot with an official immutable release
+only through an explicit tested consumer upgrade when one is available.
+
+`UpdateCache::check` fetches only the bound product/platform's stable metadata
+asset `tradeassembly-update-TARGET.json` under that product's GitHub latest release.
+It bounds metadata to 64 KiB before verifying its signature and downloading the
+immutable artifact. Dev/pinned checks make no request. Publishing/refreshed signing
+of that feed and installing a schedule remain explicit gated release operations.

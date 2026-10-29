@@ -88,6 +88,47 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 impl UpdateCache {
+    /// Fetch the stable product/platform feed, then authenticate and stage it.
+    /// Pinned/development profiles never make a metadata or artifact request.
+    pub fn check(&self, installed: &Installation, now: u64) -> Result<UpdateDecision> {
+        self.check_with(installed, now, &HttpsTransport)
+    }
+
+    fn check_with(
+        &self,
+        installed: &Installation,
+        now: u64,
+        transport: &dyn Transport,
+    ) -> Result<UpdateDecision> {
+        self.check_installation(installed)?;
+        if !matches!(installed.profile, UpdateProfile::Stable {}) {
+            return plan(installed, &[], &self.identity.public_key, now);
+        }
+        let repo = match self.identity.product.as_str() {
+            "core-bundle" => "Core",
+            "studio-local" => "Studio",
+            _ => return Err("update_feed_product_invalid".into()),
+        };
+        if !crate::TARGETS.contains(&self.identity.target.as_str()) {
+            return Err("update_feed_target_invalid".into());
+        }
+        let url = format!("https://github.com/TradeAssembly/{repo}/releases/latest/download/tradeassembly-update-{}.json",self.identity.target);
+        let response = transport.get(&url)?;
+        if response.size.is_some_and(|n| n > 65_536) {
+            return Err("update_metadata_limit".into());
+        }
+        let mut envelope = Vec::new();
+        response
+            .body
+            .take(65_537)
+            .read_to_end(&mut envelope)
+            .map_err(|_| "update_metadata_download_failed")?;
+        if envelope.len() > 65_536 || response.size.is_some_and(|n| n != envelope.len() as u64) {
+            return Err("update_metadata_limit_or_truncation".into());
+        }
+        self.download_with(installed, &envelope, now, transport)
+    }
+
     /// Explicit enrollment into an empty private directory; never replaces trust.
     /// The owning installer must supply the authenticated application identity.
     pub fn enroll(root: &Path, identity: TrustIdentity) -> Result<Self> {
@@ -536,6 +577,51 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn scheduled_check_fetches_only_the_bound_feed_and_authenticated_archive() {
+        struct Feed {
+            envelope: Vec<u8>,
+            calls: Cell<usize>,
+        }
+        impl Transport for Feed {
+            fn get(&self, url: &str) -> Result<Response> {
+                self.calls.set(self.calls.get() + 1);
+                let bytes = if url.ends_with(".json") {
+                    assert_eq!(url,"https://github.com/TradeAssembly/Core/releases/latest/download/tradeassembly-update-aarch64-apple-darwin.json");
+                    self.envelope.clone()
+                } else {
+                    b"archive".to_vec()
+                };
+                Ok(Response {
+                    size: Some(bytes.len() as u64),
+                    body: Box::new(Cursor::new(bytes)),
+                })
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (identity, installed, release, key) = fixture(temp.path());
+        let cache = UpdateCache::enroll(&temp.path().join("updates"), identity).unwrap();
+        let feed = Feed {
+            envelope: signed(&release, &key),
+            calls: Cell::new(0),
+        };
+        assert!(matches!(
+            cache.check_with(&installed, 150, &feed).unwrap(),
+            UpdateDecision::Stage { .. }
+        ));
+        assert_eq!(feed.calls.get(), 2);
+        let bad = Feed {
+            envelope: b"untrusted metadata".to_vec(),
+            calls: Cell::new(0),
+        };
+        assert!(cache.check_with(&installed, 150, &bad).is_err());
+        assert_eq!(
+            bad.calls.get(),
+            1,
+            "unsigned metadata never triggers artifact download"
+        );
+    }
+
+    #[test]
     fn restart_preserves_authenticated_download_and_exact_retry() {
         let temp = tempfile::tempdir().unwrap();
         let (identity, installed, release, key) = fixture(temp.path());
@@ -663,6 +749,11 @@ mod tests {
         let network = transport(b"archive");
         assert!(matches!(
             cache.download_with(&installed, b"", 0, &network).unwrap(),
+            UpdateDecision::Disabled { .. }
+        ));
+        assert_eq!(network.calls.get(), 0);
+        assert!(matches!(
+            cache.check_with(&installed, 0, &network).unwrap(),
             UpdateDecision::Disabled { .. }
         ));
         assert_eq!(network.calls.get(), 0);

@@ -1,5 +1,8 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use crate::adapters::plugin_sandbox::{
+    MAX_SANDBOX_DOMAINS, MAX_SANDBOX_DOMAINS_BYTES, MAX_SANDBOX_DOMAIN_BYTES,
+};
 use crate::ports::{
     ClockPort, CredentialPort, PluginOperationRequest, PluginOperationResponse, PluginPackagePort,
     PluginProcessSandboxPort, PluginRegistryPort, PluginSandboxRequest, SideEffectContext,
@@ -381,6 +384,8 @@ fn build_wire_request(
 }
 
 fn allowed_network_domains(manifest: &Value, instance: &Value) -> Result<Vec<String>, String> {
+    const MAX_CONFIGURATION_FIELDS: usize = 256;
+    const MAX_CONFIGURATION_URL_BYTES: usize = 4 * 1024;
     let outbound_declared = manifest["permissions"]
         .as_array()
         .is_some_and(|permissions| {
@@ -393,8 +398,11 @@ fn allowed_network_domains(manifest: &Value, instance: &Value) -> Result<Vec<Str
         return Ok(Vec::new());
     }
 
-    let url_fields = manifest["configuration"]["fields"]
-        .as_array()
+    let fields = manifest["configuration"]["fields"].as_array();
+    if fields.is_some_and(|fields| fields.len() > MAX_CONFIGURATION_FIELDS) {
+        return Err("plugin_network_configuration_invalid".into());
+    }
+    let url_fields = fields
         .into_iter()
         .flatten()
         .filter(|field| field["inputType"] == "url" && field["storageClass"] == "configuration")
@@ -403,10 +411,14 @@ fn allowed_network_domains(manifest: &Value, instance: &Value) -> Result<Vec<Str
         .as_object()
         .ok_or_else(|| "plugin_network_configuration_invalid".to_string())?;
     let mut domains = BTreeSet::new();
+    let mut domain_bytes = 0usize;
     for field in url_fields {
         let Some(raw_url) = configuration.get(field).and_then(Value::as_str) else {
             continue;
         };
+        if raw_url.len() > MAX_CONFIGURATION_URL_BYTES {
+            return Err("plugin_network_configuration_invalid".into());
+        }
         let url = url::Url::parse(raw_url)
             .map_err(|_| "plugin_network_configuration_invalid".to_string())?;
         let host = url
@@ -424,7 +436,17 @@ fn allowed_network_domains(manifest: &Value, instance: &Value) -> Result<Vec<Str
         {
             return Err("plugin_network_configuration_invalid".to_string());
         }
-        domains.insert(host);
+        if host.len() > MAX_SANDBOX_DOMAIN_BYTES {
+            return Err("plugin_network_configuration_invalid".into());
+        }
+        if domains.insert(host.clone()) {
+            domain_bytes = domain_bytes
+                .checked_add(host.len())
+                .ok_or("plugin_network_configuration_invalid")?;
+            if domains.len() > MAX_SANDBOX_DOMAINS || domain_bytes > MAX_SANDBOX_DOMAINS_BYTES {
+                return Err("plugin_network_configuration_invalid".into());
+            }
+        }
     }
     Ok(domains.into_iter().collect())
 }
@@ -717,6 +739,49 @@ mod tests {
             allowed_network_domains(&manifest, &credentials_in_url),
             Err("plugin_network_configuration_invalid".to_string())
         );
+    }
+
+    #[test]
+    fn outbound_policy_bounds_fields_urls_and_distinct_domains_before_sandbox() {
+        let fields = |count: usize| {
+            (0..count).map(|i| json!({"id": format!("url{i}"), "inputType": "url", "storageClass": "configuration"})).collect::<Vec<_>>()
+        };
+        let instance = |count: usize, distinct: bool| {
+            let mut configuration = Map::new();
+            for i in 0..count {
+                configuration.insert(
+                    format!("url{i}"),
+                    json!(if distinct {
+                        format!("https://host{i}.example.com")
+                    } else {
+                        "https://data.alpaca.markets".to_string()
+                    }),
+                );
+            }
+            json!({"configuration": configuration})
+        };
+        let manifest = |count| json!({"permissions": ["network.outbound"], "configuration": {"fields": fields(count)}});
+        assert_eq!(
+            allowed_network_domains(&manifest(256), &instance(256, false)).unwrap(),
+            vec!["data.alpaca.markets"]
+        );
+        assert!(allowed_network_domains(&manifest(257), &instance(257, false)).is_err());
+        assert_eq!(
+            allowed_network_domains(&manifest(128), &instance(128, true))
+                .unwrap()
+                .len(),
+            128
+        );
+        assert!(allowed_network_domains(&manifest(129), &instance(129, true)).is_err());
+        let prefix = "https://example.com/";
+        let at_limit = json!({"configuration": {"url0": format!("{prefix}{}", "x".repeat(4096 - prefix.len()))}});
+        assert_eq!(
+            allowed_network_domains(&manifest(1), &at_limit).unwrap(),
+            vec!["example.com"]
+        );
+        let oversized =
+            json!({"configuration": {"url0": format!("https://example.com/{}", "x".repeat(4096))}});
+        assert!(allowed_network_domains(&manifest(1), &oversized).is_err());
     }
 
     #[cfg(unix)]

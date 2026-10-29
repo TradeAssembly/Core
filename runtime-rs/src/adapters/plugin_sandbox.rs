@@ -15,6 +15,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SETTINGS_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+// Generous limits bound validation work without changing the sandbox's policy.
+pub(crate) const MAX_SANDBOX_DOMAINS: usize = 128;
+pub(crate) const MAX_SANDBOX_DOMAIN_BYTES: usize = 1_024;
+pub(crate) const MAX_SANDBOX_DOMAINS_BYTES: usize = 32 * 1024;
+const MAX_SANDBOX_PATH_BYTES: usize = 8 * 1024;
+const MAX_SANDBOX_SETTINGS_BYTES: usize = 64 * 1024;
+
+fn check_domain_bounds(values: &[String]) -> Result<(), String> {
+    if values.len() > MAX_SANDBOX_DOMAINS {
+        return Err("plugin_sandbox_policy_invalid".into());
+    }
+    let mut bytes = 0usize;
+    for value in values {
+        if value.len() > MAX_SANDBOX_DOMAIN_BYTES {
+            return Err("plugin_sandbox_policy_invalid".into());
+        }
+        bytes = bytes
+            .checked_add(value.len())
+            .ok_or("plugin_sandbox_policy_invalid")?;
+        if bytes > MAX_SANDBOX_DOMAINS_BYTES {
+            return Err("plugin_sandbox_policy_invalid".into());
+        }
+    }
+    Ok(())
+}
+
 pub struct SandboxRuntimePluginSandbox {
     command: PathBuf,
     settings_root: PathBuf,
@@ -56,9 +82,17 @@ impl SandboxRuntimePluginSandbox {
     }
 
     fn write_settings(&self, request: &PluginSandboxRequest) -> Result<PathBuf, String> {
+        check_domain_bounds(&request.allowed_domains)?;
         let allowed_domains =
             normalized_domains(&request.allowed_domains, self.allow_local_egress)?;
         let home = std::env::var("HOME").ok().filter(|value| !value.is_empty());
+        if home
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_SANDBOX_PATH_BYTES)
+            || request.install_root.as_os_str().len() > MAX_SANDBOX_PATH_BYTES
+        {
+            return Err("plugin_sandbox_policy_invalid".into());
+        }
         let deny_read = home.into_iter().collect::<Vec<_>>();
         let settings = json!({
             "network": {
@@ -90,6 +124,9 @@ impl SandboxRuntimePluginSandbox {
         let _ = self.windows_proxy_port_range;
         let bytes = serde_json::to_vec(&settings)
             .map_err(|_| "plugin_sandbox_policy_invalid".to_string())?;
+        if bytes.len() > MAX_SANDBOX_SETTINGS_BYTES {
+            return Err("plugin_sandbox_policy_invalid".into());
+        }
         let path = self.settings_path();
         let mut options = OpenOptions::new();
         options.create_new(true).write(true);
@@ -125,6 +162,7 @@ impl VersionedPort for SandboxRuntimePluginSandbox {
 
 impl PluginProcessSandboxPort for SandboxRuntimePluginSandbox {
     fn spawn(&self, request: &PluginSandboxRequest) -> Result<SandboxedPluginProcess, String> {
+        check_domain_bounds(&request.allowed_domains)?;
         let (install_root, executable) = resolve_executable(request)?;
         let resolved_request = PluginSandboxRequest {
             executable: executable.clone(),
@@ -277,8 +315,9 @@ mod tests {
     #[cfg(unix)]
     use super::PluginProcessSandboxPort;
     use super::{
-        normalized_domains, resolve_executable, resolve_sandbox_command, PluginSandboxRequest,
-        SandboxRuntimePluginSandbox,
+        check_domain_bounds, normalized_domains, resolve_executable, resolve_sandbox_command,
+        PluginSandboxRequest, SandboxRuntimePluginSandbox, MAX_SANDBOX_DOMAINS,
+        MAX_SANDBOX_DOMAINS_BYTES, MAX_SANDBOX_DOMAIN_BYTES,
     };
     use serde_json::Value;
     use std::fs;
@@ -341,6 +380,82 @@ mod tests {
             vec!["localhost".to_string()]
         );
         assert!(!resolve_sandbox_command("srt").as_os_str().is_empty());
+    }
+
+    #[test]
+    fn domain_bounds_cover_raw_duplicates_individual_and_total_bytes() {
+        let ordinary = vec![
+            "data.alpaca.markets".to_string(),
+            "paper-api.alpaca.markets".to_string(),
+        ];
+        assert!(check_domain_bounds(&ordinary).is_ok());
+        assert!(check_domain_bounds(&vec!["example.com".into(); MAX_SANDBOX_DOMAINS]).is_ok());
+        assert!(check_domain_bounds(&vec!["example.com".into(); MAX_SANDBOX_DOMAINS + 1]).is_err());
+        assert!(check_domain_bounds(&["a".repeat(MAX_SANDBOX_DOMAIN_BYTES)]).is_ok());
+        assert!(check_domain_bounds(&["a".repeat(MAX_SANDBOX_DOMAIN_BYTES + 1)]).is_err());
+        let mut at_total = vec![
+            "a".repeat(MAX_SANDBOX_DOMAIN_BYTES);
+            MAX_SANDBOX_DOMAINS_BYTES / MAX_SANDBOX_DOMAIN_BYTES
+        ];
+        assert!(check_domain_bounds(&at_total).is_ok());
+        at_total.push("b".into());
+        assert!(check_domain_bounds(&at_total).is_err());
+    }
+
+    #[test]
+    fn oversized_encoded_settings_and_paths_are_rejected_before_file_creation() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = directory.path().join("settings");
+        let sandbox =
+            SandboxRuntimePluginSandbox::new("unused-srt", &settings, false, None).unwrap();
+        // Each raw domain fits the byte budget, but JSON escaping expands the settings.
+        let domains = (0..MAX_SANDBOX_DOMAINS)
+            .map(|i| format!("{i:03}{}a", "\u{1}".repeat(252)))
+            .collect::<Vec<_>>();
+        assert!(check_domain_bounds(&domains).is_ok());
+        let mut request = PluginSandboxRequest {
+            executable: "unused".into(),
+            install_root: directory.path().into(),
+            allowed_domains: domains,
+        };
+        assert!(
+            matches!(sandbox.write_settings(&request), Err(error) if error == "plugin_sandbox_policy_invalid")
+        );
+        request.allowed_domains.clear();
+        request.install_root = "x".repeat(super::MAX_SANDBOX_PATH_BYTES + 1).into();
+        assert!(
+            matches!(sandbox.write_settings(&request), Err(error) if error == "plugin_sandbox_policy_invalid")
+        );
+        assert_eq!(fs::read_dir(settings).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_direct_request_never_writes_settings_or_launches() {
+        let directory = tempfile::tempdir().expect("temporary plugin");
+        let executable = executable_script(&directory, "#!/bin/sh\nexit 0\n");
+        let marker = directory.path().join("launched");
+        let launcher = directory.path().join("srt");
+        fs::write(
+            &launcher,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&launcher).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&launcher, permissions).unwrap();
+        let settings = directory.path().join("settings");
+        let sandbox = SandboxRuntimePluginSandbox::new(launcher, &settings, false, None).unwrap();
+        let request = PluginSandboxRequest {
+            executable,
+            install_root: directory.path().into(),
+            allowed_domains: vec!["example.com".into(); MAX_SANDBOX_DOMAINS + 1],
+        };
+        assert!(
+            matches!(sandbox.spawn(&request), Err(error) if error == "plugin_sandbox_policy_invalid")
+        );
+        assert!(!marker.exists());
+        assert_eq!(fs::read_dir(settings).unwrap().count(), 0);
     }
 
     #[test]

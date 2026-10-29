@@ -4208,6 +4208,7 @@ version = "0.2.0"
 dependencies = [
  "atomicwrites",
  "base64 0.22.1",
+ "ed25519-dalek",
  "flate2",
  "fs2",
  "getrandom 0.3.4",
@@ -4221,6 +4222,7 @@ dependencies = [
  "sysinfo",
  "tar",
  "tempfile",
+ "url",
  "walkdir",
  "windows-permissions",
  "zip",

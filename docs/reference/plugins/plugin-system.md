@@ -26,6 +26,14 @@ Rules:
 
 The public manifest schema lives at `plugin-contracts/schemas/plugin-manifest.schema.json`.
 
+For external plugin execution with outbound access, the local runtime accepts at
+most 256 configuration fields, 4 KiB per configured URL, and 128 derived domains
+of at most 1 KiB each and 32 KiB in total. Direct sandbox requests have the same
+domain limits before deduplication. Generated sandbox settings are limited to
+64 KiB, including paths of at most 8 KiB each. Oversized inputs fail closed before
+the sandbox settings file is written or a plugin process is started. These are
+runtime resource limits; they do not change or grant network permissions.
+
 Every manifest declares:
 
 - stable plugin id, provider metadata, name, and version,

@@ -635,3 +635,26 @@ not publication or complete launch readiness. Coordinator unattended validation
 pins the frozen qualification source separately from the compatible qualifier
 source and binary. Native qualification still uses the existing owner and all
 its assertions; development binaries cannot substitute for frozen packages.
+
+## Installed default plugin binding
+
+A packaged runtime running under `versions/<archive-sha>/bin` resolves its default
+plugin through the owning private `installed.json` or matching `pending.json`.
+It verifies the selected payload identity, executing CLI hash, bundle manifest,
+plugin lock and actual package bytes. Pending selection must be an exact fresh
+install, a transition from the current release, or the committed record awaiting
+journal cleanup. Missing, substituted, linked or nonprivate bindings fail without
+falling back to a catalogue or network source.
+
+The plugin version and source revision remain compiled into Core; the selected
+lock must match both and the bundle's native source pins. Only the post-signing
+package/manifest hashes come from the verified installed bundle. Uninstalled dev
+bundles retain the existing compiled pin and explicit source behavior. No update
+channel or automatic version choice is introduced by this lookup.
+
+The existing offline `install-default` command, its scoped idempotency/provenance
+request and workspace-bootstrap receipt validation are unchanged. Shipping this
+behavior requires rebuilding and qualifying the runtime from the new source;
+re-signing an older runtime or changing its outer JSON cannot add the behavior.
+Native signed package installation, migration and bootstrap acceptance remain
+separate release gates.

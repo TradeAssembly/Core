@@ -103,3 +103,21 @@ state are deletion targets. First unlink obsolete launchers/service registration
 only after verifying replacement ownership; quarantine old executable bundles with
 hashes and a restoration manifest. Permanent deletion needs exact action-time
 approval. No downloads or installs were removed by this change.
+
+## CI advisory gate observed on 2026-10-29
+
+Exact-head run `40921642785` at `8461e6dd8c62f4e465ce269f23d6d96ce91732d7`
+passed all 1,442 selected nextest cases (66 existing exclusions), then failed the
+advisory gate. The lock is narrowly advanced to patched `rustls-webpki 0.103.16`,
+`webpki-roots 1.0.10`, `tokio 1.53.3`, and `ctutils 0.4.4`, preserving unrelated
+Windows resolution edges and product/source pins. The updater's 50 library tests
+still pass. This is not a claim that the complete gate passes after the repair.
+
+A remaining blocker is [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html):
+`openidconnect 4.0.1` unconditionally uses `p256/p384 0.13`, whose
+`elliptic-curve 0.13.8` requires `crypto-bigint 0.5.5`; the advisory's patched
+version is 0.7.6, outside that dependency range. The current upstream
+`openidconnect` release remains 4.0.1. A compatible upstream migration or reviewed
+backport is needed; this change adds no advisory exception or bypass. The existing
+RSA exception does not cover this separate elliptic-curve advisory. Do not merge
+or declare updater/release readiness while the owning gate remains blocked.

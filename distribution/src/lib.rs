@@ -18,6 +18,7 @@ pub mod candidate;
 #[path = "../../platform/control_plane_redaction.rs"]
 mod control_plane_redaction;
 pub mod install;
+pub mod macho_derivation;
 pub mod native;
 pub mod package;
 mod plugin;

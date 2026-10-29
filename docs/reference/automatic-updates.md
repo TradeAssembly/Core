@@ -1,9 +1,10 @@
 # Binary updates: implementation and rollout
 
 Status: the distribution library and `tradeassembly-distribution update-plan`
-implement offline signature verification and update eligibility. There is no
-automatic downloader, timer, activation, production signing key, or published
-binary feed yet. Existing installations are unchanged. This is not release proof.
+implement offline signature verification and update eligibility. On Unix,
+`update_cache` adds bounded HTTPS artifact downloading, private atomic caching,
+exclusive locking and durable trust/replay receipts. There is no timer, native
+activation wiring, production signing key, or published binary feed yet. Existing installations are unchanged. This is not release proof.
 
 ## Installation profiles
 
@@ -38,6 +39,24 @@ download controller, not evidence that any download or filesystem staging happen
 Inputs are bounded at 64 KiB. Errors leave the installation untouched. Stable
 metadata cannot select prereleases, downgrade, cross-update products/platforms,
 change bytes at the current version, or cross a state migration boundary.
+
+## Authenticated download cache
+
+`UpdateCache::enroll` explicitly binds an empty private cache to a canonical
+installation root, product, platform, profile and public key. `open` rejects any
+trust change. Artifact downloads use HTTPS with verified TLS, no credentials or
+proxy inheritance, an explicit GitHub release redirect allowlist, finite connect/
+total timeouts, identity content encoding and a 512 MiB streaming bound. SHA-256
+is checked before the cache file and signed receipt are atomically published and
+synced. Failed downloads preserve a durable highest-seen metadata identity; only
+that exact envelope can retry the sequence. Verified cached bytes can retry offline.
+
+`with_ready` holds the cache lock, rechecks metadata freshness, exact envelope and
+archive hashes, and passes an authenticated archive handle to the owning installer.
+It does not itself execute or unpack the archive. The combined customer installer
+in the private coordinator owns Core/Relay transitions; this public library must
+not independently replace Core beneath that paired delivery. Windows cache ACLs
+and native activation wiring remain unimplemented and are not implied by Unix tests.
 
 ## Next integration gates
 

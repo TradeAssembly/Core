@@ -105,25 +105,7 @@ pub fn plan(
     if !current.pre.is_empty() || !current.build.is_empty() {
         return Err("update_stable_installation_version_invalid".into());
     }
-    if envelope.len() > MAX_METADATA {
-        return Err("update_metadata_limit".into());
-    }
-    let signed: SignedBinaryRelease =
-        serde_json::from_slice(envelope).map_err(|_| "update_envelope_invalid")?;
-    let payload = STANDARD
-        .decode(&signed.payload)
-        .map_err(|_| "update_payload_invalid")?;
-    let signature = STANDARD
-        .decode(&signed.signature)
-        .map_err(|_| "update_signature_invalid")?;
-    let signature = Signature::from_slice(&signature).map_err(|_| "update_signature_invalid")?;
-    let key = VerifyingKey::from_bytes(trusted_public_key).map_err(|_| "update_key_invalid")?;
-    let message = [DOMAIN, payload.as_slice()].concat();
-    key.verify_strict(&message, &signature)
-        .map_err(|_| "update_signature_invalid")?;
-    let release: BinaryRelease =
-        serde_json::from_slice(&payload).map_err(|_| "update_payload_invalid")?;
-    validate(&release)?;
+    let release = authenticate(envelope, trusted_public_key, now)?;
     if release.product != installed.product || release.target != installed.target {
         return Err("update_installation_identity_mismatch".into());
     }
@@ -161,6 +143,36 @@ pub fn plan(
         bundle_manifest_sha256: release.bundle_manifest_sha256,
         components: release.components,
     })
+}
+
+pub(crate) fn authenticate(
+    envelope: &[u8],
+    trusted_public_key: &[u8; 32],
+    now: u64,
+) -> Result<BinaryRelease> {
+    if envelope.len() > MAX_METADATA {
+        return Err("update_metadata_limit".into());
+    }
+    let signed: SignedBinaryRelease =
+        serde_json::from_slice(envelope).map_err(|_| "update_envelope_invalid")?;
+    let payload = STANDARD
+        .decode(&signed.payload)
+        .map_err(|_| "update_payload_invalid")?;
+    let signature = STANDARD
+        .decode(&signed.signature)
+        .map_err(|_| "update_signature_invalid")?;
+    let signature = Signature::from_slice(&signature).map_err(|_| "update_signature_invalid")?;
+    let key = VerifyingKey::from_bytes(trusted_public_key).map_err(|_| "update_key_invalid")?;
+    let message = [DOMAIN, payload.as_slice()].concat();
+    key.verify_strict(&message, &signature)
+        .map_err(|_| "update_signature_invalid")?;
+    let release: BinaryRelease =
+        serde_json::from_slice(&payload).map_err(|_| "update_payload_invalid")?;
+    validate(&release)?;
+    if now < release.issued_at || now >= release.expires_at {
+        return Err("update_metadata_expired_or_future".into());
+    }
+    Ok(release)
 }
 
 fn validate(release: &BinaryRelease) -> Result<()> {

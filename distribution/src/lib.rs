@@ -25,6 +25,7 @@ pub mod qualify;
 pub mod registry_qualify;
 #[cfg(unix)]
 pub mod update_cache;
+pub mod update_publication;
 pub mod updates;
 #[doc(hidden)]
 #[path = "../../platform/workspace_bootstrap.rs"]

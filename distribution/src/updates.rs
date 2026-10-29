@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use url::Url;
 
-const DOMAIN: &[u8] = b"tradeassembly.binary-update.v1\0";
+pub(crate) const DOMAIN: &[u8] = b"tradeassembly.binary-update.v1\0";
 const MAX_METADATA: usize = 65_536;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -175,7 +175,7 @@ pub(crate) fn authenticate(
     Ok(release)
 }
 
-fn validate(release: &BinaryRelease) -> Result<()> {
+pub(crate) fn validate(release: &BinaryRelease) -> Result<()> {
     let version = Version::parse(&release.version).map_err(|_| "update_version_invalid")?;
     if release.schema_version != 1
         || !matches!(

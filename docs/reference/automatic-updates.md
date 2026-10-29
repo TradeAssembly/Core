@@ -171,3 +171,44 @@ update authority. Existing releases lack the new embedded public-key trust root;
 an independently authenticated, normally signed/notarized bridge installer must
 establish that pin before an old installation can trust automatic update metadata.
 Removing old downloads cannot perform that migration.
+
+## Proof-gated offline metadata signer
+
+The publication verifier and signer now share Core's canonical
+`update_publication` contract. The native producer's versioned archive-notary
+binding identifies the exact accepted container/submission and archive/manifest/
+component pins. Approval supplies the binding SHA-256 independently; a checksum
+file downloaded beside an unapproved proof is not that approval.
+
+```sh
+tradeassembly-distribution update-publication-verify \
+  --proof /absolute/archive-notary-binding.json \
+  --expected-proof-sha256 APPROVED_BINDING_SHA256 \
+  --payload /absolute/unsigned-payload.json
+```
+
+The future release job's sole signing operation is the same command with
+`update-publication-sign` and `--output /absolute/new-signed-feed.json`.
+It re-verifies/captures both input files internally, builds a sealed request,
+then invokes the key loader for `TRADEASSEMBLY_BINARY_UPDATE_SIGNING_KEY`.
+The secret's approved encoding is standard-base64 raw 32-byte Ed25519 seed.
+Missing/malformed/unapproved/uncertain proof and changed archive, manifest,
+version, product, target or Core/Relay/helper pins fail before key access. The
+output is exclusive and the exact verified payload bytes are signed; a later
+file replacement cannot substitute bytes between validation and signing.
+
+This initial signer is narrowly for stable production `core-relay-customer`
+on macOS ARM64. It rejects unknown/duplicate fields, extra/missing component
+pins, zero placeholder proof identities, future/expired metadata and validity
+longer than seven days. Dev/pinned installation behavior is unchanged. Unit/CLI
+signing tests use deterministic fixture keys, never the production secret.
+
+Neither command performs network access, Apple status/submission, publication,
+service installation or trading. The proof is produced by the trusted native
+qualification lane; this verifier authenticates it through the independent
+approved digest rather than independently asserting Apple's result. The future
+publisher must still enforce exact source/tag/owning-gate approval, monotonic
+feed sequence, immutable approved artifacts and action-time release permission.
+No hosted signer/workflow permission or production signing is enabled by this
+source change. A matching local proof/signature is not real native bridge or
+old-to-new upgrade acceptance.

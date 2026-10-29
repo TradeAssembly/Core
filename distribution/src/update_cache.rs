@@ -208,6 +208,36 @@ impl UpdateCache {
         self.download_with(installed, envelope, now, &HttpsTransport)
     }
 
+    /// Explicit offline import uses identical signature, freshness and digest gates.
+    /// A local path is never installation authority by itself.
+    pub fn import(
+        &self,
+        installed: &Installation,
+        envelope: &[u8],
+        now: u64,
+        archive: &Path,
+    ) -> Result<UpdateDecision> {
+        struct LocalArchive<'a>(&'a Path);
+        impl Transport for LocalArchive<'_> {
+            fn get(&self, _: &str) -> Result<Response> {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                    .open(self.0)
+                    .map_err(|_| "update_import_unavailable")?;
+                let metadata = file.metadata().map_err(|_| "update_import_unavailable")?;
+                if !metadata.is_file() {
+                    return Err("update_import_invalid".into());
+                }
+                Ok(Response {
+                    size: Some(metadata.len()),
+                    body: Box::new(file),
+                })
+            }
+        }
+        self.download_with(installed, envelope, now, &LocalArchive(archive))
+    }
+
     fn download_with(
         &self,
         installed: &Installation,

@@ -626,13 +626,48 @@ fn installed(root: &Path) -> Result<Option<Installed>> {
 }
 
 fn compatible(old: &Release, new: &Release) -> Result<()> {
-    if old.target != new.target
-        || old.state_compatibility != new.state_compatibility
-        || (old.warden_sha256 != new.warden_sha256 && !f2_mac_authority_transition(old, new))
-    {
+    compatible_shape(old, new)?;
+    if old.warden_sha256 != new.warden_sha256 && !f2_mac_authority_transition(old, new) {
         return Err("upgrade_requires_qualified_authority_or_state_migration".into());
     }
     Ok(())
+}
+fn compatible_shape(old: &Release, new: &Release) -> Result<()> {
+    if old.target != new.target || old.state_compatibility != new.state_compatibility {
+        return Err("upgrade_requires_qualified_authority_or_state_migration".into());
+    }
+    Ok(())
+}
+// Both payloads must already pass their exact manifest/release bindings. No
+// caller-provided migration flag or descriptor can waive changed authority code.
+fn compatible_payloads(root: &Path, old: &Release, new: &Release) -> Result<()> {
+    compatible_shape(old, new)?;
+    if compatible(old, new).is_ok() {
+        return Ok(());
+    }
+    if old.target != "aarch64-apple-darwin" {
+        return Err("authority_signature_transition_target_rejected".into());
+    }
+    let old_payload = root.join("versions").join(&old.archive_sha256);
+    let new_payload = root.join("versions").join(&new.archive_sha256);
+    verify_bundle(&old_payload, old)?;
+    verify_bundle(&new_payload, new)?;
+    let old_bytes = authority_bytes(&old_payload.join("bin/warden"), &old.warden_sha256)?;
+    let new_bytes = authority_bytes(&new_payload.join("bin/warden"), &new.warden_sha256)?;
+    crate::macho_derivation::verify(&old_bytes, &new_bytes)?;
+    Ok(())
+}
+fn authority_bytes(path: &Path, expected: &str) -> Result<Vec<u8>> {
+    let meta = fs::symlink_metadata(path).map_err(|_| "authority_derivation_input_missing")?;
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 512 * 1024 * 1024 {
+        return Err("authority_derivation_input_invalid".into());
+    }
+    let bytes = fs::read(path).map_err(|_| "authority_derivation_input_missing")?;
+    use sha2::{Digest, Sha256};
+    if bytes.len() > 512 * 1024 * 1024 || format!("{:x}", Sha256::digest(&bytes)) != expected {
+        return Err("authority_derivation_digest_mismatch".into());
+    }
+    Ok(bytes)
 }
 
 const F2_MAC_BASELINE_WARDEN: &str =
@@ -679,9 +714,7 @@ fn recover_committed_transition(root: &Path, current: &Installed) -> Result<bool
 /// check. The pending record is durable before this is called; no runtime may
 /// launch until the new installation pointer is committed.
 fn transition_mac_authority(root: &Path, old: &Release, new: &Release, port: u16) -> Result<()> {
-    if !f2_mac_authority_transition(old, new) {
-        return Err("upgrade_requires_qualified_authority_or_state_migration".into());
-    }
+    compatible_payloads(root, old, new)?;
     let old_payload = root.join("versions").join(&old.archive_sha256);
     let new_payload = root.join("versions").join(&new.archive_sha256);
     verify_bundle(&old_payload, old)?;
@@ -926,7 +959,7 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     let _lock = lock(&root, true)?;
     let current = installed(&root)?;
     if let Some(current) = &current {
-        compatible(&current.current, &release)?;
+        compatible_shape(&current.current, &release)?;
         if current.warden_port != port {
             return Err("warden_port_change_requires_migration".into());
         }
@@ -973,6 +1006,9 @@ pub fn install(package: &Path, root: &Path, upgrade: bool, port: u16) -> Result<
     }
     verify_bundle(&destination, &release)?;
     crate::candidate::verify(package, &destination, &release)?;
+    if let Some(current) = &current {
+        compatible_payloads(&root, &current.current, &release)?;
+    }
     // Native Windows SRT is machine-scoped. Provision once before any
     // installed pointer can make this version runnable. A cancelled UAC
     // prompt leaves an inert staged payload and can be retried explicitly.
@@ -1108,6 +1144,22 @@ pub fn status(root: &Path) -> Result<Value> {
     )
 }
 
+/// Authenticate an exact existing stopped installation without invoking any of
+/// its executable files or changing its receipt, configuration or data.
+pub fn verify_stopped_installation(root: &Path, expected: &Release) -> Result<Value> {
+    expected.validate()?;
+    let canonical = root
+        .canonicalize()
+        .map_err(|_| "installation_unavailable")?;
+    let record = installed(&canonical)?.ok_or("installation_not_prepared")?;
+    if &record.current != expected {
+        return Err("adoption_release_mismatch".into());
+    }
+    let receipt = status(&canonical)?;
+    stopped(&canonical)?;
+    Ok(receipt)
+}
+
 pub fn rollback(root: &Path) -> Result<Value> {
     let root = root_path(root)?;
     let _lock = lock(&root, true)?;
@@ -1116,7 +1168,7 @@ pub fn rollback(root: &Path) -> Result<Value> {
         return status(&root);
     }
     let previous = state.previous.clone().ok_or("rollback_unavailable")?;
-    compatible(&state.current, &previous)?;
+    compatible_payloads(&root, &state.current, &previous)?;
     stopped(&root)?;
     let next = Installed {
         schema_version: 1,
@@ -1198,6 +1250,157 @@ pub fn run(root: &Path, args: &[String]) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
+    fn signature_image(signature: usize, marker: u8) -> Vec<u8> {
+        let mut b = vec![0; 160 + signature];
+        let len = b.len();
+        for (offset, n) in [
+            (0, 0xfeedfacfu32),
+            (4, 0x0100000c),
+            (12, 2),
+            (16, 2),
+            (20, 88),
+            (32, 0x19),
+            (36, 72),
+            (104, 0x1d),
+            (108, 16),
+            (112, 160),
+            (116, signature as u32),
+        ] {
+            b[offset..offset + 4].copy_from_slice(&n.to_le_bytes());
+        }
+        b[40..56].copy_from_slice(b"__LINKEDIT\0\0\0\0\0\0");
+        b[64..72].copy_from_slice(&(len as u64).to_le_bytes());
+        b[72..80].copy_from_slice(&120u64.to_le_bytes());
+        b[80..88].copy_from_slice(&((len - 120) as u64).to_le_bytes());
+        b[120..160].fill(42);
+        b[160..164].copy_from_slice(&[0xfa, 0xde, 0x0c, 0xc0]);
+        b[164..].fill(marker);
+        b
+    }
+    fn authority_release(root: &Path, bytes: &[u8], archive: char) -> Release {
+        let archive = archive.to_string().repeat(64);
+        let payload = root.join("versions").join(&archive);
+        fs::create_dir_all(payload.join("bin")).unwrap();
+        let mut files = serde_json::Map::new();
+        for name in [
+            "bin/tradeassembly",
+            "bin/warden",
+            "bin/tradeassembly-sandbox",
+        ] {
+            let p = payload.join(name);
+            fs::write(&p, bytes).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&p, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            files.insert(name.into(), json!({"sha256":digest(&p).unwrap()}));
+        }
+        atomic_json(
+            &payload.join("bundle.json"),
+            &json!({"target":"aarch64-apple-darwin","files":files}),
+        )
+        .unwrap();
+        Release {
+            schema_version: 1,
+            version: "0.2.1-beta.1".into(),
+            target: "aarch64-apple-darwin".into(),
+            parent_lock_sha256: crate::PARENT_SHA.into(),
+            bundle_manifest_sha256: digest(&payload.join("bundle.json")).unwrap(),
+            archive_sha256: archive,
+            warden_sha256: digest(&payload.join("bin/warden")).unwrap(),
+            state_compatibility: "f2-local-v1".into(),
+            candidate_descriptor_sha256: None,
+            deployment_environment: None,
+            connection_profile_sha256: None,
+        }
+    }
+    #[test]
+    fn signature_only_authority_compatibility_binds_both_payloads_and_supports_rollback() {
+        let root = tempfile::tempdir().unwrap();
+        let old = authority_release(root.path(), &signature_image(32, 1), 'a');
+        let new = authority_release(root.path(), &signature_image(64, 2), 'b');
+        assert!(compatible(&old, &new).is_err());
+        compatible_payloads(root.path(), &old, &new).unwrap();
+        compatible_payloads(root.path(), &new, &old).unwrap();
+        let mut changed = signature_image(64, 2);
+        changed[130] ^= 1;
+        let bad = authority_release(root.path(), &changed, 'c');
+        assert!(compatible_payloads(root.path(), &old, &bad).is_err());
+        let mut wrong = new.clone();
+        wrong.state_compatibility = "unknown".into();
+        assert!(compatible_payloads(root.path(), &old, &wrong).is_err());
+        let p = root
+            .path()
+            .join("versions")
+            .join(&new.archive_sha256)
+            .join("bin/warden");
+        fs::write(&p, signature_image(32, 1)).unwrap();
+        assert!(compatible_payloads(root.path(), &old, &new).is_err());
+        assert!(!root.path().join("pending.json").exists());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signature_authority_transaction_recovers_mixed_bindings_without_changing_secret_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let old = authority_release(root, &signature_image(32, 1), 'a');
+        let new = authority_release(root, &signature_image(64, 2), 'b');
+        private_dir(&root.join("authority/bin")).unwrap();
+        private_dir(&root.join("state/local")).unwrap();
+        let authority = root.join("authority/bin/warden");
+        fs::write(&authority, signature_image(32, 1)).unwrap();
+        let state = root.join("state/local");
+        for (name, bytes) in [
+            ("signing.seed", vec![7u8; 32]),
+            ("warden.token", vec![8u8; 64]),
+        ] {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(state.join(name))
+                .unwrap();
+            f.write_all(&bytes).unwrap();
+        }
+        atomic_json(&state.join("installation.json"),&json!({"schemaVersion":"tradeassembly.local-installation.v1","executable":authority,"sha256":old.warden_sha256,"port":8181,"retained":"same"})).unwrap();
+        atomic_json(&state.join("runtime.json"),&json!({"databasePath":state.join("runtime.db"),"pluginSandboxCommand":root.join("versions").join(&old.archive_sha256).join("bin/tradeassembly-sandbox"),"wardenSidecarUrl":"http://127.0.0.1:8181","wardenTokenRef":format!("file://{}",state.join("warden.token").display()),"retained":"same"})).unwrap();
+        let next = Installed {
+            schema_version: 1,
+            current: new.clone(),
+            previous: Some(old.clone()),
+            warden_port: 8181,
+        };
+        stopped(root).unwrap();
+        pending_transition(root, &next).unwrap();
+        // Simulated crash after the atomic binary replacement, before local metadata.
+        fs::write(&authority, signature_image(64, 2)).unwrap();
+        transition_mac_authority(root, &old, &new, 8181).unwrap();
+        transition_mac_authority(root, &old, &new, 8181).unwrap();
+        verify_prepared(root, &next).unwrap();
+        assert_eq!(fs::read(state.join("signing.seed")).unwrap(), vec![7u8; 32]);
+        assert_eq!(fs::read(state.join("warden.token")).unwrap(), vec![8u8; 64]);
+        assert_eq!(
+            read_json::<Value>(&state.join("runtime.json")).unwrap()["retained"],
+            "same"
+        );
+        assert_eq!(
+            read_json::<Value>(&state.join("installation.json")).unwrap()["retained"],
+            "same"
+        );
+        let reverse = Installed {
+            schema_version: 1,
+            current: old.clone(),
+            previous: Some(new.clone()),
+            warden_port: 8181,
+        };
+        atomic_json(&root.join("pending.json"), &reverse).unwrap();
+        stopped(root).unwrap();
+        transition_mac_authority(root, &new, &old, 8181).unwrap();
+        verify_prepared(root, &reverse).unwrap();
+    }
     use super::*;
     #[test]
     fn f2_mac_authority_transition_is_exact_pair_only() {

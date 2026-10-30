@@ -26,6 +26,10 @@ pub struct DataPlanContent {
     pub scope: PlanScope,
     pub plan: CompiledDataPlan,
     pub package_sha256: BTreeMap<String, String>,
+    /// Hashes of non-secret execution context. Older prepared records require
+    /// explicit preparation again before execution; legacy checkpoints are untouched.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub binding_sha256: BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -67,6 +71,7 @@ fn prepare(
     let runtime = service.runtime();
     let mut contracts = Vec::new();
     let mut packages = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
     for node in &request.nodes {
         let selected = graph
             .nodes
@@ -122,6 +127,14 @@ fn prepare(
             contract,
         });
         packages.insert(node.graph_node_id.clone(), digest.to_owned());
+        let binding = canonical_sha256(&json!({
+            "configuration":instance.get("configuration").cloned().unwrap_or_else(||json!({})),
+            "accountRef":instance["accountRef"],
+            "credentialRef":instance["credentialRef"],
+            "credentialRevision":crate::live_execution_checks::credential_revision(&instance),
+        }))
+        .map_err(|_| "data_plan_binding_invalid")?;
+        bindings.insert(node.graph_node_id.clone(), binding);
     }
     let plan = compile_data_plan(&graph, request, contracts).map_err(|errors| {
         format!(
@@ -133,6 +146,7 @@ fn prepare(
         scope,
         plan,
         package_sha256: packages,
+        binding_sha256: bindings,
     })
 }
 

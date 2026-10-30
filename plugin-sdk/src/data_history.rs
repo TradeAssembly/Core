@@ -66,20 +66,19 @@ impl Observations {
         }
         let mut child = |value: &Observations| value.evaluate(parameters, depth + 1, nodes);
         let value = match self {
-            Self::Literal { value } if *value > 0 => *value,
-            Self::Literal { .. } => return Err(HistoryError::Zero),
+            Self::Literal { value } => *value,
             Self::Parameter { name } => {
                 if name.is_empty() || name.len() > 128 {
                     return Err(HistoryError::InvalidParameter);
                 }
                 let v = parameters.get(name).ok_or(HistoryError::UnknownParameter)?;
                 match v.as_u64() {
-                    Some(value) if value > 0 => value,
+                    Some(value) => value,
                     _ => v
                         .as_f64()
                         .filter(|n| {
                             n.is_finite()
-                                && *n > 0.0
+                                && *n >= 0.0
                                 && n.fract() == 0.0
                                 && *n <= MAX_HISTORY_OBSERVATIONS as f64
                         })
@@ -321,6 +320,43 @@ mod tests {
         }
         assert!(deep.resolve(&json!({})).is_err());
     }
+    #[test]
+    fn zero_operands_are_valid_inside_positive_bounded_history() {
+        let history = Observations::Add {
+            terms: vec![p("period"), n(1)],
+        };
+        assert_eq!(history.resolve(&json!({"period":0})), Ok(1));
+        assert_eq!(history.resolve(&json!({"period":0.0})), Ok(1));
+        assert_eq!(history.resolve(&json!({"period":2})), Ok(3));
+        assert_eq!(
+            p("period").resolve(&json!({"period":0})),
+            Err(HistoryError::Zero)
+        );
+        assert_eq!(n(0).resolve(&json!({})), Err(HistoryError::Zero));
+        assert_eq!(
+            Observations::Add {
+                terms: vec![n(0), n(1)]
+            }
+            .resolve(&json!({})),
+            Ok(1)
+        );
+        assert!(history.resolve(&json!({"period":-1})).is_err());
+        assert!(history.resolve(&json!({"period":0.5})).is_err());
+        assert!(history
+            .resolve(&json!({"period":MAX_HISTORY_OBSERVATIONS}))
+            .is_err());
+        assert!(Observations::Add {
+            terms: vec![
+                Observations::Multiply {
+                    terms: vec![n(0), n(MAX_HISTORY_OBSERVATIONS + 1)]
+                },
+                n(1)
+            ]
+        }
+        .resolve(&json!({}))
+        .is_err());
+    }
+
     #[test]
     fn output_histories_remain_distinct_and_same_interval_chains_compose() {
         let port = json!({"schema":{"schemaRef":"schema://example/number","sha256":"a".repeat(64)},"shape":"series","time":{"intervalMs":60000,"completedOnly":true}});

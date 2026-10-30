@@ -9,7 +9,9 @@ and canonical contract hashes cover the whole V3 record.
 `history.firstReady` maps each output port to every required input port. Values
 are bounded observation expressions: `literal`, `parameter`, `add`, `subtract`,
 `multiply`, `maximum`, `floor_divide` by a positive constant, and `floor_sqrt`.
-Expressions have at most eight nested levels, 64 nodes and 32 terms per list;
+Zero-valued nonnegative operands are valid inside an expression (for example,
+`period + 1` at `period = 0` resolves to one observation). A final resolved history
+of zero still rejects preparation. Expressions have at most eight nested levels, 64 nodes and 32 terms per list;
 intermediate values and resolved history are bounded to 1,048,576 observations.
 Missing, fractional, negative, zero final counts and overflowing expressions
 reject preparation. They do not execute calculation code.

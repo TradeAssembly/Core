@@ -92,3 +92,11 @@ archive, then executes separate JSONL processes through ExternalPluginHost and
 checks stateful EMA results. It uses a test process sandbox and synthetic numeric
 observations; it does not qualify the production OS sandbox, a market-data
 provider, the shared evaluator's product wiring or trading behavior.
+
+The separate opt-in `saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental_parity`
+proof installs the actual calculation package, saves a graph through the existing
+HTTP graph route, prepares an immutable typed plan, and evaluates a two-node EMA
+composition through LocalPluginOperations/ExternalPluginHost. Batch and incremental
+runs match values, semantic point hashes and final state. Acquisition is an
+explicit synthetic source fixture; this is not real provider/strategy/trading
+acceptance. The proof also checks that no broker dispatch claim was created.

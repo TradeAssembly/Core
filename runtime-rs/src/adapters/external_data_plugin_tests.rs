@@ -5,6 +5,9 @@ use crate::{
     data_pipeline::canonical_sha256,
     ports::{AuthorityContext, IdempotencyKey, PluginPackageInstallRequest},
 };
+use tradeassembly_plugin_sdk::market_data::{
+    bar_batch, ohlcv_identity, ohlcv_series_schema, OhlcvBar, ProviderBar, OHLCV_SERIES_SCHEMA,
+};
 use tradeassembly_plugin_sdk::{data_contract::*, data_evaluation::*};
 
 #[test]
@@ -159,8 +162,11 @@ impl crate::ports::PluginOperationPort for FixtureSourceAndRealCalculations {
         request: &PluginOperationRequest,
         context: &SideEffectContext,
     ) -> Result<PluginOperationResponse, String> {
-        if request.operation_id != "provide.numeric" {
-            assert_eq!(request.operation_id, "indicator.ema");
+        if request.operation_id != "provide.ohlcv" {
+            assert!(matches!(
+                request.operation_id.as_str(),
+                "indicator.ema" | "data.ohlcv_field"
+            ));
             return crate::ports::PluginOperationPort::invoke(
                 self.calculations.lock().unwrap().as_ref().unwrap(),
                 request,
@@ -169,17 +175,13 @@ impl crate::ports::PluginOperationPort for FixtureSourceAndRealCalculations {
         }
         // Explicit synthetic acquisition fixture; never represented as provider data.
         let payload: DataEvaluationRequest = serde_json::from_value(request.input.clone()).unwrap();
-        let schema = SchemaIdentity {
-            schema_ref: "schema://tradeassembly/number-series@1".into(),
-            sha256: canonical_sha256(&json!({"type":"array","items":{"type":"number"}})).unwrap(),
-        };
-        let mut points = vec![];
+        let mut rows = vec![];
         let day = 86_400_000;
         let mut start = payload.window.event_start_ms;
         while start < payload.window.event_end_ms {
             let index = (start / day - 10) as usize;
             let value = [1, 4, 2, 8][index];
-            let mut point = DataPoint {
+            rows.push(ProviderBar {
                 instrument_id: "BTC/USD".into(),
                 source_event_id: format!("synthetic:{index}"),
                 provenance: BatchProvenance {
@@ -192,21 +194,24 @@ impl crate::ports::PluginOperationPort for FixtureSourceAndRealCalculations {
                     completed: true,
                     source_revision: "synthetic.1".into(),
                 },
-                result: PointValue::Ready(json!(value)),
-            };
-            point.provenance.content_sha256 = point_sha256(&point).unwrap();
-            points.push(point);
+                value: OhlcvBar {
+                    open: value as f64,
+                    high: value as f64 + 1.0,
+                    low: value as f64 - 1.0,
+                    close: value as f64,
+                    volume: 1.0,
+                    vwap: None,
+                    trade_count: None,
+                    session: None,
+                },
+            });
             start += day;
         }
         let response = DataEvaluationResponse {
             schema_version: EvaluationVersion::V1,
             outputs: std::collections::BTreeMap::from([(
                 "value".into(),
-                DataBatch {
-                    schema,
-                    shape: DataShape::Series,
-                    points,
-                },
+                bar_batch(&payload, day as u64, rows)?,
             )]),
             state: Default::default(),
         };
@@ -279,36 +284,37 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         manifest,
         &calculation,
     );
-    let (mut descriptor, contract_bytes, schema_bytes, _) =
+    let (mut descriptor, contract_bytes, _, _) =
         crate::adapters::plugin_packages::data_package_tests::materials();
+    let schema_bytes = serde_json::to_vec(&ohlcv_series_schema()).unwrap();
     let mut contract: Value = serde_json::from_slice(&contract_bytes).unwrap();
-    contract["operationId"] = json!("provide.numeric");
-    contract["outputs"]["value"]["schema"]["schemaRef"] =
-        json!("schema://tradeassembly/number-series@1");
+    contract["operationId"] = json!("provide.ohlcv");
+    contract["outputs"]["value"]["schema"] = serde_json::to_value(ohlcv_identity()).unwrap();
     let template = runtime
         .plugins
         .get_manifest("example.provide")
         .unwrap()
         .unwrap();
     let mut operation = template["manifest"]["operations"][0].clone();
-    operation["id"] = json!("provide.numeric");
-    operation["capability"] = json!("test.numeric-source");
+    operation["id"] = json!("provide.ohlcv");
+    operation["capability"] = json!("test.ohlcv-source");
     operation["traits"]["instrumentFamilies"] = json!(["crypto_asset"]);
-    operation["traits"]["outputSchemaRefs"] = json!([
-        "schema://tradeassembly/number-series@1",
-        EVALUATION_RESPONSE_SCHEMA
-    ]);
-    let source_manifest = json!({"metadata":{"id":"example.synthetic-source","version":"1","provider":{"id":"synthetic","name":"Synthetic fixture"}},"capabilities":[{"id":"test.numeric-source"}],"operations":[operation],"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
+    operation["traits"]["outputSchemaRefs"] =
+        json!([OHLCV_SERIES_SCHEMA, EVALUATION_RESPONSE_SCHEMA]);
+    let source_manifest = json!({"metadata":{"id":"example.synthetic-source","version":"1","provider":{"id":"synthetic","name":"Synthetic fixture"}},"capabilities":[{"id":"test.ohlcv-source"}],"operations":[operation],"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let source_bytes = serde_json::to_vec(&source_manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
     descriptor["package"]["plugin"]["id"] = json!("example.synthetic-source");
     descriptor["package"]["manifest"]["sha256"] =
         json!(format!("{:x}", Sha256::digest(&source_bytes)));
-    descriptor["dataContracts"][0]["operationId"] = json!("provide.numeric");
+    descriptor["dataContracts"][0]["operationId"] = json!("provide.ohlcv");
     descriptor["dataContracts"][0]["document"]["sha256"] =
         json!(format!("{:x}", Sha256::digest(&contract_bytes)));
     descriptor["dataContracts"][0]["canonicalSha256"] = json!(canonical_sha256(&contract).unwrap());
-    descriptor["dataSchemas"][0]["schemaRef"] = json!("schema://tradeassembly/number-series@1");
+    descriptor["dataSchemas"][0]["schemaRef"] = json!(OHLCV_SERIES_SCHEMA);
+    descriptor["dataSchemas"][0]["document"]["sha256"] =
+        json!(format!("{:x}", Sha256::digest(&schema_bytes)));
+    descriptor["dataSchemas"][0]["canonicalSha256"] = json!(ohlcv_identity().sha256);
     let source_archive = crate::adapters::plugin_packages::data_package_tests::archive_files(vec![
         (
             "tradeassembly-plugin.json",
@@ -337,7 +343,7 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         source_manifest,
         &source,
     );
-    for capability in ["test.numeric-source", "indicator.ema"] {
+    for capability in ["test.ohlcv-source", "indicator.ema", "data.ohlcv_field"] {
         let template = runtime
             .storage
             .get_json("entitlement_grants", "test.provide")
@@ -366,7 +372,7 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
             Arc::new(NativeTestSandbox),
         ),
     );
-    let saved_revision=service.handle_http("POST", "/capability-graph-revisions",json!({"configId":"cfg_process_proof","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"source","capability":"test.numeric-source","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema1","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema2","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+    let saved_revision=service.handle_http("POST", "/capability-graph-revisions",json!({"configId":"cfg_process_proof","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"source","capability":"test.ohlcv-source","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"close","capability":"data.ohlcv_field","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema1","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema2","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
     assert_eq!(saved_revision.status, 200, "{}", saved_revision.body);
     let revision = &saved_revision.body;
     assert_eq!(revision["revision"]["graph"]["ok"], true, "{revision:#}");
@@ -384,6 +390,7 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         trade_instruments: vec![],
         nodes: [
             ("source", json!({})),
+            ("close", json!({"field":"close"})),
             ("ema1", json!({"period":3})),
             ("ema2", json!({"period":2})),
         ]
@@ -398,6 +405,12 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         bindings: vec![
             PortBinding {
                 producer_node: "source".into(),
+                output_port: "value".into(),
+                consumer_node: "close".into(),
+                input_port: "source".into(),
+            },
+            PortBinding {
+                producer_node: "close".into(),
                 output_port: "value".into(),
                 consumer_node: "ema1".into(),
                 input_port: "source".into(),
@@ -431,7 +444,15 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         )
         .unwrap()
     };
-    let batch = step("batch", 10, 14, None, "batch");
+    let batch_first = step("batch", 10, 12, None, "batch-a");
+    assert_eq!(batch_first.status, host::EvaluationStatus::WarmingUp);
+    let batch = step(
+        "batch",
+        12,
+        14,
+        Some(batch_first.checkpoint.checkpoint_sha256.clone()),
+        "batch-b",
+    );
     assert_eq!(batch.status, host::EvaluationStatus::Ready);
     let mut streamed = vec![];
     let mut prior = None;
@@ -452,8 +473,9 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         prior = Some(receipt.checkpoint.checkpoint_sha256.clone());
         last = Some(receipt);
     }
-    let batch_points = batch.outputs["ema2"]
+    let batch_points = batch_first.outputs["ema2"]
         .iter()
+        .chain(batch.outputs["ema2"].iter())
         .flat_map(|r| r.outputs["value"].points.clone())
         .collect::<Vec<_>>();
     assert_eq!(

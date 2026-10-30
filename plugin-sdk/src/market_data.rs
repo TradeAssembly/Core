@@ -108,6 +108,9 @@ pub fn bar_batch(
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     if instruments.is_empty()
+        || instruments.iter().any(|id| id.trim().is_empty())
+        || request.max_points == 0
+        || request.max_points > 256
         || instruments.len() != request.instruments.len()
         || rows.len() > 256
         || rows.len() as u64 > request.max_points
@@ -259,6 +262,19 @@ mod tests {
     }
     #[test]
     fn malformed_unordered_duplicate_and_nonfinite_rows_fail() {
+        assert!(bar_batch(&request(), 1, vec![]).unwrap().points.is_empty());
+        let mut invalid = request();
+        invalid.max_points = 0;
+        assert_eq!(
+            bar_batch(&invalid, 1, vec![]).unwrap_err(),
+            "provider_bar_request_invalid"
+        );
+        let mut invalid = request();
+        invalid.instruments = vec![String::new()];
+        assert_eq!(
+            bar_batch(&invalid, 1, vec![]).unwrap_err(),
+            "provider_bar_request_invalid"
+        );
         assert!(bar_batch(&request(), 1, vec![row(), row()]).is_err());
         let mut bad = row();
         bad.value.high = 99.0;

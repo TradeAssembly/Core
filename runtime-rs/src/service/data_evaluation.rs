@@ -1448,3 +1448,34 @@ impl StepEnvironment<'_> {
 #[cfg(test)]
 #[path = "data_evaluation_tests.rs"]
 mod tests;
+
+/// Load an existing, owned causal evaluation receipt without invoking plugins.
+/// Used by downstream selection stages; a caller cannot supply signal contents.
+pub(crate) fn admitted_signal(
+    service: &TradeAssemblyService,
+    request: &EvaluationStep,
+    original_key: &str,
+    context: &SideEffectContext,
+) -> Result<(data_plans::StoredDataPlan, EvaluationReceipt), String> {
+    let plan = data_plans::current(service, &request.plan_revision_id)?;
+    super::data_captures::validate_window(service, &plan, &request.window)?;
+    let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
+    let receipt_key = key(&[&run_key, original_key])?;
+    let raw = service
+        .runtime()
+        .storage
+        .get_json(RECEIPTS, &receipt_key)?
+        .ok_or("option_signal_receipt_missing")?;
+    let receipt: EvaluationReceipt =
+        serde_json::from_value(raw).map_err(|_| "option_signal_receipt_invalid")?;
+    if receipt.request_sha256 != hash(&json!({"request":request,"authority":context.authority}))?
+        || receipt_hash(&receipt)? != receipt.receipt_sha256
+        || checkpoint_hash(&receipt.checkpoint)? != receipt.checkpoint.checkpoint_sha256
+        || receipt.checkpoint.run_id != request.run_id
+        || receipt.checkpoint.plan_revision_id != request.plan_revision_id
+    {
+        return Err("option_signal_receipt_invalid".into());
+    }
+    validate_state_availability(&receipt.checkpoint)?;
+    Ok((plan, receipt))
+}

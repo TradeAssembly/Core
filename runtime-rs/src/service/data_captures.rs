@@ -95,7 +95,7 @@ fn bounded<T: Serialize>(value: &T, limit: usize) -> Result<(), String> {
     }
     Ok(())
 }
-fn capturable_payload(value: &Value) -> Result<(), String> {
+pub(crate) fn capturable_payload(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(map) => {
             for (key, value) in map {

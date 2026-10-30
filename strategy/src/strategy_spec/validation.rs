@@ -542,6 +542,54 @@ fn validate_stage_semantics(
                     ));
                 }
             }
+            if let Some(selection) = &substep.option_selection {
+                let signal = spec
+                    .signal_market_requirements
+                    .iter()
+                    .find(|r| r.requirement_id == selection.signal_requirement_ref);
+                let valid_context = signal.is_some_and(|r| {
+                    r.selectors
+                        .iter()
+                        .any(|s| s.selector_id == selection.underlying_selector_ref)
+                });
+                if let Err(code) = selection.validate() {
+                    diagnostics.push(Diagnostic::error(
+                        3,
+                        "SPEC_OPTION_SELECTION_INVALID",
+                        format!("{substep_pointer}/option_selection"),
+                        code,
+                    ));
+                }
+                if !valid_context
+                    || !capability_ids.contains(&selection.chain_capability_requirement_ref)
+                    || !substep
+                        .capability_requirement_refs
+                        .contains(&selection.chain_capability_requirement_ref)
+                    || substep.optional
+                    || substep.kind != SubstepKind::Screen
+                    || substep.failure_policy != FailurePolicy::FailClosed
+                {
+                    diagnostics.push(Diagnostic::error(3, "SPEC_OPTION_SELECTION_BINDING_INVALID", format!("{substep_pointer}/option_selection"), "option selection requires an explicit signal selector, declared chain capability and mandatory fail-closed screen"));
+                }
+                if let super::OptionAnalytics::ExplicitModel {
+                    capability_requirement_ref,
+                    ..
+                } = &selection.analytics
+                {
+                    if !capability_ids.contains(capability_requirement_ref)
+                        || !substep
+                            .capability_requirement_refs
+                            .contains(capability_requirement_ref)
+                    {
+                        diagnostics.push(Diagnostic::error(
+                            3,
+                            "SPEC_OPTION_MODEL_BINDING_INVALID",
+                            format!("{substep_pointer}/option_selection/analytics"),
+                            "explicit model capability must be declared",
+                        ));
+                    }
+                }
+            }
             for key in substep.config.keys() {
                 if !key.contains('.') {
                     diagnostics.push(Diagnostic::error(

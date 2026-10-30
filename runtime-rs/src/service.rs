@@ -41,6 +41,7 @@ mod live_authorization;
 mod marketdata;
 mod object_authorization;
 mod onboarding;
+pub mod option_selections;
 mod options;
 mod orders;
 mod original_cycle_recovery;

@@ -78,6 +78,7 @@ fn preparation_request(
         return Err("data_strategy_mode_invalid".into());
     }
     let request = PipelineRequest {
+        selected_outputs: vec![],
         source_captures: body
             .get("sourceCaptures")
             .cloned()

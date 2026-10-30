@@ -6,6 +6,7 @@ use crate::{
 fn content() -> DataPlanContent {
     let (graph, request, contracts) = crate::data_pipeline::tests::fixture();
     DataPlanContent {
+        recipe_source: None,
         source_authentication: BTreeMap::new(),
         scope: PlanScope {
             strategy_id: "test-strategy".into(),
@@ -405,6 +406,7 @@ pub(crate) fn fixture_service_with_history(
         interval_ms: Some(86_400_000),
     };
     let request = PipelineRequest {
+        selected_outputs: vec![],
         source_captures: BTreeMap::new(),
         capability_graph_revision: revision["revision"]["revisionId"].as_str().unwrap().into(),
         mode: mode.into(),

@@ -88,11 +88,12 @@ fn fixture_executable() -> &'static [u8] {
         std::fs::read(output).unwrap()
     })
 }
-fn install_fixture(
+fn install_fixture_with_recipe(
     service: &crate::service::TradeAssemblyService,
     root: &std::path::Path,
     calculator: bool,
     interval_ms: u64,
+    recipe: bool,
 ) -> InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
@@ -159,7 +160,15 @@ fn install_fixture(
     descriptor["dataContracts"][0]["operationId"] = json!(opid);
     descriptor["dataContracts"][0]["document"]["sha256"] = json!(sha256(&contract_bytes));
     descriptor["dataContracts"][0]["canonicalSha256"] = json!(canonical_sha256(&contract).unwrap());
-    let archive = archive_files(vec![
+    let recipe_bytes = if recipe {
+        assert!(calculator);
+        let definition=json!({"schemaVersion":"tradeassembly.data_recipe.v1","recipeId":"source-projection","semanticsVersion":"1","parameterSchema":{"type":"object","additionalProperties":false},"inputs":{"source":contract["inputs"]["source"]["data"]},"nodes":{"projection":{"operation":{"pluginRef":"self","operationId":"derive","semanticsVersion":contract["semanticsVersion"]},"parameters":{}}},"bindings":[{"producer":{"kind":"input","port":"source"},"consumerNode":"projection","inputPort":"source"}],"outputs":{"value":{"producer":{"kind":"output","node":"projection","port":"value"},"data":contract["outputs"]["value"]}}});
+        let bytes=serde_json::to_vec_pretty(&definition).unwrap();
+        descriptor["packageContractVersion"]=json!("3");
+        descriptor["recipes"]=json!([{"recipeId":"source-projection","document":{"path":"recipe.json","sha256":sha256(&bytes)},"canonicalSha256":canonical_sha256(&definition).unwrap()}]);
+        Some(bytes)
+    } else {None};
+    let mut files = vec![
         (
             "tradeassembly-plugin.json",
             serde_json::to_vec(&descriptor).unwrap(),
@@ -169,7 +178,9 @@ fn install_fixture(
         ("schema.json", schema_bytes),
         ("response.json", response),
         ("bin/plugin", script.to_vec()),
-    ]);
+    ];
+    if let Some(bytes)=recipe_bytes {files.push(("recipe.json",bytes));}
+    let archive=archive_files(files);
     let path = root.join(format!("{id}.tgz"));
     fs::write(&path, &archive).unwrap();
     let package = service
@@ -211,7 +222,8 @@ struct Rig {
 fn rig() -> Rig {
     rig_with_options(false)
 }
-fn rig_with_options(options: bool) -> Rig {
+fn rig_with_options(options: bool) -> Rig { rig_configuration(options,false) }
+fn rig_configuration(options:bool,recipes:bool)->Rig {
     let operations = Arc::new(ForwardNative::default());
     let (dir, service, scope, _) = data_plans::tests::fixture_service(Some(operations.clone()));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -256,11 +268,12 @@ fn rig_with_options(options: bool) -> Rig {
         }
     });
     for calculator in [false, true] {
-        let package = install_fixture(
+        let package = install_fixture_with_recipe(
             &service,
             dir.path(),
             calculator,
             if options { 60000 } else { 86400000 },
+            recipes && calculator,
         );
         service.runtime().plugins.put_instance(&package.plugin_ref,json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"credentialRef":if calculator {"fixture-unused"}else{"capture-fixture"},"configuration":if calculator {json!({})} else {json!({"dataApiUrl":format!("http://{address}")})}}),&ctx("instance")).unwrap();
     }
@@ -370,6 +383,7 @@ fn data_capture_real_process_product_admission_replay_and_service_recreation() {
     );
     assert_eq!(duplicate.body["capture"], response.body["capture"]);
     let mut pipeline = PipelineRequest {
+        selected_outputs: vec![],
         source_captures: BTreeMap::from([("source".into(), receipt.capture_id.clone())]),
         capability_graph_revision: r.command.policy.capability_graph_revision.clone(),
         mode: "paper".into(),
@@ -892,6 +906,7 @@ fn data_capture_external_provider_package_admits_replays_and_reopens_without_liv
         &service,
         scope,
         PipelineRequest {
+            selected_outputs: vec![],
             source_captures: BTreeMap::from([("source".into(), receipt.capture_id.clone())]),
             capability_graph_revision: command.policy.capability_graph_revision.clone(),
             mode: "paper".into(),
@@ -1427,5 +1442,83 @@ fn option_selection_real_process_causal_signal_selection_restart_and_no_match() 
         .list_json("orders")
         .unwrap()
         .is_empty());
+    r.server.join().unwrap();
+}
+
+#[test]
+fn recipe_real_process_public_preparation_evaluation_recreation_and_tamper() {
+    use crate::service::data_recipes::*;
+    let r=rig_configuration(false,true);
+    let capture=r.service.handle_http("POST","/product/strategies/data-captures/create",json!({"capture":r.command,"idempotencyKey":"recipe-capture"}));
+    assert_eq!(capture.status,200,"{}",capture.body);
+    let receipt:captures::CaptureReceipt=serde_json::from_value(capture.body["capture"].clone()).unwrap();
+    let package_sha=r.service.runtime().plugins.get_instance("capture.calculation").unwrap().unwrap()["activePackageSha256"].as_str().unwrap().to_owned();
+    let program=RecipeProgram {
+        schema_version:RecipeProgramVersion::V1,
+        base_request:PipelineRequest {selected_outputs:vec![],source_captures:BTreeMap::from([("source".into(),receipt.capture_id.clone())]),capability_graph_revision:r.command.policy.capability_graph_revision.clone(),mode:"paper".into(),trade_instruments:vec![],nodes:vec![PipelineNode {graph_node_id:"source".into(),parameters:json!({}),context:r.command.policy.context.clone(),input_contexts:BTreeMap::new()}],bindings:vec![]},
+        instances:vec![RecipeInvocation {instance_id:"projection".into(),plugin_instance_ref:"capture.calculation".into(),package_sha256:package_sha.clone(),recipe_id:"source-projection".into(),semantics_version:"1".into(),parameters:json!({}),nodes:BTreeMap::from([("projection".into(),RecipeNodeBinding {graph_node_id:"derived".into(),context:r.command.policy.context.clone(),input_contexts:BTreeMap::new()})]),inputs:BTreeMap::from([("source".into(),RecipeInput::Pipeline {node:"source".into(),port:"value".into()})]),selected_outputs:vec!["value".into()]}],
+        outputs:vec![RecipeInput::Recipe {instance:"projection".into(),output:"value".into()}]
+    };
+    let body=json!({"scope":r.command.policy.scope,"program":program,"idempotencyKey":"public-recipe"});
+    let prepared=r.service.handle_http("POST","/product/strategies/data-recipes/prepare",body.clone());
+    assert_eq!(prepared.status,200,"{}",prepared.body);
+    assert_eq!(prepared.body["executionAuthorityGranted"],false);
+    let plan_count=r.service.runtime().storage.list_json("compiled_data_plan_revisions_v1").unwrap().len();
+    for case in ["parameter","cycle","context","mode"] {
+        let mut invalid=body.clone(); invalid["idempotencyKey"]=json!(format!("recipe-invalid-{case}"));
+        match case {
+            "parameter"=>invalid["program"]["instances"][0]["parameters"]=json!({"unexpected":true}),
+            "cycle"=>invalid["program"]["instances"][0]["inputs"]["source"]=json!({"kind":"recipe","instance":"projection","output":"value"}),
+            "mode"=>invalid["program"]["baseRequest"]["mode"]=json!("live"),
+            _=>invalid["program"]["instances"][0]["nodes"]["projection"]["context"]["instruments"][0]["instrumentFamily"]=json!("crypto_spot"),
+        }
+        let error=r.service.handle_http("POST","/product/strategies/data-recipes/prepare",invalid.clone());
+        assert_eq!(error.status,409,"{case}: {}",error.body);
+        let expected=match case {"parameter"=>"data_recipe_parameters_invalid","cycle"=>"data_recipe_instance_cycle","mode"=>"data_plan_graph_stale",_=>"data_recipe_plan_compile_failed"};
+        assert_eq!(error.body["error"]["code"],expected,"{case}: {}",error.body);
+        let mcp=r.service.call_mcp_tool("tradeassembly.strategy.data_recipe.prepare",invalid);
+        assert_eq!(mcp["isError"],true,"{case}: {mcp}");
+        if case=="context" {assert!(error.body["diagnostics"].as_array().is_some_and(|rows|!rows.is_empty()));}
+        assert_eq!(r.service.runtime().storage.list_json("compiled_data_plan_revisions_v1").unwrap().len(),plan_count);
+    }
+    let plan:data_plans::StoredDataPlan=serde_json::from_value(prepared.body["plan"].clone()).unwrap();
+    assert_eq!(plan.content.plan.schema_version,DataPlanVersion::V5);
+    assert_eq!(plan.content.plan.selected_source_history["source"],1);
+    let source=plan.content.recipe_source.as_ref().unwrap();
+    assert_eq!(source.pins.len(),1);
+    assert_ne!(source.pins[0].recipe_document_sha256,source.pins[0].recipe_canonical_sha256);
+    let step_body=json!({"step":data_evaluation::EvaluationStep {run_id:"recipe-run".into(),plan_revision_id:plan.revision_id.clone(),window:EvaluationWindow {event_start_ms:10*86400000,event_end_ms:13*86400000,as_of_ms:r.service.runtime().clock.now_ms()},expected_checkpoint_sha256:None},"idempotencyKey":"recipe-evaluate"});
+    let response=r.service.handle_http("POST","/product/strategies/data-recipes/step",step_body.clone());
+    assert_eq!(response.status,200,"{}",response.body);
+    let evaluated:data_evaluation::EvaluationReceipt=serde_json::from_value(response.body["receipt"].clone()).unwrap();
+    let values=evaluated.outputs["derived"].iter().flat_map(|response|response.outputs["value"].points.iter()).filter_map(|point|match &point.result {PointValue::Ready(value)=>value.as_i64(),_=>None}).collect::<Vec<_>>();
+    assert_eq!(values,vec![10,20,30]);
+    let db=r.dir.path().join("service.db").to_string_lossy().into_owned();
+    drop(r.service);drop(r.operations);
+    let mut runtime=crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages=Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(r.dir.path().join("package-store")).unwrap());
+    runtime.plugin_operations=Arc::new(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(runtime.storage.clone(),runtime.plugins.clone(),runtime.credentials.clone(),runtime.plugin_packages.clone(),runtime.clock.clone(),Arc::new(NativeTestSandbox)));
+    let reopened=crate::service::TradeAssemblyService::from_runtime(&db,runtime);
+    assert_eq!(data_plans::current(&reopened,&plan.revision_id).unwrap(),plan);
+    let retry=reopened.handle_http("POST","/product/strategies/data-recipes/step",step_body.clone());
+    assert_eq!(retry.body["receipt"],response.body["receipt"]);
+    let mut missing=step_body.clone(); missing["step"]["planRevisionId"]=json!("missing"); missing["idempotencyKey"]=json!("missing-recipe-step");
+    assert_eq!(reopened.call_mcp_tool("tradeassembly.strategy.data_recipe.step",missing)["isError"],true);
+    let mcp=reopened.call_mcp_tool("tradeassembly.strategy.data_recipe.prepare",body.clone());
+    assert_ne!(mcp["isError"],true,"{mcp}");
+    assert_eq!(mcp["structuredContent"]["plan"],prepared.body["plan"]);
+    let saved=reopened.runtime().storage.list_json("data_evaluation_receipts_v1").unwrap();
+    let package=reopened.runtime().plugin_packages.get(&package_sha).unwrap().unwrap();
+    fs::write(package.install_root.join("recipe.json"),b"{}").unwrap();
+    let rejected=reopened.call_mcp_tool("tradeassembly.strategy.data_recipe.prepare",body);
+    assert_eq!(rejected["isError"],true,"{rejected}");
+    assert_eq!(reopened.runtime().storage.list_json("data_evaluation_receipts_v1").unwrap(),saved);
+    assert!(data_plans::current(&reopened,&plan.revision_id).is_err());
+    let strategy_id=r.command.policy.scope.strategy_id.clone();
+    let alice=reopened.for_authenticated_invocation("test","alice",None,None);
+    alice.bind_owned_object("strategy",&strategy_id).unwrap();
+    let bob=reopened.for_authenticated_invocation("test","bob",None,None);
+    let foreign=bob.call_mcp_tool("tradeassembly.strategy.data_recipe.step",step_body);
+    assert_eq!(foreign["isError"],true,"{foreign}");
     r.server.join().unwrap();
 }

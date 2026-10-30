@@ -410,6 +410,12 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/data-captures/get") => {
             "strategy.data_capture.get".to_string()
         }
+        ("POST", "/product/strategies/data-recipes/step") => {
+            "strategy.data_recipe.step".to_string()
+        }
+        ("POST", "/product/strategies/data-recipes/prepare") => {
+            "strategy.data_recipe.prepare".to_string()
+        }
         ("POST", "/product/strategies/data-plans/prepare") => {
             "strategy.data_plan.prepare".to_string()
         }
@@ -700,6 +706,12 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.strategy.data_capture.get" => {
             return "strategy.data_capture.get".to_string()
+        }
+        "tradeassembly.strategy.data_recipe.step" => {
+            return "strategy.data_recipe.step".to_string()
+        }
+        "tradeassembly.strategy.data_recipe.prepare" => {
+            return "strategy.data_recipe.prepare".to_string()
         }
         "tradeassembly.strategy.data_plan.prepare" => {
             return "strategy.data_plan.prepare".to_string()
@@ -1291,10 +1303,16 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
             "paper".to_string()
         };
     }
-    if path == "/product/strategies/data-plans/prepare" {
+    if matches!(
+        path,
+        "/product/strategies/data-plans/prepare" | "/product/strategies/data-recipes/prepare"
+    ) {
         return "mutation".to_string();
     }
-    if path == "/product/strategies/data-runs/step" {
+    if matches!(
+        path,
+        "/product/strategies/data-runs/step" | "/product/strategies/data-recipes/step"
+    ) {
         return "research".to_string();
     }
     if path.contains("strategy-execution-configs") {

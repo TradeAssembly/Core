@@ -228,6 +228,7 @@ fn make_fixture(
         })
         .collect();
     let request = PipelineRequest {
+        selected_outputs: vec![],
         source_captures: BTreeMap::new(),
         capability_graph_revision: "revision.test".into(),
         mode: "paper".into(),
@@ -841,6 +842,30 @@ fn data_pipeline_v3_composes_only_the_selected_output_history() {
     seal(&mut contracts);
     let early = compile_data_plan(&graph, request.clone(), contracts.clone()).unwrap();
     assert_eq!(early.schema_version, DataPlanVersion::V3);
+    assert!(serde_json::to_value(&request)
+        .unwrap()
+        .get("selectedOutputs")
+        .is_none());
+    let mut explicit = request.clone();
+    explicit.selected_outputs = vec![PipelineOutput {
+        node: "result".into(),
+        port: "early".into(),
+    }];
+    let selected_early = compile_data_plan(&graph, explicit.clone(), contracts.clone()).unwrap();
+    assert_eq!(selected_early.schema_version, DataPlanVersion::V5);
+    assert_eq!(selected_early.selected_source_history["source"], 5);
+    explicit.selected_outputs[0].port = "late".into();
+    let selected_late = compile_data_plan(&graph, explicit.clone(), contracts.clone()).unwrap();
+    assert_eq!(selected_late.selected_source_history["source"], 7);
+    assert_ne!(selected_early.plan_sha256, selected_late.plan_sha256);
+    explicit
+        .selected_outputs
+        .push(explicit.selected_outputs[0].clone());
+    assert!(has(
+        &compile_data_plan(&graph, explicit, contracts.clone()).unwrap_err(),
+        PlanDiagnosticCode::UnknownPort
+    ));
+
     assert_eq!(early.source_warmup_observations["result"], 7);
     assert_eq!(early.source_warmup_observations["result_1"], 9);
     assert_eq!(

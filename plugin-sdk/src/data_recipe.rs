@@ -21,6 +21,8 @@ pub struct DataRecipe {
     pub recipe_id: String,
     pub semantics_version: String,
     pub parameter_schema: Value,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameter_defaults: BTreeMap<String, Value>,
     pub inputs: BTreeMap<String, DataPort>,
     pub nodes: BTreeMap<String, RecipeNode>,
     pub bindings: Vec<RecipeBinding>,
@@ -139,6 +141,12 @@ impl DataRecipe {
                     .and_then(|p| p.get(id))
                     .is_some()
         };
+        for (key, value) in &self.parameter_defaults {
+            if !parameter_exists(key) {
+                return Err("data_recipe_parameter_missing");
+            }
+            normalized(value)?;
+        }
         for node in self.nodes.values() {
             if !reference(&node.operation.plugin_ref)
                 || !reference(&node.operation.operation_id)

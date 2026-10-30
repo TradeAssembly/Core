@@ -518,6 +518,7 @@ pub(crate) fn acquire(
     crate::data_pipeline::compile_data_plan(
         &graph,
         crate::data_pipeline::PipelineRequest {
+            selected_outputs: vec![],
             source_captures: BTreeMap::new(),
             capability_graph_revision: command.policy.capability_graph_revision.clone(),
             mode: command.policy.mode.clone(),

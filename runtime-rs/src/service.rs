@@ -28,6 +28,7 @@ pub(crate) mod data_binding;
 pub mod data_captures;
 pub mod data_evaluation;
 pub mod data_plans;
+pub mod data_recipes;
 pub mod data_strategy;
 mod dataset_ingestion;
 mod derivatives;
@@ -1072,6 +1073,9 @@ impl TradeAssemblyService {
         if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = data_recipes::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = data_strategy::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1296,6 +1300,12 @@ impl TradeAssemblyService {
                 data_captures::create(self, body)
             }
             ("POST", "/product/strategies/data-captures/get") => data_captures::read(self, body),
+            ("POST", "/product/strategies/data-recipes/step") => {
+                data_recipes::step_response(self, body)
+            }
+            ("POST", "/product/strategies/data-recipes/prepare") => {
+                data_recipes::prepare_response(self, body)
+            }
             ("POST", "/product/strategies/data-plans/prepare") => {
                 data_strategy::prepare(self, body)
             }
@@ -3385,13 +3395,18 @@ impl TradeAssemblyService {
             if let Some(response) =
                 object_authorization::authorize_private_request(self, "POST", path, &arguments)
             {
-                if name == "tradeassembly.strategy.option_selection.create" {
+                if matches!(
+                    name,
+                    "tradeassembly.strategy.option_selection.create"
+                        | "tradeassembly.strategy.data_recipe.prepare"
+                        | "tradeassembly.strategy.data_recipe.step"
+                ) {
                     let code = service_error_code(&response.body)
                         .unwrap_or_else(|| "option_selection_not_available".into());
                     return mcp::tool_error(
                         name,
                         &code,
-                        "Owned option selection is not available.",
+                        "Owned strategy data operation is not available.",
                         None,
                     );
                 }
@@ -3408,6 +3423,21 @@ impl TradeAssemblyService {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "data_capture_preflight_failed".into());
                 return mcp::tool_error(name, &code, "Data capture failed closed.", None);
+            }
+            if let Some(response) = data_recipes::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_recipe_preflight_failed".into());
+                let details = response
+                    .body
+                    .get("diagnostics")
+                    .filter(|value| value.is_array())
+                    .map(|diagnostics| json!({"diagnostics":diagnostics}));
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Recipe data operation failed closed.",
+                    details,
+                );
             }
             if let Some(response) = data_strategy::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
@@ -3717,6 +3747,18 @@ impl TradeAssemblyService {
             "tradeassembly.strategy.data_capture.get" => {
                 self.dispatch_http("POST", "/product/strategies/data-captures/get", arguments)
                     .body
+            }
+            "tradeassembly.strategy.data_recipe.step" => {
+                self.dispatch_http("POST", "/product/strategies/data-recipes/step", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_recipe.prepare" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-recipes/prepare",
+                    arguments,
+                )
+                .body
             }
             "tradeassembly.strategy.data_plan.prepare" => {
                 self.dispatch_http("POST", "/product/strategies/data-plans/prepare", arguments)
@@ -4247,10 +4289,15 @@ impl TradeAssemblyService {
                 return self.complete_mcp_command_or_error(name, &command_envelope, 400, response);
             }
         }
-        if name == "tradeassembly.strategy.option_selection.create" {
+        if matches!(
+            name,
+            "tradeassembly.strategy.option_selection.create"
+                | "tradeassembly.strategy.data_recipe.prepare"
+                | "tradeassembly.strategy.data_recipe.step"
+        ) {
             if let Some(code) = service_error_code(&payload) {
                 let response =
-                    mcp::tool_error(name, &code, "Option selection failed closed.", None);
+                    mcp::tool_error(name, &code, "Strategy data operation failed closed.", None);
                 return self.complete_mcp_command_or_error(name, &command_envelope, 409, response);
             }
         }
@@ -5187,6 +5234,10 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
             Some("/product/strategies/data-captures/create")
         }
         "tradeassembly.strategy.data_capture.get" => Some("/product/strategies/data-captures/get"),
+        "tradeassembly.strategy.data_recipe.step" => Some("/product/strategies/data-recipes/step"),
+        "tradeassembly.strategy.data_recipe.prepare" => {
+            Some("/product/strategies/data-recipes/prepare")
+        }
         "tradeassembly.strategy.data_plan.prepare" => {
             Some("/product/strategies/data-plans/prepare")
         }

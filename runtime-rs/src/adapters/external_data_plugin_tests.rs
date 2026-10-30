@@ -385,7 +385,7 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         }],
         interval_ms: Some(86_400_000),
     };
-    let mut pipeline = PipelineRequest { source_captures: BTreeMap::new(),
+    let mut pipeline = PipelineRequest { selected_outputs: vec![], source_captures: BTreeMap::new(),
         capability_graph_revision: revision["revision"]["revisionId"].as_str().unwrap().into(),
         mode: "paper".into(),
         trade_instruments: vec![],

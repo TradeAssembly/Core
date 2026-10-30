@@ -491,7 +491,7 @@ fn data_evaluation_missing_initial_coverage_cannot_silently_shift_the_sample() {
 }
 
 #[test]
-fn data_evaluation_prior_state_availability_survives_batch_and_restart() {
+fn data_evaluation_prior_state_availability_survives_batch_and_checkpoint_reload() {
     let operations = Arc::new(FixtureOperations::default());
     operations.delayed_first.store(true, Ordering::SeqCst);
     let (_dir, service, scope, mut pipeline) =
@@ -609,4 +609,130 @@ fn data_evaluation_research_run_state_has_a_known_slot_and_is_isolated_on_resume
             .count(),
         2
     );
+}
+
+#[test]
+fn data_evaluation_service_recreation_preserves_causality_and_research_run_isolation() {
+    let operations = Arc::new(FixtureOperations::default());
+    operations.delayed_first.store(true, Ordering::SeqCst);
+    operations.research_run.store(true, Ordering::SeqCst);
+    let (directory, service, scope, mut pipeline) =
+        super::super::data_plans::tests::fixture_service_with_state(
+            Some(operations.clone()),
+            StatePartition::ResearchRun,
+            "backtest",
+        );
+    pipeline
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "derived")
+        .unwrap()
+        .parameters = json!({"window":1});
+    let plan = data_plans::save(&service, scope, pipeline, &context("recreated-plan")).unwrap();
+    let make_request = |run: &str, start, end, prior| {
+        let mut r = request(&plan, run, start, end, prior);
+        r.window.as_of_ms = 15 * INTERVAL;
+        r
+    };
+    let initial_a = step(
+        &service,
+        make_request("persisted-a", 10, 11, None),
+        &context("persisted-a-initial"),
+    )
+    .unwrap();
+    let initial_b = step(
+        &service,
+        make_request("persisted-b", 10, 11, None),
+        &context("persisted-b-initial"),
+    )
+    .unwrap();
+    drop(service);
+    drop(operations);
+
+    // Fresh service, runtime, storage/registry/lease repository objects and
+    // stateless fixture invoker. Only the database and verified package files
+    // survive; no prior service or invoker object is reused.
+    let fresh_operations = Arc::new(FixtureOperations::default());
+    fresh_operations.delayed_first.store(true, Ordering::SeqCst);
+    fresh_operations.research_run.store(true, Ordering::SeqCst);
+    let db = directory
+        .path()
+        .join("service.db")
+        .to_string_lossy()
+        .into_owned();
+    let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_operations = fresh_operations.clone();
+    let reopened = TradeAssemblyService::from_runtime(&db, runtime);
+    assert_eq!(
+        data_plans::current(&reopened, &plan.revision_id).unwrap(),
+        plan
+    );
+    let mut too_early = make_request(
+        "persisted-a",
+        11,
+        12,
+        Some(initial_a.checkpoint.checkpoint_sha256.clone()),
+    );
+    too_early.window.as_of_ms = 12 * INTERVAL;
+    assert_eq!(
+        step(&reopened, too_early, &context("persisted-a-early")).unwrap_err(),
+        "data_evaluation_state_not_available_at_cutoff"
+    );
+    let resumed_a = step(
+        &reopened,
+        make_request(
+            "persisted-a",
+            11,
+            12,
+            Some(initial_a.checkpoint.checkpoint_sha256),
+        ),
+        &context("persisted-a-resume"),
+    )
+    .unwrap();
+    let resumed_b = step(
+        &reopened,
+        make_request(
+            "persisted-b",
+            11,
+            13,
+            Some(initial_b.checkpoint.checkpoint_sha256),
+        ),
+        &context("persisted-b-resume"),
+    )
+    .unwrap();
+    assert_eq!(
+        resumed_a.checkpoint.states["derived"][RESEARCH_RUN_STATE_SLOT]["seen"],
+        2
+    );
+    assert_eq!(
+        resumed_b.checkpoint.states["derived"][RESEARCH_RUN_STATE_SLOT]["seen"],
+        3
+    );
+    for receipt in [&resumed_a, &resumed_b] {
+        assert_eq!(
+            receipt.checkpoint.state_availability["derived"].known_at_ms,
+            15 * INTERVAL
+        );
+        assert!(terminal(receipt)
+            .iter()
+            .all(|p| p.provenance.known_at_ms >= 15 * INTERVAL));
+    }
+    let a_key = key(&["persisted-a", &plan.revision_id]).unwrap();
+    let stored_a = reopened
+        .runtime()
+        .storage
+        .get_json(RUNS, &a_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored_a["states"]["derived"][RESEARCH_RUN_STATE_SLOT]["seen"],
+        2
+    );
+    assert!(fresh_operations
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.node_id == "derived")
+        .all(|r| !r.prior_state.is_empty() && r.window.as_of_ms >= 15 * INTERVAL));
 }

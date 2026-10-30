@@ -96,6 +96,19 @@ pub(crate) fn verify(
         }
     }
     let mut total = 0;
+    // Base response schemas are metadata too, even though their V1 descriptor
+    // binds byte hashes rather than canonical schema identities.
+    for response in &data.package.response_schemas {
+        let value = document(root, &response.document, &mut total)?;
+        if !local_schema_refs(&value) {
+            return Err("plugin_data_schema_invalid".into());
+        }
+        schema_budget(&value)?;
+        if jsonschema::validator_for(&value).is_err() {
+            return Err("plugin_data_schema_invalid".into());
+        }
+    }
+
     let mut schemas = BTreeMap::new();
     for schema in &data.data_schemas {
         let value = document(root, &schema.document, &mut total)?;

@@ -52,14 +52,15 @@ host evaluation and the default pack remain separate follow-up work.
 
 ## Bounded V2 catalog capacity
 
-V2 packages admit up to 256 operation-data contracts and 256 schema documents.
+V2 packages admit up to 256 operation-data contracts, 256 data-schema documents
+and 256 base response-schema documents.
 The embedded wire V1 format is unchanged; unknown descriptor versions/fields
 remain rejected. Older hosts reject catalogs above 64 contracts, so packages
 using the larger capacity require a matching qualified host/source pin. This
 capacity change does not enlarge a runtime DAG, frame, state or evaluation budget.
 
 Descriptors are read with a 1 MiB cap before decoding. Typed manifests and each
-contract/schema document are capped at 1 MiB; aggregate document reads at 16 MiB;
+contract/schema document (including base response schemas) are capped at 1 MiB; aggregate document reads at 16 MiB;
 manifest operations at 512. Metadata trees have at most 32 nesting levels,
 32,768 visited nodes, 2,048 members per collection, 16 KiB strings and 256-byte
 keys. JSON Schema compilation uses the same bounded work accounting expanded

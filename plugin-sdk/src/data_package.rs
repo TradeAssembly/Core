@@ -155,6 +155,7 @@ impl VersionedPackageDescriptor {
             if data.data_contracts.is_empty()
                 || data.data_contracts.len() > MAX_DATA_CONTRACTS
                 || data.data_schemas.len() > MAX_DATA_SCHEMAS
+                || data.package.response_schemas.len() > MAX_DATA_SCHEMAS
             {
                 return Err("plugin_data_package_bounds_invalid".into());
             }

@@ -100,6 +100,15 @@
       "requires_receipt": true
     },
     {
+      "rule_id": "tradeassembly-data-capture-create",
+      "action": "strategy.data_capture.create",
+      "resource_kind": "strategy_data_capture",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
       "rule_id": "tradeassembly-data-plan-prepare",
       "action": "strategy.data_plan.prepare",
       "resource_kind": "strategy_data_plan",

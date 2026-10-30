@@ -62,26 +62,40 @@ fn context(service: &TradeAssemblyService, body: &Value) -> Result<SideEffectCon
     )
     .with_agent_execution(service.agent_mcp_execution_context()))
 }
+fn preparation_request(
+    service: &TradeAssemblyService,
+    body: &Value,
+) -> Result<(data_plans::PlanScope, PipelineRequest, DataStrategy), String> {
+    let scope: data_plans::PlanScope =
+        serde_json::from_value(body["scope"].clone()).map_err(|_| "data_strategy_scope_invalid")?;
+    let program = program(service, &scope)?.ok_or("data_strategy_program_missing")?;
+    let graph = body["capabilityGraphRevisionId"]
+        .as_str()
+        .ok_or("data_strategy_graph_required")?;
+    let mode = body["mode"].as_str().ok_or("data_strategy_mode_required")?;
+    // Read-only evaluation supports these contexts; it grants no activation.
+    if !matches!(mode, "paper" | "live" | "backtest") {
+        return Err("data_strategy_mode_invalid".into());
+    }
+    let request = PipelineRequest {
+        source_captures: body
+            .get("sourceCaptures")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| "data_strategy_capture_bindings_invalid")?
+            .unwrap_or_default(),
+        capability_graph_revision: graph.into(),
+        mode: mode.into(),
+        nodes: program.nodes.clone(),
+        bindings: program.bindings.clone(),
+        trade_instruments: program.trade_instruments.clone(),
+    };
+    Ok((scope, request, program))
+}
 pub fn prepare(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     let result: Result<data_plans::StoredDataPlan, String> = (|| {
-        let scope: data_plans::PlanScope = serde_json::from_value(body["scope"].clone())
-            .map_err(|_| "data_strategy_scope_invalid")?;
-        let program = program(service, &scope)?.ok_or("data_strategy_program_missing")?;
-        let graph = body["capabilityGraphRevisionId"]
-            .as_str()
-            .ok_or("data_strategy_graph_required")?;
-        let mode = body["mode"].as_str().ok_or("data_strategy_mode_required")?;
-        // Read-only evaluation supports these contexts; it grants no activation.
-        if !matches!(mode, "paper" | "live" | "backtest") {
-            return Err("data_strategy_mode_invalid".into());
-        }
-        let request = PipelineRequest {
-            capability_graph_revision: graph.into(),
-            mode: mode.into(),
-            nodes: program.nodes.clone(),
-            bindings: program.bindings.clone(),
-            trade_instruments: program.trade_instruments.clone(),
-        };
+        let (scope, request, program) = preparation_request(service, &body)?;
         let plan = data_plans::save(service, scope, request, &context(service, &body)?)?;
         program.validate(&plan.content.plan)?;
         Ok(plan)
@@ -119,9 +133,8 @@ pub(crate) fn preflight(
 ) -> Option<ServiceResponse> {
     let result: Result<(), String> = match path {
         "/product/strategies/data-plans/prepare" => (|| {
-            let scope: data_plans::PlanScope = serde_json::from_value(body["scope"].clone())
-                .map_err(|_| "data_strategy_scope_invalid")?;
-            program(service, &scope)?.ok_or("data_strategy_program_missing")?;
+            let (scope, request, _) = preparation_request(service, body)?;
+            data_plans::prepare(service, scope, request)?;
             Ok(())
         })(),
         "/product/strategies/data-runs/step" => (|| {
@@ -141,7 +154,8 @@ pub(crate) fn preflight(
 fn error_response(code: &str) -> ServiceResponse {
     if matches!(
         code,
-        "data_strategy_scope_invalid"
+        "data_strategy_capture_bindings_invalid"
+            | "data_strategy_scope_invalid"
             | "data_strategy_step_invalid"
             | "data_strategy_idempotency_required"
             | "data_strategy_graph_required"

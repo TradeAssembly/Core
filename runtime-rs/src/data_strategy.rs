@@ -98,6 +98,32 @@ impl DataStrategy {
     pub fn validate(&self, plan: &CompiledDataPlan) -> Result<(), String> {
         let mut expected = plan.request.clone();
         expected.nodes = self.nodes.clone();
+        for id in plan.request.source_captures.keys() {
+            let declared = expected
+                .nodes
+                .iter_mut()
+                .find(|n| &n.graph_node_id == id)
+                .ok_or("data_strategy_plan_mismatch")?;
+            if !declared
+                .parameters
+                .as_object()
+                .is_some_and(|p| p.is_empty())
+                || !plan
+                    .contracts
+                    .iter()
+                    .any(|c| &c.graph_node_id == id && c.contract.inputs.is_empty())
+            {
+                return Err("data_strategy_capture_template_invalid".into());
+            }
+            declared.parameters = plan
+                .request
+                .nodes
+                .iter()
+                .find(|n| &n.graph_node_id == id)
+                .ok_or("data_strategy_plan_mismatch")?
+                .parameters
+                .clone();
+        }
         expected.bindings = self.bindings.clone();
         expected.trade_instruments = self.trade_instruments.clone();
         if !crate::data_pipeline::normalize_request(&mut expected).is_empty() {

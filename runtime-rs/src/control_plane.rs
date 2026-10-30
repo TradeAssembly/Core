@@ -401,6 +401,12 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", "/product/sightline/events") => "sightline.events.list".to_string(),
         ("POST", "/product/strategies/publish") => "strategy.version.publish".to_string(),
         ("POST", "/capabilities/graph/resolve") => "capability.graph.resolve".to_string(),
+        ("POST", "/product/strategies/data-captures/create") => {
+            "strategy.data_capture.create".to_string()
+        }
+        ("POST", "/product/strategies/data-captures/get") => {
+            "strategy.data_capture.get".to_string()
+        }
         ("POST", "/product/strategies/data-plans/prepare") => {
             "strategy.data_plan.prepare".to_string()
         }
@@ -682,6 +688,12 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.plugin.capability_graph_resolve" => {
             return "capability.graph.resolve".to_string();
+        }
+        "tradeassembly.strategy.data_capture.create" => {
+            return "strategy.data_capture.create".to_string()
+        }
+        "tradeassembly.strategy.data_capture.get" => {
+            return "strategy.data_capture.get".to_string()
         }
         "tradeassembly.strategy.data_plan.prepare" => {
             return "strategy.data_plan.prepare".to_string()
@@ -1232,6 +1244,12 @@ fn mcp_is_read(name: &str) -> bool {
 fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if is_read_http_route(method, path) {
         return "read".to_string();
+    }
+    if path == "/product/strategies/data-captures/get" {
+        return "read".into();
+    }
+    if path == "/product/strategies/data-captures/create" {
+        return "research".into();
     }
     if path == "/product/sightline/context/get" {
         return "read".to_string();

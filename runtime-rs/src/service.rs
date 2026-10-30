@@ -24,6 +24,8 @@ pub mod connected_runner;
 mod contracts;
 pub mod core_runner;
 mod credentials;
+pub(crate) mod data_binding;
+pub mod data_captures;
 pub mod data_evaluation;
 pub mod data_plans;
 pub mod data_strategy;
@@ -1063,6 +1065,9 @@ impl TradeAssemblyService {
         {
             return response;
         }
+        if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = data_strategy::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1280,6 +1285,10 @@ impl TradeAssemblyService {
             return response;
         }
         match (normalized_method.as_str(), normalized_path.as_str()) {
+            ("POST", "/product/strategies/data-captures/create") => {
+                data_captures::create(self, body)
+            }
+            ("POST", "/product/strategies/data-captures/get") => data_captures::read(self, body),
             ("POST", "/product/strategies/data-plans/prepare") => {
                 data_strategy::prepare(self, body)
             }
@@ -3373,6 +3382,11 @@ impl TradeAssemblyService {
             }
         }
         if let Some(path) = mcp_object_authorization_route(name) {
+            if let Some(response) = data_captures::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_capture_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Data capture failed closed.", None);
+            }
             if let Some(response) = data_strategy::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "data_strategy_preflight_failed".into());
@@ -3661,6 +3675,18 @@ impl TradeAssemblyService {
             }
             "tradeassembly.plugin.capability_resolve" => {
                 providers::resolve_capability(self, providers::requirement_from_body(&arguments))
+            }
+            "tradeassembly.strategy.data_capture.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-captures/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_capture.get" => {
+                self.dispatch_http("POST", "/product/strategies/data-captures/get", arguments)
+                    .body
             }
             "tradeassembly.strategy.data_plan.prepare" => {
                 self.dispatch_http("POST", "/product/strategies/data-plans/prepare", arguments)
@@ -5117,6 +5143,10 @@ fn mcp_control_route(name: &str) -> Option<&'static str> {
 
 fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
+        "tradeassembly.strategy.data_capture.create" => {
+            Some("/product/strategies/data-captures/create")
+        }
+        "tradeassembly.strategy.data_capture.get" => Some("/product/strategies/data-captures/get"),
         "tradeassembly.strategy.data_plan.prepare" => {
             Some("/product/strategies/data-plans/prepare")
         }

@@ -23,6 +23,8 @@ pub struct PlanScope {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataPlanContent {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_authentication: BTreeMap<String, super::data_captures::SourceAuthentication>,
     pub scope: PlanScope,
     pub plan: CompiledDataPlan,
     pub package_sha256: BTreeMap<String, String>,
@@ -39,10 +41,10 @@ pub struct StoredDataPlan {
     pub content: DataPlanContent,
 }
 
-fn prepare(
+pub(crate) fn prepare(
     service: &TradeAssemblyService,
     scope: PlanScope,
-    request: PipelineRequest,
+    mut request: PipelineRequest,
 ) -> Result<DataPlanContent, String> {
     service
         .require_object("strategy", &scope.strategy_id)
@@ -68,6 +70,7 @@ fn prepare(
     }
     let graph: CapabilityGraphResolution =
         serde_json::from_value(revision["graph"].clone()).map_err(|_| "data_plan_graph_invalid")?;
+    super::data_captures::resolve_parameters(service, &scope, &mut request)?;
     let runtime = service.runtime();
     let mut contracts = Vec::new();
     let mut packages = BTreeMap::new();
@@ -79,41 +82,8 @@ fn prepare(
             .find(|n| n.node_id == node.graph_node_id)
             .and_then(|n| n.selected.as_ref())
             .ok_or("data_plan_node_unresolved")?;
-        service
-            .require_object("plugin_instance", &selected.plugin_instance_ref)
-            .map_err(|_| "data_plan_not_available")?;
-        let instance = runtime
-            .plugins
-            .get_instance(&selected.plugin_instance_ref)?
-            .ok_or("data_plan_instance_missing")?;
-        if instance["enabled"] != true
-            || instance["pluginRef"] != selected.plugin_ref
-            || instance["instanceRef"] != selected.plugin_instance_ref
-            || instance.get("removedAtMs").is_some_and(|v| !v.is_null())
-        {
-            return Err("data_plan_instance_stale".into());
-        }
-        let digest = instance["activePackageSha256"]
-            .as_str()
-            .ok_or("data_plan_package_missing")?;
-        let manifest_record = runtime
-            .plugins
-            .get_manifest(&selected.plugin_ref)?
-            .ok_or("data_plan_manifest_missing")?;
-        if manifest_record["manifestDigest"] != selected.manifest_fingerprint
-            || manifest_record["package"]["packageSha256"] != digest
-        {
-            return Err("data_plan_package_binding_mismatch".into());
-        }
-        let package = runtime
-            .plugin_packages
-            .get(digest)?
-            .ok_or("data_plan_package_missing")?;
-        if package.plugin_ref != selected.plugin_ref
-            || package.manifest_sha256 != selected.manifest_fingerprint
-        {
-            return Err("data_plan_package_binding_mismatch".into());
-        }
+        let pinned = super::data_binding::pin(service, selected)?;
+        let digest = &pinned.package_sha256;
         let contract = runtime
             .plugin_packages
             .operation_data(digest, &selected.operation_id)?
@@ -127,14 +97,7 @@ fn prepare(
             contract,
         });
         packages.insert(node.graph_node_id.clone(), digest.to_owned());
-        let binding = canonical_sha256(&json!({
-            "configuration":instance.get("configuration").cloned().unwrap_or_else(||json!({})),
-            "accountRef":instance["accountRef"],
-            "credentialRef":instance["credentialRef"],
-            "credentialRevision":crate::live_execution_checks::credential_revision(&instance),
-        }))
-        .map_err(|_| "data_plan_binding_invalid")?;
-        bindings.insert(node.graph_node_id.clone(), binding);
+        bindings.insert(node.graph_node_id.clone(), pinned.context_sha256);
     }
     let plan = compile_data_plan(&graph, request, contracts).map_err(|errors| {
         format!(
@@ -145,7 +108,10 @@ fn prepare(
     if let Some(program) = super::data_strategy::program(service, &scope)? {
         program.validate(&plan)?;
     }
+    let source_authentication =
+        super::data_captures::validate_plan_sources(service, &scope, &graph, &plan)?;
     Ok(DataPlanContent {
+        source_authentication,
         scope,
         plan,
         package_sha256: packages,

@@ -49,6 +49,8 @@ pub struct PortBinding {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PipelineRequest {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_captures: BTreeMap<String, String>,
     pub capability_graph_revision: String,
     pub mode: String,
     /// Recorded for identity only: data readiness does not grant trade eligibility.
@@ -125,6 +127,8 @@ pub enum DataPlanVersion {
     V2,
     #[serde(rename = "tradeassembly.compiled_data_plan.v3")]
     V3,
+    #[serde(rename = "tradeassembly.compiled_data_plan.v4")]
+    V4,
 }
 
 fn issue(
@@ -683,7 +687,9 @@ pub fn compile_data_plan(
         source_warmup.insert(id.clone(), total);
         history_by_output.insert(id.clone(), output_histories);
     }
-    let version = if has_v3 {
+    let version = if !request.source_captures.is_empty() {
+        DataPlanVersion::V4
+    } else if has_v3 {
         DataPlanVersion::V3
     } else if contracts
         .iter()

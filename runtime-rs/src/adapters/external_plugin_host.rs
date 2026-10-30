@@ -616,6 +616,11 @@ mod tests {
         include!("external_data_plugin_tests.rs");
     }
 
+    #[cfg(unix)]
+    mod capture_plugin_tests {
+        include!("external_capture_plugin_tests.rs");
+    }
+
     fn operation_request() -> PluginOperationRequest {
         PluginOperationRequest {
             correlation_id: "correlation-1".to_string(),

@@ -49,3 +49,31 @@ that currentness and idempotent save both fail. Executable fixture bytes are nev
 invoked. Existing graph-currentness contracts remain the owner of entitlement and
 credential checks. Public route integration, explicit package-replacement cases,
 host evaluation and the default pack remain separate follow-up work.
+
+## Bounded V2 catalog capacity
+
+V2 packages admit up to 256 operation-data contracts and 256 schema documents.
+The embedded wire V1 format is unchanged; unknown descriptor versions/fields
+remain rejected. Older hosts reject catalogs above 64 contracts, so packages
+using the larger capacity require a matching qualified host/source pin. This
+capacity change does not enlarge a runtime DAG, frame, state or evaluation budget.
+
+Descriptors are read with a 1 MiB cap before decoding. Typed manifests and each
+contract/schema document are capped at 1 MiB; aggregate document reads at 16 MiB;
+manifest operations at 512. Metadata trees have at most 32 nesting levels,
+32,768 visited nodes, 2,048 members per collection, 16 KiB strings and 256-byte
+keys. JSON Schema compilation uses the same bounded work accounting expanded
+through local JSON-pointer references: at most eight reference levels, no cycles,
+anchors, remote, dynamic or recursive references. Regex patterns have a 512-byte
+length and 64-pattern work limit. Structural limits bound validation work; they
+are not a preemptive CPU timer. Existing package archive/expansion limits,
+artifact/canonical hashes, safe paths, symlink rejection and offline resolution
+remain in force. The manifest operation index avoids repeated linear searches.
+Legacy descriptor decoding retains its closed schema, with the common 1 MiB
+resource cap; legacy manifests are not reinterpreted as typed metadata.
+
+Catalog admission is separate from availability, exact history planning,
+calculation readiness, state reconstruction, installed instance authority and
+broker eligibility. V1/V2 warmup metadata still has its existing meaning; a
+capacity increase does not make undeclared composite histories or reset policies
+executable. Such semantics require a separately versioned operation contract.

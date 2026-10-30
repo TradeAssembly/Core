@@ -15,7 +15,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tar::Archive;
-use tradeassembly_plugin_sdk::{data_package::VersionedPackageDescriptor, PluginPackageDescriptor};
+use tradeassembly_plugin_sdk::{
+    data_package::{VersionedPackageDescriptor, MAX_DESCRIPTOR_BYTES, MAX_METADATA_DOCUMENT_BYTES},
+    PluginPackageDescriptor,
+};
 use url::Url;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -81,8 +84,12 @@ impl LocalPluginPackageStore {
             .map_err(|_| "plugin_package_record_missing".to_string())?;
         let mut record: InstalledPluginPackage = serde_json::from_slice(&bytes)
             .map_err(|_| "plugin_package_record_invalid".to_string())?;
-        let descriptor_bytes = fs::read(package_root.join(PACKAGE_DESCRIPTOR))
-            .map_err(|_| "plugin_package_descriptor_missing".to_string())?;
+        let descriptor_bytes = read_metadata_file(
+            &package_root.join(PACKAGE_DESCRIPTOR),
+            MAX_DESCRIPTOR_BYTES,
+            "plugin_package_descriptor_missing",
+            "plugin_package_descriptor_too_large",
+        )?;
         let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
         let descriptor = envelope.base();
         descriptor
@@ -91,8 +98,7 @@ impl LocalPluginPackageStore {
         let target = target_record(descriptor)?;
         let manifest_path = package_root.join(&descriptor.manifest.path);
         ensure_within(package_root, &manifest_path)?;
-        let manifest_bytes =
-            fs::read(&manifest_path).map_err(|_| "plugin_package_manifest_missing".to_string())?;
+        let manifest_bytes = read_manifest_file(&manifest_path, &envelope)?;
         let manifest: Value = serde_yaml::from_slice(&manifest_bytes)
             .map_err(|_| "plugin_package_manifest_invalid".to_string())?;
         let executable_path = package_root.join(&target.binary.path);
@@ -213,8 +219,12 @@ impl LocalPluginPackageStore {
                 }
             }
 
-            let descriptor_bytes = fs::read(staging.join(PACKAGE_DESCRIPTOR))
-                .map_err(|_| "plugin_package_descriptor_missing".to_string())?;
+            let descriptor_bytes = read_metadata_file(
+                &staging.join(PACKAGE_DESCRIPTOR),
+                MAX_DESCRIPTOR_BYTES,
+                "plugin_package_descriptor_missing",
+                "plugin_package_descriptor_too_large",
+            )?;
             let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
             let descriptor_contract = envelope.base();
             descriptor_contract
@@ -244,8 +254,7 @@ impl LocalPluginPackageStore {
             let executable_path = target.binary.path.clone();
             let manifest_file = staging.join(&manifest_path);
             ensure_within(&staging, &manifest_file)?;
-            let manifest_bytes = fs::read(&manifest_file)
-                .map_err(|_| "plugin_package_manifest_missing".to_string())?;
+            let manifest_bytes = read_manifest_file(&manifest_file, &envelope)?;
             if sha256(&manifest_bytes) != descriptor_contract.manifest.sha256 {
                 return Err("plugin_package_manifest_digest_mismatch".to_string());
             }
@@ -623,6 +632,39 @@ fn validate_digest(value: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("plugin_package_digest_invalid".to_string())
+    }
+}
+
+fn read_metadata_file(
+    path: &Path,
+    limit: usize,
+    missing: &str,
+    excessive: &str,
+) -> Result<Vec<u8>, String> {
+    let file = File::open(path).map_err(|_| missing.to_string())?;
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| missing.to_string())?;
+    if bytes.len() > limit {
+        return Err(excessive.to_string());
+    }
+    Ok(bytes)
+}
+fn read_manifest_file(
+    path: &Path,
+    envelope: &VersionedPackageDescriptor,
+) -> Result<Vec<u8>, String> {
+    match envelope {
+        VersionedPackageDescriptor::Legacy(_) => {
+            fs::read(path).map_err(|_| "plugin_package_manifest_missing".into())
+        }
+        VersionedPackageDescriptor::Data(_) => read_metadata_file(
+            path,
+            MAX_METADATA_DOCUMENT_BYTES,
+            "plugin_package_manifest_missing",
+            "plugin_data_manifest_too_large",
+        ),
     }
 }
 

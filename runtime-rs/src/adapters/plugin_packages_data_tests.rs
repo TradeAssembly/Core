@@ -157,3 +157,41 @@ fn data_package_rejects_symlinked_installation_root() {
         .unwrap_err()
         .contains("symlink"));
 }
+
+#[test]
+#[ignore = "requires DATA_PACKAGE_TEST_ARCHIVE; validates bytes without executing the package"]
+fn data_package_external_broad_archive_verifies_without_execution() {
+    let path = std::path::PathBuf::from(
+        std::env::var_os("DATA_PACKAGE_TEST_ARCHIVE").expect("explicit local package required"),
+    );
+    let bytes = fs::read(&path).unwrap();
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+    let manifest: Value = tar
+        .entries()
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|e| e.path().unwrap().as_ref() == std::path::Path::new("manifest.json"))
+        .map(|mut e| {
+            let mut b = vec![];
+            std::io::Read::read_to_end(&mut e, &mut b).unwrap();
+            serde_json::from_slice(&b).unwrap()
+        })
+        .expect("manifest required");
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalPluginPackageStore::new(dir.path().join("store")).unwrap();
+    let installed = store
+        .install(&PluginPackageInstallRequest {
+            source_type: "file".into(),
+            locator: path.to_string_lossy().into(),
+            package_sha256: sha256(&bytes),
+            manifest_sha256: canonical(&manifest).unwrap(),
+            offline: true,
+        })
+        .unwrap();
+    assert!(manifest["operations"].as_array().unwrap().len() > 64);
+    assert!(store.get(&installed.package_sha256).unwrap().is_some());
+    assert!(store
+        .data_contract(&installed.package_sha256, "indicator.ema")
+        .unwrap()
+        .is_some());
+}

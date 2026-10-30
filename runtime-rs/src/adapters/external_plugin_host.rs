@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tradeassembly_plugin_sdk::{
-    read_response, write_request, EphemeralCredentialGrant, PluginPackageDescriptor, PluginRequest,
-    PluginResponse, Reconciliation, RequestContext, RequestMetadata, RequestPayload,
-    ResponseStatus, DEFAULT_MAX_ENVELOPE_BYTES, SDK_VERSION, WIRE_CONTRACT_VERSION,
+    read_response, write_request, EphemeralCredentialGrant, PluginRequest, PluginResponse,
+    Reconciliation, RequestContext, RequestMetadata, RequestPayload, ResponseStatus,
+    DEFAULT_MAX_ENVELOPE_BYTES, SDK_VERSION, WIRE_CONTRACT_VERSION,
 };
 
 pub struct ExternalPluginHost {
@@ -190,8 +190,11 @@ fn validate_response_schema_document(
     package: &crate::ports::InstalledPluginPackage,
     response: &PluginResponse,
 ) -> Result<(), String> {
-    let descriptor: PluginPackageDescriptor = serde_json::from_value(package.descriptor.clone())
-        .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
+    let envelope = tradeassembly_plugin_sdk::data_package::VersionedPackageDescriptor::decode(
+        &serde_json::to_vec(&package.descriptor)
+            .map_err(|_| "plugin_package_descriptor_invalid")?,
+    )?;
+    let descriptor = envelope.base();
     let schema = descriptor
         .response_schemas
         .iter()

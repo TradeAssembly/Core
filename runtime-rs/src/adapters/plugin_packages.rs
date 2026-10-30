@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tar::Archive;
-use tradeassembly_plugin_sdk::PluginPackageDescriptor;
+use tradeassembly_plugin_sdk::{data_package::VersionedPackageDescriptor, PluginPackageDescriptor};
 use url::Url;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -83,12 +83,12 @@ impl LocalPluginPackageStore {
             .map_err(|_| "plugin_package_record_invalid".to_string())?;
         let descriptor_bytes = fs::read(package_root.join(PACKAGE_DESCRIPTOR))
             .map_err(|_| "plugin_package_descriptor_missing".to_string())?;
-        let descriptor: PluginPackageDescriptor = serde_json::from_slice(&descriptor_bytes)
-            .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
+        let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
+        let descriptor = envelope.base();
         descriptor
             .validate()
             .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
-        let target = target_record(&descriptor)?;
+        let target = target_record(descriptor)?;
         let manifest_path = package_root.join(&descriptor.manifest.path);
         ensure_within(package_root, &manifest_path)?;
         let manifest_bytes =
@@ -117,7 +117,8 @@ impl LocalPluginPackageStore {
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
-        verify_response_schemas(&descriptor, package_root)?;
+        verify_response_schemas(descriptor, package_root)?;
+        super::plugin_data_contracts::verify(&envelope, package_root, &manifest)?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
         Ok(record)
@@ -214,9 +215,8 @@ impl LocalPluginPackageStore {
 
             let descriptor_bytes = fs::read(staging.join(PACKAGE_DESCRIPTOR))
                 .map_err(|_| "plugin_package_descriptor_missing".to_string())?;
-            let descriptor_contract: PluginPackageDescriptor =
-                serde_json::from_slice(&descriptor_bytes)
-                    .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
+            let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
+            let descriptor_contract = envelope.base();
             descriptor_contract
                 .validate()
                 .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
@@ -240,7 +240,7 @@ impl LocalPluginPackageStore {
             if sdk_version != tradeassembly_plugin_sdk::SDK_VERSION {
                 return Err("plugin_package_sdk_version_unsupported".to_string());
             }
-            let target = target_record(&descriptor_contract)?;
+            let target = target_record(descriptor_contract)?;
             let executable_path = target.binary.path.clone();
             let manifest_file = staging.join(&manifest_path);
             ensure_within(&staging, &manifest_file)?;
@@ -264,7 +264,8 @@ impl LocalPluginPackageStore {
             if sha256(&executable_bytes) != expected_executable_sha {
                 return Err("plugin_package_executable_digest_mismatch".to_string());
             }
-            verify_response_schemas(&descriptor_contract, &staging)?;
+            verify_response_schemas(descriptor_contract, &staging)?;
+            super::plugin_data_contracts::verify(&envelope, &staging, &manifest)?;
 
             let record = InstalledPluginPackage {
                 plugin_ref,
@@ -530,6 +531,27 @@ impl PluginPackagePort for LocalPluginPackageStore {
             return Ok(None);
         }
         self.load_record(&root).map(Some)
+    }
+
+    fn data_contract(
+        &self,
+        package_sha256: &str,
+        operation_id: &str,
+    ) -> Result<Option<tradeassembly_plugin_sdk::data_contract::OperationDataContract>, String>
+    {
+        let package = self
+            .get(package_sha256)?
+            .ok_or("plugin_package_not_installed")?;
+        let envelope = VersionedPackageDescriptor::decode(
+            &serde_json::to_vec(&package.descriptor)
+                .map_err(|_| "plugin_package_descriptor_invalid")?,
+        )?;
+        let mut contracts = super::plugin_data_contracts::verify(
+            &envelope,
+            &package.install_root,
+            &package.manifest,
+        )?;
+        Ok(contracts.remove(operation_id))
     }
 
     fn remove(&self, package_sha256: &str) -> Result<bool, String> {
@@ -961,3 +983,7 @@ metadata:
         encoder.finish().expect("finish gzip")
     }
 }
+
+#[cfg(test)]
+#[path = "plugin_packages_data_tests.rs"]
+pub(crate) mod data_package_tests;

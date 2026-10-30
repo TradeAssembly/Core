@@ -39,5 +39,15 @@ pub trait PluginPackagePort: VersionedPort {
 
     fn get(&self, package_sha256: &str) -> Result<Option<InstalledPluginPackage>, String>;
 
+    /// Revalidates installed package bytes before returning pinned metadata.
+    fn data_contract(
+        &self,
+        _package_sha256: &str,
+        _operation_id: &str,
+    ) -> Result<Option<tradeassembly_plugin_sdk::data_contract::OperationDataContract>, String>
+    {
+        Err("plugin_data_contract_loading_unsupported".into())
+    }
+
     fn remove(&self, package_sha256: &str) -> Result<bool, String>;
 }

@@ -20,3 +20,5 @@ pub mod self_hosted;
 pub mod studio_identity;
 
 pub(crate) mod execution_checkpoint;
+
+pub(crate) mod plugin_data_contracts;

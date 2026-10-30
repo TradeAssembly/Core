@@ -10,7 +10,7 @@ use tradeassembly_plugin_sdk::data_contract::*;
 
 #[cfg(test)]
 #[path = "data_pipeline_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -193,7 +193,7 @@ fn valid_schema(value: &SchemaIdentity) -> bool {
     !value.schema_ref.trim().is_empty() && valid_digest(&value.sha256)
 }
 
-fn local_schema_refs(value: &Value) -> bool {
+pub(crate) fn local_schema_refs(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().all(|(key, value)| {
             if matches!(key.as_str(), "$ref" | "$dynamicRef" | "$recursiveRef") {
@@ -207,7 +207,7 @@ fn local_schema_refs(value: &Value) -> bool {
     }
 }
 
-fn validate_contract(contract: &OperationDataContract) -> bool {
+pub(crate) fn validate_contract(contract: &OperationDataContract) -> bool {
     !contract.operation_id.trim().is_empty()
         && !contract.semantics_version.trim().is_empty()
         && !contract.outputs.is_empty()

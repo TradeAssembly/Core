@@ -4,6 +4,8 @@
 //! exactly one [`PluginResponse`] and exits. Credential grants are ephemeral
 //! request transport data and are redacted from debug output.
 
+pub mod data_contract;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

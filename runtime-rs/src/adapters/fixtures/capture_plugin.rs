@@ -7,11 +7,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 fn digest(v: &Value) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(serde_json_canonicalizer::to_vec(v).unwrap())
-    )
+    Sha256::digest(serde_json_canonicalizer::to_vec(v).unwrap())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
+
 fn main() {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).unwrap();
@@ -55,6 +56,32 @@ fn main() {
                 result["headers"] = json!({"NonSecretFixture":"must-not-persist"});
             }
             (result, "schema://capture-fixture/response@1")
+        }
+        "chain" => {
+            assert!(!request["ephemeralCredentialGrant"].is_null());
+            let address = payload["config"]["dataApiUrl"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("http://127.0.0.1:")
+                .unwrap();
+            let mut stream =
+                TcpStream::connect(("127.0.0.1", address.parse::<u16>().unwrap())).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(
+                stream,
+                "GET /options HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.take(65537).read_to_string(&mut response).unwrap();
+            assert!(response.len() <= 65536);
+            let (_, body) = response.split_once("\r\n\r\n").unwrap();
+            (
+                serde_json::from_str(body).unwrap(),
+                "schema://capture-fixture/option-chain@1",
+            )
         }
         "replay" => {
             assert!(request["ephemeralCredentialGrant"].is_null());

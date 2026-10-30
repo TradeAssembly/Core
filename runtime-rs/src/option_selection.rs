@@ -50,7 +50,7 @@ pub struct RankedOption {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OptionOutcome {
-    Selected { contract: OptionCandidate },
+    Selected { contract: Box<OptionCandidate> },
     NoEligibleContract,
     RequiredDataUnavailable,
 }
@@ -148,6 +148,17 @@ pub fn select(
         let expiry = expiry_date(&c.expiry).ok_or("option_chain_expiry_invalid")?;
         let dte = (expiry - date).num_days() as f64;
         let mut reasons = vec![];
+        if [c.bid, c.ask, c.volume, c.open_interest]
+            .iter()
+            .flatten()
+            .any(|v| !v.is_finite() || *v < 0.0)
+        {
+            reasons.push("invalid_market_value".to_string());
+        }
+        if c.bid.zip(c.ask).is_some_and(|(bid, ask)| ask < bid) {
+            reasons.push("crossed_quote".to_string());
+        }
+
         if c.right != policy.filters.right {
             reasons.push("right".to_string());
         }
@@ -255,7 +266,7 @@ pub fn select(
         OptionOutcome::RequiredDataUnavailable
     } else if let Some((c, _)) = eligible.first() {
         OptionOutcome::Selected {
-            contract: c.clone(),
+            contract: Box::new(c.clone()),
         }
     } else {
         OptionOutcome::NoEligibleContract
@@ -281,7 +292,7 @@ pub fn select(
 pub(crate) mod tests {
     use super::*;
     pub fn policy() -> OptionSelection {
-        serde_json::from_value(serde_json::json!({"version":"tradeassembly.option_selection.v1","signal_requirement_ref":"signal","underlying_selector_ref":"underlying","chain_capability_requirement_ref":"chain","filters":{"right":"call","dte":{"min":0,"max":60},"delta":{"min":0.3,"max":0.7},"min_open_interest":10,"max_relative_spread":0.2},"analytics":{"kind":"provider_supplied"},"ranking":[{"field":"delta","direction":"ascending","target":0.5}],"tiebreak":"contract_id_ascending","missing_data":"reject_candidate","no_match":"no_eligible_contract","max_age_ms":60000,"max_contracts":100,"max_pages":4})).unwrap()
+        serde_json::from_value(serde_json::json!({"version":"tradeassembly.option_selection.v1","signal_requirement_ref":"signal","trade_requirement_ref":"trade","underlying_selector_ref":"underlying","chain_capability_requirement_ref":"chain","filters":{"right":"call","dte":{"min":0,"max":60},"delta":{"min":0.3,"max":0.7},"min_open_interest":10,"max_relative_spread":0.2},"analytics":{"kind":"provider_supplied"},"ranking":[{"field":"delta","direction":"ascending","target":0.5}],"tiebreak":"contract_id_ascending","missing_data":"reject_candidate","no_match":"no_eligible_contract","max_age_ms":60000,"max_contracts":100,"max_pages":4})).unwrap()
     }
     pub fn candidate(id: &str) -> OptionCandidate {
         OptionCandidate {
@@ -309,7 +320,7 @@ pub(crate) mod tests {
         let p = policy();
         let forward = select(&p, "SPY", NOW, &[a.clone(), b.clone()]).unwrap();
         assert_eq!(forward, select(&p, "SPY", NOW, &[b, a.clone()]).unwrap());
-        assert!(matches!(forward.outcome,OptionOutcome::Selected{contract} if contract==a));
+        assert!(matches!(forward.outcome,OptionOutcome::Selected{contract} if *contract==a));
         assert!(!forward.stage_failed);
     }
     #[test]

@@ -119,10 +119,11 @@ fn providers_credentials_marketdata_options_and_packs_are_service_backed_and_red
     let chain = reopened.handle_http(
         "GET",
         "/marketdata/options/chain",
-        json!({"underlying": "SPY", "right": "CALL", "providerRef": provider_ref}),
+        json!({"fixture":true,"underlying": "SPY", "right": "CALL", "providerRef": provider_ref}),
     );
     assert_eq!(chain.body["underlying"], "SPY");
-    assert_eq!(chain.body["provider_ref"], provider_ref);
+    assert_eq!(chain.body["provider_ref"], "fixture");
+    assert_eq!(chain.body["sourceClass"], "deterministic_fixture");
     assert!(
         chain.body["contracts"][0]["bid"]
             .as_f64()
@@ -133,7 +134,7 @@ fn providers_credentials_marketdata_options_and_packs_are_service_backed_and_red
     let selected = reopened.handle_http(
         "POST",
         "/marketdata/options/select",
-        json!({"underlying": "SPY", "right": "CALL", "minDelta": 0.40, "maxDelta": 0.60}),
+        json!({"fixture":true,"underlying": "SPY", "right": "CALL", "minDelta": 0.40, "maxDelta": 0.60}),
     );
     assert_eq!(selected.body["selected"]["right"], "CALL");
     assert!(selected.body["rejected"]

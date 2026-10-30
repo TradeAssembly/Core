@@ -560,7 +560,30 @@ fn validate_stage_semantics(
                         code,
                     ));
                 }
-                if !valid_context
+                let valid_chain = spec
+                    .capability_requirements
+                    .required
+                    .iter()
+                    .chain(spec.capability_requirements.optional.iter())
+                    .any(|r| {
+                        r.requirement_id == selection.chain_capability_requirement_ref
+                            && r.constraints
+                                .data_shapes
+                                .iter()
+                                .any(|s| s == "option_chain")
+                    });
+                let valid_trade = spec.trade_market_requirements.iter().any(|r| {
+                    r.requirement_id == selection.trade_requirement_ref
+                        && r.instrument_families
+                            .contains(&InstrumentFamily::OptionContract)
+                        && r.signal_requirement_refs
+                            .contains(&selection.signal_requirement_ref)
+                });
+                if stage_name != StageName::Intent
+                    || substep.operation_ref != "option.contract.select@1"
+                    || !valid_chain
+                    || !valid_trade
+                    || !valid_context
                     || !capability_ids.contains(&selection.chain_capability_requirement_ref)
                     || !substep
                         .capability_requirement_refs

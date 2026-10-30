@@ -112,6 +112,7 @@ pub enum OptionAnalytics {
 pub struct OptionSelection {
     pub version: OptionSelectionVersion,
     pub signal_requirement_ref: String,
+    pub trade_requirement_ref: String,
     pub underlying_selector_ref: String,
     pub chain_capability_requirement_ref: String,
     pub filters: OptionFilters,
@@ -156,6 +157,7 @@ impl OptionSelection {
     pub fn validate(&self) -> Result<(), &'static str> {
         let refs = [
             &self.signal_requirement_ref,
+            &self.trade_requirement_ref,
             &self.underlying_selector_ref,
             &self.chain_capability_requirement_ref,
         ];
@@ -228,5 +230,54 @@ impl OptionSelection {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn value() -> serde_json::Value {
+        serde_json::json!({"version":"tradeassembly.option_selection.v1","signal_requirement_ref":"signal","trade_requirement_ref":"trade","underlying_selector_ref":"underlying","chain_capability_requirement_ref":"chain","filters":{"right":"call","expiry":{"earliest":"2026-10-30","latest":"2026-12-31"},"dte":{"min":0,"max":60},"delta":{"min":0.3,"max":0.7},"min_open_interest":10,"max_relative_spread":0.2},"analytics":{"kind":"provider_supplied"},"ranking":[{"field":"delta","direction":"ascending","target":0.5}],"tiebreak":"contract_id_ascending","missing_data":"reject_candidate","no_match":"no_eligible_contract","max_age_ms":60000,"max_contracts":100,"max_pages":4})
+    }
+    fn policy(value: serde_json::Value) -> OptionSelection {
+        serde_json::from_value(value).unwrap()
+    }
+    #[test]
+    fn explicit_selection_schema_is_closed_and_versioned() {
+        assert!(policy(value()).validate().is_ok());
+        let mut v = value();
+        v["version"] = serde_json::json!("tradeassembly.option_selection.v2");
+        assert!(serde_json::from_value::<OptionSelection>(v).is_err());
+        let mut v = value();
+        v["filters"]["unknown_filter"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<OptionSelection>(v).is_err());
+        let mut v = value();
+        v.as_object_mut().unwrap().remove("trade_requirement_ref");
+        assert!(serde_json::from_value::<OptionSelection>(v).is_err());
+        let mut v = value();
+        v["analytics"] =
+            serde_json::json!({"kind":"explicit_model","capability_requirement_ref":"model"});
+        assert!(serde_json::from_value::<OptionSelection>(v).is_err());
+    }
+    #[test]
+    fn selection_rejects_ambiguous_ranges_dates_ranks_and_unbounded_queries() {
+        for (pointer, v) in [
+            ("/filters/delta", serde_json::json!({"min":0.7,"max":0.3})),
+            ("/filters/expiry/earliest", serde_json::json!("2026-02-29")),
+            ("/filters/dte/min", serde_json::json!(0.5)),
+            ("/ranking", serde_json::json!([])),
+            ("/max_pages", serde_json::json!(17)),
+            ("/max_contracts", serde_json::json!(4097)),
+            ("/max_age_ms", serde_json::json!(0)),
+        ] {
+            let mut spec = value();
+            *spec.pointer_mut(pointer).unwrap() = v;
+            assert!(policy(spec).validate().is_err(), "{pointer}");
+        }
+        let mut p = policy(value());
+        p.ranking.push(p.ranking[0].clone());
+        assert_eq!(p.validate(), Err("option_selection_ranking_invalid"));
+        assert!(date_valid("2024-02-29"));
+        assert!(!date_valid("2026-02-29"));
     }
 }

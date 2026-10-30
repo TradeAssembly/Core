@@ -1988,11 +1988,15 @@
         },
         "version": {
           "$ref": "#/$defs/OptionSelectionVersion"
+        },
+        "trade_requirement_ref": {
+          "type": "string"
         }
       },
       "required": [
         "version",
         "signal_requirement_ref",
+        "trade_requirement_ref",
         "underlying_selector_ref",
         "chain_capability_requirement_ref",
         "filters",

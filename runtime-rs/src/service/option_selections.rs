@@ -78,7 +78,9 @@ fn policy(
         for step in view.substeps {
             if step.id == c.stage_substep_id {
                 if let Some(p) = &step.option_selection {
-                    if !view.enabled
+                    if stage != StageName::Intent
+                        || step.operation_ref != "option.contract.select@1"
+                        || !view.enabled
                         || step.optional
                         || step.kind != SubstepKind::Screen
                         || step.failure_policy != FailurePolicy::FailClosed
@@ -121,7 +123,10 @@ fn graph(
     service: &TradeAssemblyService,
     c: &SelectionCommand,
 ) -> Result<CapabilityGraphResolution, String> {
-    if c.mode != "paper" && c.mode != "backtest" && c.mode != "live" {
+    if c.mode == "backtest" {
+        return Err("option_selection_historical_chain_replay_unavailable".into());
+    }
+    if c.mode != "paper" && c.mode != "live" {
         return Err("option_selection_mode_invalid".into());
     }
     let now = chrono::DateTime::from_timestamp_millis(service.runtime().clock.now_ms())
@@ -263,11 +268,11 @@ fn acquire_page(
     c: &SelectionCommand,
     g: &CapabilityGraphResolution,
     s: &CapabilitySelection,
-    pin: &data_binding::PinnedOperation,
     input: Value,
     ctx: &SideEffectContext,
     page: u32,
 ) -> Result<PluginOperationResponse, String> {
+    let pin = data_binding::pin(service, s)?;
     let package = service
         .runtime()
         .plugin_packages
@@ -422,6 +427,7 @@ fn current_receipt(
         serde_json::from_value(raw).map_err(|_| "option_selection_receipt_invalid")?;
     let (_, _, _, pin, sig, _) = validate_current(service, c, ctx)?;
     if identity(&r)? != r.receipt_id
+        || v["receiptId"] != r.receipt_id
         || hash(&r.command)? != hash(c)?
         || r.provider != pin
         || r.signal_receipt_sha256 != sig
@@ -448,12 +454,27 @@ pub(crate) fn execute(
     let mut token = None;
     let started = std::time::Instant::now();
     let mut complete = false;
+    let mut total_bytes = 0usize;
     for page in 0..p.max_pages {
         if started.elapsed().as_secs() >= 30 {
             return Err("option_chain_deadline_exceeded".into());
         }
         let input = json!({"instruments":[underlying],"maxRows":p.max_contracts,"pageToken":token});
-        let response = acquire_page(service, &c, &g, s, &pin, input, ctx, page)?;
+        let response = acquire_page(service, &c, &g, s, input, ctx, page)?;
+        total_bytes = total_bytes
+            .checked_add(
+                serde_json::to_vec(&response)
+                    .map_err(|_| "option_chain_response_invalid")?
+                    .len(),
+            )
+            .ok_or("option_chain_response_too_large")?;
+        if total_bytes > 8 * 1024 * 1024 {
+            return Err("option_chain_response_too_large".into());
+        }
+        if started.elapsed().as_secs() >= 30 {
+            return Err("option_chain_deadline_exceeded".into());
+        }
+
         if response.observed_at_ms < signal_time {
             return Err("option_chain_precedes_signal_availability".into());
         }
@@ -541,6 +562,12 @@ fn error(code: &str) -> ServiceResponse {
         ServiceResponse::conflict(code)
     }
 }
+fn public_receipt(r: &SelectionReceipt) -> Value {
+    // Pagination cursors remain in private acquisition evidence, never public
+    // command responses. Keep a stable projection across durable/redacted retries.
+    let evidence=r.responses.iter().zip(&r.payload_sha256).map(|(response,payload_sha256)|json!({"schemaRef":response.schema_ref,"observedAtMs":response.observed_at_ms,"sourceEventId":response.source_event_id,"contentHash":response.content_hash,"payloadSha256":payload_sha256})).collect::<Vec<_>>();
+    json!({"schemaVersion":"tradeassembly.option_selection_view.v1","receiptId":r.receipt_id,"command":r.command,"provider":r.provider,"signalReceiptSha256":r.signal_receipt_sha256,"signalKnownAtMs":r.signal_known_at_ms,"acquiredAtMs":r.acquired_at_ms,"acquisitionEvidence":evidence,"result":r.result})
+}
 pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     let result = (|| {
         let c: SelectionCommand = serde_json::from_value(body["selection"].clone())
@@ -548,9 +575,9 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
         execute(service, c, &context(service, &body)?)
     })();
     match result {
-        Ok(receipt) => {
-            ServiceResponse::ok(json!({"selection":receipt,"executionAuthorityGranted":false}))
-        }
+        Ok(receipt) => ServiceResponse::ok(
+            json!({"selection":public_receipt(&receipt),"executionAuthorityGranted":false}),
+        ),
         Err(code) => error(&code),
     }
 }

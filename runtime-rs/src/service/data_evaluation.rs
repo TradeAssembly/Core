@@ -42,6 +42,8 @@ pub struct EvaluationCheckpoint {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub state_availability: BTreeMap<String, StateAvailability>,
     pub valid_counts: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub last_frame: crate::data_strategy::Frame,
     pub checkpoint_sha256: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,8 @@ pub struct EvaluationReceipt {
     pub checkpoint: EvaluationCheckpoint,
     pub outputs: BTreeMap<String, Vec<DataEvaluationResponse>>,
     pub frames_processed: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<crate::data_strategy::SignalFrame>,
 }
 
 fn hash<T: Serialize>(value: &T) -> Result<String, String> {
@@ -345,6 +349,9 @@ pub fn step(
     if plan.content.plan.execution_order.len() > MAX_NODES {
         return Err("data_evaluation_plan_too_large".into());
     }
+    if let Some(program) = super::data_strategy::program(service, &plan.content.scope)? {
+        program.validate(&plan.content.plan)?;
+    }
     let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
     let request_hash = hash(&json!({"request":request,"authority":context.authority}))?;
     let receipt_key = key(&[&run_key, context.idempotency_key.as_str()])?;
@@ -378,6 +385,7 @@ pub fn step(
             states: BTreeMap::new(),
             state_availability: BTreeMap::new(),
             valid_counts: BTreeMap::new(),
+            last_frame: BTreeMap::new(),
             checkpoint_sha256: String::new(),
         },
     };
@@ -387,6 +395,12 @@ pub fn step(
             || checkpoint.plan_revision_id != request.plan_revision_id)
     {
         return Err("data_evaluation_checkpoint_invalid".into());
+    }
+    if checkpoint.generation > 0
+        && checkpoint.last_frame.is_empty()
+        && super::data_strategy::program(service, &plan.content.scope)?.is_some()
+    {
+        return Err("data_strategy_history_missing_requires_replay".into());
     }
     validate_state_availability(&checkpoint)?;
     let prior_hash = prior.as_ref().map(|_| checkpoint.checkpoint_sha256.clone());
@@ -656,6 +670,8 @@ impl StepEnvironment<'_> {
             .take(MAX_FRAMES)
             .collect::<Vec<_>>();
         let mut outputs: BTreeMap<String, Vec<DataEvaluationResponse>> = BTreeMap::new();
+        let program = super::data_strategy::program(self.service, &self.plan.content.scope)?;
+        let mut signals = Vec::new();
         let mut source_writes = BTreeMap::new();
         let mut any_ready = false;
         for frame in &frames {
@@ -738,6 +754,23 @@ impl StepEnvironment<'_> {
                 values.insert(node_id.clone(), response.clone());
                 outputs.entry(node_id.clone()).or_default().push(response);
             }
+            if let Some(program) = &program {
+                signals.push(program.evaluate(
+                    plan,
+                    &values,
+                    &checkpoint.last_frame,
+                    *frame,
+                    self.request.window.as_of_ms,
+                )?);
+                for response in values.values_mut() {
+                    response.state.clear();
+                }
+                checkpoint.last_frame = values;
+                step_bytes += bytes(&checkpoint.last_frame)?;
+                if step_bytes > MAX_STEP_BYTES {
+                    return Err("data_evaluation_step_too_large".into());
+                }
+            }
         }
         // Readiness is determined by terminal operations, not ready provider rows.
         let consumers = plan
@@ -754,6 +787,12 @@ impl StepEnvironment<'_> {
                 .flat_map(|r| r.outputs.values())
                 .flat_map(|b| &b.points)
                 .any(|p| matches!(p.result, PointValue::Ready(_)));
+        }
+        if program.is_some() && !signals.is_empty() {
+            any_ready = signals.last().is_some_and(|s| {
+                matches!(s.entry, crate::data_strategy::SignalValue::Ready { .. })
+                    && matches!(s.exit, crate::data_strategy::SignalValue::Ready { .. })
+            });
         }
         let status = if frames.is_empty() {
             if any_points {
@@ -772,6 +811,9 @@ impl StepEnvironment<'_> {
                 .checked_add(1)
                 .ok_or("data_evaluation_generation_overflow")?;
         }
+        if bytes(checkpoint)? > MAX_STEP_BYTES {
+            return Err("data_evaluation_checkpoint_too_large".into());
+        }
         checkpoint.checkpoint_sha256 = checkpoint_hash(checkpoint)?;
         let mut receipt = EvaluationReceipt {
             receipt_sha256: String::new(),
@@ -780,6 +822,7 @@ impl StepEnvironment<'_> {
             checkpoint: checkpoint.clone(),
             outputs,
             frames_processed: frames.len() as u64,
+            signals,
         };
         receipt.receipt_sha256 = receipt_hash(&receipt)?;
         self.check_budget()?;

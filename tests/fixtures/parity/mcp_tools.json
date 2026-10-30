@@ -148,5 +148,7 @@
   "studio.deployment.stop",
   "studio.execution.external_receipt.append",
   "studio.execution.external_receipt.inspect",
-  "studio.execution.external_receipt.reconcile"
+  "studio.execution.external_receipt.reconcile",
+  "tradeassembly.strategy.data_plan.prepare",
+  "tradeassembly.strategy.data_run.step"
 ]

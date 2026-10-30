@@ -736,3 +736,172 @@ fn data_evaluation_service_recreation_preserves_causality_and_research_run_isola
         .filter(|r| r.node_id == "derived")
         .all(|r| !r.prior_state.is_empty() && r.window.as_of_ms >= 15 * INTERVAL));
 }
+
+#[test]
+fn data_strategy_product_routes_commit_signals_and_history_then_resume_after_service_recreation() {
+    use crate::data_pipeline::InstrumentContext;
+    use crate::data_strategy::{Comparison, DataStrategy, Operand, Rule, Sample, SignalValue};
+    let (directory, service, template, operations) = rig();
+    let mut request = template.content.plan.request.clone();
+    request.trade_instruments = vec![InstrumentContext {
+        instrument_id: "SPY".into(),
+        asset_class: "equity".into(),
+        instrument_family: "equity".into(),
+    }];
+    let operand = |sample| Operand::Output {
+        node: "derived".into(),
+        port: "value".into(),
+        instrument: "TEST".into(),
+        sample,
+    };
+    let program = DataStrategy {
+        version: 1,
+        nodes: request.nodes.clone(),
+        bindings: request.bindings.clone(),
+        trade_instruments: request.trade_instruments.clone(),
+        entry: Rule::Compare {
+            left: operand(Sample::Current),
+            op: Comparison::Greater,
+            right: operand(Sample::Previous),
+        },
+        exit: Rule::IsTrue {
+            value: Operand::Boolean { value: false },
+        },
+    };
+    let mut spec: Value = serde_json::from_str(include_str!(
+        "../../../examples/strategy-spec/v3/valid/static-equity.json"
+    ))
+    .unwrap();
+    spec["stages"]["evaluate"]["substeps"][0]["config"] =
+        json!({"tradeassembly.data_strategy":program});
+    let created = service.handle_http(
+        "POST",
+        "/product/strategies/create",
+        json!({"name":"Persisted data signal fixture","spec":spec}),
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+    let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":created.body["body"]["strategy"]["id"],"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));
+    assert_eq!(
+        published.body["body"]["published"], true,
+        "{}",
+        published.body
+    );
+    let version = &published.body["body"]["version"];
+    let scope = data_plans::PlanScope {
+        strategy_id: version["strategyId"].as_str().unwrap().into(),
+        strategy_version_id: version["id"].as_str().unwrap().into(),
+        strategy_spec_hash: version["specHash"].as_str().unwrap().into(),
+    };
+    let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"signal-config","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+    assert_eq!(graph.status, 200, "{}", graph.body);
+    let prepared=service.handle_http("POST","/product/strategies/data-plans/prepare",json!({"scope":scope,"capabilityGraphRevisionId":graph.body["revision"]["revisionId"],"mode":"paper","idempotencyKey":"signal-prepare"}));
+    assert_eq!(prepared.status, 200, "{}", prepared.body);
+    let plan: data_plans::StoredDataPlan =
+        serde_json::from_value(prepared.body["plan"].clone()).unwrap();
+    let command = |run: &str, start, end, prior| json!({"step":request_for_signal(&plan,run,start,end,prior),"idempotencyKey":format!("{run}:{start}")});
+    let body = command("signal-a", 10, 16, None);
+    let initial = service.handle_http("POST", "/product/strategies/data-runs/step", body.clone());
+    assert_eq!(initial.status, 200, "{}", initial.body);
+    let initial: EvaluationReceipt =
+        serde_json::from_value(initial.body["receipt"].clone()).unwrap();
+    assert_eq!(
+        initial.signals.last().unwrap().entry,
+        SignalValue::Ready { value: true }
+    );
+    assert_eq!(
+        initial.signals.last().unwrap().trade_instruments[0].instrument_id,
+        "SPY"
+    );
+    assert!(!initial.checkpoint.last_frame.is_empty());
+    let retry_body = body.clone();
+    let duplicate = service.handle_http("POST", "/product/strategies/data-runs/step", body);
+    let duplicate: EvaluationReceipt =
+        serde_json::from_value(duplicate.body["receipt"].clone()).unwrap();
+    assert_eq!(duplicate, initial);
+    drop(service);
+    drop(operations);
+    let db = directory
+        .path()
+        .join("service.db")
+        .to_string_lossy()
+        .into_owned();
+    let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_operations = Arc::new(FixtureOperations::default());
+    let reopened = TradeAssemblyService::from_runtime(&db, runtime);
+    let resumed = reopened.handle_http(
+        "POST",
+        "/product/strategies/data-runs/step",
+        command(
+            "signal-a",
+            16,
+            17,
+            Some(initial.checkpoint.checkpoint_sha256),
+        ),
+    );
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    let resumed: EvaluationReceipt =
+        serde_json::from_value(resumed.body["receipt"].clone()).unwrap();
+    assert_eq!(resumed.signals[0].entry, SignalValue::Ready { value: true });
+    let independent = reopened.handle_http(
+        "POST",
+        "/product/strategies/data-runs/step",
+        command("signal-b", 10, 11, None),
+    );
+    assert_eq!(independent.status, 200, "{}", independent.body);
+    let independent: EvaluationReceipt =
+        serde_json::from_value(independent.body["receipt"].clone()).unwrap();
+    assert_eq!(independent.signals[0].entry, SignalValue::WarmingUp);
+    let mcp_body = command("signal-mcp", 10, 11, None);
+    let mcp = reopened.call_mcp_tool("tradeassembly.strategy.data_run.step", mcp_body.clone());
+    assert_eq!(mcp["isError"], false, "{mcp}");
+    let mut instance = reopened
+        .runtime()
+        .plugins
+        .get_instance("instance.derive")
+        .unwrap()
+        .unwrap();
+    instance["enabled"] = json!(false);
+    reopened
+        .runtime()
+        .plugins
+        .put_instance(
+            "instance.derive",
+            instance,
+            &context("revoke-signal-plugin"),
+        )
+        .unwrap();
+    let mcp_revoked = reopened.call_mcp_tool("tradeassembly.strategy.data_run.step", mcp_body);
+    assert_eq!(mcp_revoked["isError"], true, "{mcp_revoked}");
+    // A previously completed transport command must not bypass current package,
+    // instance or ownership checks when returning its cached receipt.
+    assert_eq!(
+        reopened
+            .handle_http("POST", "/product/strategies/data-runs/step", retry_body)
+            .status,
+        409
+    );
+    assert!(reopened
+        .runtime()
+        .storage
+        .list_json("plugin_broker_dispatch_claims")
+        .unwrap()
+        .is_empty());
+}
+fn request_for_signal(
+    plan: &data_plans::StoredDataPlan,
+    run: &str,
+    start: i64,
+    end: i64,
+    prior: Option<String>,
+) -> EvaluationStep {
+    EvaluationStep {
+        run_id: run.into(),
+        plan_revision_id: plan.revision_id.clone(),
+        window: EvaluationWindow {
+            event_start_ms: start * INTERVAL,
+            event_end_ms: end * INTERVAL,
+            as_of_ms: end * INTERVAL,
+        },
+        expected_checkpoint_sha256: prior,
+    }
+}

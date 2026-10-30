@@ -26,6 +26,7 @@ pub mod core_runner;
 mod credentials;
 pub mod data_evaluation;
 pub mod data_plans;
+pub mod data_strategy;
 mod dataset_ingestion;
 mod derivatives;
 mod execution;
@@ -1062,6 +1063,9 @@ impl TradeAssemblyService {
         {
             return response;
         }
+        if let Some(response) = data_strategy::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if normalized_method == "POST"
             && matches!(normalized_path.as_str(), "/demo/reset" | "/demo/reset-btc")
         {
@@ -1276,6 +1280,10 @@ impl TradeAssemblyService {
             return response;
         }
         match (normalized_method.as_str(), normalized_path.as_str()) {
+            ("POST", "/product/strategies/data-plans/prepare") => {
+                data_strategy::prepare(self, body)
+            }
+            ("POST", "/product/strategies/data-runs/step") => data_strategy::evaluate(self, body),
             ("POST", "/product/live-mandates/issue") => live_authorization::issue(self, body),
             ("POST", "/product/live-mandates/revoke") => live_authorization::revoke(self, body),
             ("POST", "/product/live-mandates/status") => live_authorization::status(self, body),
@@ -3364,6 +3372,18 @@ impl TradeAssemblyService {
                 return response.body;
             }
         }
+        if let Some(path) = mcp_object_authorization_route(name) {
+            if let Some(response) = data_strategy::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_strategy_preflight_failed".into());
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Strategy data evaluation failed closed.",
+                    None,
+                );
+            }
+        }
         // Export remains a protected action, but an implicit retry must observe
         // a newly completed run instead of replaying a cached pre-completion error.
         // Explicit caller idempotency keys keep their existing replay semantics.
@@ -3582,7 +3602,7 @@ impl TradeAssemblyService {
             "tradeassembly.strategy.schema" => json!({
                 "ok": true,
                 "schema": spec::strategy_spec_schema(),
-                "evaluators": [crate::strategy_kernel::portfolio_program::discovery()],
+                "evaluators": [crate::strategy_kernel::portfolio_program::discovery(), crate::data_strategy::discovery()],
                 "guidance": "Encode only owner-supplied strategy rules. Blank drafts are incomplete. Validate before requesting owner publication; publication does not activate execution."
             }),
             "tradeassembly.strategy.create" => self.create_strategy(arguments),
@@ -3641,6 +3661,14 @@ impl TradeAssemblyService {
             }
             "tradeassembly.plugin.capability_resolve" => {
                 providers::resolve_capability(self, providers::requirement_from_body(&arguments))
+            }
+            "tradeassembly.strategy.data_plan.prepare" => {
+                self.dispatch_http("POST", "/product/strategies/data-plans/prepare", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_run.step" => {
+                self.dispatch_http("POST", "/product/strategies/data-runs/step", arguments)
+                    .body
             }
             "tradeassembly.plugin.capability_graph_resolve" => {
                 capability_graph::resolve(self, arguments)
@@ -4116,6 +4144,7 @@ impl TradeAssemblyService {
         ) || name.starts_with("tradeassembly.robustness.")
             || name.starts_with("tradeassembly.derivatives.")
             || name.starts_with("tradeassembly.comparison.")
+            || name.starts_with("tradeassembly.strategy.data_")
         {
             if let Some(code) = service_error_code(&payload) {
                 let response = mcp::tool_error(
@@ -5088,6 +5117,10 @@ fn mcp_control_route(name: &str) -> Option<&'static str> {
 
 fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
+        "tradeassembly.strategy.data_plan.prepare" => {
+            Some("/product/strategies/data-plans/prepare")
+        }
+        "tradeassembly.strategy.data_run.step" => Some("/product/strategies/data-runs/step"),
         "tradeassembly.strategy.get" => Some("/product/strategies/get"),
         "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
             Some("/product/strategies/save-draft")

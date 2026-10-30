@@ -11,7 +11,7 @@ use tradeassembly_plugin_sdk::data_contract::*;
 #[path = "data_pipeline_tests.rs"]
 pub(crate) mod tests;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstrumentContext {
     pub instrument_id: String,
@@ -19,14 +19,14 @@ pub struct InstrumentContext {
     pub instrument_family: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataContext {
     pub instruments: Vec<InstrumentContext>,
     pub interval_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PipelineNode {
     /// Exact node ID in the capability graph, never a new plugin registry key.
@@ -37,7 +37,7 @@ pub struct PipelineNode {
     pub input_contexts: BTreeMap<String, DataContext>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PortBinding {
     pub producer_node: String,
@@ -206,37 +206,11 @@ fn valid_context(context: &DataContext) -> bool {
             == context.instruments.len()
 }
 
-/// Compiles only explicit bindings backed by the selected dependency graph.
-/// Schema identity is exact in V1; no implicit shape conversion or resampling.
-pub fn compile_data_plan(
-    graph: &CapabilityGraphResolution,
-    mut request: PipelineRequest,
-    mut contracts: Vec<VerifiedDataContract>,
-) -> Result<CompiledDataPlan, Vec<PlanDiagnostic>> {
+/// Canonicalize unordered pipeline definitions consistently for compilation and
+/// immutable strategy binding. Retains duplicate definitions for validation.
+pub(crate) fn normalize_request(request: &mut PipelineRequest) -> Vec<PlanDiagnostic> {
     use PlanDiagnosticCode::*;
     let mut errors = Vec::new();
-    if !graph.ok
-        || graph.graph_fingerprint.is_empty()
-        || request.capability_graph_revision.trim().is_empty()
-        || !graph.no_silent_fallback
-        || !graph.blockers.is_empty()
-    {
-        let mut diagnostics = vec![issue(
-            GraphBlocked,
-            None,
-            None,
-            "Resolve and save an admitted capability graph before compiling data bindings.",
-        )];
-        diagnostics.extend(graph.blockers.iter().map(|blocker| {
-            issue(
-                GraphBlocked,
-                blocker.subject.as_deref(),
-                None,
-                format!("{}: {}", blocker.code, blocker.message),
-            )
-        }));
-        return Err(diagnostics);
-    }
     request
         .nodes
         .sort_by(|a, b| a.graph_node_id.cmp(&b.graph_node_id));
@@ -275,6 +249,41 @@ pub fn compile_data_plan(
                 &b.output_port,
             ))
     });
+    errors
+}
+
+/// Compiles explicit bindings backed by the selected dependency graph.
+/// Schema identity is exact; no implicit shape conversion or resampling.
+pub fn compile_data_plan(
+    graph: &CapabilityGraphResolution,
+    mut request: PipelineRequest,
+    mut contracts: Vec<VerifiedDataContract>,
+) -> Result<CompiledDataPlan, Vec<PlanDiagnostic>> {
+    use PlanDiagnosticCode::*;
+    let mut errors = Vec::new();
+    if !graph.ok
+        || graph.graph_fingerprint.is_empty()
+        || request.capability_graph_revision.trim().is_empty()
+        || !graph.no_silent_fallback
+        || !graph.blockers.is_empty()
+    {
+        let mut diagnostics = vec![issue(
+            GraphBlocked,
+            None,
+            None,
+            "Resolve and save an admitted capability graph before compiling data bindings.",
+        )];
+        diagnostics.extend(graph.blockers.iter().map(|blocker| {
+            issue(
+                GraphBlocked,
+                blocker.subject.as_deref(),
+                None,
+                format!("{}: {}", blocker.code, blocker.message),
+            )
+        }));
+        return Err(diagnostics);
+    }
+    errors.extend(normalize_request(&mut request));
     contracts.sort_by(|a, b| a.graph_node_id.cmp(&b.graph_node_id));
     for binding in &mut contracts {
         if normalize_numbers(&mut binding.contract.parameter_schema).is_err() {

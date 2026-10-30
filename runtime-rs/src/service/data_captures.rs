@@ -652,6 +652,18 @@ fn context(service: &TradeAssemblyService, body: &Value) -> Result<SideEffectCon
     )
     .with_agent_execution(service.agent_mcp_execution_context()))
 }
+fn error_response(code: &str) -> ServiceResponse {
+    if matches!(
+        code,
+        "data_capture_command_invalid"
+            | "data_capture_id_required"
+            | "data_capture_idempotency_required"
+    ) {
+        ServiceResponse::bad_request(code)
+    } else {
+        ServiceResponse::conflict(code)
+    }
+}
 pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     let result = (|| {
         let command: CaptureCommand = serde_json::from_value(body["capture"].clone())
@@ -662,7 +674,7 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
         Ok(receipt) => {
             ServiceResponse::ok(json!({"capture":receipt,"executionAuthorityGranted":false}))
         }
-        Err(code) => ServiceResponse::conflict(&code),
+        Err(code) => error_response(&code),
     }
 }
 pub fn read(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
@@ -725,7 +737,7 @@ pub(crate) fn preflight(
         }
         Ok(())
     })();
-    result.err().map(|code| ServiceResponse::conflict(&code))
+    result.err().map(|code| error_response(&code))
 }
 
 pub(crate) fn validate_plan_sources(

@@ -29,6 +29,7 @@ pub mod connection_profile;
 pub mod control_plane;
 #[path = "../../platform/control_plane_redaction.rs"]
 mod control_plane_redaction;
+pub mod data_pipeline;
 pub mod demos;
 pub mod derivatives_analysis;
 pub mod domain;

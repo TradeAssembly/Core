@@ -234,3 +234,54 @@ fn data_package_v3_metadata_is_loaded_without_legacy_downgrade() {
         "plugin_data_contract_version_requires_v3"
     );
 }
+
+fn oversized_invalid_response_schema() -> Vec<u8> {
+    serde_json::to_vec(&json!({"type":7,"description":"x".repeat(tradeassembly_plugin_sdk::data_package::MAX_METADATA_DOCUMENT_BYTES)})).unwrap()
+}
+
+#[test]
+fn data_package_install_bounds_response_before_schema_compilation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut descriptor, contract, _, manifest) = materials();
+    let oversized = oversized_invalid_response_schema();
+    descriptor["package"]["responseSchemas"] = json!([{"schemaRef":"schema://test/response@1","document":{"path":"schema.json","sha256":sha256(&oversized)}}]);
+    assert_eq!(
+        install(dir.path(), &descriptor, contract, oversized, &manifest)
+            .err()
+            .unwrap(),
+        "plugin_data_document_too_large"
+    );
+    assert_eq!(
+        fs::read_dir(dir.path().join("store/packages"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn data_package_reload_bounds_response_before_schema_compilation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut descriptor, contract, schema, manifest) = materials();
+    descriptor["package"]["responseSchemas"] = json!([{"schemaRef":"schema://test/response@1","document":{"path":"schema.json","sha256":sha256(&schema)}}]);
+    let (store, mut installed) =
+        install(dir.path(), &descriptor, contract, schema, &manifest).unwrap();
+    let oversized = oversized_invalid_response_schema();
+    descriptor["package"]["responseSchemas"][0]["document"]["sha256"] = json!(sha256(&oversized));
+    fs::write(installed.install_root.join("schema.json"), oversized).unwrap();
+    fs::write(
+        installed.install_root.join("tradeassembly-plugin.json"),
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    installed.descriptor = descriptor;
+    fs::write(
+        installed.install_root.join(INSTALLED_RECORD),
+        serde_json::to_vec(&installed).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.get(&installed.package_sha256).unwrap_err(),
+        "plugin_data_document_too_large"
+    );
+}

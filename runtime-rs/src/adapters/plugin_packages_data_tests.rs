@@ -434,3 +434,73 @@ fn data_package_snapshot_is_current_bounded_and_returns_independent_values() {
         "plugin_package_integrity_invalid"
     );
 }
+
+#[test]
+fn recipe_package_v3_loads_reopens_and_detects_unrelated_recipe_tampering() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut descriptor, contract, schema, manifest) = materials();
+    let contract_value: Value = serde_json::from_slice(&contract).unwrap();
+    let recipe = json!({"schemaVersion":"tradeassembly.data_recipe.v1","recipeId":"source-alias","semanticsVersion":"1","parameterSchema":{"type":"object","additionalProperties":false},"inputs":{},"nodes":{"source":{"operation":{"pluginRef":"self","operationId":"provide","semanticsVersion":contract_value["semanticsVersion"]},"parameters":{}}},"bindings":[],"outputs":{"value":{"producer":{"kind":"output","node":"source","port":"value"},"data":contract_value["outputs"]["value"]}}});
+    let recipe_bytes = serde_json::to_vec(&recipe).unwrap();
+    descriptor["packageContractVersion"] = json!("3");
+    descriptor["recipes"] = json!([{"recipeId":"source-alias","document":{"path":"recipe.json","sha256":sha256(&recipe_bytes)},"canonicalSha256":canonical(&recipe).unwrap()}]);
+    let archive = archive_files(vec![
+        (
+            "tradeassembly-plugin.json",
+            serde_json::to_vec(&descriptor).unwrap(),
+        ),
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("contract.json", contract),
+        ("schema.json", schema),
+        ("recipe.json", recipe_bytes),
+        ("bin/plugin", b"not-executed".to_vec()),
+    ]);
+    let archive_path = dir.path().join("recipes.tar.gz");
+    fs::write(&archive_path, &archive).unwrap();
+    let root = dir.path().join("store");
+    let store = LocalPluginPackageStore::new(&root).unwrap();
+    let installed = store
+        .install(&PluginPackageInstallRequest {
+            source_type: "file".into(),
+            locator: archive_path.to_string_lossy().into(),
+            package_sha256: sha256(&archive),
+            manifest_sha256: canonical(&manifest).unwrap(),
+            offline: true,
+        })
+        .unwrap();
+    let loaded = store
+        .data_recipe(&installed.package_sha256, "source-alias")
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::to_value(&loaded).unwrap(), recipe);
+    assert!(store
+        .data_recipe(&installed.package_sha256, "missing")
+        .unwrap()
+        .is_none());
+    drop(store);
+    let reopened = LocalPluginPackageStore::new(&root).unwrap();
+    assert_eq!(
+        reopened
+            .data_recipe(&installed.package_sha256, "source-alias")
+            .unwrap()
+            .unwrap(),
+        loaded
+    );
+    reopened
+        .operation_data(&installed.package_sha256, "provide")
+        .unwrap()
+        .unwrap();
+    fs::write(installed.install_root.join("recipe.json"), b"{}").unwrap();
+    assert_eq!(
+        reopened
+            .operation_data(&installed.package_sha256, "provide")
+            .unwrap_err(),
+        "plugin_data_artifact_digest_mismatch"
+    );
+    assert_eq!(
+        reopened
+            .data_recipe(&installed.package_sha256, "source-alias")
+            .unwrap_err(),
+        "plugin_data_artifact_digest_mismatch"
+    );
+}

@@ -85,6 +85,7 @@ pub(crate) struct VerificationCache {
 pub(crate) struct VerifiedMetadata {
     pub contracts: BTreeMap<String, VersionedOperationData>,
     pub schemas: BTreeMap<String, Value>,
+    pub recipes: BTreeMap<String, tradeassembly_plugin_sdk::data_recipe::DataRecipe>,
 }
 impl VerificationCache {
     pub fn get(
@@ -93,7 +94,7 @@ impl VerificationCache {
         root: &Path,
         manifest: &Value,
     ) -> Result<Arc<VerifiedMetadata>, String> {
-        let VersionedPackageDescriptor::Data(data) = envelope else {
+        let Some(data) = envelope.data() else {
             return Ok(Arc::new(VerifiedMetadata::default()));
         };
         let identity = canonical_sha256(&serde_json::json!({
@@ -118,6 +119,7 @@ impl VerificationCache {
                 .map(|s| &s.document)
                 .chain(data.data_schemas.iter().map(|s| &s.document))
                 .chain(data.data_contracts.iter().map(|c| &c.document))
+                .chain(data.recipes.iter().map(|r| &r.document))
             {
                 document_bytes(root, document, &mut total)?;
             }
@@ -147,7 +149,7 @@ fn load_metadata(
     root: &Path,
     manifest: &Value,
 ) -> Result<VerifiedMetadata, String> {
-    let VersionedPackageDescriptor::Data(data) = envelope else {
+    let Some(data) = envelope.data() else {
         return Ok(VerifiedMetadata::default());
     };
     if serde_json::to_vec(manifest)
@@ -190,7 +192,7 @@ fn load_metadata(
     }
 
     let mut schemas = BTreeMap::new();
-    for schema in &data.data_schemas {
+    for schema in data.data_schemas {
         let value = document(root, &schema.document, &mut total)?;
         if canonical_sha256(&value).map_err(|_| "plugin_data_schema_numeric_range")?
             != schema.canonical_sha256
@@ -208,7 +210,7 @@ fn load_metadata(
         documents.insert(schema.schema_ref.clone(), value);
     }
     let mut contracts = BTreeMap::new();
-    for entry in &data.data_contracts {
+    for entry in data.data_contracts {
         let value = document(root, &entry.document, &mut total)?;
         if canonical_sha256(&value).map_err(|_| "plugin_data_contract_numeric_range")?
             != entry.canonical_sha256
@@ -256,9 +258,50 @@ fn load_metadata(
         }
         contracts.insert(entry.operation_id.clone(), contract);
     }
+    let mut recipes = BTreeMap::new();
+    for entry in data.recipes {
+        let value = document(root, &entry.document, &mut total)?;
+        if canonical_sha256(&value).map_err(|_| "plugin_data_recipe_numeric_range")?
+            != entry.canonical_sha256
+        {
+            return Err("plugin_data_recipe_digest_mismatch".into());
+        }
+        let recipe = tradeassembly_plugin_sdk::data_recipe::DataRecipe::decode(
+            &serde_json::to_vec(&value).map_err(|_| "plugin_data_recipe_invalid")?,
+        )?;
+        if recipe.recipe_id != entry.recipe_id
+            || !local_schema_refs(&recipe.parameter_schema)
+            || jsonschema::validator_for(&recipe.parameter_schema).is_err()
+        {
+            return Err("plugin_data_recipe_invalid".into());
+        }
+        for port in recipe
+            .inputs
+            .values()
+            .chain(recipe.outputs.values().map(|p| &p.data))
+        {
+            if schemas.get(&port.schema.schema_ref) != Some(&port.schema.sha256) {
+                return Err("plugin_data_recipe_schema_unverified".into());
+            }
+        }
+        for node in recipe
+            .nodes
+            .values()
+            .filter(|n| n.operation.plugin_ref == "self")
+        {
+            let contract = contracts
+                .get(&node.operation.operation_id)
+                .ok_or("plugin_data_recipe_operation_missing")?;
+            if contract.semantics_version != node.operation.semantics_version {
+                return Err("plugin_data_recipe_semantics_mismatch".into());
+            }
+        }
+        recipes.insert(entry.recipe_id.clone(), recipe);
+    }
     Ok(VerifiedMetadata {
         contracts,
         schemas: documents,
+        recipes,
     })
 }
 

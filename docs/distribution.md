@@ -658,3 +658,7 @@ behavior requires rebuilding and qualifying the runtime from the new source;
 re-signing an older runtime or changing its outer JSON cannot add the behavior.
 Native signed package installation, migration and bootstrap acceptance remain
 separate release gates.
+
+## Reviewed notarized customer release publication
+
+Customer archive publication is a release-tag-only lane. A new `vX.Y.Z` tag must be admitted to the canonical default branch and have successful owning CI at that exact commit. A reviewed `packaging/release-approvals/vX.Y.Z.json` pins the final disk image, archive and notarization-binding hashes. The operator stages only those three public files plus their exact `SHA256SUMS` in a draft release. The workflow verifies every byte and the existing offline Core publication-proof contract before making that draft latest/public. It refuses unexpected assets and newer existing releases. No private source access, signing credential, updater feed, service activation or old-asset removal is part of publication.

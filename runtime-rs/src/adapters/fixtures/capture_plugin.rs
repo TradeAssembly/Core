@@ -7,11 +7,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 fn digest(v: &Value) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(serde_json_canonicalizer::to_vec(v).unwrap())
-    )
+    Sha256::digest(serde_json_canonicalizer::to_vec(v).unwrap())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
+
 fn main() {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).unwrap();

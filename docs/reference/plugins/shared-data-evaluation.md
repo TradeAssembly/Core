@@ -70,3 +70,20 @@ Fixed equal-interval event frames are supported; session calendars, resampling,
 explicit gap policies and revision replay orchestration remain separate work.
 No provider coverage, brokerage eligibility or research result is inferred from
 this host interface alone.
+
+## Causal state availability and research state slots
+
+Every evaluated calculation node persists host-owned state availability beside
+its plugin state and warmup counters in the same checkpoint transaction. Later
+frames use the maximum known and arrival times of current inputs and preceding
+state when invoking a plugin and stamping outputs. This also applies when plugin
+state is unchanged or empty: the host's readiness decision has causal inputs.
+A request cutoff earlier than the retained state's availability is rejected.
+Unreleased data-evaluation checkpoints/receipts missing required availability
+metadata require explicit replay; no availability time is guessed. Existing
+strategy checkpoints and old wire versions are unchanged.
+
+ResearchRun-partitioned plugins read and return their state under the SDK's
+`RESEARCH_RUN_STATE_SLOT` (`__research_run__`). The host scopes this stable slot by
+saved plan, research run and graph node. Raw caller run IDs need not be exposed
+to the plugin; distinct runs retain independent state and resume independently.

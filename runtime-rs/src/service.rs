@@ -24,6 +24,7 @@ pub mod connected_runner;
 mod contracts;
 pub mod core_runner;
 mod credentials;
+pub mod data_plans;
 mod dataset_ingestion;
 mod derivatives;
 mod execution;

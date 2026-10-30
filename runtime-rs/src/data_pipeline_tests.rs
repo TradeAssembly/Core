@@ -80,7 +80,7 @@ fn seal(contracts: &mut [VerifiedDataContract]) {
     }
 }
 // The fixture selects two separate plugins through the existing real resolver.
-fn fixture() -> (
+pub(crate) fn fixture() -> (
     CapabilityGraphResolution,
     PipelineRequest,
     Vec<VerifiedDataContract>,

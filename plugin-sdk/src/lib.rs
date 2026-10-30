@@ -5,6 +5,7 @@
 //! request transport data and are redacted from debug output.
 
 pub mod data_contract;
+pub mod data_package;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

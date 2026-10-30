@@ -128,3 +128,21 @@ pub(crate) fn verify(
     }
     Ok(contracts)
 }
+
+/// Only called after package verification; each read still verifies byte identity.
+pub(crate) fn schema(
+    envelope: &VersionedPackageDescriptor,
+    root: &Path,
+    manifest: &Value,
+    schema_ref: &str,
+) -> Result<Option<Value>, String> {
+    verify(envelope, root, manifest)?;
+    let VersionedPackageDescriptor::Data(data) = envelope else {
+        return Ok(None);
+    };
+    data.data_schemas
+        .iter()
+        .find(|schema| schema.schema_ref == schema_ref)
+        .map(|schema| document(root, &schema.document))
+        .transpose()
+}

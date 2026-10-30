@@ -554,6 +554,22 @@ impl PluginPackagePort for LocalPluginPackageStore {
         Ok(contracts.remove(operation_id))
     }
 
+    fn data_schema(&self, package_sha256: &str, schema_ref: &str) -> Result<Option<Value>, String> {
+        let package = self
+            .get(package_sha256)?
+            .ok_or("plugin_package_not_installed")?;
+        let envelope = VersionedPackageDescriptor::decode(
+            &serde_json::to_vec(&package.descriptor)
+                .map_err(|_| "plugin_package_descriptor_invalid")?,
+        )?;
+        super::plugin_data_contracts::schema(
+            &envelope,
+            &package.install_root,
+            &package.manifest,
+            schema_ref,
+        )
+    }
+
     fn remove(&self, package_sha256: &str) -> Result<bool, String> {
         validate_digest(package_sha256)?;
         let root = self.package_root(package_sha256);

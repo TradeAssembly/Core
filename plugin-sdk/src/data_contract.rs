@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 pub enum DataContractVersion {
     #[serde(rename = "tradeassembly.operation_data.v1")]
     V1,
+    /// Named data ports are wired between independently admitted operation nodes.
+    #[serde(rename = "tradeassembly.operation_data.v2")]
+    V2,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,8 +52,9 @@ pub struct DataPort {
 pub struct InputPort {
     pub data: DataPort,
     pub required: bool,
-    /// Capability dependency ID on the selected consumer operation. Required
-    /// for cross-node bindings; prevents data edges bypassing graph resolution.
+    /// V1: capability dependency ID on the selected consumer operation.
+    /// V2: stable label for this typed data requirement. Producers are independently
+    /// admitted graph nodes; named data links do not grant invocation authority.
     pub dependency_id: String,
 }
 
@@ -112,7 +116,7 @@ pub struct OperationDataContract {
     pub state: Option<OperationStateContract>,
 }
 
-/// Host-owned batch metadata for the future evaluator. Event intervals,
+/// Host-owned event metadata for the shared evaluator. Event intervals,
 /// availability time and arrival time are separate. Values must be validated
 /// against the bound port schema. No state or cursor mutation is implied here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -243,4 +243,4 @@ fn persist(
 
 #[cfg(test)]
 #[path = "data_plans_tests.rs"]
-mod tests;
+pub(crate) mod tests;

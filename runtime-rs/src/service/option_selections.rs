@@ -396,8 +396,10 @@ fn normalize(row: &Value) -> Result<OptionCandidate, String> {
 }
 fn key(c: &SelectionCommand, ctx: &SideEffectContext) -> Result<String, String> {
     hash(&(
+        "option_selection_command.v2",
         &c.scope.strategy_id,
-        &ctx.authority,
+        &ctx.authority.actor,
+        &ctx.authority.account_mode,
         ctx.idempotency_key.as_str(),
     ))
 }
@@ -407,9 +409,34 @@ fn current_receipt(
     ctx: &SideEffectContext,
     key: &str,
 ) -> Result<Option<SelectionReceipt>, String> {
-    let Some(v) = service.runtime().storage.get_json(KEYS, key)? else {
-        return Ok(None);
-    };
+    let mut value = service.runtime().storage.get_json(KEYS, key)?;
+    if value.is_none() {
+        // Earlier host indexes were transport scoped. Preserve them without
+        // silently reacquiring or choosing between divergent legacy decisions.
+        let mut entries = vec![];
+        let surfaces = [ctx.authority.surface.as_str(), "http", "mcp"]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        for surface in surfaces {
+            let mut authority = ctx.authority.clone();
+            authority.surface = surface.into();
+            let legacy = hash(&(
+                &c.scope.strategy_id,
+                &authority,
+                ctx.idempotency_key.as_str(),
+            ))?;
+            if let Some(entry) = service.runtime().storage.get_json(KEYS, &legacy)? {
+                if !entries.contains(&entry) {
+                    entries.push(entry);
+                }
+            }
+        }
+        if entries.len() > 1 {
+            return Err("option_selection_legacy_idempotency_ambiguous".into());
+        }
+        value = entries.pop();
+    }
+    let Some(v) = value else { return Ok(None) };
     if v["commandSha256"] != hash(c)? {
         return Err("option_selection_idempotency_conflict".into());
     }
@@ -425,7 +452,7 @@ fn current_receipt(
         .ok_or("option_selection_receipt_invalid")?;
     let r: SelectionReceipt =
         serde_json::from_value(raw).map_err(|_| "option_selection_receipt_invalid")?;
-    let (_, _, _, pin, sig, _) = validate_current(service, c, ctx)?;
+    let (policy, _, _, pin, sig, _) = validate_current(service, c, ctx)?;
     if identity(&r)? != r.receipt_id
         || v["receiptId"] != r.receipt_id
         || hash(&r.command)? != hash(c)?
@@ -434,6 +461,21 @@ fn current_receipt(
         || r.schema_version != "tradeassembly.option_selection_receipt.v1"
     {
         return Err("option_selection_receipt_invalid".into());
+    }
+    let now = service.runtime().clock.now_ms();
+    let fresh = |time: i64| {
+        time > 0
+            && now
+                .checked_sub(time)
+                .is_some_and(|age| age >= 0 && age <= policy.max_age_ms as i64)
+    };
+    if !fresh(r.acquired_at_ms)
+        || r.responses
+            .iter()
+            .any(|response| !fresh(response.observed_at_ms))
+        || matches!(&r.result.outcome,OptionOutcome::Selected{contract} if !fresh(contract.observed_at_ms))
+    {
+        return Err("option_selection_receipt_stale".into());
     }
     Ok(Some(r))
 }

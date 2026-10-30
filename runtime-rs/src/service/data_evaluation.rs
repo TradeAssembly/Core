@@ -72,6 +72,10 @@ pub enum EvaluationStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationReceipt {
+    /// Immutable origin for downstream verification across transports. It is
+    /// evidence only, never the authority used to invoke a downstream operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_authority: Option<crate::ports::AuthorityContext>,
     pub receipt_sha256: String,
     pub request_sha256: String,
     pub status: EvaluationStatus,
@@ -908,6 +912,7 @@ impl StepEnvironment<'_> {
         }
         checkpoint.checkpoint_sha256 = checkpoint_hash(checkpoint)?;
         let mut receipt = EvaluationReceipt {
+            request_authority: Some(self.context.authority.clone()),
             receipt_sha256: String::new(),
             request_sha256: self.request_hash.clone(),
             status,
@@ -1468,7 +1473,11 @@ pub(crate) fn admitted_signal(
         .ok_or("option_signal_receipt_missing")?;
     let receipt: EvaluationReceipt =
         serde_json::from_value(raw).map_err(|_| "option_signal_receipt_invalid")?;
-    if receipt.request_sha256 != hash(&json!({"request":request,"authority":context.authority}))?
+    let origin = receipt
+        .request_authority
+        .as_ref()
+        .unwrap_or(&context.authority);
+    if receipt.request_sha256 != hash(&json!({"request":request,"authority":origin}))?
         || receipt_hash(&receipt)? != receipt.receipt_sha256
         || checkpoint_hash(&receipt.checkpoint)? != receipt.checkpoint.checkpoint_sha256
         || receipt.checkpoint.run_id != request.run_id

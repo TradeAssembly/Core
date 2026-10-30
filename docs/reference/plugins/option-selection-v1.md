@@ -63,6 +63,16 @@ recheck current ownership, freshness and bindings. The public V1 view omits raw
 pages and pagination cursors, retaining acquisition summaries and the immutable
 private receipt ID. This preserves redaction and stable retry responses.
 
+Retries recheck acquisition, response and selected-quote timestamps against the
+published maximum age. An expired decision returns `option_selection_receipt_stale`
+without changing its receipt or reacquiring a chain. Command identity is stable
+across HTTP and MCP for the same actor, account mode, strategy and idempotency key.
+Earlier transport-scoped indexes remain readable; divergent legacy decisions fail
+closed. New signal receipts retain their original request authority as hash-bound
+evidence for cross-transport reads. Downstream calls still use current authority.
+Legacy signal receipts preserve their serialized form and original verification
+behavior.
+
 A successful HTTP response means a receipt was recorded. Clients must inspect
 `selection.result.outcome.status` and `stageFailed`; no eligible contract is not
 a selected contract, and the response explicitly grants no execution authority.

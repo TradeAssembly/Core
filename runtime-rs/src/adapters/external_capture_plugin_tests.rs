@@ -92,6 +92,7 @@ fn install_fixture(
     service: &crate::service::TradeAssemblyService,
     root: &std::path::Path,
     calculator: bool,
+    interval_ms: u64,
 ) -> InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
@@ -106,6 +107,7 @@ fn install_fixture(
     contract["operationId"] = json!(opid);
     contract["applicability"] =
         json!({"assetClasses":["equity"],"instrumentFamilies":["equity"],"modes":["paper"]});
+    contract["outputs"]["value"]["time"]["intervalMs"] = json!(interval_ms);
     if calculator {
         contract["inputs"] = json!({"source":{"data":contract["outputs"]["value"],"required":true,"dependencyId":"source"}});
     } else {
@@ -185,6 +187,20 @@ fn install_fixture(
     let _ = fixture;
     package
 }
+struct AdvancedClock {
+    base: Arc<dyn ClockPort>,
+    advance: Arc<std::sync::atomic::AtomicI64>,
+}
+impl VersionedPort for AdvancedClock {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        vec![]
+    }
+}
+impl ClockPort for AdvancedClock {
+    fn now_ms(&self) -> i64 {
+        self.base.now_ms() + self.advance.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 struct Rig {
     dir: tempfile::TempDir,
     service: crate::service::TradeAssemblyService,
@@ -214,17 +230,22 @@ fn rig_with_options(options: bool) -> Rig {
             let day = 86400000_i64;
             let now = chrono::Utc::now();
             let start = if options {
-                now.timestamp_millis() / day * day - 3 * day
+                now.timestamp_millis() / 60000 * 60000 - 3 * 60000
             } else {
                 10 * day
             };
             let body = if index == 0 {
-                json!({"values":[10,20,30],"start":start,"interval":day,"instrument":"TEST"})
+                json!({"values":[10,20,30],"start":start,"interval":if options {60000}else{day},"instrument":"TEST"})
             } else {
                 let expiry = (now.date_naive() + chrono::Days::new(21))
                     .format("%Y-%m-%d")
                     .to_string();
-                let rows=["B","A"].iter().map(|id|json!({"instrumentId":id,"timestamp":now.to_rfc3339(),"data":{"kind":"option_contract","data":{"contractSymbol":id,"underlyingInstrumentId":"TEST","expiration":expiry,"strike":500.0,"right":"call","bid":4.0,"ask":4.2,"volume":100,"openInterest":50,"greeks":{"delta":if index==1 {0.5}else{0.1}}}}})).collect::<Vec<_>>();
+                let quote_time = if index == 1 {
+                    now - chrono::Duration::milliseconds(86400000 - 120000)
+                } else {
+                    now
+                };
+                let rows=["B","A"].iter().map(|id|json!({"instrumentId":id,"timestamp":quote_time.to_rfc3339(),"data":{"kind":"option_contract","data":{"contractSymbol":id,"underlyingInstrumentId":"TEST","expiration":expiry,"strike":500.0,"right":"call","bid":4.0,"ask":4.2,"volume":100,"openInterest":50,"greeks":{"delta":if index==1 {0.5}else{0.1}}}}})).collect::<Vec<_>>();
                 // Synthetic HTTP response exercises the production wire profile;
                 // this fixture is never authenticated market-data evidence.
                 json!({"sourceClass":"production","observations":rows,"nextPageToken":if index==3 {json!("more")}else{Value::Null},"upstreamRefs":["fixture:options"]})
@@ -235,7 +256,12 @@ fn rig_with_options(options: bool) -> Rig {
         }
     });
     for calculator in [false, true] {
-        let package = install_fixture(&service, dir.path(), calculator);
+        let package = install_fixture(
+            &service,
+            dir.path(),
+            calculator,
+            if options { 60000 } else { 86400000 },
+        );
         service.runtime().plugins.put_instance(&package.plugin_ref,json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"credentialRef":if calculator {"fixture-unused"}else{"capture-fixture"},"configuration":if calculator {json!({})} else {json!({"dataApiUrl":format!("http://{address}")})}}),&ctx("instance")).unwrap();
     }
     service
@@ -298,15 +324,15 @@ fn rig_with_options(options: bool) -> Rig {
                     asset_class: "equity".into(),
                     instrument_family: "equity".into(),
                 }],
-                interval_ms: Some(86400000),
+                interval_ms: Some(if options { 60000 } else { 86400000 }),
             },
             event_start_ms: if options {
-                service.runtime().clock.now_ms() / 86400000 * 86400000 - 3 * 86400000
+                service.runtime().clock.now_ms() / 60000 * 60000 - 3 * 60000
             } else {
                 10 * 86400000
             },
             event_end_ms: if options {
-                service.runtime().clock.now_ms() / 86400000 * 86400000
+                service.runtime().clock.now_ms() / 60000 * 60000
             } else {
                 13 * 86400000
             },
@@ -1144,7 +1170,12 @@ fn option_selection_real_process_causal_signal_selection_restart_and_no_match() 
         .into_owned();
     drop(r.service);
     drop(r.operations);
+    let clock_advance = Arc::new(std::sync::atomic::AtomicI64::new(0));
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.clock = Arc::new(AdvancedClock {
+        base: runtime.clock.clone(),
+        advance: clock_advance.clone(),
+    });
     runtime.plugin_operations = Arc::new(
         crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
             runtime.storage.clone(),
@@ -1165,6 +1196,64 @@ fn option_selection_real_process_causal_signal_selection_restart_and_no_match() 
         retry.body["selection"], selected.body["selection"],
         "{}",
         retry.body
+    );
+    let fresh_mcp = service.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        body.clone(),
+    );
+    assert_eq!(fresh_mcp["isError"], false, "{fresh_mcp}");
+    assert_eq!(
+        fresh_mcp["structuredContent"]["selection"]["receiptId"],
+        selected.body["selection"]["receiptId"],
+        "{fresh_mcp}"
+    );
+    let indexes = service
+        .runtime()
+        .storage
+        .list_json("option_selection_keys_v1")
+        .unwrap();
+    assert_eq!(
+        indexes.len(),
+        1,
+        "HTTP and MCP must share one host decision"
+    );
+    let legacy_authority = crate::control_plane::http_envelope(
+        "http",
+        "POST",
+        "/product/strategies/option-selections/create",
+        &body,
+    )
+    .unwrap()
+    .authority;
+    let legacy_key = canonical_sha256(&(
+        &command.scope.strategy_id,
+        &legacy_authority,
+        "first-option-selection",
+    ))
+    .unwrap();
+    service
+        .runtime()
+        .storage
+        .clear_namespace("option_selection_keys_v1")
+        .unwrap();
+    service
+        .runtime()
+        .storage
+        .put_json(
+            "option_selection_keys_v1",
+            &legacy_key,
+            indexes[0].1.clone(),
+            &ctx("legacy-selection-index"),
+        )
+        .unwrap();
+    let legacy_retry = service.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        body.clone(),
+    );
+    assert_eq!(legacy_retry["isError"], false, "{legacy_retry}");
+    assert_eq!(
+        legacy_retry["structuredContent"]["selection"]["receiptId"],
+        selected.body["selection"]["receiptId"]
     );
     let original = service
         .runtime()
@@ -1239,6 +1328,66 @@ fn option_selection_real_process_causal_signal_selection_restart_and_no_match() 
             .unwrap()
             .len(),
         2
+    );
+    let original_before_expiry = service
+        .runtime()
+        .storage
+        .get_json("option_selection_receipts_v1", &receipt.receipt_id)
+        .unwrap()
+        .unwrap();
+    let operation_count = service
+        .runtime()
+        .storage
+        .list_json("plugin_operation_receipts")
+        .unwrap()
+        .len();
+    clock_advance.store(180000, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        service.runtime().clock.now_ms() - command.signal_event_end_ms < 86400000,
+        "signal must remain fresh while the quote expires"
+    );
+    let expired_http = service.handle_http(
+        "POST",
+        "/product/strategies/option-selections/create",
+        body.clone(),
+    );
+    let expired_mcp = service.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        body.clone(),
+    );
+    assert_eq!(
+        (expired_http.status, expired_mcp["isError"].as_bool()),
+        (409, Some(true)),
+        "HTTP:{} MCP:{}",
+        expired_http.body,
+        expired_mcp
+    );
+    assert_eq!(
+        expired_http.body["error"]["code"],
+        "option_selection_receipt_stale"
+    );
+    assert_eq!(
+        expired_mcp["structuredContent"]["error"]["code"], "option_selection_receipt_stale",
+        "{expired_mcp}"
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .get_json("option_selection_receipts_v1", &receipt.receipt_id)
+            .unwrap()
+            .unwrap(),
+        original_before_expiry
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap()
+            .len(),
+        operation_count,
+        "stale retries must not reacquire"
     );
     let mut pin = service
         .runtime()

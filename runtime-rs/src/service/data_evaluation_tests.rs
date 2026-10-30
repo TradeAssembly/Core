@@ -1064,3 +1064,56 @@ fn data_evaluation_v3_unavailable_resets_only_affected_instrument_across_service
     assert!(source_requests.iter().any(|r| r.instruments == ["A"]));
     assert!(source_requests.iter().any(|r| r.instruments == ["B"]));
 }
+
+#[test]
+fn data_evaluation_receipt_origin_allows_owned_transport_reads_and_preserves_legacy() {
+    let (_directory, service, plan, operations) = rig();
+    let input = request(&plan, "origin-read", 10, 11, None);
+    let origin = context("origin-step");
+    let receipt = step(&service, input.clone(), &origin).unwrap();
+    assert_eq!(receipt.request_authority, Some(origin.authority.clone()));
+    let calls = operations.requests.lock().unwrap().len();
+    let mut mcp = context("downstream-read");
+    mcp.authority.surface = "mcp".into();
+    assert_eq!(
+        admitted_signal(&service, &input, "origin-step", &mcp)
+            .unwrap()
+            .1,
+        receipt
+    );
+    assert_eq!(
+        operations.requests.lock().unwrap().len(),
+        calls,
+        "reading an owned receipt does not invoke a provider"
+    );
+    let mut legacy = receipt;
+    legacy.request_authority = None;
+    legacy.receipt_sha256 = receipt_hash(&legacy).unwrap();
+    let encoded = serde_json::to_value(&legacy).unwrap();
+    assert!(encoded.get("requestAuthority").is_none());
+    let record_key = key(&[
+        &key(&[&input.run_id, &input.plan_revision_id]).unwrap(),
+        "origin-step",
+    ])
+    .unwrap();
+    service
+        .runtime()
+        .storage
+        .put_json(RECEIPTS, &record_key, encoded.clone(), &origin)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            admitted_signal(&service, &input, "origin-step", &origin)
+                .unwrap()
+                .1
+        )
+        .unwrap(),
+        encoded
+    );
+    assert!(
+        admitted_signal(&service, &input, "origin-step", &mcp).is_err(),
+        "legacy receipts retain strict original-context verification"
+    );
+    assert_eq!(step(&service, input, &origin).unwrap(), legacy);
+    assert_eq!(operations.requests.lock().unwrap().len(), calls);
+}

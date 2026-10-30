@@ -4247,6 +4247,13 @@ impl TradeAssemblyService {
                 return self.complete_mcp_command_or_error(name, &command_envelope, 400, response);
             }
         }
+        if name == "tradeassembly.strategy.option_selection.create" {
+            if let Some(code) = service_error_code(&payload) {
+                let response =
+                    mcp::tool_error(name, &code, "Option selection failed closed.", None);
+                return self.complete_mcp_command_or_error(name, &command_envelope, 409, response);
+            }
+        }
         if name.starts_with("tradeassembly.dataset_ingestion.") {
             let status = dataset_ingestion_status(&payload, 200);
             if status >= 400 {

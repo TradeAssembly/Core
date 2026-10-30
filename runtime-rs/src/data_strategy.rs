@@ -90,7 +90,7 @@ pub struct SignalFrame {
 pub fn discovery() -> Value {
     serde_json::json!({"id":"typed-data-signals-v1","configPointer":"/stages/evaluate/substeps/0/config/tradeassembly.data_strategy",
         "configSchema":schemars::schema_for!(DataStrategy),"signalEvaluationSupported":true,
-        "backtestSupported":false,"statelessExecutionSupported":false,"executionAuthorityGranted":false,
+        "optionSelection":{"schemaVersion":"tradeassembly.option_selection.v1","supportedModes":["paper","live"],"historicalChainReplaySupported":false,"explicitModelAnalyticsSupported":false,"dynamicUnderlyingSelectorsSupported":false,"automaticExecutionSupported":false,"createTool":"tradeassembly.strategy.option_selection.create"},"captureAdmission":{"instrumentIndependentMultiInstrumentReplaySupported":false,"singleInstrumentCaptureSupported":true},"backtestSupported":false,"statelessExecutionSupported":false,"executionAuthorityGranted":false,
         "prepareTool":"tradeassembly.strategy.data_plan.prepare","stepTool":"tradeassembly.strategy.data_run.step",
         "notice":"Signal evidence only. Backtest accounting and activation/tick consumption are not yet integrated. Data context is distinct from trading eligibility."})
 }

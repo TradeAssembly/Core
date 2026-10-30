@@ -1016,6 +1016,16 @@
               "type": "null"
             }
           ]
+        },
+        "option_selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptionSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -1719,6 +1729,306 @@
         "follow_calendar",
         "exclude"
       ]
+    },
+    "ExpiryRange": {
+      "additionalProperties": false,
+      "properties": {
+        "earliest": {
+          "description": "Inclusive ISO-8601 UTC calendar dates. DTE is UTC date difference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MissingOptionData": {
+      "enum": [
+        "reject_candidate",
+        "fail_stage"
+      ],
+      "type": "string"
+    },
+    "NoEligibleOption": {
+      "enum": [
+        "no_eligible_contract",
+        "fail_stage"
+      ],
+      "type": "string"
+    },
+    "NumericRange": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OptionAnalytics": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider_supplied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "capability_requirement_ref": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "explicit_model",
+              "type": "string"
+            },
+            "semantics_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "capability_requirement_ref",
+            "semantics_version"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OptionFilters": {
+      "additionalProperties": false,
+      "properties": {
+        "delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumericRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Signed delta, not absolute delta; puts normally have negative delta."
+        },
+        "dte": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumericRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExpiryRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_relative_spread": {
+          "description": "(ask-bid)/((ask+bid)/2); zero mid is unavailable, never zero spread.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_open_interest": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_volume": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "right": {
+          "$ref": "#/$defs/OptionRight"
+        },
+        "strike": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumericRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "right"
+      ],
+      "type": "object"
+    },
+    "OptionRankField": {
+      "enum": [
+        "dte",
+        "strike",
+        "delta",
+        "volume",
+        "open_interest",
+        "relative_spread"
+      ],
+      "type": "string"
+    },
+    "OptionRanking": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/RankDirection"
+        },
+        "field": {
+          "$ref": "#/$defs/OptionRankField"
+        },
+        "target": {
+          "description": "When set, compare absolute distance from this target.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "field",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "OptionRight": {
+      "enum": [
+        "call",
+        "put"
+      ],
+      "type": "string"
+    },
+    "OptionSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "analytics": {
+          "$ref": "#/$defs/OptionAnalytics"
+        },
+        "chain_capability_requirement_ref": {
+          "type": "string"
+        },
+        "filters": {
+          "$ref": "#/$defs/OptionFilters"
+        },
+        "max_age_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_contracts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_pages": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing_data": {
+          "$ref": "#/$defs/MissingOptionData"
+        },
+        "no_match": {
+          "$ref": "#/$defs/NoEligibleOption"
+        },
+        "ranking": {
+          "items": {
+            "$ref": "#/$defs/OptionRanking"
+          },
+          "type": "array"
+        },
+        "signal_requirement_ref": {
+          "type": "string"
+        },
+        "tiebreak": {
+          "$ref": "#/$defs/OptionTiebreak"
+        },
+        "underlying_selector_ref": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/OptionSelectionVersion"
+        },
+        "trade_requirement_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "signal_requirement_ref",
+        "trade_requirement_ref",
+        "underlying_selector_ref",
+        "chain_capability_requirement_ref",
+        "filters",
+        "analytics",
+        "ranking",
+        "tiebreak",
+        "missing_data",
+        "no_match",
+        "max_age_ms",
+        "max_contracts",
+        "max_pages"
+      ],
+      "type": "object"
+    },
+    "OptionSelectionVersion": {
+      "enum": [
+        "tradeassembly.option_selection.v1"
+      ],
+      "type": "string"
+    },
+    "OptionTiebreak": {
+      "enum": [
+        "contract_id_ascending"
+      ],
+      "type": "string"
+    },
+    "RankDirection": {
+      "enum": [
+        "ascending",
+        "descending"
+      ],
+      "type": "string"
     }
   }
 }

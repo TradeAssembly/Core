@@ -437,6 +437,8 @@ pub enum SubstepKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Substep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_selection: Option<super::OptionSelection>,
     pub id: String,
     pub kind: SubstepKind,
     pub operation_ref: String,

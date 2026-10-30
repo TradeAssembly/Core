@@ -183,6 +183,13 @@ action!(
     Write
 );
 action!(
+    OPTION_SELECTION_CREATE,
+    "strategy.option_selection.create",
+    "strategy_option_selection",
+    "data_acquisition",
+    Write
+);
+action!(
     DATA_CAPTURE_CREATE,
     "strategy.data_capture.create",
     "strategy_data_capture",
@@ -588,6 +595,7 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     PLUGIN_OPERATION,
     STUDIO_SETUP_OBSERVE,
     CAPABILITY_BINDING_CONFIGURE,
+    OPTION_SELECTION_CREATE,
     DATA_CAPTURE_CREATE,
     DATA_PLAN_PREPARE,
     DATA_RUN_STEP,
@@ -678,6 +686,7 @@ pub fn authority_definition(
         "strategy.version.publish" => &STRATEGY_PUBLISH,
         "strategy.duplicate" | "strategy.archive" | "strategy.restore" => &STRATEGY_LIFECYCLE,
         "capability.binding.revision.save" => &CAPABILITY_BINDING_CONFIGURE,
+        "strategy.option_selection.create" => &OPTION_SELECTION_CREATE,
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
         "strategy.data_run.step" => &DATA_RUN_STEP,

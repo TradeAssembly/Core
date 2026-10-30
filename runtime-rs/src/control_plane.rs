@@ -401,6 +401,9 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", "/product/sightline/events") => "sightline.events.list".to_string(),
         ("POST", "/product/strategies/publish") => "strategy.version.publish".to_string(),
         ("POST", "/capabilities/graph/resolve") => "capability.graph.resolve".to_string(),
+        ("POST", "/product/strategies/option-selections/create") => {
+            "strategy.option_selection.create".into()
+        }
         ("POST", "/product/strategies/data-captures/create") => {
             "strategy.data_capture.create".to_string()
         }
@@ -688,6 +691,9 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.plugin.capability_graph_resolve" => {
             return "capability.graph.resolve".to_string();
+        }
+        "tradeassembly.strategy.option_selection.create" => {
+            return "strategy.option_selection.create".into()
         }
         "tradeassembly.strategy.data_capture.create" => {
             return "strategy.data_capture.create".to_string()
@@ -1248,7 +1254,9 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if path == "/product/strategies/data-captures/get" {
         return "read".into();
     }
-    if path == "/product/strategies/data-captures/create" {
+    if path == "/product/strategies/data-captures/create"
+        || path == "/product/strategies/option-selections/create"
+    {
         return "research".into();
     }
     if path == "/product/sightline/context/get" {

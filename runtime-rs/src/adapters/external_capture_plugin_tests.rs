@@ -41,23 +41,50 @@ fn fixture_executable() -> &'static [u8] {
     BINARY.get_or_init(|| {
         // Compile the Rust-only fixture against this test build's locked
         // dependency artifacts; no nested Cargo command or registry access.
-        let deps = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let deps = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("capture-fixture");
         let mut command = std::process::Command::new("rustc");
-        command.args(["--edition=2021", "--crate-name", "capture_fixture"])
-            .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/adapters/fixtures/capture_plugin.rs"))
-            .arg("-L").arg(format!("dependency={}", deps.display())).arg("-o").arg(&output);
+        command
+            .args(["--edition=2021", "--crate-name", "capture_fixture"])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("src/adapters/fixtures/capture_plugin.rs"),
+            )
+            .arg("-L")
+            .arg(format!("dependency={}", deps.display()))
+            .arg("-o")
+            .arg(&output);
         for name in ["serde_json", "sha2", "serde_json_canonicalizer"] {
-            let mut libraries = std::fs::read_dir(&deps).unwrap().filter_map(Result::ok)
-                .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("lib{name}-")) && e.path().extension().is_some_and(|e|e=="rlib"))
-                .map(|e|e.path()).collect::<Vec<_>>();
-            libraries.sort_by_key(|p|std::fs::metadata(p).unwrap().modified().unwrap());
-            let library = libraries.last().expect("locked Rust fixture dependency artifact");
-            command.arg("--extern").arg(format!("{name}={}",library.display()));
+            let mut libraries = std::fs::read_dir(&deps)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("lib{name}-"))
+                        && e.path().extension().is_some_and(|e| e == "rlib")
+                })
+                .map(|e| e.path())
+                .collect::<Vec<_>>();
+            libraries.sort_by_key(|p| std::fs::metadata(p).unwrap().modified().unwrap());
+            let library = libraries
+                .last()
+                .expect("locked Rust fixture dependency artifact");
+            command
+                .arg("--extern")
+                .arg(format!("{name}={}", library.display()));
         }
-        let result=command.output().unwrap();
-        assert!(result.status.success(), "Rust fixture compile failed: {}",String::from_utf8_lossy(&result.stderr));
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "Rust fixture compile failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         std::fs::read(output).unwrap()
     })
 }
@@ -65,6 +92,7 @@ fn install_fixture(
     service: &crate::service::TradeAssemblyService,
     root: &std::path::Path,
     calculator: bool,
+    interval_ms: u64,
 ) -> InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
@@ -79,6 +107,7 @@ fn install_fixture(
     contract["operationId"] = json!(opid);
     contract["applicability"] =
         json!({"assetClasses":["equity"],"instrumentFamilies":["equity"],"modes":["paper"]});
+    contract["outputs"]["value"]["time"]["intervalMs"] = json!(interval_ms);
     if calculator {
         contract["inputs"] = json!({"source":{"data":contract["outputs"]["value"],"required":true,"dependencyId":"source"}});
     } else {
@@ -108,10 +137,16 @@ fn install_fixture(
         operation["traits"]["outputSchemaRefs"] = json!(["schema://capture-fixture/response@1"]);
         operation["traits"]["deterministic"] = json!(false);
         operation["traits"]["replayable"] = json!(false);
+        operations.push(operation.clone());
+        operation["id"] = json!("chain");
+        operation["capability"] = json!("test.option.chain@1");
+        operation["traits"]["dataShapes"] = json!(["option_chain"]);
+        operation["traits"]["outputSchemaRefs"] =
+            json!(["schema://capture-fixture/option-chain@1"]);
         operations.push(operation);
     }
     let manifest = json!({"metadata":{"id":id,"version":"1","provider":{"id":id,"name":"Local capture fixture"}},"operations":operations,
-        "capabilities":[{"id":"test.capture.acquire"},{"id":"test.capture.replay"},{"id":"test.capture.derive"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
+        "capabilities":[{"id":"test.capture.acquire"},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
         "configuration":{"fields":[{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
@@ -120,7 +155,7 @@ fn install_fixture(
     descriptor["package"]["plugin"]["id"] = json!(id);
     descriptor["package"]["manifest"]["sha256"] = json!(sha256(&manifest_bytes));
     descriptor["package"]["targets"][0]["binary"]["sha256"] = json!(sha256(script));
-    descriptor["package"]["responseSchemas"] = json!([{"schemaRef":EVALUATION_RESPONSE_SCHEMA,"document":{"path":"response.json","sha256":sha256(&response)}},{"schemaRef":"schema://capture-fixture/response@1","document":{"path":"response.json","sha256":sha256(&response)}}]);
+    descriptor["package"]["responseSchemas"] = json!([{ "schemaRef":"schema://capture-fixture/option-chain@1","document":{"path":"response.json","sha256":sha256(&response)}},{"schemaRef":EVALUATION_RESPONSE_SCHEMA,"document":{"path":"response.json","sha256":sha256(&response)}},{"schemaRef":"schema://capture-fixture/response@1","document":{"path":"response.json","sha256":sha256(&response)}}]);
     descriptor["dataContracts"][0]["operationId"] = json!(opid);
     descriptor["dataContracts"][0]["document"]["sha256"] = json!(sha256(&contract_bytes));
     descriptor["dataContracts"][0]["canonicalSha256"] = json!(canonical_sha256(&contract).unwrap());
@@ -152,6 +187,20 @@ fn install_fixture(
     let _ = fixture;
     package
 }
+struct AdvancedClock {
+    base: Arc<dyn ClockPort>,
+    advance: Arc<std::sync::atomic::AtomicI64>,
+}
+impl VersionedPort for AdvancedClock {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        vec![]
+    }
+}
+impl ClockPort for AdvancedClock {
+    fn now_ms(&self) -> i64 {
+        self.base.now_ms() + self.advance.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 struct Rig {
     dir: tempfile::TempDir,
     service: crate::service::TradeAssemblyService,
@@ -160,21 +209,59 @@ struct Rig {
     server: std::thread::JoinHandle<()>,
 }
 fn rig() -> Rig {
+    rig_with_options(false)
+}
+fn rig_with_options(options: bool) -> Rig {
     let operations = Arc::new(ForwardNative::default());
     let (dir, service, scope, _) = data_plans::tests::fixture_service(Some(operations.clone()));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0; 8192];
-        let n = stream.read(&mut buf).unwrap();
-        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /observations "));
-        let body=serde_json::to_vec(&json!({"values":[10,20,30],"start":10*86400000_i64,"interval":86400000,"instrument":"TEST"})).unwrap();
-        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
-        stream.write_all(&body).unwrap();
+        for index in 0..if options { 4 } else { 1 } {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            let path = if index == 0 {
+                "/observations"
+            } else {
+                "/options"
+            };
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with(&format!("GET {path} ")));
+            let day = 86400000_i64;
+            let now = chrono::Utc::now();
+            let start = if options {
+                now.timestamp_millis() / 60000 * 60000 - 3 * 60000
+            } else {
+                10 * day
+            };
+            let body = if index == 0 {
+                json!({"values":[10,20,30],"start":start,"interval":if options {60000}else{day},"instrument":"TEST"})
+            } else {
+                let expiry = (now.date_naive() + chrono::Days::new(21))
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let quote_time = if index == 1 {
+                    now - chrono::Duration::milliseconds(86400000 - 120000)
+                } else {
+                    now
+                };
+                let rows=["B","A"].iter().map(|id|json!({"instrumentId":id,"timestamp":quote_time.to_rfc3339(),"data":{"kind":"option_contract","data":{"contractSymbol":id,"underlyingInstrumentId":"TEST","expiration":expiry,"strike":500.0,"right":"call","bid":4.0,"ask":4.2,"volume":100,"openInterest":50,"greeks":{"delta":if index==1 {0.5}else{0.1}}}}})).collect::<Vec<_>>();
+                // Synthetic HTTP response exercises the production wire profile;
+                // this fixture is never authenticated market-data evidence.
+                json!({"sourceClass":"production","observations":rows,"nextPageToken":if index==3 {json!("more")}else{Value::Null},"upstreamRefs":["fixture:options"]})
+            };
+            let body = serde_json::to_vec(&body).unwrap();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+            stream.write_all(&body).unwrap();
+        }
     });
     for calculator in [false, true] {
-        let package = install_fixture(&service, dir.path(), calculator);
+        let package = install_fixture(
+            &service,
+            dir.path(),
+            calculator,
+            if options { 60000 } else { 86400000 },
+        );
         service.runtime().plugins.put_instance(&package.plugin_ref,json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"credentialRef":if calculator {"fixture-unused"}else{"capture-fixture"},"configuration":if calculator {json!({})} else {json!({"dataApiUrl":format!("http://{address}")})}}),&ctx("instance")).unwrap();
     }
     service
@@ -202,6 +289,7 @@ fn rig() -> Rig {
         "test.capture.acquire",
         "test.capture.replay",
         "test.capture.derive",
+        "test.option.chain@1",
     ] {
         let grant = json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null});
         service
@@ -236,10 +324,18 @@ fn rig() -> Rig {
                     asset_class: "equity".into(),
                     instrument_family: "equity".into(),
                 }],
-                interval_ms: Some(86400000),
+                interval_ms: Some(if options { 60000 } else { 86400000 }),
             },
-            event_start_ms: 10 * 86400000,
-            event_end_ms: 13 * 86400000,
+            event_start_ms: if options {
+                service.runtime().clock.now_ms() / 60000 * 60000 - 3 * 60000
+            } else {
+                10 * 86400000
+            },
+            event_end_ms: if options {
+                service.runtime().clock.now_ms() / 60000 * 60000
+            } else {
+                13 * 86400000
+            },
             gap_policy: captures::GapPolicy::StrictFixedInterval,
         },
         input: json!({}),
@@ -604,8 +700,11 @@ fn data_capture_process_tamper_foreign_owner_and_revoked_cached_retry_fail_close
         )
         .unwrap();
     assert!(captures::current(&r.service, "capture_missing").is_err());
-    let missing = r.service.call_mcp_tool("tradeassembly.strategy.data_capture.get",json!({"captureId":"capture_missing"}));
-    assert_eq!(missing["isError"],true,"{missing}");
+    let missing = r.service.call_mcp_tool(
+        "tradeassembly.strategy.data_capture.get",
+        json!({"captureId":"capture_missing"}),
+    );
+    assert_eq!(missing["isError"], true, "{missing}");
 
     let alice = r
         .service
@@ -644,7 +743,7 @@ fn data_capture_process_tamper_foreign_owner_and_revoked_cached_retry_fail_close
         json!({"captureId":receipt.capture_id}),
     );
     assert!(mcp.get("capture").is_none());
-    assert_eq!(mcp["isError"],true,"{mcp}");
+    assert_eq!(mcp["isError"], true, "{mcp}");
     r.server.join().unwrap();
 }
 
@@ -867,4 +966,463 @@ fn data_capture_external_provider_package_admits_replays_and_reopens_without_liv
     combined.extend(rest.outputs["source"].clone());
     assert_eq!(combined, batch.outputs["source"]);
     server.join().unwrap();
+}
+
+#[test]
+fn option_selection_real_process_causal_signal_selection_restart_and_no_match() {
+    use crate::data_strategy::{Comparison, DataStrategy, Operand, Rule, Sample};
+    use crate::service::option_selections::{SelectionCommand, SelectionReceipt};
+    let r = rig_with_options(true);
+    let response = r.service.handle_http(
+        "POST",
+        "/product/strategies/data-captures/create",
+        json!({"capture":r.command,"idempotencyKey":"options-underlying-capture"}),
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let capture: captures::CaptureReceipt =
+        serde_json::from_value(response.body["capture"].clone()).unwrap();
+    let program = DataStrategy {
+        version: 1,
+        nodes: vec![PipelineNode {
+            graph_node_id: "source".into(),
+            parameters: json!({}),
+            context: r.command.policy.context.clone(),
+            input_contexts: BTreeMap::new(),
+        }],
+        bindings: vec![],
+        trade_instruments: vec![InstrumentContext {
+            instrument_id: "STATIC_NOT_SELECTED".into(),
+            asset_class: "option".into(),
+            instrument_family: "option_contract".into(),
+        }],
+        entry: Rule::Compare {
+            left: Operand::Output {
+                node: "source".into(),
+                port: "value".into(),
+                instrument: "TEST".into(),
+                sample: Sample::Current,
+            },
+            op: Comparison::Greater,
+            right: Operand::Number { value: 0.0 },
+        },
+        exit: Rule::IsTrue {
+            value: Operand::Boolean { value: false },
+        },
+    };
+    let mut policy = crate::option_selection::tests::policy();
+    policy.signal_requirement_ref = "signal_primary".into();
+    policy.trade_requirement_ref = "trade_primary".into();
+    policy.underlying_selector_ref = "primary_symbol".into();
+    policy.max_age_ms = 86400000;
+    policy.max_pages = 1;
+    let mut spec: Value = serde_json::from_str(include_str!(
+        "../../../examples/strategy-spec/v3/valid/static-equity.json"
+    ))
+    .unwrap();
+    spec["strategy_id"] = json!(r.command.policy.scope.strategy_id);
+    spec["signal_market_requirements"][0]["selectors"][0]["normalized_id"] = json!("TEST");
+    spec["trade_market_requirements"][0]["asset_classes"] = json!(["option"]);
+    spec["trade_market_requirements"][0]["instrument_families"] = json!(["option_contract"]);
+    spec["trade_market_requirements"][0]["required_capability_refs"] = json!([]);
+    spec["trade_market_requirements"][0]["quantity_units"] = json!(["contract"]);
+    spec["stages"]["evaluate"]["substeps"][0]["config"] =
+        json!({"tradeassembly.data_strategy":program});
+    let mut chain_req = spec["capability_requirements"]["required"][0].clone();
+    chain_req["requirement_id"] = json!("chain");
+    chain_req["capability"] = json!("test.option.chain@1");
+    chain_req["purpose"] = json!("Acquire normalized option snapshots");
+    chain_req["stage_refs"] = json!(["intent"]);
+    chain_req["substep_refs"] = json!(["select_options"]);
+    chain_req["constraints"]["data_shapes"] = json!(["option_chain"]);
+    chain_req["constraints"]["input_paths"] = json!([]);
+    chain_req["constraints"]["schema_refs"] = json!(["schema://capture-fixture/option-chain@1"]);
+    chain_req["constraints"]["fields"] = json!([]);
+    chain_req["constraints"]["deterministic"] = json!(false);
+    chain_req["constraints"]["replayable"] = json!(false);
+    chain_req["constraints"]["operations"] = json!([]);
+    chain_req["constraints"]
+        .as_object_mut()
+        .unwrap()
+        .remove("max_freshness");
+    chain_req["constraints"]
+        .as_object_mut()
+        .unwrap()
+        .remove("timeframe");
+    spec["capability_requirements"]["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(chain_req);
+    let mut step = spec["stages"]["universe"]["substeps"][0].clone();
+    step["id"] = json!("select_options");
+    step["operation_ref"] = json!("option.contract.select@1");
+    step["capability_requirement_refs"] = json!(["chain"]);
+    step["reads"] = json!(["signals.primary"]);
+    step["writes"] = json!(["assets.selected_option"]);
+    step["option_selection"] = json!(policy);
+    spec["stages"]["intent"]["substeps"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, step);
+    spec["stages"]["intent"]["substeps"][1]["reads"] =
+        json!(["signals.primary", "assets.selected_option"]);
+    let report = crate::spec::validate_strategy_spec_report(&spec);
+    assert!(
+        report.valid,
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap()
+    );
+    assert!(crate::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
+    let saved = r.service.handle_http(
+        "POST",
+        "/product/strategies/save-draft",
+        json!({"strategyId":r.command.policy.scope.strategy_id,"spec":spec}),
+    );
+    assert_eq!(saved.body["body"]["draftSaved"], true, "{}", saved.body);
+    let published=r.service.handle_http("POST","/product/strategies/publish",json!({"strategyId":r.command.policy.scope.strategy_id,"expectedDraftHash":saved.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));
+    assert_eq!(
+        published.body["body"]["published"], true,
+        "{}",
+        published.body
+    );
+    let version = &published.body["body"]["version"];
+    let scope = data_plans::PlanScope {
+        strategy_id: r.command.policy.scope.strategy_id.clone(),
+        strategy_version_id: version["id"].as_str().unwrap().into(),
+        strategy_spec_hash: version["specHash"].as_str().unwrap().into(),
+    };
+    let graph=r.service.handle_http("POST","/capability-graph-revisions",json!({"configId":"option-journey","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"chain":{"pluginInstanceRef":"capture.source","pluginRef":"capture.source","operationId":"chain"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"source","capability":"test.capture.replay","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+    assert_eq!(
+        graph.body["revision"]["graph"]["ok"], true,
+        "{}",
+        graph.body
+    );
+    let revision = graph.body["revision"]["revisionId"].as_str().unwrap();
+    let prepared=r.service.handle_http("POST","/product/strategies/data-plans/prepare",json!({"scope":scope,"capabilityGraphRevisionId":revision,"mode":"paper","sourceCaptures":{"source":capture.capture_id},"idempotencyKey":"option-plan"}));
+    assert_eq!(prepared.status, 200, "{}", prepared.body);
+    let signal_step = data_evaluation::EvaluationStep {
+        run_id: "options-signal".into(),
+        plan_revision_id: prepared.body["plan"]["revisionId"].as_str().unwrap().into(),
+        window: EvaluationWindow {
+            event_start_ms: r.command.policy.event_start_ms,
+            event_end_ms: r.command.policy.event_end_ms,
+            as_of_ms: r.service.runtime().clock.now_ms(),
+        },
+        expected_checkpoint_sha256: None,
+    };
+    let evaluated = r.service.handle_http(
+        "POST",
+        "/product/strategies/data-runs/step",
+        json!({"step":signal_step,"idempotencyKey":"option-signal-step"}),
+    );
+    assert_eq!(evaluated.status, 200, "{}", evaluated.body);
+    assert_eq!(
+        evaluated.body["receipt"]["signals"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["entry"]["value"],
+        true
+    );
+    let command = SelectionCommand {
+        scope,
+        capability_graph_revision: revision.into(),
+        acquisition_node: "chain".into(),
+        mode: "paper".into(),
+        stage_substep_id: "select_options".into(),
+        signal_step,
+        signal_idempotency_key: "option-signal-step".into(),
+        signal_event_end_ms: r.command.policy.event_end_ms,
+    };
+    let body = json!({"selection":command,"idempotencyKey":"first-option-selection"});
+    let selected = r.service.handle_http(
+        "POST",
+        "/product/strategies/option-selections/create",
+        body.clone(),
+    );
+    assert_eq!(selected.status, 200, "{}", selected.body);
+    let stored = r
+        .service
+        .runtime()
+        .storage
+        .get_json(
+            "option_selection_receipts_v1",
+            selected.body["selection"]["receiptId"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let receipt: SelectionReceipt = serde_json::from_value(stored).unwrap();
+    assert!(selected.body["selection"].get("responses").is_none());
+    assert!(!selected.body.to_string().contains("nextPageToken"));
+    assert!(
+        matches!(receipt.result.outcome,crate::option_selection::OptionOutcome::Selected{ref contract} if contract.contract_id=="A" && contract.underlying=="TEST")
+    );
+    assert!(!receipt.result.stage_failed);
+    assert!(!receipt.signal_receipt_sha256.is_empty());
+    assert!(!serde_json::to_string(&receipt)
+        .unwrap()
+        .contains("fake-capture-canary"));
+    assert_eq!(selected.body["executionAuthorityGranted"], false);
+    let db = r
+        .dir
+        .path()
+        .join("service.db")
+        .to_string_lossy()
+        .into_owned();
+    drop(r.service);
+    drop(r.operations);
+    let clock_advance = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.clock = Arc::new(AdvancedClock {
+        base: runtime.clock.clone(),
+        advance: clock_advance.clone(),
+    });
+    runtime.plugin_operations = Arc::new(
+        crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+            runtime.storage.clone(),
+            runtime.plugins.clone(),
+            runtime.credentials.clone(),
+            runtime.plugin_packages.clone(),
+            runtime.clock.clone(),
+            Arc::new(NativeTestSandbox),
+        ),
+    );
+    let service = crate::service::TradeAssemblyService::from_runtime(&db, runtime);
+    let retry = service.handle_http(
+        "POST",
+        "/product/strategies/option-selections/create",
+        body.clone(),
+    );
+    assert_eq!(
+        retry.body["selection"], selected.body["selection"],
+        "{}",
+        retry.body
+    );
+    let fresh_mcp = service.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        body.clone(),
+    );
+    assert_eq!(fresh_mcp["isError"], false, "{fresh_mcp}");
+    assert_eq!(
+        fresh_mcp["structuredContent"]["selection"]["receiptId"],
+        selected.body["selection"]["receiptId"],
+        "{fresh_mcp}"
+    );
+    let indexes = service
+        .runtime()
+        .storage
+        .list_json("option_selection_keys_v1")
+        .unwrap();
+    assert_eq!(
+        indexes.len(),
+        1,
+        "HTTP and MCP must share one host decision"
+    );
+    let legacy_authority = crate::control_plane::http_envelope(
+        "http",
+        "POST",
+        "/product/strategies/option-selections/create",
+        &body,
+    )
+    .unwrap()
+    .authority;
+    let legacy_key = canonical_sha256(&(
+        &command.scope.strategy_id,
+        &legacy_authority,
+        "first-option-selection",
+    ))
+    .unwrap();
+    service
+        .runtime()
+        .storage
+        .clear_namespace("option_selection_keys_v1")
+        .unwrap();
+    service
+        .runtime()
+        .storage
+        .put_json(
+            "option_selection_keys_v1",
+            &legacy_key,
+            indexes[0].1.clone(),
+            &ctx("legacy-selection-index"),
+        )
+        .unwrap();
+    let legacy_retry = service.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        body.clone(),
+    );
+    assert_eq!(legacy_retry["isError"], false, "{legacy_retry}");
+    assert_eq!(
+        legacy_retry["structuredContent"]["selection"]["receiptId"],
+        selected.body["selection"]["receiptId"]
+    );
+    let original = service
+        .runtime()
+        .storage
+        .get_json("option_selection_receipts_v1", &receipt.receipt_id)
+        .unwrap()
+        .unwrap();
+    let mut forged = original.clone();
+    forged["result"]["outcome"]["contract"]["contractId"] = json!("FORGED");
+    forged["receiptId"] = json!("");
+    forged["receiptId"] = json!(canonical_sha256(&forged).unwrap());
+    service
+        .runtime()
+        .storage
+        .put_json(
+            "option_selection_receipts_v1",
+            &receipt.receipt_id,
+            forged,
+            &ctx("tamper-option-receipt"),
+        )
+        .unwrap();
+    assert_ne!(
+        service
+            .handle_http(
+                "POST",
+                "/product/strategies/option-selections/create",
+                body.clone()
+            )
+            .status,
+        200,
+        "a rehashed row under the wrong receipt ID must reject"
+    );
+    service
+        .runtime()
+        .storage
+        .put_json(
+            "option_selection_receipts_v1",
+            &receipt.receipt_id,
+            original,
+            &ctx("restore-option-receipt"),
+        )
+        .unwrap();
+    let no_match = service.handle_http(
+        "POST",
+        "/product/strategies/option-selections/create",
+        json!({"selection":command,"idempotencyKey":"second-option-selection"}),
+    );
+    assert_eq!(no_match.status, 200, "{}", no_match.body);
+    assert_eq!(
+        no_match.body["selection"]["result"]["outcome"]["status"],
+        "no_eligible_contract"
+    );
+    assert_eq!(
+        no_match.body["selection"]["result"]["rejected"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let incomplete = service.handle_http(
+        "POST",
+        "/product/strategies/option-selections/create",
+        json!({"selection":command,"idempotencyKey":"incomplete-option-selection"}),
+    );
+    assert_eq!(incomplete.status, 409, "{}", incomplete.body);
+    assert_eq!(incomplete.body["error"]["code"], "option_chain_incomplete");
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("option_selection_receipts_v1")
+            .unwrap()
+            .len(),
+        2
+    );
+    let original_before_expiry = service
+        .runtime()
+        .storage
+        .get_json("option_selection_receipts_v1", &receipt.receipt_id)
+        .unwrap()
+        .unwrap();
+    let operation_count = service
+        .runtime()
+        .storage
+        .list_json("plugin_operation_receipts")
+        .unwrap()
+        .len();
+    clock_advance.store(180000, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        service.runtime().clock.now_ms() - command.signal_event_end_ms < 86400000,
+        "signal must remain fresh while the quote expires"
+    );
+    let expired_http = service.handle_http(
+        "POST",
+        "/product/strategies/option-selections/create",
+        body.clone(),
+    );
+    let expired_mcp = service.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        body.clone(),
+    );
+    assert_eq!(
+        (expired_http.status, expired_mcp["isError"].as_bool()),
+        (409, Some(true)),
+        "HTTP:{} MCP:{}",
+        expired_http.body,
+        expired_mcp
+    );
+    assert_eq!(
+        expired_http.body["error"]["code"],
+        "option_selection_receipt_stale"
+    );
+    assert_eq!(
+        expired_mcp["structuredContent"]["error"]["code"], "option_selection_receipt_stale",
+        "{expired_mcp}"
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .get_json("option_selection_receipts_v1", &receipt.receipt_id)
+            .unwrap()
+            .unwrap(),
+        original_before_expiry
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap()
+            .len(),
+        operation_count,
+        "stale retries must not reacquire"
+    );
+    let mut pin = service
+        .runtime()
+        .plugins
+        .get_instance("capture.source")
+        .unwrap()
+        .unwrap();
+    pin["enabled"] = json!(false);
+    service
+        .runtime()
+        .plugins
+        .put_instance("capture.source", pin, &ctx("revoke-option-source"))
+        .unwrap();
+    assert_ne!(
+        service
+            .handle_http("POST", "/product/strategies/option-selections/create", body)
+            .status,
+        200
+    );
+    let alice = service.for_authenticated_invocation("test", "alice", None, None);
+    alice
+        .bind_owned_object("strategy", &command.scope.strategy_id)
+        .unwrap();
+    let bob = service.for_authenticated_invocation("test", "bob", None, None);
+    let denied = bob.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        json!({"selection":command,"idempotencyKey":"foreign-owner-option"}),
+    );
+    assert_eq!(denied["isError"], true, "{denied}");
+    assert!(denied.get("selection").is_none());
+    assert!(service
+        .runtime()
+        .storage
+        .list_json("orders")
+        .unwrap()
+        .is_empty());
+    r.server.join().unwrap();
 }

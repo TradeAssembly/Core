@@ -21,6 +21,7 @@ pub(super) fn authorize_private_request(
     let nested_strategy_id = body
         .get("scope")
         .or_else(|| body.pointer("/capture/policy/scope"))
+        .or_else(|| body.pointer("/selection/scope"))
         .and_then(|scope| string_field(scope, &["strategyId", "strategy_id"]));
     let strategy_id = if method == "GET" && path.starts_with("/strategies/") {
         path.trim_start_matches("/strategies/")

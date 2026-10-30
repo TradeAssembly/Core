@@ -72,6 +72,10 @@ pub enum EvaluationStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationReceipt {
+    /// Immutable origin for downstream verification across transports. It is
+    /// evidence only, never the authority used to invoke a downstream operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_authority: Option<crate::ports::AuthorityContext>,
     pub receipt_sha256: String,
     pub request_sha256: String,
     pub status: EvaluationStatus,
@@ -908,6 +912,7 @@ impl StepEnvironment<'_> {
         }
         checkpoint.checkpoint_sha256 = checkpoint_hash(checkpoint)?;
         let mut receipt = EvaluationReceipt {
+            request_authority: Some(self.context.authority.clone()),
             receipt_sha256: String::new(),
             request_sha256: self.request_hash.clone(),
             status,
@@ -1448,3 +1453,38 @@ impl StepEnvironment<'_> {
 #[cfg(test)]
 #[path = "data_evaluation_tests.rs"]
 mod tests;
+
+/// Load an existing, owned causal evaluation receipt without invoking plugins.
+/// Used by downstream selection stages; a caller cannot supply signal contents.
+pub(crate) fn admitted_signal(
+    service: &TradeAssemblyService,
+    request: &EvaluationStep,
+    original_key: &str,
+    context: &SideEffectContext,
+) -> Result<(data_plans::StoredDataPlan, EvaluationReceipt), String> {
+    let plan = data_plans::current(service, &request.plan_revision_id)?;
+    super::data_captures::validate_window(service, &plan, &request.window)?;
+    let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
+    let receipt_key = key(&[&run_key, original_key])?;
+    let raw = service
+        .runtime()
+        .storage
+        .get_json(RECEIPTS, &receipt_key)?
+        .ok_or("option_signal_receipt_missing")?;
+    let receipt: EvaluationReceipt =
+        serde_json::from_value(raw).map_err(|_| "option_signal_receipt_invalid")?;
+    let origin = receipt
+        .request_authority
+        .as_ref()
+        .unwrap_or(&context.authority);
+    if receipt.request_sha256 != hash(&json!({"request":request,"authority":origin}))?
+        || receipt_hash(&receipt)? != receipt.receipt_sha256
+        || checkpoint_hash(&receipt.checkpoint)? != receipt.checkpoint.checkpoint_sha256
+        || receipt.checkpoint.run_id != request.run_id
+        || receipt.checkpoint.plan_revision_id != request.plan_revision_id
+    {
+        return Err("option_signal_receipt_invalid".into());
+    }
+    validate_state_availability(&receipt.checkpoint)?;
+    Ok((plan, receipt))
+}

@@ -191,6 +191,20 @@ impl CompiledStrategy {
                 "typed data strategy requires stateful data evaluator",
             ));
         }
+        if crate::spec::StageName::VALIDATION_ORDER
+            .iter()
+            .any(|stage| {
+                spec.stages
+                    .view(stage)
+                    .substeps
+                    .iter()
+                    .any(|step| step.option_selection.is_some())
+            })
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "option selection requires provider-backed selection stage",
+            ));
+        }
         let stages = &spec.stages;
         let expected = [
             (&stages.inputs.substeps, "market_data.bars.read@1"),

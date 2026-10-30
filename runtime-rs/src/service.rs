@@ -41,6 +41,7 @@ mod live_authorization;
 mod marketdata;
 mod object_authorization;
 mod onboarding;
+pub mod option_selections;
 mod options;
 mod orders;
 mod original_cycle_recovery;
@@ -1065,6 +1066,9 @@ impl TradeAssemblyService {
         {
             return response;
         }
+        if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1285,6 +1289,9 @@ impl TradeAssemblyService {
             return response;
         }
         match (normalized_method.as_str(), normalized_path.as_str()) {
+            ("POST", "/product/strategies/option-selections/create") => {
+                option_selections::create(self, body)
+            }
             ("POST", "/product/strategies/data-captures/create") => {
                 data_captures::create(self, body)
             }
@@ -3378,10 +3385,25 @@ impl TradeAssemblyService {
             if let Some(response) =
                 object_authorization::authorize_private_request(self, "POST", path, &arguments)
             {
+                if name == "tradeassembly.strategy.option_selection.create" {
+                    let code = service_error_code(&response.body)
+                        .unwrap_or_else(|| "option_selection_not_available".into());
+                    return mcp::tool_error(
+                        name,
+                        &code,
+                        "Owned option selection is not available.",
+                        None,
+                    );
+                }
                 return response.body;
             }
         }
         if let Some(path) = mcp_object_authorization_route(name) {
+            if let Some(response) = option_selections::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "option_selection_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Option selection failed closed.", None);
+            }
             if let Some(response) = data_captures::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "data_capture_preflight_failed".into());
@@ -3675,6 +3697,14 @@ impl TradeAssemblyService {
             }
             "tradeassembly.plugin.capability_resolve" => {
                 providers::resolve_capability(self, providers::requirement_from_body(&arguments))
+            }
+            "tradeassembly.strategy.option_selection.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/option-selections/create",
+                    arguments,
+                )
+                .body
             }
             "tradeassembly.strategy.data_capture.create" => {
                 self.dispatch_http(
@@ -4215,6 +4245,13 @@ impl TradeAssemblyService {
                     Some(payload),
                 );
                 return self.complete_mcp_command_or_error(name, &command_envelope, 400, response);
+            }
+        }
+        if name == "tradeassembly.strategy.option_selection.create" {
+            if let Some(code) = service_error_code(&payload) {
+                let response =
+                    mcp::tool_error(name, &code, "Option selection failed closed.", None);
+                return self.complete_mcp_command_or_error(name, &command_envelope, 409, response);
             }
         }
         if name.starts_with("tradeassembly.dataset_ingestion.") {
@@ -5143,6 +5180,9 @@ fn mcp_control_route(name: &str) -> Option<&'static str> {
 
 fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
+        "tradeassembly.strategy.option_selection.create" => {
+            Some("/product/strategies/option-selections/create")
+        }
         "tradeassembly.strategy.data_capture.create" => {
             Some("/product/strategies/data-captures/create")
         }

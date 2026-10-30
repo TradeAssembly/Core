@@ -1,0 +1,10 @@
+{
+  "schema": "tradeassembly.private-update-candidate/v1",
+  "version": "0.2.5",
+  "target": "aarch64-apple-darwin",
+  "publicFeedEnabled": false,
+  "sequence": 2,
+  "archiveSha256": "ba959d5df7c29cb7e92da87f9a240a58f30b21f2c385ea0f2f1ff1bf9ecd378c",
+  "diskImageSha256": "63e39b6ce8e348d97137fdf8abcbef5cc6cefaab000a4c96aa181d64a32ee6a7",
+  "notarizationBindingSha256": "cd537d210a454c5e0684a26fb5acac5309fea81980133d8f2d8857f1cf2e5cc2"
+}

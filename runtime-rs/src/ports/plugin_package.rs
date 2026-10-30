@@ -49,5 +49,13 @@ pub trait PluginPackagePort: VersionedPort {
         Err("plugin_data_contract_loading_unsupported".into())
     }
 
+    fn data_schema(
+        &self,
+        _package_sha256: &str,
+        _schema_ref: &str,
+    ) -> Result<Option<Value>, String> {
+        Err("plugin_data_schema_loading_unsupported".into())
+    }
+
     fn remove(&self, package_sha256: &str) -> Result<bool, String>;
 }

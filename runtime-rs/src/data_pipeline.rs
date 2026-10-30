@@ -4,7 +4,6 @@
 use crate::ports::capability::CapabilityGraphResolution;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use tradeassembly_plugin_sdk::data_contract::*;
 
@@ -113,59 +112,15 @@ pub struct CompiledDataPlan {
     pub plan_sha256: String,
 }
 
-pub fn canonical_sha256<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
-    let mut value = serde_json::to_value(value)?;
-    normalize_numbers(&mut value)?;
-    serde_json_canonicalizer::to_vec(&value).map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-}
-
-/// Integer identity is exact only inside the interoperable binary64 integer
-/// range. Do not let canonicalization silently round a larger integer. Decimal
-/// parameters use finite binary64 semantics; integral forms normalize to integers.
-const MAX_EXACT_INTEGER: u64 = 9_007_199_254_740_991;
-
-fn normalize_numbers(value: &mut Value) -> Result<(), serde_json::Error> {
-    let invalid =
-        || <serde_json::Error as serde::ser::Error>::custom("number_outside_supported_exact_range");
-    match value {
-        Value::Number(number) => {
-            if let Some(n) = number.as_i64() {
-                if n.unsigned_abs() > MAX_EXACT_INTEGER {
-                    return Err(invalid());
-                }
-            } else if let Some(n) = number.as_u64() {
-                if n > MAX_EXACT_INTEGER {
-                    return Err(invalid());
-                }
-            } else {
-                let n = number.as_f64().ok_or_else(invalid)?;
-                if !n.is_finite() || n.abs() > MAX_EXACT_INTEGER as f64 {
-                    return Err(invalid());
-                }
-                if n.fract() == 0.0 {
-                    *number = serde_json::Number::from(n as i64);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                normalize_numbers(value)?;
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values_mut() {
-                normalize_numbers(value)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
+pub use tradeassembly_plugin_sdk::canonical::canonical_sha256;
+use tradeassembly_plugin_sdk::canonical::{normalize_numbers, MAX_EXACT_INTEGER};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DataPlanVersion {
     #[serde(rename = "tradeassembly.compiled_data_plan.v1")]
     V1,
+    #[serde(rename = "tradeassembly.compiled_data_plan.v2")]
+    V2,
 }
 
 fn issue(
@@ -570,7 +525,11 @@ pub fn compile_data_plan(
                         && e.required == dependency.required
                 })
         });
-        if !declared_binding {
+        if matches!(
+            target_contract.contract.schema_version,
+            DataContractVersion::V1
+        ) && !declared_binding
+        {
             errors.push(issue(
                 UndeclaredDependency,
                 Some(&edge.consumer_node),
@@ -665,8 +624,16 @@ pub fn compile_data_plan(
             }
         }
     }
+    let version = if contracts
+        .iter()
+        .any(|c| matches!(c.contract.schema_version, DataContractVersion::V2))
+    {
+        DataPlanVersion::V2
+    } else {
+        DataPlanVersion::V1
+    };
     let mut plan = CompiledDataPlan {
-        schema_version: DataPlanVersion::V1,
+        schema_version: version,
         capability_graph_fingerprint: graph.graph_fingerprint.clone(),
         evaluation_epoch: graph.evaluation_epoch.clone(),
         request,

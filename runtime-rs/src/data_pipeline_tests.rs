@@ -80,20 +80,25 @@ fn seal(contracts: &mut [VerifiedDataContract]) {
     }
 }
 // The fixture selects two separate plugins through the existing real resolver.
-pub(crate) fn fixture() -> (
+fn make_fixture(
+    typed: bool,
+    derived_count: usize,
+) -> (
     CapabilityGraphResolution,
     PipelineRequest,
     Vec<VerifiedDataContract>,
 ) {
     let provider = operation("provide");
     let mut derive = operation("derive");
-    derive.dependencies.push(PluginOperationDependency {
-        dependency_id: "source".into(),
-        capability: provider.capability.clone(),
-        operation_id: Some(provider.id.clone()),
-        required: true,
-        traits: Default::default(),
-    });
+    if !typed {
+        derive.dependencies.push(PluginOperationDependency {
+            dependency_id: "source".into(),
+            capability: provider.capability.clone(),
+            operation_id: Some(provider.id.clone()),
+            required: true,
+            traits: Default::default(),
+        });
+    }
     let plugins = [provider, derive]
         .into_iter()
         .map(|op| PluginCatalogEntry {
@@ -138,14 +143,33 @@ pub(crate) fn fixture() -> (
         .collect();
     let graph = crate::capability::resolve_graph(
         CapabilityGraphRequest {
-            requirements: vec![CapabilityRequirement {
-                requirement_id: "result".into(),
-                capability: "test.derive".into(),
-                mode: "paper".into(),
-                declaration: "required".into(),
-                fallback_policy: "none".into(),
-                ..Default::default()
-            }],
+            requirements: {
+                let mut requirements = (0..derived_count)
+                    .map(|index| CapabilityRequirement {
+                        requirement_id: if index == 0 {
+                            "result".into()
+                        } else {
+                            format!("result_{index}")
+                        },
+                        capability: "test.derive".into(),
+                        mode: "paper".into(),
+                        declaration: "required".into(),
+                        fallback_policy: "none".into(),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>();
+                if typed {
+                    requirements.push(CapabilityRequirement {
+                        requirement_id: "source".into(),
+                        capability: "test.provide".into(),
+                        mode: "paper".into(),
+                        declaration: "required".into(),
+                        fallback_policy: "none".into(),
+                        ..Default::default()
+                    });
+                }
+                requirements
+            },
             evaluation_epoch: "test-epoch".into(),
             ..Default::default()
         },
@@ -169,17 +193,21 @@ pub(crate) fn fixture() -> (
         .unwrap()
         .node_id
         .clone();
-    let nodes = [(&source, false), (&target, true)]
-        .into_iter()
-        .map(|(id, input)| PipelineNode {
-            graph_node_id: id.clone(),
-            parameters: if input {
-                json!({"window":5})
-            } else {
-                json!({})
-            },
-            context: context(),
-            input_contexts: BTreeMap::new(),
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|n| {
+            let input = n.selected.as_ref().unwrap().operation_id == "derive";
+            PipelineNode {
+                graph_node_id: n.node_id.clone(),
+                parameters: if input {
+                    json!({"window":5})
+                } else {
+                    json!({})
+                },
+                context: context(),
+                input_contexts: BTreeMap::new(),
+            }
         })
         .collect();
     let contracts = graph
@@ -187,7 +215,10 @@ pub(crate) fn fixture() -> (
         .iter()
         .map(|n| {
             let s = n.selected.as_ref().unwrap();
-            let c = contract(&s.operation_id, s.operation_id == "derive");
+            let mut c = contract(&s.operation_id, s.operation_id == "derive");
+            if typed {
+                c.schema_version = DataContractVersion::V2;
+            }
             VerifiedDataContract {
                 graph_node_id: n.node_id.clone(),
                 manifest_fingerprint: s.manifest_fingerprint.clone(),
@@ -201,15 +232,41 @@ pub(crate) fn fixture() -> (
         mode: "paper".into(),
         trade_instruments: vec![],
         nodes,
-        bindings: vec![PortBinding {
-            producer_node: source,
-            output_port: "value".into(),
-            consumer_node: target,
-            input_port: "source".into(),
-        }],
+        bindings: if typed {
+            graph
+                .nodes
+                .iter()
+                .filter(|n| n.selected.as_ref().unwrap().operation_id == "derive")
+                .map(|n| PortBinding {
+                    producer_node: if n.node_id == "result_2" {
+                        "result_1".into()
+                    } else {
+                        source.clone()
+                    },
+                    output_port: "value".into(),
+                    consumer_node: n.node_id.clone(),
+                    input_port: "source".into(),
+                })
+                .collect()
+        } else {
+            vec![PortBinding {
+                producer_node: source,
+                output_port: "value".into(),
+                consumer_node: target,
+                input_port: "source".into(),
+            }]
+        },
     };
     (graph, request, contracts)
 }
+pub(crate) fn fixture() -> (
+    CapabilityGraphResolution,
+    PipelineRequest,
+    Vec<VerifiedDataContract>,
+) {
+    make_fixture(false, 1)
+}
+
 fn has(errors: &[PlanDiagnostic], code: PlanDiagnosticCode) -> bool {
     errors.iter().any(|e| e.code == code)
 }
@@ -429,7 +486,7 @@ fn data_pipeline_rejects_undeclared_edges_duplicate_inputs_and_cycles() {
 fn data_pipeline_versions_and_unknown_fields_fail_closed() {
     let (_, request, contracts) = fixture();
     let mut value = serde_json::to_value(&contracts[0].contract).unwrap();
-    value["schemaVersion"] = json!("tradeassembly.operation_data.v2");
+    value["schemaVersion"] = json!("tradeassembly.operation_data.v99");
     assert!(serde_json::from_value::<OperationDataContract>(value).is_err());
     let mut value = serde_json::to_value(request).unwrap();
     value["autoFallback"] = json!(true);
@@ -670,5 +727,59 @@ fn data_pipeline_rejects_hourly_aggregation_before_daily_window() {
     assert!(has(
         &compile_data_plan(&graph, request, contracts).unwrap_err(),
         PlanDiagnosticCode::IncompatibleTimeContext
+    ));
+}
+
+#[test]
+fn data_pipeline_v2_composes_repeated_operations_and_shared_outputs() {
+    let (graph, request, contracts) = make_fixture(true, 3);
+    assert!(graph.edges.is_empty());
+    let plan = compile_data_plan(&graph, request.clone(), contracts.clone()).unwrap();
+    assert_eq!(plan.schema_version, DataPlanVersion::V2);
+    assert_eq!(plan.source_warmup_observations["result"], 5);
+    assert_eq!(plan.source_warmup_observations["result_1"], 5);
+    assert_eq!(plan.source_warmup_observations["result_2"], 9);
+    assert_eq!(plan.execution_order.len(), 4);
+    let mut bad = contracts.clone();
+    bad.iter_mut()
+        .find(|c| c.graph_node_id == "source")
+        .unwrap()
+        .contract
+        .outputs
+        .get_mut("value")
+        .unwrap()
+        .schema
+        .sha256 = "b".repeat(64);
+    seal(&mut bad);
+    assert!(has(
+        &compile_data_plan(&graph, request.clone(), bad).unwrap_err(),
+        PlanDiagnosticCode::IncompatibleSchema
+    ));
+    let mut cyclic = contracts;
+    cyclic
+        .iter_mut()
+        .find(|c| c.graph_node_id == "source")
+        .unwrap()
+        .contract
+        .inputs
+        .insert(
+            "feedback".into(),
+            InputPort {
+                data: port(),
+                required: true,
+                dependency_id: "feedback".into(),
+            },
+        );
+    seal(&mut cyclic);
+    let mut request = request;
+    request.bindings.push(PortBinding {
+        producer_node: "result_2".into(),
+        output_port: "value".into(),
+        consumer_node: "source".into(),
+        input_port: "feedback".into(),
+    });
+    assert!(has(
+        &compile_data_plan(&graph, request, cyclic).unwrap_err(),
+        PlanDiagnosticCode::Cycle
     ));
 }

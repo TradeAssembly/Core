@@ -139,8 +139,31 @@ fn data_plan_cached_record_cannot_bypass_current_graph_admission() {
 
 // Exercises host preparation with two independently installed fixture packages.
 // Their executable bytes are inert and are never invoked by plan preparation.
-#[test]
-fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
+pub(crate) fn fixture_service(
+    plugin_operations: Option<std::sync::Arc<dyn crate::ports::PluginOperationPort>>,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    PlanScope,
+    PipelineRequest,
+) {
+    fixture_service_with_state(
+        plugin_operations,
+        tradeassembly_plugin_sdk::data_contract::StatePartition::Instrument,
+        "paper",
+    )
+}
+
+pub(crate) fn fixture_service_with_state(
+    plugin_operations: Option<std::sync::Arc<dyn crate::ports::PluginOperationPort>>,
+    state_partition: tradeassembly_plugin_sdk::data_contract::StatePartition,
+    mode: &str,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    PlanScope,
+    PipelineRequest,
+) {
     use crate::{
         adapters::plugin_packages::data_package_tests::{archive_files, materials},
         ports::*,
@@ -149,8 +172,11 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
     use sha2::{Digest, Sha256};
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("service.db").to_string_lossy().into_owned();
-    let service =
-        TradeAssemblyService::from_runtime(&db, crate::adapters::local::test_runtime(&db));
+    let mut fixture_runtime = crate::adapters::local::test_runtime(&db);
+    if let Some(operations) = plugin_operations {
+        fixture_runtime.plugin_operations = operations;
+    }
+    let service = TradeAssemblyService::from_runtime(&db, fixture_runtime);
     let runtime = service.runtime();
     let ctx = context("fixture-setup");
     let (fixture_graph, _, fixture_contracts) = crate::data_pipeline::tests::fixture();
@@ -168,6 +194,13 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
             .unwrap();
         let mut op = serde_json::to_value(&selected.operation).unwrap();
         op["traits"]["instrumentFamilies"] = json!(["equity"]);
+        op["traits"]["modes"] = json!([mode]);
+        op["traits"]["outputSchemaRefs"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(
+                tradeassembly_plugin_sdk::data_evaluation::EVALUATION_RESPONSE_SCHEMA
+            ));
         let manifest = json!({"metadata":{"id":plugin,"version":"1","provider":{"id":plugin,"name":"Fixture"}},"capabilities":[{"id":format!("test.{id}")}],"operations":[op],"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
         let mut contract = fixture_contracts
             .iter()
@@ -176,12 +209,28 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
             .contract
             .clone();
         contract.applicability.asset_classes = vec!["equity".into()];
+        contract.applicability.modes = vec![mode.into()];
         contract.applicability.instrument_families = vec!["equity".into()];
         for port in contract.inputs.values_mut() {
             port.data.schema.sha256 = schema_hash.clone();
         }
         for port in contract.outputs.values_mut() {
             port.schema.sha256 = schema_hash.clone();
+        }
+        let state_schema = json!({"type":"object","properties":{"seen":{"type":"integer","minimum":0}},"required":["seen"],"additionalProperties":false});
+        let state_bytes = serde_json::to_vec(&state_schema).unwrap();
+        let state_hash = canonical_sha256(&state_schema).unwrap();
+        if id == "derive" {
+            contract.state = Some(
+                tradeassembly_plugin_sdk::data_contract::OperationStateContract {
+                    schema: tradeassembly_plugin_sdk::data_contract::SchemaIdentity {
+                        schema_ref: "schema://test/state@1".into(),
+                        sha256: state_hash.clone(),
+                    },
+                    version: "1".into(),
+                    partition: state_partition.clone(),
+                },
+            );
         }
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let contract_bytes = serde_json::to_vec(&contract).unwrap();
@@ -192,6 +241,7 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
         descriptor["dataContracts"][0]["document"]["sha256"] = json!(hash(&contract_bytes));
         descriptor["dataContracts"][0]["canonicalSha256"] =
             json!(canonical_sha256(&contract).unwrap());
+        descriptor["dataSchemas"].as_array_mut().unwrap().push(json!({"schemaRef":"schema://test/state@1","document":{"path":"state.json","sha256":hash(&state_bytes)},"canonicalSha256":state_hash}));
         let archive = archive_files(vec![
             (
                 "tradeassembly-plugin.json",
@@ -200,6 +250,7 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
             ("manifest.json", manifest_bytes),
             ("contract.json", contract_bytes),
             ("schema.json", schema_bytes),
+            ("state.json", state_bytes),
             ("bin/plugin", b"not-executed".to_vec()),
         ]);
         let path = dir.path().join(format!("{id}.tar.gz"));
@@ -279,7 +330,7 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
     };
     let revision = super::capability_graph::save_revision(
         &service,
-        json!({"configId":"cfg_plan_fixture","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}),
+        json!({"configId":"cfg_plan_fixture","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":mode,"additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":mode,"declaration":"required","fallbackPolicy":"none"}]}),
     );
     assert_eq!(revision["revision"]["graph"]["ok"], true, "{revision:#}");
     let graph: CapabilityGraphResolution =
@@ -306,7 +357,7 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
     };
     let request = PipelineRequest {
         capability_graph_revision: revision["revision"]["revisionId"].as_str().unwrap().into(),
-        mode: "paper".into(),
+        mode: mode.into(),
         trade_instruments: vec![],
         nodes: vec![
             crate::data_pipeline::PipelineNode {
@@ -329,6 +380,15 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
             input_port: "source".into(),
         }],
     };
+    (dir, service, scope, request)
+}
+
+#[test]
+fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
+    use serde_json::json;
+    let (_dir, service, scope, request) = fixture_service(None);
+    let runtime = service.runtime();
+    let ctx = context("fixture-setup");
     let saved = save(&service, scope.clone(), request.clone(), &ctx).unwrap();
     assert_eq!(current(&service, &saved.revision_id).unwrap(), saved);
     let mut instance = runtime

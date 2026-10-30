@@ -13,6 +13,8 @@ type InvocationHook = Box<dyn Fn(&PluginOperationRequest) + Send + Sync>;
 struct FixtureOperations {
     requests: Mutex<Vec<DataEvaluationRequest>>,
     revised: AtomicBool,
+    delayed_first: AtomicBool,
+    research_run: AtomicBool,
     fail: AtomicBool,
     incomplete: AtomicBool,
     premature: AtomicBool,
@@ -81,6 +83,9 @@ impl PluginOperationPort for FixtureOperations {
                     point.provenance.known_at_ms = payload.window.as_of_ms + 1;
                     point.provenance.arrived_at_ms = payload.window.as_of_ms + 1;
                 }
+                if self.delayed_first.load(Ordering::SeqCst) && start == 10 * INTERVAL {
+                    point.provenance.known_at_ms = 15 * INTERVAL;
+                }
                 point.provenance.content_sha256 = point_sha256(&point).unwrap();
                 if self.gap.load(Ordering::SeqCst) && end == 12 * INTERVAL {
                     start = end;
@@ -93,13 +98,18 @@ impl PluginOperationPort for FixtureOperations {
             assert_eq!(request.operation_id, "derive");
             for input in &payload.inputs["source"].points {
                 assert!(input.provenance.event_end_ms <= payload.window.event_end_ms);
+                let slot = if self.research_run.load(Ordering::SeqCst) {
+                    RESEARCH_RUN_STATE_SLOT
+                } else {
+                    &input.instrument_id
+                };
                 let seen = payload
                     .prior_state
-                    .get(&input.instrument_id)
+                    .get(slot)
                     .and_then(|s| s["seen"].as_u64())
                     .unwrap_or(0)
                     + 1;
-                state.insert(input.instrument_id.clone(), json!({"seen":seen}));
+                state.insert(slot.to_owned(), json!({"seen":seen}));
                 let mut point = input.clone();
                 point.result = if self.premature.load(Ordering::SeqCst)
                     || seen >= payload.parameters["window"].as_u64().unwrap()
@@ -478,4 +488,125 @@ fn data_evaluation_missing_initial_coverage_cannot_silently_shift_the_sample() {
         .list_json(RUNS)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn data_evaluation_prior_state_availability_survives_batch_and_restart() {
+    let operations = Arc::new(FixtureOperations::default());
+    operations.delayed_first.store(true, Ordering::SeqCst);
+    let (_dir, service, scope, mut pipeline) =
+        super::super::data_plans::tests::fixture_service(Some(operations.clone()));
+    pipeline
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "derived")
+        .unwrap()
+        .parameters = json!({"window":1});
+    let plan = data_plans::save(&service, scope, pipeline, &context("delayed-plan")).unwrap();
+    let delayed_request = |run: &str, start, end, prior| {
+        let mut r = request(&plan, run, start, end, prior);
+        r.window.as_of_ms = 15 * INTERVAL;
+        r
+    };
+    let batch = step(
+        &service,
+        delayed_request("batch-delayed", 10, 12, None),
+        &context("batch-delayed"),
+    )
+    .unwrap();
+    let first = step(
+        &service,
+        delayed_request("stream-delayed", 10, 11, None),
+        &context("stream-delayed-a"),
+    )
+    .unwrap();
+    let mut before_available = request(
+        &plan,
+        "stream-delayed",
+        11,
+        12,
+        Some(first.checkpoint.checkpoint_sha256.clone()),
+    );
+    before_available.window.as_of_ms = 12 * INTERVAL;
+    assert_eq!(
+        step(&service, before_available, &context("too-early-state")).unwrap_err(),
+        "data_evaluation_state_not_available_at_cutoff"
+    );
+    let resumed = step(
+        &service,
+        delayed_request(
+            "stream-delayed",
+            11,
+            12,
+            Some(first.checkpoint.checkpoint_sha256),
+        ),
+        &context("stream-delayed-b"),
+    )
+    .unwrap();
+    for point in [terminal(&batch)[1].clone(), terminal(&resumed)[0].clone()] {
+        assert!(
+            point.provenance.known_at_ms >= 15 * INTERVAL,
+            "state became available later than this output: {point:?}"
+        );
+    }
+    let calls = operations.requests.lock().unwrap();
+    assert!(calls
+        .iter()
+        .filter(|r| r.node_id == "derived" && r.window.event_end_ms == 12 * INTERVAL)
+        .all(|r| r.window.as_of_ms >= 15 * INTERVAL));
+}
+
+#[test]
+fn data_evaluation_research_run_state_has_a_known_slot_and_is_isolated_on_resume() {
+    let operations = Arc::new(FixtureOperations::default());
+    operations.research_run.store(true, Ordering::SeqCst);
+    let (_dir, service, scope, pipeline) =
+        super::super::data_plans::tests::fixture_service_with_state(
+            Some(operations.clone()),
+            StatePartition::ResearchRun,
+            "backtest",
+        );
+    let plan = data_plans::save(&service, scope, pipeline, &context("research-plan")).unwrap();
+    let first = step(
+        &service,
+        request(&plan, "research-a", 10, 12, None),
+        &context("research-a"),
+    )
+    .unwrap();
+    let other = step(
+        &service,
+        request(&plan, "research-b", 10, 11, None),
+        &context("research-b"),
+    )
+    .unwrap();
+    let resumed = step(
+        &service,
+        request(
+            &plan,
+            "research-a",
+            12,
+            13,
+            Some(first.checkpoint.checkpoint_sha256),
+        ),
+        &context("research-a-resume"),
+    )
+    .unwrap();
+    assert_eq!(
+        other.checkpoint.states["derived"][RESEARCH_RUN_STATE_SLOT]["seen"],
+        1
+    );
+    assert_eq!(
+        resumed.checkpoint.states["derived"][RESEARCH_RUN_STATE_SLOT]["seen"],
+        3
+    );
+    assert_eq!(
+        operations
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.node_id == "derived" && r.prior_state.is_empty())
+            .count(),
+        2
+    );
 }

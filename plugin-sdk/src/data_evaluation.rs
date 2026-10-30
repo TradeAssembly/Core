@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const EVALUATION_RESPONSE_SCHEMA: &str = "schema://tradeassembly/data-evaluation-response@1";
+/// Stable plugin-visible key for ResearchRun-partitioned operation state. The
+/// host scopes this slot by plan/run/node; raw run IDs are not needed on the wire.
+pub const RESEARCH_RUN_STATE_SLOT: &str = "__research_run__";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvaluationVersion {
     #[serde(rename = "tradeassembly.data_evaluation.v1")]

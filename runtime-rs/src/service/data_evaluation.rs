@@ -39,9 +39,18 @@ pub struct EvaluationCheckpoint {
     pub generation: u64,
     pub cursors: BTreeMap<String, i64>,
     pub states: BTreeMap<String, BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub state_availability: BTreeMap<String, StateAvailability>,
     pub valid_counts: BTreeMap<String, u64>,
     pub checkpoint_sha256: String,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StateAvailability {
+    pub known_at_ms: i64,
+    pub arrived_at_ms: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationStatus {
@@ -77,6 +86,26 @@ fn checkpoint_hash(checkpoint: &EvaluationCheckpoint) -> Result<String, String> 
     value.checkpoint_sha256.clear();
     hash(&value)
 }
+fn validate_state_availability(checkpoint: &EvaluationCheckpoint) -> Result<(), String> {
+    for node in checkpoint.states.keys() {
+        let availability = checkpoint
+            .state_availability
+            .get(node)
+            .ok_or("data_evaluation_state_availability_missing_requires_replay")?;
+        if availability.arrived_at_ms < availability.known_at_ms {
+            return Err("data_evaluation_state_availability_invalid".into());
+        }
+    }
+    if checkpoint
+        .state_availability
+        .keys()
+        .any(|node| !checkpoint.states.contains_key(node))
+    {
+        return Err("data_evaluation_state_availability_invalid".into());
+    }
+    Ok(())
+}
+
 fn receipt_hash(receipt: &EvaluationReceipt) -> Result<String, String> {
     let mut value = receipt.clone();
     value.receipt_sha256.clear();
@@ -333,6 +362,7 @@ pub fn step(
         {
             return Err("data_evaluation_receipt_invalid".into());
         }
+        validate_state_availability(&receipt.checkpoint)?;
         return Ok(receipt);
     }
     let prior = runtime.storage.get_json(RUNS, &run_key)?;
@@ -346,6 +376,7 @@ pub fn step(
             generation: 0,
             cursors: BTreeMap::new(),
             states: BTreeMap::new(),
+            state_availability: BTreeMap::new(),
             valid_counts: BTreeMap::new(),
             checkpoint_sha256: String::new(),
         },
@@ -357,6 +388,7 @@ pub fn step(
     {
         return Err("data_evaluation_checkpoint_invalid".into());
     }
+    validate_state_availability(&checkpoint)?;
     let prior_hash = prior.as_ref().map(|_| checkpoint.checkpoint_sha256.clone());
     if prior_hash != request.expected_checkpoint_sha256 {
         return Err("data_evaluation_checkpoint_conflict".into());
@@ -846,6 +878,18 @@ impl StepEnvironment<'_> {
             .get(&node.graph_node_id)
             .cloned()
             .unwrap_or_default();
+        // Host readiness counters are state too, even for a stateless plugin.
+        if checkpoint.states.contains_key(&node.graph_node_id) {
+            let availability = checkpoint
+                .state_availability
+                .get(&node.graph_node_id)
+                .ok_or("data_evaluation_state_availability_missing_requires_replay")?;
+            if availability.known_at_ms > self.request.window.as_of_ms {
+                return Err("data_evaluation_state_not_available_at_cutoff".into());
+            }
+            known = known.max(availability.known_at_ms);
+            arrived = arrived.max(availability.arrived_at_ms);
+        }
         lineage.insert(hash(&prior_state)?);
         let interval = node
             .context
@@ -1036,7 +1080,7 @@ impl StepEnvironment<'_> {
                     StatePartition::ResearchRun
                         if plan.request.mode == "backtest" || plan.request.mode == "research" =>
                     {
-                        BTreeSet::from([self.request.run_id.clone()])
+                        BTreeSet::from([RESEARCH_RUN_STATE_SLOT.to_owned()])
                     }
                     StatePartition::Activation => {
                         return Err("data_evaluation_activation_state_not_integrated".into())
@@ -1051,6 +1095,15 @@ impl StepEnvironment<'_> {
                 }
             }
         }
+        // Include the availability of the decision to process/wait as well as
+        // plugin state. Unchanged/empty state must not lose host warmup causality.
+        checkpoint.state_availability.insert(
+            node.graph_node_id.clone(),
+            StateAvailability {
+                known_at_ms: known,
+                arrived_at_ms: arrived,
+            },
+        );
         checkpoint
             .states
             .insert(node.graph_node_id.clone(), response.state.clone());

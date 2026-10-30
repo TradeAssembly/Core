@@ -75,6 +75,8 @@ pub(crate) fn prepare(
     let mut contracts = Vec::new();
     let mut packages = BTreeMap::new();
     let mut bindings = BTreeMap::new();
+    let mut snapshots =
+        std::collections::BTreeMap::<String, crate::ports::OperationDataSnapshot>::new();
     for node in &request.nodes {
         let selected = graph
             .nodes
@@ -82,11 +84,34 @@ pub(crate) fn prepare(
             .find(|n| n.node_id == node.graph_node_id)
             .and_then(|n| n.selected.as_ref())
             .ok_or("data_plan_node_unresolved")?;
-        let pinned = super::data_binding::pin(service, selected)?;
+        let pinned = super::data_binding::pin_with_package_loader(service, selected, |digest| {
+            if !snapshots.contains_key(digest) {
+                let operations = request
+                    .nodes
+                    .iter()
+                    .filter_map(|node| {
+                        graph
+                            .nodes
+                            .iter()
+                            .find(|entry| entry.node_id == node.graph_node_id)
+                            .and_then(|entry| entry.selected.as_ref())
+                    })
+                    .filter(|entry| entry.plugin_ref == selected.plugin_ref)
+                    .map(|entry| entry.operation_id.clone())
+                    .collect::<Vec<_>>();
+                let snapshot = runtime
+                    .plugin_packages
+                    .operation_data_snapshot(digest, &operations)?
+                    .ok_or("data_plan_package_missing")?;
+                snapshots.insert(digest.into(), snapshot);
+            }
+            Ok(snapshots[digest].package.clone())
+        })?;
         let digest = &pinned.package_sha256;
-        let contract = runtime
-            .plugin_packages
-            .operation_data(digest, &selected.operation_id)?
+        let contract = snapshots[digest]
+            .contracts
+            .get(&selected.operation_id)
+            .cloned()
             .ok_or("data_plan_contract_missing")?;
         let contract_sha256 =
             canonical_sha256(&contract).map_err(|_| "data_plan_contract_invalid")?;

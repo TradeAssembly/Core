@@ -689,6 +689,12 @@ fn data_evaluation_service_recreation_preserves_causality_and_research_run_isola
         .to_string_lossy()
         .into_owned();
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(
+        crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+            directory.path().join("package-store"),
+        )
+        .unwrap(),
+    );
     runtime.plugin_operations = fresh_operations.clone();
     let reopened = TradeAssemblyService::from_runtime(&db, runtime);
     assert_eq!(
@@ -854,6 +860,12 @@ fn data_strategy_product_routes_commit_signals_and_history_then_resume_after_ser
         .to_string_lossy()
         .into_owned();
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(
+        crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+            directory.path().join("package-store"),
+        )
+        .unwrap(),
+    );
     runtime.plugin_operations = Arc::new(FixtureOperations::default());
     let reopened = TradeAssemblyService::from_runtime(&db, runtime);
     let resumed = reopened.handle_http(
@@ -976,6 +988,12 @@ fn data_evaluation_v3_unavailable_resets_only_affected_instrument_across_service
         .to_string_lossy()
         .into_owned();
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(
+        crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+            directory.path().join("package-store"),
+        )
+        .unwrap(),
+    );
     runtime.plugin_operations = operations.clone();
     let reopened = TradeAssemblyService::from_runtime(&db, runtime);
     // A fails readiness first; B then fails invocation. No partial reset or source ledger may commit.
@@ -1025,6 +1043,12 @@ fn data_evaluation_v3_unavailable_resets_only_affected_instrument_across_service
     assert!(!reset.checkpoint.partition_resets["derived"].contains_key("B"));
     drop(reopened);
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(
+        crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+            directory.path().join("package-store"),
+        )
+        .unwrap(),
+    );
     runtime.plugin_operations = operations.clone();
     let reopened = TradeAssemblyService::from_runtime(&db, runtime);
     let resumed = step(
@@ -1116,4 +1140,107 @@ fn data_evaluation_receipt_origin_allows_owned_transport_reads_and_preserves_leg
     );
     assert_eq!(step(&service, input, &origin).unwrap(), legacy);
     assert_eq!(operations.requests.lock().unwrap().len(), calls);
+}
+
+struct ChangeAfterFinalFrame {
+    inner: Arc<FixtureOperations>,
+    change: Box<dyn Fn() + Send + Sync>,
+    corrupt_value: bool,
+}
+impl VersionedPort for ChangeAfterFinalFrame {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        vec![]
+    }
+}
+impl PluginOperationPort for ChangeAfterFinalFrame {
+    fn invoke(
+        &self,
+        call: &PluginOperationRequest,
+        context: &SideEffectContext,
+    ) -> Result<PluginOperationResponse, String> {
+        let mut response = self.inner.invoke(call, context)?;
+        let payload: DataEvaluationRequest = serde_json::from_value(call.input.clone()).unwrap();
+        if call.operation_id == "derive" && payload.window.event_end_ms == 17 * INTERVAL {
+            (self.change)();
+            if self.corrupt_value {
+                response.payload["state"]["TEST"]["seen"] = json!("invalid-after-warm-cache");
+            }
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn data_evaluation_step_schema_reuse_cannot_commit_changed_artifacts_or_authority() {
+    for case in [
+        "schema",
+        "executable",
+        "configuration",
+        "revocation",
+        "invalid-state-value",
+    ] {
+        let (_dir, service, plan, operations) = rig();
+        let runtime = service.runtime();
+        let package = runtime
+            .plugin_packages
+            .get(&plan.content.package_sha256["derived"])
+            .unwrap()
+            .unwrap();
+        let schema = package.install_root.join("state.json");
+        let executable = package.executable_path;
+        let target_runtime = runtime.clone();
+        let change = Box::new(move || match case {
+            "schema" => std::fs::write(&schema, b"{}").unwrap(),
+            "executable" => std::fs::write(&executable, b"changed-after-last-dispatch").unwrap(),
+            "configuration" | "revocation" => {
+                let mut instance = target_runtime
+                    .plugins
+                    .get_instance("instance.derive")
+                    .unwrap()
+                    .unwrap();
+                if case == "configuration" {
+                    instance["configuration"] = json!({"changed":true});
+                } else {
+                    instance["enabled"] = json!(false);
+                }
+                target_runtime
+                    .plugins
+                    .put_instance("instance.derive", instance, &context("change-last-frame"))
+                    .unwrap();
+            }
+            _ => {}
+        });
+        let mut modified = (*runtime).clone();
+        modified.plugin_operations = Arc::new(ChangeAfterFinalFrame {
+            inner: operations.clone(),
+            change,
+            corrupt_value: case == "invalid-state-value",
+        });
+        let changed = TradeAssemblyService::from_runtime(service.db(), modified);
+        let error = step(&changed, request(&plan, case, 10, 17, None), &context(case)).unwrap_err();
+        let expected = match case {
+            "schema" | "executable" => "data_plan_graph_stale",
+            "configuration" => "data_plan_stale",
+            "revocation" => "data_plan_graph_stale",
+            _ => "data_evaluation_value_schema_invalid",
+        };
+        assert_eq!(error, expected, "{case}");
+        assert_eq!(
+            operations
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.node_id == "derived")
+                .count(),
+            7,
+            "all frames must reach the final dispatch: {case}"
+        );
+        for namespace in [RUNS, SOURCES, RECEIPTS] {
+            assert!(
+                runtime.storage.list_json(namespace).unwrap().is_empty(),
+                "{case} {namespace}"
+            );
+        }
+    }
 }

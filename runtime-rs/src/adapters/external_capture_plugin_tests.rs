@@ -1258,6 +1258,17 @@ fn option_selection_real_process_causal_signal_selection_restart_and_no_match() 
             .status,
         200
     );
+    let alice = service.for_authenticated_invocation("test", "alice", None, None);
+    alice
+        .bind_owned_object("strategy", &command.scope.strategy_id)
+        .unwrap();
+    let bob = service.for_authenticated_invocation("test", "bob", None, None);
+    let denied = bob.call_mcp_tool(
+        "tradeassembly.strategy.option_selection.create",
+        json!({"selection":command,"idempotencyKey":"foreign-owner-option"}),
+    );
+    assert_eq!(denied["isError"], true, "{denied}");
+    assert!(denied.get("selection").is_none());
     assert!(service
         .runtime()
         .storage

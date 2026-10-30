@@ -3385,6 +3385,16 @@ impl TradeAssemblyService {
             if let Some(response) =
                 object_authorization::authorize_private_request(self, "POST", path, &arguments)
             {
+                if name == "tradeassembly.strategy.option_selection.create" {
+                    let code = service_error_code(&response.body)
+                        .unwrap_or_else(|| "option_selection_not_available".into());
+                    return mcp::tool_error(
+                        name,
+                        &code,
+                        "Owned option selection is not available.",
+                        None,
+                    );
+                }
                 return response.body;
             }
         }

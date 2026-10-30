@@ -88,7 +88,7 @@ pub fn prepare(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     })();
     match result {
         Ok(plan) => ServiceResponse::ok(json!({"plan":plan,"executionAuthorityGranted":false})),
-        Err(code) => ServiceResponse::conflict(&code),
+        Err(code) => error_response(&code),
     }
 }
 pub fn evaluate(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
@@ -106,7 +106,7 @@ pub fn evaluate(service: &TradeAssemblyService, body: Value) -> ServiceResponse 
         Ok(receipt) => {
             ServiceResponse::ok(json!({"receipt":receipt,"executionAuthorityGranted":false}))
         }
-        Err(code) => ServiceResponse::conflict(&code),
+        Err(code) => error_response(&code),
     }
 }
 
@@ -135,5 +135,21 @@ pub(crate) fn preflight(
         })(),
         _ => return None,
     };
-    result.err().map(|code| ServiceResponse::conflict(&code))
+    result.err().map(|code| error_response(&code))
+}
+
+fn error_response(code: &str) -> ServiceResponse {
+    if matches!(
+        code,
+        "data_strategy_scope_invalid"
+            | "data_strategy_step_invalid"
+            | "data_strategy_idempotency_required"
+            | "data_strategy_graph_required"
+            | "data_strategy_mode_required"
+            | "data_strategy_mode_invalid"
+    ) {
+        ServiceResponse::bad_request(code)
+    } else {
+        ServiceResponse::conflict(code)
+    }
 }

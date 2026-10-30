@@ -65,7 +65,7 @@ pub struct VerifiedDataContract {
     pub graph_node_id: String,
     pub manifest_fingerprint: String,
     pub contract_sha256: String,
-    pub contract: OperationDataContract,
+    pub contract: tradeassembly_plugin_sdk::data_history::VersionedOperationData,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +109,8 @@ pub struct CompiledDataPlan {
     /// Source observations required on the longest required path. V1 requires
     /// matching intervals; resampling must be an explicit future operation.
     pub source_warmup_observations: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_history_by_output: BTreeMap<String, BTreeMap<String, BTreeMap<String, u64>>>,
     pub plan_sha256: String,
 }
 
@@ -121,6 +123,8 @@ pub enum DataPlanVersion {
     V1,
     #[serde(rename = "tradeassembly.compiled_data_plan.v2")]
     V2,
+    #[serde(rename = "tradeassembly.compiled_data_plan.v3")]
+    V3,
 }
 
 fn issue(
@@ -422,6 +426,27 @@ pub fn compile_data_plan(
                 "Parameters must satisfy the pinned operation parameter schema.",
             )),
         }
+        if let Some(v3) = contract.v3() {
+            if contract.inputs.is_empty() && contract.state.is_some() {
+                errors.push(issue(InvalidContract, Some(id), None,
+                    "Stateful V3 source acquisition is unsupported; use a stateless source with explicit replay or a stateful downstream transform."));
+            }
+            for (output, inputs) in &v3.history.first_ready {
+                for (input, expression) in inputs {
+                    if let Err(reason) = expression.resolve(&node.parameters) {
+                        errors.push(issue(
+                            InvalidParameters,
+                            Some(id),
+                            Some(output),
+                            format!("Input {input} history: {reason:?}"),
+                        ));
+                    }
+                }
+            }
+            if let Err(reason) = v3.resolve(&node.parameters) {
+                errors.push(issue(InvalidContract, Some(id), None, reason));
+            }
+        }
         let warmup = &contract.warmup;
         let parameter = match &warmup.observations_parameter {
             Some(name) => node
@@ -603,37 +628,64 @@ pub fn compile_data_plan(
     if !errors.is_empty() {
         return Err(errors);
     }
+    let has_v3 = contracts.iter().any(|c| c.contract.v3().is_some());
     let mut source_warmup: BTreeMap<String, u64> = BTreeMap::new();
+    let mut history_by_output: BTreeMap<String, BTreeMap<String, BTreeMap<String, u64>>> =
+        BTreeMap::new();
     for id in &order {
         let contract = &metadata[id.as_str()].contract;
-        let upstream = contract
-            .inputs
-            .iter()
-            .filter(|(_, p)| p.required)
-            .filter_map(|(port, _)| incoming.get(&(id.as_str(), port.as_str())))
-            .map(|source| source_warmup[*source])
-            .max();
         let own = warmups[id.as_str()];
-        let total = match upstream {
-            Some(n) => n.checked_add(own.saturating_sub(1)),
-            None => Some(own),
-        }
-        .filter(|n| *n <= MAX_EXACT_INTEGER);
-        match total {
-            Some(n) => {
-                source_warmup.insert(id.clone(), n);
+        let resolved = contract
+            .v3()
+            .map(|v| v.resolve(&nodes[id.as_str()].parameters))
+            .transpose()
+            .map_err(|e| vec![issue(InvalidContract, Some(id), None, e)])?;
+        let mut output_histories = BTreeMap::new();
+        for output in contract.outputs.keys() {
+            let mut roots: BTreeMap<String, u64> = BTreeMap::new();
+            for (input, declaration) in contract.inputs.iter().filter(|(_, p)| p.required) {
+                let _ = declaration;
+                let binding = request
+                    .bindings
+                    .iter()
+                    .find(|b| b.consumer_node == *id && b.input_port == *input)
+                    .expect("required binding was validated");
+                let count = resolved.as_ref().map_or(own, |r| r[output][input]);
+                let upstream = &history_by_output[&binding.producer_node][&binding.output_port];
+                for (source, history) in upstream {
+                    let total=history.checked_add(count.saturating_sub(1)).filter(|n|*n<=if has_v3 {tradeassembly_plugin_sdk::data_history::MAX_HISTORY_OBSERVATIONS}else{MAX_EXACT_INTEGER})
+                        .ok_or_else(||vec![issue(WarmupOverflow,Some(id),Some(output),format!("Input {input} history exceeds the supported observation budget."))])?;
+                    roots
+                        .entry(source.clone())
+                        .and_modify(|n| *n = (*n).max(total))
+                        .or_insert(total);
+                }
             }
-            None => {
-                return Err(vec![issue(
-                    WarmupOverflow,
-                    Some(id),
-                    None,
-                    "Reduce the cumulative required history.",
-                )])
+            if roots.is_empty() {
+                roots.insert(id.clone(), own);
             }
+            output_histories.insert(output.clone(), roots);
         }
+        let total = output_histories
+            .values()
+            .flat_map(|r| r.values())
+            .copied()
+            .max()
+            .unwrap_or(own);
+        if has_v3 && total > tradeassembly_plugin_sdk::data_history::MAX_HISTORY_OBSERVATIONS {
+            return Err(vec![issue(
+                WarmupOverflow,
+                Some(id),
+                None,
+                "Source history exceeds the supported observation budget.",
+            )]);
+        }
+        source_warmup.insert(id.clone(), total);
+        history_by_output.insert(id.clone(), output_histories);
     }
-    let version = if contracts
+    let version = if has_v3 {
+        DataPlanVersion::V3
+    } else if contracts
         .iter()
         .any(|c| matches!(c.contract.schema_version, DataContractVersion::V2))
     {
@@ -649,6 +701,11 @@ pub fn compile_data_plan(
         contracts,
         execution_order: order,
         source_warmup_observations: source_warmup,
+        source_history_by_output: if has_v3 {
+            history_by_output
+        } else {
+            BTreeMap::new()
+        },
         plan_sha256: String::new(),
     };
     plan.plan_sha256 = canonical_sha256(&plan).map_err(|_| {

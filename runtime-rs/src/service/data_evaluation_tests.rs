@@ -13,6 +13,8 @@ type InvocationHook = Box<dyn Fn(&PluginOperationRequest) + Send + Sync>;
 struct FixtureOperations {
     requests: Mutex<Vec<DataEvaluationRequest>>,
     revised: AtomicBool,
+    unavailable_a: AtomicBool,
+    fail_b: AtomicBool,
     delayed_first: AtomicBool,
     research_run: AtomicBool,
     fail: AtomicBool,
@@ -44,6 +46,12 @@ impl PluginOperationPort for FixtureOperations {
         }
         let payload: DataEvaluationRequest = serde_json::from_value(request.input.clone()).unwrap();
         self.requests.lock().unwrap().push(payload.clone());
+        if request.operation_id == "derive"
+            && payload.instruments == ["B"]
+            && self.fail_b.load(Ordering::SeqCst)
+        {
+            return Err("fixture_partition_b_failed".into());
+        }
         let schema = SchemaIdentity {
             schema_ref: "schema://test/series@1".into(),
             sha256: hash(&json!({"type":"array","items":{"type":"number"}}))?,
@@ -91,7 +99,23 @@ impl PluginOperationPort for FixtureOperations {
                     start = end;
                     continue;
                 }
-                points.push(point);
+                for instrument in &payload.instruments {
+                    let mut point = point.clone();
+                    point.instrument_id = instrument.clone();
+                    if instrument != "TEST" {
+                        point.source_event_id = format!("fixture:{instrument}:{end}");
+                    }
+                    if instrument == "A"
+                        && end == 13 * INTERVAL
+                        && self.unavailable_a.load(Ordering::SeqCst)
+                    {
+                        point.result = PointValue::WarmingUp;
+                        point.provenance.known_at_ms = 20 * INTERVAL;
+                        point.provenance.arrived_at_ms = 20 * INTERVAL;
+                    }
+                    point.provenance.content_sha256 = point_sha256(&point).unwrap();
+                    points.push(point);
+                }
                 start = end;
             }
         } else {
@@ -107,8 +131,12 @@ impl PluginOperationPort for FixtureOperations {
                     .prior_state
                     .get(slot)
                     .and_then(|s| s["seen"].as_u64())
-                    .unwrap_or(0)
-                    + 1;
+                    .unwrap_or(0);
+                let seen = if matches!(input.result, PointValue::Ready(_)) {
+                    seen + 1
+                } else {
+                    0
+                };
                 state.insert(slot.to_owned(), json!({"seen":seen}));
                 let mut point = input.clone();
                 point.result = if self.premature.load(Ordering::SeqCst)
@@ -904,4 +932,135 @@ fn request_for_signal(
         },
         expected_checkpoint_sha256: prior,
     }
+}
+
+#[test]
+fn data_evaluation_v3_unavailable_resets_only_affected_instrument_across_service_recreation() {
+    let operations = Arc::new(FixtureOperations::default());
+    operations.unavailable_a.store(true, Ordering::SeqCst);
+    let (directory, service, scope, mut pipeline) =
+        super::super::data_plans::tests::fixture_service_with_history(
+            Some(operations.clone()),
+            StatePartition::Instrument,
+            "paper",
+            true,
+        );
+    for node in &mut pipeline.nodes {
+        let mut a = node.context.instruments[0].clone();
+        a.instrument_id = "A".into();
+        let mut b = a.clone();
+        b.instrument_id = "B".into();
+        node.context.instruments = vec![a, b];
+        if node.graph_node_id == "derived" {
+            node.parameters = json!({"window":2});
+        }
+    }
+    let plan = data_plans::save(&service, scope, pipeline, &context("v3-plan")).unwrap();
+    let make = |start, end, prior| {
+        let mut r = request(&plan, "isolated", start, end, prior);
+        r.window.as_of_ms = 20 * INTERVAL;
+        r
+    };
+    operations.unavailable_a.store(false, Ordering::SeqCst);
+    let mut baseline_request = make(10, 15, None);
+    baseline_request.run_id = "baseline".into();
+    let baseline = step(&service, baseline_request, &context("v3-baseline")).unwrap();
+    operations.unavailable_a.store(true, Ordering::SeqCst);
+    let initial = step(&service, make(10, 12, None), &context("v3-initial")).unwrap();
+    assert_eq!(initial.checkpoint.states["derived"]["A"]["seen"], 2);
+    assert_eq!(initial.checkpoint.states["derived"]["B"]["seen"], 2);
+    drop(service);
+    let db = directory
+        .path()
+        .join("service.db")
+        .to_string_lossy()
+        .into_owned();
+    let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_operations = operations.clone();
+    let reopened = TradeAssemblyService::from_runtime(&db, runtime);
+    // A fails readiness first; B then fails invocation. No partial reset or source ledger may commit.
+    let saved_before = reopened.runtime().storage.list_json(RUNS).unwrap();
+    operations.fail_b.store(true, Ordering::SeqCst);
+    assert_eq!(
+        step(
+            &reopened,
+            make(12, 13, Some(initial.checkpoint.checkpoint_sha256.clone())),
+            &context("v3-partition-failure")
+        )
+        .unwrap_err(),
+        "fixture_partition_b_failed"
+    );
+    operations.fail_b.store(false, Ordering::SeqCst);
+    assert_eq!(
+        reopened.runtime().storage.list_json(RUNS).unwrap(),
+        saved_before
+    );
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection.execute_batch("CREATE TRIGGER fail_v3 BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='data_evaluation_checkpoints_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    assert!(step(
+        &reopened,
+        make(12, 13, Some(initial.checkpoint.checkpoint_sha256.clone())),
+        &context("v3-commit-failure")
+    )
+    .is_err());
+    assert_eq!(
+        reopened.runtime().storage.list_json(RUNS).unwrap(),
+        saved_before
+    );
+    connection.execute_batch("DROP TRIGGER fail_v3;").unwrap();
+    let reset = step(
+        &reopened,
+        make(12, 13, Some(initial.checkpoint.checkpoint_sha256)),
+        &context("v3-reset"),
+    )
+    .unwrap();
+    assert_eq!(reset.checkpoint.states["derived"]["A"]["seen"], 0);
+    assert_eq!(reset.checkpoint.states["derived"]["B"]["seen"], 3);
+    let points = terminal(&reset);
+    assert!(matches!(points[0].result, PointValue::WarmingUp));
+    assert!(matches!(points[1].result, PointValue::Ready(_)));
+    assert_eq!(points[0].provenance.known_at_ms, 20 * INTERVAL);
+    assert_eq!(points[1].provenance.known_at_ms, 13 * INTERVAL);
+    assert!(reset.checkpoint.partition_resets["derived"].contains_key("A"));
+    assert!(!reset.checkpoint.partition_resets["derived"].contains_key("B"));
+    drop(reopened);
+    let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_operations = operations.clone();
+    let reopened = TradeAssemblyService::from_runtime(&db, runtime);
+    let resumed = step(
+        &reopened,
+        make(13, 15, Some(reset.checkpoint.checkpoint_sha256.clone())),
+        &context("v3-resume"),
+    )
+    .unwrap();
+    assert_eq!(resumed.checkpoint.states["derived"]["A"]["seen"], 2);
+    assert_eq!(resumed.checkpoint.states["derived"]["B"]["seen"], 5);
+    let points = terminal(&resumed);
+    assert!(matches!(points[0].result, PointValue::WarmingUp));
+    assert!(matches!(points[1].result, PointValue::Ready(_)));
+    assert!(matches!(points[2].result, PointValue::Ready(_)));
+    assert_eq!(points[1].provenance.known_at_ms, 14 * INTERVAL);
+    assert_eq!(points[2].provenance.known_at_ms, 20 * INTERVAL);
+    let expected_b: Vec<_> = terminal(&baseline)
+        .into_iter()
+        .filter(|p| p.instrument_id == "B" && p.provenance.event_end_ms >= 13 * INTERVAL)
+        .collect();
+    let actual_b: Vec<_> = terminal(&reset)
+        .into_iter()
+        .chain(terminal(&resumed))
+        .filter(|p| p.instrument_id == "B")
+        .collect();
+    assert_eq!(
+        actual_b, expected_b,
+        "unrelated partition including provenance must match uninterrupted execution"
+    );
+    let captured = operations.requests.lock().unwrap();
+    let source_requests: Vec<_> = captured.iter().filter(|r| r.node_id != "derived").collect();
+    assert!(!source_requests.is_empty());
+    assert!(
+        source_requests.iter().all(|r| r.instruments.len() == 1),
+        "instrument-independent sources must receive singleton requests too"
+    );
+    assert!(source_requests.iter().any(|r| r.instruments == ["A"]));
+    assert!(source_requests.iter().any(|r| r.instruments == ["B"]));
 }

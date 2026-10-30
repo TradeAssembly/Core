@@ -563,6 +563,17 @@ impl PluginPackagePort for LocalPluginPackageStore {
         operation_id: &str,
     ) -> Result<Option<tradeassembly_plugin_sdk::data_contract::OperationDataContract>, String>
     {
+        self.operation_data(package_sha256, operation_id)?
+            .map(|record| record.into_legacy())
+            .transpose()
+    }
+
+    fn operation_data(
+        &self,
+        package_sha256: &str,
+        operation_id: &str,
+    ) -> Result<Option<tradeassembly_plugin_sdk::data_history::VersionedOperationData>, String>
+    {
         let package = self
             .get(package_sha256)?
             .ok_or("plugin_package_not_installed")?;

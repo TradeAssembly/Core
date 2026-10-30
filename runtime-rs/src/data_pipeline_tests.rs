@@ -223,7 +223,7 @@ fn make_fixture(
                 graph_node_id: n.node_id.clone(),
                 manifest_fingerprint: s.manifest_fingerprint.clone(),
                 contract_sha256: canonical_sha256(&c).unwrap(),
-                contract: c,
+                contract: c.into(),
             }
         })
         .collect();
@@ -709,7 +709,7 @@ fn data_pipeline_rejects_hourly_aggregation_before_daily_window() {
         graph_node_id: raw_id.clone(),
         manifest_fingerprint: raw_manifest,
         contract_sha256: String::new(),
-        contract: raw_contract,
+        contract: raw_contract.into(),
     });
     seal(&mut contracts);
     request.nodes.push(PipelineNode {
@@ -782,4 +782,124 @@ fn data_pipeline_v2_composes_repeated_operations_and_shared_outputs() {
         &compile_data_plan(&graph, request, cyclic).unwrap_err(),
         PlanDiagnosticCode::Cycle
     ));
+}
+
+#[test]
+fn data_pipeline_v3_composes_only_the_selected_output_history() {
+    use tradeassembly_plugin_sdk::data_history::*;
+    let (graph, mut request, mut contracts) = make_fixture(true, 2);
+    let first = contracts
+        .iter_mut()
+        .find(|c| c.graph_node_id == "result")
+        .unwrap();
+    let mut base = first.contract.clone().into_legacy().unwrap();
+    let port = base.outputs.remove("value").unwrap();
+    base.outputs = BTreeMap::from([("early".into(), port.clone()), ("late".into(), port)]);
+    base.parameter_schema["properties"]["tail"] = json!({"type":"integer","minimum":1});
+    base.parameter_schema["required"] = json!(["window", "tail"]);
+    let param = || Observations::Parameter {
+        name: "window".into(),
+    };
+    let late = Observations::Subtract {
+        left: Box::new(Observations::Add {
+            terms: vec![
+                param(),
+                Observations::Parameter {
+                    name: "tail".into(),
+                },
+            ],
+        }),
+        right: Box::new(Observations::Literal { value: 1 }),
+    };
+    first.contract = VersionedOperationData::V3(OperationDataV3 {
+        schema_version: HistoryVersion::V3,
+        operation: base,
+        history: HistoryContract {
+            first_ready: BTreeMap::from([
+                ("early".into(), BTreeMap::from([("source".into(), param())])),
+                ("late".into(), BTreeMap::from([("source".into(), late)])),
+            ]),
+            partitioning: Partitioning::InstrumentIndependent,
+            required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+            reconstruction: Reconstruction::CheckpointOrExplicitOrigin,
+        },
+    });
+    request
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "result")
+        .unwrap()
+        .parameters = json!({"window":5,"tail":3});
+    let consumer = request
+        .bindings
+        .iter_mut()
+        .find(|b| b.consumer_node == "result_1")
+        .unwrap();
+    consumer.producer_node = "result".into();
+    consumer.output_port = "early".into();
+    seal(&mut contracts);
+    let early = compile_data_plan(&graph, request.clone(), contracts.clone()).unwrap();
+    assert_eq!(early.schema_version, DataPlanVersion::V3);
+    assert_eq!(early.source_warmup_observations["result"], 7);
+    assert_eq!(early.source_warmup_observations["result_1"], 9);
+    assert_eq!(
+        early.source_history_by_output["result"]["early"]["source"],
+        5
+    );
+    assert_eq!(
+        early.source_history_by_output["result"]["late"]["source"],
+        7
+    );
+    request
+        .bindings
+        .iter_mut()
+        .find(|b| b.consumer_node == "result_1")
+        .unwrap()
+        .output_port = "late".into();
+    let late = compile_data_plan(&graph, request.clone(), contracts.clone()).unwrap();
+    assert_eq!(late.source_warmup_observations["result_1"], 11);
+    assert_ne!(early.plan_sha256, late.plan_sha256);
+    request
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "result")
+        .unwrap()
+        .parameters["tail"] = json!(-1);
+    let errors = compile_data_plan(&graph, request, contracts).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|e| e.node_id.as_deref() == Some("result") && e.port.as_deref() == Some("late")));
+}
+
+#[test]
+fn data_pipeline_v3_stateful_source_is_rejected_during_preparation() {
+    use tradeassembly_plugin_sdk::data_history::*;
+    let (graph, request, mut contracts) = make_fixture(true, 1);
+    let source = contracts
+        .iter_mut()
+        .find(|c| c.graph_node_id == "source")
+        .unwrap();
+    let mut operation = source.contract.clone().into_legacy().unwrap();
+    operation.schema_version = DataContractVersion::V2;
+    operation.state = Some(OperationStateContract {
+        schema: operation.outputs["value"].schema.clone(),
+        version: "1".into(),
+        partition: StatePartition::Instrument,
+    });
+    source.contract = VersionedOperationData::V3(OperationDataV3 {
+        schema_version: HistoryVersion::V3,
+        operation,
+        history: HistoryContract {
+            first_ready: BTreeMap::from([("value".into(), BTreeMap::new())]),
+            partitioning: Partitioning::InstrumentIndependent,
+            required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+            reconstruction: Reconstruction::CheckpointOrExplicitOrigin,
+        },
+    });
+    seal(&mut contracts);
+    let errors = compile_data_plan(&graph, request, contracts).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|e| e.code == PlanDiagnosticCode::InvalidContract
+            && e.message.contains("Stateful V3 source acquisition")));
 }

@@ -9,7 +9,7 @@ use std::{
     path::{Component, Path},
 };
 use tradeassembly_plugin_sdk::{
-    data_contract::OperationDataContract, data_package::*, DigestedPackagePath,
+    data_history::VersionedOperationData, data_package::*, DigestedPackagePath,
 };
 
 fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result<Value, String> {
@@ -68,7 +68,7 @@ pub(crate) fn verify(
     envelope: &VersionedPackageDescriptor,
     root: &Path,
     manifest: &Value,
-) -> Result<BTreeMap<String, OperationDataContract>, String> {
+) -> Result<BTreeMap<String, VersionedOperationData>, String> {
     let VersionedPackageDescriptor::Data(data) = envelope else {
         return Ok(BTreeMap::new());
     };
@@ -134,7 +134,7 @@ pub(crate) fn verify(
         {
             return Err("plugin_data_contract_digest_mismatch".into());
         }
-        let contract: OperationDataContract =
+        let contract: VersionedOperationData =
             serde_json::from_value(value).map_err(|_| "plugin_data_contract_invalid")?;
         schema_budget(&contract.parameter_schema)?;
         if contract.operation_id != entry.operation_id

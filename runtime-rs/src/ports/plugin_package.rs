@@ -49,6 +49,18 @@ pub trait PluginPackagePort: VersionedPort {
         Err("plugin_data_contract_loading_unsupported".into())
     }
 
+    /// Full versioned operation metadata. Existing adapters retain their legacy
+    /// implementation; no caller may discard V3 history to use the old path.
+    fn operation_data(
+        &self,
+        package_sha256: &str,
+        operation_id: &str,
+    ) -> Result<Option<tradeassembly_plugin_sdk::data_history::VersionedOperationData>, String>
+    {
+        self.data_contract(package_sha256, operation_id)
+            .map(|record| record.map(Into::into))
+    }
+
     fn data_schema(
         &self,
         _package_sha256: &str,

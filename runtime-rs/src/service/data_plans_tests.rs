@@ -165,6 +165,20 @@ pub(crate) fn fixture_service_with_state(
     PlanScope,
     PipelineRequest,
 ) {
+    fixture_service_with_history(plugin_operations, state_partition, mode, false)
+}
+
+pub(crate) fn fixture_service_with_history(
+    plugin_operations: Option<std::sync::Arc<dyn crate::ports::PluginOperationPort>>,
+    state_partition: tradeassembly_plugin_sdk::data_contract::StatePartition,
+    mode: &str,
+    v3: bool,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    PlanScope,
+    PipelineRequest,
+) {
     use crate::{
         adapters::plugin_packages::data_package_tests::{archive_files, materials},
         ports::*,
@@ -232,6 +246,29 @@ pub(crate) fn fixture_service_with_state(
                     partition: state_partition.clone(),
                 },
             );
+        }
+        if v3 && id == "derive" {
+            use tradeassembly_plugin_sdk::data_history::*;
+            let mut base = contract.into_legacy().unwrap();
+            base.schema_version = tradeassembly_plugin_sdk::data_contract::DataContractVersion::V2;
+            contract = VersionedOperationData::V3(OperationDataV3 {
+                schema_version: HistoryVersion::V3,
+                operation: base,
+                history: HistoryContract {
+                    first_ready: BTreeMap::from([(
+                        "value".into(),
+                        BTreeMap::from([(
+                            "source".into(),
+                            Observations::Parameter {
+                                name: "window".into(),
+                            },
+                        )]),
+                    )]),
+                    partitioning: Partitioning::InstrumentIndependent,
+                    required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+                    reconstruction: Reconstruction::CheckpointOrExplicitOrigin,
+                },
+            });
         }
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let contract_bytes = serde_json::to_vec(&contract).unwrap();

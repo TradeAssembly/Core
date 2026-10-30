@@ -116,7 +116,7 @@ fn prepare(
         }
         let contract = runtime
             .plugin_packages
-            .data_contract(digest, &selected.operation_id)?
+            .operation_data(digest, &selected.operation_id)?
             .ok_or("data_plan_contract_missing")?;
         let contract_sha256 =
             canonical_sha256(&contract).map_err(|_| "data_plan_contract_invalid")?;

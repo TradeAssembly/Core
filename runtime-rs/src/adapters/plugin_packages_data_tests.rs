@@ -195,3 +195,42 @@ fn data_package_external_broad_archive_verifies_without_execution() {
         .unwrap()
         .is_some());
 }
+
+#[test]
+fn data_package_v3_metadata_is_loaded_without_legacy_downgrade() {
+    use tradeassembly_plugin_sdk::data_history::*;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut descriptor, contract, schema, manifest) = materials();
+    let mut operation: tradeassembly_plugin_sdk::data_contract::OperationDataContract =
+        serde_json::from_slice(&contract).unwrap();
+    operation.schema_version = tradeassembly_plugin_sdk::data_contract::DataContractVersion::V2;
+    let record = OperationDataV3 {
+        schema_version: HistoryVersion::V3,
+        operation,
+        history: HistoryContract {
+            first_ready: std::collections::BTreeMap::from([(
+                "value".into(),
+                std::collections::BTreeMap::new(),
+            )]),
+            partitioning: Partitioning::InstrumentIndependent,
+            required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+            reconstruction: Reconstruction::FiniteWindow,
+        },
+    };
+    let bytes = serde_json::to_vec(&record).unwrap();
+    descriptor["dataContracts"][0]["document"]["sha256"] = json!(sha256(&bytes));
+    descriptor["dataContracts"][0]["canonicalSha256"] = json!(canonical(&record).unwrap());
+    let (store, installed) = install(dir.path(), &descriptor, bytes, schema, &manifest).unwrap();
+    assert!(store
+        .operation_data(&installed.package_sha256, "provide")
+        .unwrap()
+        .unwrap()
+        .v3()
+        .is_some());
+    assert_eq!(
+        store
+            .data_contract(&installed.package_sha256, "provide")
+            .unwrap_err(),
+        "plugin_data_contract_version_requires_v3"
+    );
+}

@@ -9,7 +9,11 @@ use crate::ports::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use tradeassembly_plugin_sdk::{data_contract::*, data_evaluation::*};
+use tradeassembly_plugin_sdk::{
+    data_contract::*,
+    data_evaluation::*,
+    data_history::{Partitioning, VersionedOperationData},
+};
 
 const RUNS: &str = "data_evaluation_checkpoints_v1";
 const RECEIPTS: &str = "data_evaluation_receipts_v1";
@@ -42,6 +46,10 @@ pub struct EvaluationCheckpoint {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub state_availability: BTreeMap<String, StateAvailability>,
     pub valid_counts: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub partition_availability: BTreeMap<String, BTreeMap<String, StateAvailability>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub partition_resets: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub last_frame: crate::data_strategy::Frame,
     pub checkpoint_sha256: String,
@@ -385,6 +393,8 @@ pub fn step(
             states: BTreeMap::new(),
             state_availability: BTreeMap::new(),
             valid_counts: BTreeMap::new(),
+            partition_availability: BTreeMap::new(),
+            partition_resets: BTreeMap::new(),
             last_frame: BTreeMap::new(),
             checkpoint_sha256: String::new(),
         },
@@ -449,7 +459,7 @@ pub fn step(
 struct TransformFrame<'a> {
     graph: &'a CapabilityGraphResolution,
     node: &'a PipelineNode,
-    contract: &'a OperationDataContract,
+    contract: &'a VersionedOperationData,
     package: &'a str,
     time: i64,
     values: &'a BTreeMap<String, DataEvaluationResponse>,
@@ -871,6 +881,147 @@ impl StepEnvironment<'_> {
         claim: &mut LeaseClaim,
     ) -> Result<DataEvaluationResponse, String> {
         self.check_budget()?;
+        let Some(v3) = frame.contract.v3() else {
+            return self.transform_partition(frame, checkpoint, claim);
+        };
+        if v3.history.partitioning == Partitioning::AllDeclaredContext {
+            return self.transform_partition(frame, checkpoint, claim);
+        }
+        // Partition BEFORE collecting input readiness, lineage or availability.
+        // Never infer independence from the plugin's state shape.
+        let mut combined = DataEvaluationResponse {
+            schema_version: EvaluationVersion::V1,
+            outputs: BTreeMap::new(),
+            state: checkpoint
+                .states
+                .get(&frame.node.graph_node_id)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        for instrument in &frame.node.context.instruments {
+            self.check_budget()?;
+            let id = &instrument.instrument_id;
+            let mut node = frame.node.clone();
+            node.context.instruments = vec![instrument.clone()];
+            for context in node.input_contexts.values_mut() {
+                if context.instruments != frame.node.context.instruments {
+                    return Err("data_evaluation_independent_context_mismatch".into());
+                }
+                context.instruments = vec![instrument.clone()];
+            }
+            let mut values = frame.values.clone();
+            for response in values.values_mut() {
+                response.state.clear();
+                for batch in response.outputs.values_mut() {
+                    batch.points.retain(|point| point.instrument_id == *id);
+                }
+            }
+            let mut local = checkpoint.clone();
+            let prior = combined.state.get(id).cloned();
+            let availability = checkpoint
+                .partition_availability
+                .get(&node.graph_node_id)
+                .and_then(|slots| slots.get(id))
+                .cloned();
+            match availability {
+                Some(value) => {
+                    local.states.insert(
+                        node.graph_node_id.clone(),
+                        prior
+                            .map(|v| BTreeMap::from([(id.clone(), v)]))
+                            .unwrap_or_default(),
+                    );
+                    local
+                        .state_availability
+                        .insert(node.graph_node_id.clone(), value);
+                }
+                None => {
+                    let has_history = frame.contract.inputs.keys().any(|port| {
+                        key(&[&node.graph_node_id, port, id])
+                            .ok()
+                            .is_some_and(|key| checkpoint.valid_counts.contains_key(&key))
+                    });
+                    if prior.is_some() || has_history {
+                        return Err(
+                            "data_evaluation_partition_availability_missing_requires_replay".into(),
+                        );
+                    }
+                    local.states.remove(&node.graph_node_id);
+                    local.state_availability.remove(&node.graph_node_id);
+                }
+            }
+            let response = self.transform_partition(
+                TransformFrame {
+                    graph: frame.graph,
+                    node: &node,
+                    contract: frame.contract,
+                    package: frame.package,
+                    time: frame.time,
+                    values: &values,
+                },
+                &mut local,
+                claim,
+            )?;
+            combined.state.remove(id);
+            combined.state.extend(response.state);
+            for (port, batch) in response.outputs {
+                combined
+                    .outputs
+                    .entry(port)
+                    .or_insert_with(|| DataBatch {
+                        schema: batch.schema.clone(),
+                        shape: batch.shape.clone(),
+                        points: vec![],
+                    })
+                    .points
+                    .extend(batch.points);
+            }
+            checkpoint.valid_counts = local.valid_counts;
+            checkpoint.partition_resets = local.partition_resets;
+            let availability = local.state_availability[&node.graph_node_id].clone();
+            checkpoint
+                .partition_availability
+                .entry(node.graph_node_id.clone())
+                .or_default()
+                .insert(id.clone(), availability);
+        }
+        for batch in combined.outputs.values_mut() {
+            batch
+                .points
+                .sort_by(|a, b| a.instrument_id.cmp(&b.instrument_id));
+        }
+        if bytes(&combined.state)? > MAX_STATE_BYTES {
+            return Err("data_evaluation_state_too_large".into());
+        }
+        let availability = checkpoint.partition_availability[&frame.node.graph_node_id]
+            .values()
+            .fold(
+                StateAvailability {
+                    known_at_ms: i64::MIN,
+                    arrived_at_ms: i64::MIN,
+                },
+                |mut result, value| {
+                    result.known_at_ms = result.known_at_ms.max(value.known_at_ms);
+                    result.arrived_at_ms = result.arrived_at_ms.max(value.arrived_at_ms);
+                    result
+                },
+            );
+        checkpoint
+            .states
+            .insert(frame.node.graph_node_id.clone(), combined.state.clone());
+        checkpoint
+            .state_availability
+            .insert(frame.node.graph_node_id.clone(), availability);
+        Ok(combined)
+    }
+
+    fn transform_partition(
+        &self,
+        frame: TransformFrame<'_>,
+        checkpoint: &mut EvaluationCheckpoint,
+        claim: &mut LeaseClaim,
+    ) -> Result<DataEvaluationResponse, String> {
+        self.check_budget()?;
         let TransformFrame {
             graph,
             node,
@@ -916,6 +1067,30 @@ impl StepEnvironment<'_> {
             }
             inputs.insert(port.clone(), batch.clone());
         }
+        let v3_history = contract
+            .v3()
+            .map(|v| v.resolve(&node.parameters))
+            .transpose()?;
+        if v3_history.is_some() && !ready {
+            // A complete typed-unavailable frame explicitly starts a new seed.
+            // Do not feed stale recursive state or partial counters to the plugin.
+            checkpoint.states.remove(&node.graph_node_id);
+            checkpoint.state_availability.remove(&node.graph_node_id);
+            for port in contract.inputs.keys() {
+                for instrument in &node.context.instruments {
+                    checkpoint.valid_counts.remove(&key(&[
+                        &node.graph_node_id,
+                        port,
+                        &instrument.instrument_id,
+                    ])?);
+                    checkpoint
+                        .partition_resets
+                        .entry(node.graph_node_id.clone())
+                        .or_default()
+                        .insert(instrument.instrument_id.clone(), hash(&(frame, &inputs))?);
+                }
+            }
+        }
         let prior_state = checkpoint
             .states
             .get(&node.graph_node_id)
@@ -934,6 +1109,15 @@ impl StepEnvironment<'_> {
             arrived = arrived.max(availability.arrived_at_ms);
         }
         lineage.insert(hash(&prior_state)?);
+        if v3_history.is_some() {
+            if let Some(resets) = checkpoint.partition_resets.get(&node.graph_node_id) {
+                for instrument in &node.context.instruments {
+                    if let Some(reset) = resets.get(&instrument.instrument_id) {
+                        lineage.insert(reset.clone());
+                    }
+                }
+            }
+        }
         let interval = node
             .context
             .interval_ms
@@ -946,7 +1130,7 @@ impl StepEnvironment<'_> {
             event_end_ms: frame,
             as_of_ms: known,
         };
-        let mut response = if ready {
+        if ready {
             for (port, input) in &contract.inputs {
                 if input.required {
                     for point in &inputs[port].points {
@@ -958,6 +1142,8 @@ impl StepEnvironment<'_> {
                     }
                 }
             }
+        }
+        let mut response = if ready || v3_history.is_some() {
             let selected = graph
                 .nodes
                 .iter()
@@ -1058,13 +1244,34 @@ impl StepEnvironment<'_> {
                     })
             });
         for (port, batch) in &mut response.outputs {
+            let output_warmed = if let Some(history) = &v3_history {
+                history
+                    .get(port)
+                    .ok_or("data_evaluation_history_output_missing")?
+                    .iter()
+                    .all(|(input, minimum)| {
+                        node.input_contexts
+                            .get(input)
+                            .unwrap_or(&node.context)
+                            .instruments
+                            .iter()
+                            .all(|instrument| {
+                                key(&[&node.graph_node_id, input, &instrument.instrument_id])
+                                    .ok()
+                                    .and_then(|k| checkpoint.valid_counts.get(&k))
+                                    .is_some_and(|n| n >= minimum)
+                            })
+                    })
+            } else {
+                warmed
+            };
             if batch.points.len() != node.context.instruments.len() {
                 return Err("data_evaluation_output_cardinality_invalid".into());
             }
             for point in &mut batch.points {
                 if point.provenance.event_start_ms != start
                     || point.provenance.event_end_ms != frame
-                    || (!ready || !warmed) && matches!(point.result, PointValue::Ready(_))
+                    || (!ready || !output_warmed) && matches!(point.result, PointValue::Ready(_))
                 {
                     return Err("data_evaluation_premature_output".into());
                 }
@@ -1130,7 +1337,9 @@ impl StepEnvironment<'_> {
                     }
                     _ => return Err("data_evaluation_state_partition_invalid".into()),
                 };
-                if ready && response.state.keys().cloned().collect::<BTreeSet<_>>() != expected {
+                if (ready || v3_history.is_some())
+                    && response.state.keys().cloned().collect::<BTreeSet<_>>() != expected
+                {
                     return Err("data_evaluation_state_partition_invalid".into());
                 }
                 for value in response.state.values() {

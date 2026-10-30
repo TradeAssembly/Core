@@ -492,6 +492,94 @@ impl StepEnvironment<'_> {
         serde_json::from_value(revision["revision"]["graph"].clone())
             .map_err(|_| "data_evaluation_graph_invalid".into())
     }
+    fn acquire(
+        &self,
+        node: &PipelineNode,
+        contract: &VersionedOperationData,
+        selected: &CapabilitySelection,
+        payload: &DataEvaluationRequest,
+        claim: &mut LeaseClaim,
+    ) -> Result<DataEvaluationResponse, String> {
+        if !contract
+            .v3()
+            .is_some_and(|v| v.history.partitioning == Partitioning::InstrumentIndependent)
+        {
+            return invoke(
+                self.service,
+                self.plan,
+                node,
+                selected,
+                payload,
+                claim,
+                self.context,
+            );
+        }
+        let count = node.context.instruments.len();
+        if count == 0 || count > MAX_POINTS {
+            return Err("data_evaluation_source_partition_budget_invalid".into());
+        }
+        let mut combined = DataEvaluationResponse {
+            schema_version: EvaluationVersion::V1,
+            outputs: BTreeMap::new(),
+            state: BTreeMap::new(),
+        };
+        for instrument in &node.context.instruments {
+            self.check_budget()?;
+            let mut singleton = node.clone();
+            singleton.context.instruments = vec![instrument.clone()];
+            let mut request = payload.clone();
+            request.instruments = vec![instrument.instrument_id.clone()];
+            // Divide the existing source point budget, rather than multiplying
+            // it by the number of independent invocations.
+            request.max_points = (MAX_POINTS / count) as u64;
+            let response = invoke(
+                self.service,
+                self.plan,
+                &singleton,
+                selected,
+                &request,
+                claim,
+                self.context,
+            )?;
+            if !response.state.is_empty() || response.outputs.keys().ne(contract.outputs.keys()) {
+                return Err("data_evaluation_provider_response_invalid".into());
+            }
+            for (port, batch) in response.outputs {
+                if batch.points.len() > request.max_points as usize {
+                    return Err("data_evaluation_source_partition_budget_invalid".into());
+                }
+                validate_batch(
+                    self.service,
+                    &self.plan.content.package_sha256[&node.graph_node_id],
+                    &contract.outputs[&port],
+                    &singleton.context,
+                    &batch,
+                    &request.window,
+                )?;
+                combined
+                    .outputs
+                    .entry(port)
+                    .or_insert_with(|| DataBatch {
+                        schema: batch.schema.clone(),
+                        shape: batch.shape.clone(),
+                        points: vec![],
+                    })
+                    .points
+                    .extend(batch.points);
+            }
+            if bytes(&combined)? > MAX_STEP_BYTES {
+                return Err("data_evaluation_step_too_large".into());
+            }
+        }
+        for batch in combined.outputs.values_mut() {
+            batch.points.sort_by(|a, b| {
+                (a.provenance.event_end_ms, &a.instrument_id)
+                    .cmp(&(b.provenance.event_end_ms, &b.instrument_id))
+            });
+        }
+        Ok(combined)
+    }
+
     fn evaluate(
         &self,
         checkpoint: &mut EvaluationCheckpoint,
@@ -555,15 +643,7 @@ impl StepEnvironment<'_> {
                 prior_state: BTreeMap::new(),
                 max_points: MAX_POINTS as u64,
             };
-            let response = invoke(
-                self.service,
-                self.plan,
-                node,
-                selected,
-                &payload,
-                claim,
-                self.context,
-            )?;
+            let response = self.acquire(node, contract, selected, &payload, claim)?;
             self.check_budget()?;
             if !response.state.is_empty() || response.outputs.len() != contract.outputs.len() {
                 return Err("data_evaluation_provider_response_invalid".into());

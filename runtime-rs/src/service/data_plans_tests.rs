@@ -247,7 +247,7 @@ pub(crate) fn fixture_service_with_history(
                 },
             );
         }
-        if v3 && id == "derive" {
+        if v3 {
             use tradeassembly_plugin_sdk::data_history::*;
             let mut base = contract.into_legacy().unwrap();
             base.schema_version = tradeassembly_plugin_sdk::data_contract::DataContractVersion::V2;
@@ -257,12 +257,16 @@ pub(crate) fn fixture_service_with_history(
                 history: HistoryContract {
                     first_ready: BTreeMap::from([(
                         "value".into(),
-                        BTreeMap::from([(
-                            "source".into(),
-                            Observations::Parameter {
-                                name: "window".into(),
-                            },
-                        )]),
+                        if id == "provide" {
+                            BTreeMap::new()
+                        } else {
+                            BTreeMap::from([(
+                                "source".into(),
+                                Observations::Parameter {
+                                    name: "window".into(),
+                                },
+                            )])
+                        },
                     )]),
                     partitioning: Partitioning::InstrumentIndependent,
                     required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,

@@ -870,3 +870,36 @@ fn data_pipeline_v3_composes_only_the_selected_output_history() {
         .iter()
         .any(|e| e.node_id.as_deref() == Some("result") && e.port.as_deref() == Some("late")));
 }
+
+#[test]
+fn data_pipeline_v3_stateful_source_is_rejected_during_preparation() {
+    use tradeassembly_plugin_sdk::data_history::*;
+    let (graph, request, mut contracts) = make_fixture(true, 1);
+    let source = contracts
+        .iter_mut()
+        .find(|c| c.graph_node_id == "source")
+        .unwrap();
+    let mut operation = source.contract.clone().into_legacy().unwrap();
+    operation.schema_version = DataContractVersion::V2;
+    operation.state = Some(OperationStateContract {
+        schema: operation.outputs["value"].schema.clone(),
+        version: "1".into(),
+        partition: StatePartition::Instrument,
+    });
+    source.contract = VersionedOperationData::V3(OperationDataV3 {
+        schema_version: HistoryVersion::V3,
+        operation,
+        history: HistoryContract {
+            first_ready: BTreeMap::from([("value".into(), BTreeMap::new())]),
+            partitioning: Partitioning::InstrumentIndependent,
+            required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+            reconstruction: Reconstruction::CheckpointOrExplicitOrigin,
+        },
+    });
+    seal(&mut contracts);
+    let errors = compile_data_plan(&graph, request, contracts).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|e| e.code == PlanDiagnosticCode::InvalidContract
+            && e.message.contains("Stateful V3 source acquisition")));
+}

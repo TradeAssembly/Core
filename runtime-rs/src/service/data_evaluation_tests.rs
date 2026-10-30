@@ -1054,4 +1054,13 @@ fn data_evaluation_v3_unavailable_resets_only_affected_instrument_across_service
         actual_b, expected_b,
         "unrelated partition including provenance must match uninterrupted execution"
     );
+    let captured = operations.requests.lock().unwrap();
+    let source_requests: Vec<_> = captured.iter().filter(|r| r.node_id != "derived").collect();
+    assert!(!source_requests.is_empty());
+    assert!(
+        source_requests.iter().all(|r| r.instruments.len() == 1),
+        "instrument-independent sources must receive singleton requests too"
+    );
+    assert!(source_requests.iter().any(|r| r.instruments == ["A"]));
+    assert!(source_requests.iter().any(|r| r.instruments == ["B"]));
 }

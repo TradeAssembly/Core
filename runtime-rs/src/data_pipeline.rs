@@ -427,6 +427,10 @@ pub fn compile_data_plan(
             )),
         }
         if let Some(v3) = contract.v3() {
+            if contract.inputs.is_empty() && contract.state.is_some() {
+                errors.push(issue(InvalidContract, Some(id), None,
+                    "Stateful V3 source acquisition is unsupported; use a stateless source with explicit replay or a stateful downstream transform."));
+            }
             for (output, inputs) in &v3.history.first_ready {
                 for (input, expression) in inputs {
                     if let Err(reason) = expression.resolve(&node.parameters) {

@@ -30,6 +30,9 @@ implicit reconstruction of missing checkpoints.
 
 `partitioning` is explicit: `instrument_independent` invokes each instrument
 separately, with only that instrument's input points and prior state.
+Stateless source acquisition also uses singleton instrument requests and divides
+the existing source point budget across them. Stateful V3 source declarations
+are rejected during preparation until acquisition state is supported.
 Instrument state, required-input counters, availability time and lineage remain
 isolated. Explicit input contexts must match that independent context;
 cross-context calculations must declare `all_declared_context` instead.

@@ -60,7 +60,7 @@ winapi-util = "0.1.11"
 fs2 = "0.4"
 
 [dev-dependencies]
-openidconnect = "4.0.1"
+openidconnect = { git = "https://github.com/ramosbugs/openidconnect-rs", rev = "4e5d6725d51cee04848c440ad7fba82e5e4f5385" }
 rsa = "0.9.8"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

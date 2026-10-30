@@ -7,6 +7,8 @@ license-file = "../LICENSE"
 
 [dependencies]
 base64 = "0.22"
+ed25519-dalek = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 fs2 = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -18,10 +20,11 @@ sysinfo = "0.33"
 tar = "0.4"
 tempfile = "3"
 walkdir = "2"
+url = "2"
 zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "0.4.4"

@@ -3608,6 +3608,29 @@ fn bundled_default_plugin_request(
     executable: &std::path::Path,
     offline: bool,
 ) -> Option<Result<PluginPackageArgs, Value>> {
+    if let Some(pin) =
+        crate::workspace_bootstrap::installed_plugin_pin(executable, &runtime_target())
+    {
+        return Some(
+            pin.and_then(|pin| {
+                let compiled: Value =
+                    serde_json::from_str(include_str!("../../../packaging/alpaca.json"))
+                        .expect("Alpaca bundle pin JSON");
+                if compiled["version"].as_str() != Some(pin.version.as_str())
+                    || compiled["sourceRevision"].as_str() != Some(pin.source_revision.as_str())
+                {
+                    return Err("bundled_plugin_compile_identity_changed".into());
+                }
+                Ok(PluginPackageArgs {
+                    source: pin.source.display().to_string(),
+                    package_sha256: pin.package_sha256,
+                    manifest_sha256: pin.manifest_sha256,
+                    offline,
+                })
+            })
+            .map_err(|_| json!({"ok":false,"error":{"code":"bundled_plugin_unavailable"}})),
+        );
+    }
     let bin = executable.parent()?;
     let root = bin.parent()?;
     if bin.file_name()? != "bin" || !root.join("bundle.json").is_file() {
@@ -3973,6 +3996,80 @@ mod tests {
             pin["manifestSha256"].as_str().unwrap()
         );
         assert!(request.offline);
+    }
+
+    #[test]
+    fn installed_default_plugin_uses_bound_pin_and_preserves_bootstrap_request_scope() {
+        let fixture =
+            crate::workspace_bootstrap::installed_pin_tests::Fixture::new(&super::runtime_target());
+        let request = super::bundled_default_plugin_request(&fixture.executable, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.package_sha256, fixture.pin["packageSha256"]);
+        assert_eq!(request.manifest_sha256, fixture.pin["manifestSha256"]);
+        let compiled: serde_json::Value =
+            serde_json::from_str(include_str!("../../../packaging/alpaca.json")).unwrap();
+        assert_ne!(request.package_sha256, compiled["packageSha256"]);
+        let envelope =
+            super::scoped_plugin_package_request(&request, "cli-install-default", "fixture");
+        assert_eq!(
+            envelope["integrity"],
+            serde_json::json!({"packageSha256":fixture.pin["packageSha256"],"manifestSha256":fixture.pin["manifestSha256"]})
+        );
+        assert_eq!(
+            envelope["idempotencyKey"],
+            format!(
+                "cli-install-default:plugin-package:{}:{}:fixture",
+                request.package_sha256, request.manifest_sha256
+            )
+        );
+        assert_eq!(envelope["offline"], true);
+        fs::write(fixture.payload.join("plugins/alpaca.json"), b"{}").unwrap();
+        let rejected = super::bundled_default_plugin_request(&fixture.executable, true)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(rejected["error"]["code"], "bundled_plugin_unavailable");
+    }
+
+    #[test]
+    fn installed_default_plugin_rejects_a_rebound_sdk_source_identity() {
+        use sha2::{Digest, Sha256};
+        let fixture =
+            crate::workspace_bootstrap::installed_pin_tests::Fixture::new(&super::runtime_target());
+        let lock = fixture.payload.join("plugins/alpaca.json");
+        let mut pin = fixture.pin.clone();
+        pin["sourceRevision"] = serde_json::json!("f".repeat(40));
+        fs::write(&lock, serde_json::to_vec(&pin).unwrap()).unwrap();
+        let bundle_path = fixture.payload.join("bundle.json");
+        let mut bundle: serde_json::Value =
+            serde_json::from_slice(&fs::read(&bundle_path).unwrap()).unwrap();
+        bundle["nativeInputs"]["alpacaRevision"] = pin["sourceRevision"].clone();
+        bundle["files"]["plugins/alpaca.json"]["sha256"] =
+            serde_json::json!(format!("{:x}", Sha256::digest(fs::read(&lock).unwrap())));
+        fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        let mut release = fixture.release.clone();
+        release["bundleManifestSha256"] = serde_json::json!(format!(
+            "{:x}",
+            Sha256::digest(fs::read(bundle_path).unwrap())
+        ));
+        crate::workspace_bootstrap::installed_pin_tests::private_record(
+            &fixture.root.join("installed.json"),
+            &serde_json::json!({"schemaVersion":1,"current":release,"previous":null,"wardenPort":32123}),
+        );
+        // Filesystem bindings are internally consistent, but cannot change this
+        // executable's compiled plugin source identity.
+        crate::workspace_bootstrap::installed_plugin_pin(
+            &fixture.executable,
+            &super::runtime_target(),
+        )
+        .unwrap()
+        .unwrap();
+        let rejected = super::bundled_default_plugin_request(&fixture.executable, true)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(rejected["error"]["code"], "bundled_plugin_unavailable");
     }
 
     #[test]

@@ -18,11 +18,16 @@ pub mod candidate;
 #[path = "../../platform/control_plane_redaction.rs"]
 mod control_plane_redaction;
 pub mod install;
+pub mod macho_derivation;
 pub mod native;
 pub mod package;
 mod plugin;
 pub mod qualify;
 pub mod registry_qualify;
+#[cfg(unix)]
+pub mod update_cache;
+pub mod update_publication;
+pub mod updates;
 #[doc(hidden)]
 #[path = "../../platform/workspace_bootstrap.rs"]
 pub mod workspace_bootstrap;

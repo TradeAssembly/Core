@@ -1,5 +1,5 @@
-//! Create-only installation evidence, under the existing local-owner filesystem
-//! trust root. This is not a backup or a migration of pre-existing installations.
+//! Installation evidence and read-only package selection under the existing
+//! local-owner filesystem trust root. Evidence creation never migrates old data.
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -166,6 +166,161 @@ fn verify_payload(payload: &Path, release: &Value) -> Result<Value, String> {
             && bundle["nativeInputs"]["alpacaManifestSha256"] == pin["manifestSha256"],
     )?;
     Ok(pin)
+}
+
+/// Verified package hashes and compile identity from one selected installation.
+#[derive(Debug)]
+pub struct InstalledPluginPin {
+    pub source: PathBuf,
+    pub package_sha256: String,
+    pub manifest_sha256: String,
+    pub version: String,
+    pub source_revision: String,
+}
+
+/// Resolve the exact current or pending installed payload, without mutation or
+/// network access. Dev bundles return `None`; invalid installed bindings fail.
+pub fn installed_plugin_pin(
+    executable: &Path,
+    target: &str,
+) -> Option<Result<InstalledPluginPin, String>> {
+    let bin = executable.parent()?;
+    let payload = bin.parent()?;
+    let versions = payload.parent()?;
+    if bin.file_name()? != "bin" || versions.file_name()? != "versions" {
+        return None;
+    }
+    Some(resolve_installed_plugin_pin(executable, target))
+}
+
+fn digest_text(value: &Value) -> bool {
+    value.as_str().is_some_and(|s| {
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+fn pin_regular_file(path: &Path, limit: u64) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| ERROR)?;
+    check(metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= limit)?;
+    // Canonical payload paths have already resolved system aliases. Refuse links
+    // in the package/metadata path, including an otherwise contained plugin dir.
+    check(path.canonicalize().map_err(|_| ERROR)? == path)?;
+    Ok(())
+}
+
+fn pin_record(root: &Path, name: &str) -> Result<Option<Value>, String> {
+    let path = root.join(name);
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(ERROR.into()),
+        Ok(_) => {
+            let record = private_json(&path)?;
+            check(
+                record["schemaVersion"] == 1
+                    && record["wardenPort"]
+                        .as_u64()
+                        .is_some_and(|p| p > 0 && p <= u16::MAX as u64)
+                    && record["current"].is_object(),
+            )?;
+            Ok(Some(record))
+        }
+    }
+}
+
+fn resolve_installed_plugin_pin(
+    executable: &Path,
+    target: &str,
+) -> Result<InstalledPluginPin, String> {
+    // Do not resolve an attacker-controlled root/payload link into a seemingly
+    // valid selected installation. System ancestors such as macOS /var are fine.
+    for path in executable.ancestors().take(5) {
+        check(
+            !fs::symlink_metadata(path)
+                .map_err(|_| ERROR)?
+                .file_type()
+                .is_symlink(),
+        )?;
+    }
+    let executable = executable.canonicalize().map_err(|_| ERROR)?;
+    let payload = executable.parent().and_then(Path::parent).ok_or(ERROR)?;
+    let root = payload.parent().and_then(Path::parent).ok_or(ERROR)?;
+    check(executable == payload.join(binary_name()))?;
+    let installed = pin_record(root, "installed.json")?;
+    let pending = pin_record(root, "pending.json")?;
+    let selected = match (&installed, &pending) {
+        (Some(current), Some(next)) => {
+            // Before pointer commit: previous is the exact current release. After
+            // commit: the full record is identical, awaiting journal cleanup.
+            check(
+                next == current
+                    || (next["previous"] == current["current"]
+                        && next["wardenPort"] == current["wardenPort"]),
+            )?;
+            &next["current"]
+        }
+        (None, Some(next)) => {
+            check(next["previous"].is_null())?;
+            &next["current"]
+        }
+        (Some(current), None) => &current["current"],
+        (None, None) => return Err(ERROR.into()),
+    };
+    check(
+        selected["schemaVersion"] == 2
+            && selected["target"] == target
+            && selected["stateCompatibility"] == "f2-local-v1"
+            && digest_text(&selected["archiveSha256"])
+            && digest_text(&selected["bundleManifestSha256"]),
+    )?;
+    pin_regular_file(&payload.join("bundle.json"), LIMIT)?;
+    pin_regular_file(&executable, 512 * LIMIT)?;
+    pin_regular_file(&payload.join("plugins/alpaca.json"), LIMIT)?;
+    let pin = read(&payload.join("plugins/alpaca.json"))?;
+    let version = pin["version"].as_str().ok_or(ERROR)?;
+    let filename = pin["packageFile"].as_str().ok_or(ERROR)?;
+    check(
+        !version.is_empty()
+            && version.len() <= 64
+            && version
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
+            && filename == format!("tradeassembly-plugin-alpaca-{version}.tar.gz")
+            && pin["target"] == target
+            && digest_text(&pin["packageSha256"])
+            && digest_text(&pin["manifestSha256"]),
+    )?;
+    let source = pin["sourceRevision"].as_str().ok_or(ERROR)?;
+    check(
+        source.len() == 40
+            && source
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+    )?;
+    pin_regular_file(&payload.join("plugins").join(filename), 512 * LIMIT)?;
+    let verified = verify_payload(payload, selected)?;
+    let bundle = read(&payload.join("bundle.json"))?;
+    check(
+        bundle["target"] == target
+            && bundle["nativeInputs"]["target"] == target
+            && bundle["nativeInputs"]["coreRevision"]
+                .as_str()
+                .is_some_and(|s| {
+                    s.len() == 40
+                        && s.bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+            && bundle["nativeInputs"]["coreSha256"] == bundle["files"][binary_name()]["sha256"],
+    )?;
+    check(bundle["nativeInputs"]["alpacaRevision"] == source)?;
+    Ok(InstalledPluginPin {
+        source: payload.join("plugins").join(filename),
+        package_sha256: verified["packageSha256"].as_str().ok_or(ERROR)?.into(),
+        manifest_sha256: verified["manifestSha256"].as_str().ok_or(ERROR)?.into(),
+        version: version.into(),
+        source_revision: source.into(),
+    })
 }
 fn validate(material: &Material) -> Result<(), String> {
     check(material.schema == "tradeassembly.installed-workspace-bootstrap.v1")?;
@@ -702,6 +857,184 @@ mod tests {
                 ERROR
             );
             assert!(!seal_path(&fixture.database).exists());
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod installed_pin_tests {
+    use super::*;
+    pub struct Fixture {
+        pub _temp: tempfile::TempDir,
+        pub root: PathBuf,
+        pub payload: PathBuf,
+        pub executable: PathBuf,
+        pub pin: Value,
+        pub release: Value,
+    }
+    pub fn private_record(path: &Path, value: &Value) {
+        let bytes = serde_json::to_vec(value).unwrap();
+        #[cfg(windows)]
+        {
+            crate::windows_private::ensure_directory(path.parent().unwrap()).unwrap();
+            crate::windows_private::write_atomic(path, &bytes).unwrap();
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(path, bytes).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    impl Fixture {
+        pub fn new(target: &str) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let payload = root.join("versions").join("a".repeat(64));
+            fs::create_dir_all(payload.join("bin")).unwrap();
+            fs::create_dir(payload.join("plugins")).unwrap();
+            let executable = payload.join(binary_name());
+            fs::write(&executable, b"new runtime fixture; never executed").unwrap();
+            let filename = "tradeassembly-plugin-alpaca-0.1.19.tar.gz";
+            fs::write(
+                payload.join("plugins").join(filename),
+                b"derived signed-package fixture",
+            )
+            .unwrap();
+            let package_hash = hash(&payload.join("plugins").join(filename)).unwrap();
+            let compiled: Value =
+                serde_json::from_str(include_str!("../packaging/alpaca.json")).unwrap();
+            let pin = json!({"version":"0.1.19","target":target,"packageFile":filename,"sourceRevision":compiled["sourceRevision"],"packageSha256":package_hash,"manifestSha256":"b".repeat(64)});
+            fs::write(
+                payload.join("plugins/alpaca.json"),
+                serde_json::to_vec(&pin).unwrap(),
+            )
+            .unwrap();
+            let core_sha = hash(&executable).unwrap();
+            let bundle = json!({"target":target,"nativeInputs":{"target":target,"coreRevision":"c".repeat(40),"coreSha256":core_sha,"alpacaRevision":pin["sourceRevision"],"alpacaPackageSha256":package_hash,"alpacaManifestSha256":pin["manifestSha256"]},"files":{binary_name():{"sha256":core_sha},"plugins/alpaca.json":{"sha256":hash(&payload.join("plugins/alpaca.json")).unwrap()}}});
+            fs::write(
+                payload.join("bundle.json"),
+                serde_json::to_vec(&bundle).unwrap(),
+            )
+            .unwrap();
+            let release = json!({"schemaVersion":2,"target":target,"stateCompatibility":"f2-local-v1","archiveSha256":"a".repeat(64),"bundleManifestSha256":hash(&payload.join("bundle.json")).unwrap()});
+            private_record(
+                &root.join("installed.json"),
+                &json!({"schemaVersion":1,"current":release,"previous":null,"wardenPort":32123}),
+            );
+            Self {
+                _temp: temp,
+                root,
+                payload,
+                executable,
+                pin,
+                release,
+            }
+        }
+    }
+    #[test]
+    fn installed_pin_uses_exact_derived_package_and_never_mutates_owner_record() {
+        let f = Fixture::new("aarch64-apple-darwin");
+        let before = fs::read(f.root.join("installed.json")).unwrap();
+        let result = installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.package_sha256, f.pin["packageSha256"]);
+        assert_eq!(result.manifest_sha256, f.pin["manifestSha256"]);
+        assert_eq!(
+            result.source,
+            f.payload
+                .join("plugins")
+                .join(f.pin["packageFile"].as_str().unwrap())
+        );
+        assert_eq!(fs::read(f.root.join("installed.json")).unwrap(), before);
+        assert!(
+            installed_plugin_pin(&f.executable, "x86_64-unknown-linux-gnu")
+                .unwrap()
+                .is_err()
+        );
+    }
+    #[test]
+    fn installed_pin_substitution_of_package_lock_bundle_or_executing_binary_fails_closed() {
+        for relative in [
+            "plugins/tradeassembly-plugin-alpaca-0.1.19.tar.gz",
+            "plugins/alpaca.json",
+            "bundle.json",
+            binary_name(),
+        ] {
+            let f = Fixture::new("aarch64-apple-darwin");
+            fs::write(f.payload.join(relative), b"substitution").unwrap();
+            assert!(
+                installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+                    .unwrap()
+                    .is_err(),
+                "{relative}"
+            );
+        }
+        let f = Fixture::new("aarch64-apple-darwin");
+        fs::remove_file(f.root.join("installed.json")).unwrap();
+        assert!(installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .is_err());
+    }
+    #[test]
+    fn installed_pin_pending_fresh_upgrade_and_committed_recovery_are_exact() {
+        let f = Fixture::new("aarch64-apple-darwin");
+        let next =
+            json!({"schemaVersion":1,"current":f.release,"previous":null,"wardenPort":32123});
+        private_record(&f.root.join("pending.json"), &next);
+        fs::remove_file(f.root.join("installed.json")).unwrap();
+        installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .unwrap();
+        let mut old = f.release.clone();
+        old["archiveSha256"] = json!("d".repeat(64));
+        let current = json!({"schemaVersion":1,"current":old,"previous":null,"wardenPort":32123});
+        private_record(&f.root.join("installed.json"), &current);
+        assert!(installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .is_err());
+        let upgrade =
+            json!({"schemaVersion":1,"current":f.release,"previous":old,"wardenPort":32123});
+        private_record(&f.root.join("pending.json"), &upgrade);
+        installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .unwrap();
+        private_record(&f.root.join("installed.json"), &upgrade);
+        installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .unwrap();
+        let mut wrong = upgrade;
+        wrong["wardenPort"] = json!(32124);
+        private_record(&f.root.join("pending.json"), &wrong);
+        assert!(installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+            .unwrap()
+            .is_err());
+    }
+    #[test]
+    fn installed_pin_does_not_apply_to_dev_bundles_and_rejects_linked_or_nonprivate_records() {
+        let f = Fixture::new("aarch64-apple-darwin");
+        assert!(installed_plugin_pin(
+            &f.root.join("dev/bin/tradeassembly"),
+            "aarch64-apple-darwin"
+        )
+        .is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{symlink, PermissionsExt};
+            let record = f.root.join("installed.json");
+            fs::set_permissions(&record, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+                .unwrap()
+                .is_err());
+            fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+            let pin = f.payload.join("plugins/alpaca.json");
+            let saved = f.payload.join("saved-pin.json");
+            fs::rename(&pin, &saved).unwrap();
+            symlink(saved, &pin).unwrap();
+            assert!(installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
+                .unwrap()
+                .is_err());
         }
     }
 }

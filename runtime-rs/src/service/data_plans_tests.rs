@@ -148,6 +148,23 @@ pub(crate) fn fixture_service(
     PlanScope,
     PipelineRequest,
 ) {
+    fixture_service_with_state(
+        plugin_operations,
+        tradeassembly_plugin_sdk::data_contract::StatePartition::Instrument,
+        "paper",
+    )
+}
+
+pub(crate) fn fixture_service_with_state(
+    plugin_operations: Option<std::sync::Arc<dyn crate::ports::PluginOperationPort>>,
+    state_partition: tradeassembly_plugin_sdk::data_contract::StatePartition,
+    mode: &str,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    PlanScope,
+    PipelineRequest,
+) {
     use crate::{
         adapters::plugin_packages::data_package_tests::{archive_files, materials},
         ports::*,
@@ -178,6 +195,7 @@ pub(crate) fn fixture_service(
             .unwrap();
         let mut op = serde_json::to_value(&selected.operation).unwrap();
         op["traits"]["instrumentFamilies"] = json!(["equity"]);
+        op["traits"]["modes"] = json!([mode]);
         op["traits"]["outputSchemaRefs"]
             .as_array_mut()
             .unwrap()
@@ -192,6 +210,7 @@ pub(crate) fn fixture_service(
             .contract
             .clone();
         contract.applicability.asset_classes = vec!["equity".into()];
+        contract.applicability.modes = vec![mode.into()];
         contract.applicability.instrument_families = vec!["equity".into()];
         for port in contract.inputs.values_mut() {
             port.data.schema.sha256 = schema_hash.clone();
@@ -210,7 +229,7 @@ pub(crate) fn fixture_service(
                         sha256: state_hash.clone(),
                     },
                     version: "1".into(),
-                    partition: tradeassembly_plugin_sdk::data_contract::StatePartition::Instrument,
+                    partition: state_partition.clone(),
                 },
             );
         }
@@ -312,7 +331,7 @@ pub(crate) fn fixture_service(
     };
     let revision = super::capability_graph::save_revision(
         &service,
-        json!({"configId":"cfg_plan_fixture","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}),
+        json!({"configId":"cfg_plan_fixture","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":mode,"additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":mode,"declaration":"required","fallbackPolicy":"none"}]}),
     );
     assert_eq!(revision["revision"]["graph"]["ok"], true, "{revision:#}");
     let graph: CapabilityGraphResolution =
@@ -339,7 +358,7 @@ pub(crate) fn fixture_service(
     };
     let request = PipelineRequest {
         capability_graph_revision: revision["revision"]["revisionId"].as_str().unwrap().into(),
-        mode: "paper".into(),
+        mode: mode.into(),
         trade_instruments: vec![],
         nodes: vec![
             crate::data_pipeline::PipelineNode {

@@ -679,3 +679,12 @@ unattended long-lived feed; expiry is never bypassed. A future renewal lane must
 retain the same approved artifact/component identities and increasing sequence.
 Signing a feed alone does not enable a customer service or qualify a native
 bridge-to-next upgrade. Those remain measured release gates.
+
+A separate `update-input-vX.Y.Z` release-tag lane can sign an exact reviewed
+notarized candidate into an existing draft release for isolated native updater
+acceptance. `packaging/update-candidates/update-input-vX.Y.Z.json` binds version,
+platform, archive/disk-image/proof hashes and sequence, with `publicFeedEnabled:false`.
+It requires canonical ancestry and exact successful owning CI, refuses existing
+metadata and any published release, and never publishes a release or changes
+latest. Its output is production-key metadata for candidate qualification, not
+an enabled customer feed. Ordinary PRs/pushes and schedules cannot sign.

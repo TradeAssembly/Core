@@ -39,10 +39,18 @@ jobs:
           record="packaging/update-candidates/$GITHUB_REF_NAME.json"
           version=${GITHUB_REF_NAME#update-input-v}
           jq -e --arg v "$version" '.schema == "tradeassembly.private-update-candidate/v1" and .version == $v and .target == "aarch64-apple-darwin" and .publicFeedEnabled == false and (.sequence | type == "number" and . > 0 and floor == .) and ([.archiveSha256,.diskImageSha256,.notarizationBindingSha256] | all(.[]; type == "string" and test("^[0-9a-f]{64}$")))' "$record"
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq --arg t "v$version" '[.[]|select(.tag_name == $t)]|select(length==1)|.[0]' > "$RUNNER_TEMP/draft.json"
-          jq -e '.draft == true and all(.assets[]; .name != "tradeassembly-customer-update-aarch64-apple-darwin.json")' "$RUNNER_TEMP/draft.json"
+          ready=false
+          for attempt in $(seq 1 60); do
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq --arg t "$GITHUB_REF_NAME" '[.[]|select(.tag_name == $t)]|if length == 1 then .[0] else empty end' > "$RUNNER_TEMP/draft.json"
+            if test -s "$RUNNER_TEMP/draft.json"; then
+              jq -e '.draft == true and all(.assets[]; .name != "tradeassembly-customer-update-aarch64-apple-darwin.json")' "$RUNNER_TEMP/draft.json"
+              if jq -e --arg v "$version" '([.assets[].name]|sort)==(["TradeAssembly-"+$v+"-production-aarch64-apple-darwin.tar.gz","TradeAssembly-"+$v+"-macos-arm64.dmg","TradeAssembly-"+$v+"-notarization-proof.json"]|sort) and all(.assets[];.state=="uploaded" and .size<=536870912)' "$RUNNER_TEMP/draft.json" >/dev/null; then ready=true; break; fi
+            fi
+            sleep 10
+          done
+          test "$ready" = true
           mkdir "$RUNNER_TEMP/update-candidate"
-          gh release download "v$version" --repo "$GITHUB_REPOSITORY" --pattern "TradeAssembly-$version-production-aarch64-apple-darwin.tar.gz" --pattern "TradeAssembly-$version-macos-arm64.dmg" --pattern "TradeAssembly-$version-notarization-proof.json" --dir "$RUNNER_TEMP/update-candidate"
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern "TradeAssembly-$version-production-aarch64-apple-darwin.tar.gz" --pattern "TradeAssembly-$version-macos-arm64.dmg" --pattern "TradeAssembly-$version-notarization-proof.json" --dir "$RUNNER_TEMP/update-candidate"
           for pair in archiveSha256:production-aarch64-apple-darwin.tar.gz diskImageSha256:macos-arm64.dmg notarizationBindingSha256:notarization-proof.json; do
             field=${pair%%:*}
             file="TradeAssembly-$version-${pair#*:}"
@@ -81,7 +89,7 @@ jobs:
           id=$(jq -er .id "$RUNNER_TEMP/draft.json")
           gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq .draft | grep -qx true
           test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA"
-          gh release upload "v$version" "$root/$feed" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$GITHUB_REF_NAME" "$root/$feed" --repo "$GITHUB_REPOSITORY"
           sha256sum "$root/$feed" > "$root/metadata.sha256"
       - name: Retain signed metadata and safe verification receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

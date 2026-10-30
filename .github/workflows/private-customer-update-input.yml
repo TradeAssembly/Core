@@ -61,6 +61,7 @@ jobs:
           proof="$RUNNER_TEMP/update-candidate/TradeAssembly-$version-notarization-proof.json"
           now=$(date +%s)
           jq --argjson now "$now" --argjson sequence "$(jq -er .sequence "$record")" '.identity + {sequence:$sequence,issued_at:$now,expires_at:($now+604800)}' "$proof" > "$RUNNER_TEMP/update-candidate/payload.json"
+          jq -e --arg a "$(jq -er .archiveSha256 "$record")" --arg d "$(jq -er .diskImageSha256 "$record")" --arg v "$version" '.identity.archive_sha256 == $a and .stapledContainerSha256 == $d and .identity.version == $v' "$proof"
           target/debug/tradeassembly-distribution update-publication-verify --proof "$proof" --expected-proof-sha256 "$(jq -er .notarizationBindingSha256 "$record")" --payload "$RUNNER_TEMP/update-candidate/payload.json"
       - name: Sign only the sealed candidate identity with the existing metadata key
         env:

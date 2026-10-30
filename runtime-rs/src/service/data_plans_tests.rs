@@ -13,6 +13,7 @@ fn content() -> DataPlanContent {
         },
         plan: compile_data_plan(&graph, request, contracts).unwrap(),
         package_sha256: BTreeMap::new(),
+        binding_sha256: BTreeMap::new(),
     }
 }
 fn context(key: &str) -> SideEffectContext {
@@ -390,4 +391,38 @@ fn data_plan_service_loads_packages_and_invalidates_revoked_binding() {
         save(&service, scope, request, &ctx).unwrap_err(),
         "data_plan_graph_stale"
     );
+}
+
+#[test]
+fn data_plan_provider_configuration_changes_invalidate_prepared_and_cached_identity() {
+    let (_dir, service, scope, request) = fixture_service(None);
+    let saved = save(
+        &service,
+        scope.clone(),
+        request.clone(),
+        &context("binding-pin"),
+    )
+    .unwrap();
+    let runtime = service.runtime();
+    let mut provider = runtime
+        .plugins
+        .get_instance("instance.provide")
+        .unwrap()
+        .unwrap();
+    provider["configuration"] = json!({"datasetRevision":"different-source"});
+    runtime
+        .plugins
+        .put_instance(
+            "instance.provide",
+            provider,
+            &context("change-provider-config"),
+        )
+        .unwrap();
+    assert_eq!(
+        current(&service, &saved.revision_id).unwrap_err(),
+        "data_plan_stale"
+    );
+    let fresh = save(&service, scope, request, &context("fresh-binding")).unwrap();
+    assert_ne!(fresh.revision_sha256, saved.revision_sha256);
+    assert_ne!(fresh.content.binding_sha256, saved.content.binding_sha256);
 }

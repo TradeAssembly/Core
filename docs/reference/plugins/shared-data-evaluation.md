@@ -70,3 +70,25 @@ Fixed equal-interval event frames are supported; session calendars, resampling,
 explicit gap policies and revision replay orchestration remain separate work.
 No provider coverage, brokerage eligibility or research result is inferred from
 this host interface alone.
+
+## Credential-free host integration
+
+Data read operations that explicitly require neither credentials nor an account
+can prepare without a credential reference. Credential-requiring reads and other
+operation classes retain the established requirement. No credential is created
+or resolved for the credential-free case. The SDK's `decode_operation_payload`
+separates the existing host-injected `config` object from the closed evaluation
+request; it does not permit undeclared evaluation fields or grant authority.
+
+Prepared plan content also pins hashed instance configuration, account and
+credential reference/revision facts. Changing that context invalidates the old
+plan before cached evaluation receipts can be used. Older prepared records can
+be read for identity validation but require explicit preparation before execution;
+no legacy strategy checkpoint migration is performed.
+
+The opt-in `real_data_calculation_package_installs_prepares_and_executes_without_credentials`
+test accepts `DATA_CALCULATION_TEST_PACKAGE`, verifies and installs its actual
+archive, then executes separate JSONL processes through ExternalPluginHost and
+checks stateful EMA results. It uses a test process sandbox and synthetic numeric
+observations; it does not qualify the production OS sandbox, a market-data
+provider, the shared evaluator's product wiring or trading behavior.

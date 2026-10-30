@@ -88,7 +88,7 @@ impl ExternalPluginHost {
         let credential_required = operation["credentialGrantRequired"]
             .as_bool()
             .unwrap_or(false);
-        let credential_ref = required_string(&instance, "credentialRef")?;
+        let credential_ref = credential_reference(&instance, &operation)?;
         let credential_values = if credential_required {
             self.credentials
                 .resolve_fields(credential_ref)?
@@ -312,6 +312,23 @@ fn operation_timeout_ms(manifest: &Value, requested_ms: u64) -> Result<u64, Stri
         Err("plugin_timeout_invalid".to_string())
     } else {
         Ok(timeout)
+    }
+}
+
+// Credential-free, account-free data reads do not manufacture a credential binding.
+// Other operation classes retain the established required-reference behavior.
+fn credential_reference<'a>(instance: &'a Value, operation: &Value) -> Result<&'a str, String> {
+    let credential_free_read = operation["effect"] == "read"
+        && !operation["credentialGrantRequired"]
+            .as_bool()
+            .unwrap_or(false)
+        && !operation["accountBindingRequired"]
+            .as_bool()
+            .unwrap_or(false);
+    if credential_free_read && instance.get("credentialRef").is_none() {
+        Ok("")
+    } else {
+        required_string(instance, "credentialRef")
     }
 }
 
@@ -594,6 +611,11 @@ mod tests {
     use std::process::{Command, Stdio};
     use tradeassembly_plugin_sdk::{PluginRequest, PluginResponse};
 
+    #[cfg(unix)]
+    mod data_plugin_tests {
+        include!("external_data_plugin_tests.rs");
+    }
+
     fn operation_request() -> PluginOperationRequest {
         PluginOperationRequest {
             correlation_id: "correlation-1".to_string(),
@@ -618,6 +640,74 @@ mod tests {
             input: json!({}),
             evidence_refs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn credential_free_data_read_does_not_require_or_resolve_a_credential() {
+        let read =
+            json!({"effect":"read","credentialGrantRequired":false,"accountBindingRequired":false});
+        assert_eq!(credential_reference(&json!({}), &read).unwrap(), "");
+        for operation in [
+            json!({"effect":"write"}),
+            json!({"effect":"read","credentialGrantRequired":true}),
+            json!({"effect":"read","accountBindingRequired":true}),
+        ] {
+            assert!(credential_reference(&json!({}), &operation).is_err());
+        }
+        assert!(credential_reference(&json!({"credentialRef":null}), &read).is_err());
+        assert_eq!(
+            credential_reference(&json!({"credentialRef":"existing"}), &read).unwrap(),
+            "existing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_installed_data_package_prepares_without_any_credential_binding() {
+        use crate::ports::{AuthorityContext, IdempotencyKey};
+        let (_dir, service, scope, pipeline) =
+            crate::service::data_plans::tests::fixture_service(None);
+        let runtime = service.runtime();
+        let record = runtime
+            .plugins
+            .get_manifest("example.derive")
+            .unwrap()
+            .unwrap();
+        let mut request = operation_request();
+        request.plugin_instance_ref = "instance.derive".into();
+        request.plugin_ref = "example.derive".into();
+        request.manifest_fingerprint = record["manifestDigest"].as_str().unwrap().into();
+        request.operation_id = "derive".into();
+        request.capability = "test.derive".into();
+        request.account_ref = None;
+        request.strategy_id = scope.strategy_id;
+        request.strategy_version_id = scope.strategy_version_id;
+        request.strategy_spec_hash = scope.strategy_spec_hash;
+        request.capability_graph_revision_id = pipeline.capability_graph_revision;
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("prepare-data").unwrap(),
+        );
+        let host = ExternalPluginHost::new(
+            runtime.plugins.clone(),
+            runtime.credentials.clone(),
+            runtime.plugin_packages.clone(),
+            runtime.clock.clone(),
+            Arc::new(NativeTestSandbox),
+        );
+        let prepared = host.prepare(&request, &context).unwrap();
+        assert!(prepared.credential_values.is_empty());
+        assert!(prepared.binding.credential_ref.is_empty());
+        assert!(prepared.wire_request.ephemeral_credential_grant.is_none());
+        assert!(prepared.wire_request.context.account_id.is_none());
+        assert!(prepared.allowed_domains.is_empty());
+        assert!(runtime
+            .plugins
+            .get_instance("instance.derive")
+            .unwrap()
+            .unwrap()
+            .get("credentialRef")
+            .is_none());
     }
 
     fn wire_request() -> PluginRequest {

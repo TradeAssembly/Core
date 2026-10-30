@@ -82,3 +82,13 @@ live-provider qualification. An opt-in test accepts an independently pinned
 external package fixture through `DATA_CAPTURE_PROVIDER_CONFIG`; it rejects
 non-local service URLs and non-fixture credential values. Native package and
 provider coverage remain separate qualification evidence.
+
+V3 instrument-independent replay with multiple capture instruments is currently
+rejected before acquisition (`data_capture_multi_instrument_independent_replay_unsupported`).
+Use separate single-instrument captures. The host does not admit a combined replay
+under semantics that later singleton evaluation cannot reproduce. All-declared-context
+contracts retain their explicit declared batching semantics.
+
+The local subprocess fixture is Rust, compiled against the current locked test
+artifacts without a nested Cargo command or network access. It grants no production
+sandbox qualification and does not require a Python runtime or language-policy exception.

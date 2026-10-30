@@ -903,3 +903,84 @@ fn data_pipeline_v3_stateful_source_is_rejected_during_preparation() {
         .any(|e| e.code == PlanDiagnosticCode::InvalidContract
             && e.message.contains("Stateful V3 source acquisition")));
 }
+
+#[test]
+fn data_pipeline_v3_zero_parameter_can_resolve_to_positive_history() {
+    use tradeassembly_plugin_sdk::data_history::*;
+    let (graph, mut request, mut contracts) = make_fixture(true, 1);
+    let binding = contracts
+        .iter_mut()
+        .find(|c| c.graph_node_id == "result")
+        .unwrap();
+    let mut operation = binding.contract.clone().into_legacy().unwrap();
+    operation.schema_version = DataContractVersion::V2;
+    operation.parameter_schema = json!({"type":"object","properties":{"period":{"type":"integer","minimum":0}},"required":["period"],"additionalProperties":false});
+    operation.warmup = WarmupContract {
+        minimum_observations: 1,
+        observations_parameter: None,
+        additional_observations: 0,
+    };
+    binding.contract = VersionedOperationData::V3(OperationDataV3 {
+        schema_version: HistoryVersion::V3,
+        operation,
+        history: HistoryContract {
+            first_ready: BTreeMap::from([(
+                "value".into(),
+                BTreeMap::from([(
+                    "source".into(),
+                    Observations::Add {
+                        terms: vec![
+                            Observations::Parameter {
+                                name: "period".into(),
+                            },
+                            Observations::Literal { value: 1 },
+                        ],
+                    },
+                )]),
+            )]),
+            partitioning: Partitioning::InstrumentIndependent,
+            required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+            reconstruction: Reconstruction::FiniteWindow,
+        },
+    });
+    seal(&mut contracts);
+    request
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "result")
+        .unwrap()
+        .parameters = json!({"period":0});
+    let zero = compile_data_plan(&graph, request.clone(), contracts.clone()).unwrap();
+    assert_eq!(zero.source_warmup_observations["result"], 1);
+    request
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "result")
+        .unwrap()
+        .parameters = json!({"period":0.0});
+    assert_eq!(
+        compile_data_plan(&graph, request.clone(), contracts.clone())
+            .unwrap()
+            .plan_sha256,
+        zero.plan_sha256
+    );
+    request
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "result")
+        .unwrap()
+        .parameters = json!({"period":2});
+    assert_eq!(
+        compile_data_plan(&graph, request.clone(), contracts.clone())
+            .unwrap()
+            .source_warmup_observations["result"],
+        3
+    );
+    request
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "result")
+        .unwrap()
+        .parameters = json!({"period":-1});
+    assert!(compile_data_plan(&graph, request, contracts).is_err());
+}

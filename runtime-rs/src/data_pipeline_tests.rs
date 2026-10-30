@@ -228,6 +228,7 @@ fn make_fixture(
         })
         .collect();
     let request = PipelineRequest {
+        source_captures: BTreeMap::new(),
         capability_graph_revision: "revision.test".into(),
         mode: "paper".into(),
         trade_instruments: vec![],

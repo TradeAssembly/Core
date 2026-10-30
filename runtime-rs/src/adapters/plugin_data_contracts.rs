@@ -192,7 +192,15 @@ pub(crate) fn schema(
     data.data_schemas
         .iter()
         .find(|schema| schema.schema_ref == schema_ref)
-        .map(|schema| document(root, &schema.document, &mut 0))
+        .map(|schema| &schema.document)
+        .or_else(|| {
+            data.package
+                .response_schemas
+                .iter()
+                .find(|s| s.schema_ref == schema_ref)
+                .map(|s| &s.document)
+        })
+        .map(|doc| document(root, doc, &mut 0))
         .transpose()
 }
 

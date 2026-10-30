@@ -164,7 +164,7 @@ fn schema_values(batch: &DataBatch) -> Result<Value, String> {
         _ => Ok(Value::Array(values)),
     }
 }
-fn allowed_data_operation(
+pub(crate) fn allowed_data_operation(
     selection: &CapabilitySelection,
     transform: bool,
     manifest: &Value,
@@ -285,7 +285,7 @@ fn invoke(
     }
     Ok(payload)
 }
-fn validate_batch(
+pub(crate) fn validate_batch(
     service: &TradeAssemblyService,
     package: &str,
     port: &DataPort,
@@ -354,6 +354,7 @@ pub fn step(
     }
     let started = std::time::Instant::now();
     let plan = data_plans::current(service, &request.plan_revision_id)?;
+    super::data_captures::validate_window(service, &plan, &request.window)?;
     if plan.content.plan.execution_order.len() > MAX_NODES {
         return Err("data_evaluation_plan_too_large".into());
     }
@@ -643,7 +644,8 @@ impl StepEnvironment<'_> {
                 prior_state: BTreeMap::new(),
                 max_points: MAX_POINTS as u64,
             };
-            let response = self.acquire(node, contract, selected, &payload, claim)?;
+            let mut response = self.acquire(node, contract, selected, &payload, claim)?;
+            super::data_captures::envelope_source(self.service, self.plan, node, &mut response)?;
             self.check_budget()?;
             if !response.state.is_empty() || response.outputs.len() != contract.outputs.len() {
                 return Err("data_evaluation_provider_response_invalid".into());

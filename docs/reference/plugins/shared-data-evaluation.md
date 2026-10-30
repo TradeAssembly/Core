@@ -60,10 +60,11 @@ budget before the step rejects. There is no partial checkpoint on budget failure
 
 ## Remaining integration
 
-This is exercised with real package verification/graph/storage and a controlled
-invocation-port fixture, not an installed provider/calculation process. The
-separate default pack, generic rule operators, product routes, strategy/research
-wiring and paper execution still need integration and actual product exercise.
+Package verification, graph/storage and controlled invocation fixtures cover the
+host contracts. Opt-in proofs below also exercise installed calculation processes
+with an explicit synthetic source. Real provider acquisition, product routes,
+strategy/research wiring and paper execution still need integration and actual
+product exercise. The separate local default pack is unreleased.
 Provider state and activation-partitioned state are rejected until their owning
 lifecycle is integrated. Instrument/research-run calculation state is supported.
 Fixed equal-interval event frames are supported; session calendars, resampling,
@@ -93,6 +94,14 @@ checks stateful EMA results. It uses a test process sandbox and synthetic numeri
 observations; it does not qualify the production OS sandbox, a market-data
 provider, the shared evaluator's product wiring or trading behavior.
 
+The separate opt-in `saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental_parity`
+proof installs the actual calculation package, saves a graph through the existing
+HTTP graph route, prepares an immutable typed plan, and evaluates a two-node EMA
+composition through LocalPluginOperations/ExternalPluginHost. Batch and incremental
+runs match values, semantic point hashes and final state. Acquisition is an
+explicit synthetic source fixture; this is not real provider/strategy/trading
+acceptance. The proof also checks that no broker dispatch claim was created.
+
 ## Causal state availability and research state slots
 
 Every evaluated calculation node persists host-owned state availability beside
@@ -109,3 +118,10 @@ ResearchRun-partitioned plugins read and return their state under the SDK's
 `RESEARCH_RUN_STATE_SLOT` (`__research_run__`). The host scopes this stable slot by
 saved plan, research run and graph node. Raw caller run IDs need not be exposed
 to the plugin; distinct runs retain independent state and resume independently.
+
+
+The provider-contract proof extends acquisition to the SDK's typed OHLCV fixture
+and adds a real plugin field projection before the repeated EMA operations. It
+uses bounded two-bar batches and single-bar steps. See provider-bar-contract.md
+for the exact provider boundary, availability requirements and remaining real
+provider/authentication acceptance.

@@ -157,3 +157,92 @@ fn data_package_rejects_symlinked_installation_root() {
         .unwrap_err()
         .contains("symlink"));
 }
+
+#[test]
+#[ignore = "requires DATA_PACKAGE_TEST_ARCHIVE; validates bytes without executing the package"]
+fn data_package_external_broad_archive_verifies_without_execution() {
+    let path = std::path::PathBuf::from(
+        std::env::var_os("DATA_PACKAGE_TEST_ARCHIVE").expect("explicit local package required"),
+    );
+    let bytes = fs::read(&path).unwrap();
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+    let manifest: Value = tar
+        .entries()
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|e| e.path().unwrap().as_ref() == std::path::Path::new("manifest.json"))
+        .map(|mut e| {
+            let mut b = vec![];
+            std::io::Read::read_to_end(&mut e, &mut b).unwrap();
+            serde_json::from_slice(&b).unwrap()
+        })
+        .expect("manifest required");
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalPluginPackageStore::new(dir.path().join("store")).unwrap();
+    let installed = store
+        .install(&PluginPackageInstallRequest {
+            source_type: "file".into(),
+            locator: path.to_string_lossy().into(),
+            package_sha256: sha256(&bytes),
+            manifest_sha256: canonical(&manifest).unwrap(),
+            offline: true,
+        })
+        .unwrap();
+    assert!(manifest["operations"].as_array().unwrap().len() > 64);
+    assert!(store.get(&installed.package_sha256).unwrap().is_some());
+    assert!(store
+        .data_contract(&installed.package_sha256, "indicator.ema")
+        .unwrap()
+        .is_some());
+}
+
+fn oversized_invalid_response_schema() -> Vec<u8> {
+    serde_json::to_vec(&json!({"type":7,"description":"x".repeat(tradeassembly_plugin_sdk::data_package::MAX_METADATA_DOCUMENT_BYTES)})).unwrap()
+}
+
+#[test]
+fn data_package_install_bounds_response_before_schema_compilation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut descriptor, contract, _, manifest) = materials();
+    let oversized = oversized_invalid_response_schema();
+    descriptor["package"]["responseSchemas"] = json!([{"schemaRef":"schema://test/response@1","document":{"path":"schema.json","sha256":sha256(&oversized)}}]);
+    assert_eq!(
+        install(dir.path(), &descriptor, contract, oversized, &manifest)
+            .err()
+            .unwrap(),
+        "plugin_data_document_too_large"
+    );
+    assert_eq!(
+        fs::read_dir(dir.path().join("store/packages"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn data_package_reload_bounds_response_before_schema_compilation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut descriptor, contract, schema, manifest) = materials();
+    descriptor["package"]["responseSchemas"] = json!([{"schemaRef":"schema://test/response@1","document":{"path":"schema.json","sha256":sha256(&schema)}}]);
+    let (store, mut installed) =
+        install(dir.path(), &descriptor, contract, schema, &manifest).unwrap();
+    let oversized = oversized_invalid_response_schema();
+    descriptor["package"]["responseSchemas"][0]["document"]["sha256"] = json!(sha256(&oversized));
+    fs::write(installed.install_root.join("schema.json"), oversized).unwrap();
+    fs::write(
+        installed.install_root.join("tradeassembly-plugin.json"),
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    installed.descriptor = descriptor;
+    fs::write(
+        installed.install_root.join(INSTALLED_RECORD),
+        serde_json::to_vec(&installed).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.get(&installed.package_sha256).unwrap_err(),
+        "plugin_data_document_too_large"
+    );
+}

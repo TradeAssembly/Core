@@ -662,3 +662,20 @@ separate release gates.
 ## Reviewed notarized customer release publication
 
 Customer archive publication is a release-tag-only lane. A new `vX.Y.Z` tag must be admitted to the canonical default branch and have successful owning CI at that exact commit. A reviewed `packaging/release-approvals/vX.Y.Z.json` pins the final disk image, archive and notarization-binding hashes. The operator stages only those three public files plus their exact `SHA256SUMS` in a draft release. The workflow verifies every byte and the existing offline Core publication-proof contract before making that draft latest/public. It refuses unexpected assets and newer existing releases. No private source access, signing credential, updater feed, service activation or old-asset removal is part of publication.
+
+
+A future release may explicitly set `updateFeedEnabled:true` and a reviewed
+positive monotonically increasing `sequence` in its release approval. Only that
+release-tag workflow may consume the existing metadata signing secret. It signs
+the exact approved notarization identity, verifies the resulting signature with
+the customer-pinned public key, and adds the stable platform metadata asset to
+the draft before publication. Reruns verify/reuse an existing valid feed; they
+never replace or silently resign one. A disabled record never enters the signer.
+The v0.2.3 record stays disabled and its published assets stay immutable.
+
+Metadata expires after seven days under the existing verifier policy. Renewal
+for an unchanged current release is still required before calling this an
+unattended long-lived feed; expiry is never bypassed. A future renewal lane must
+retain the same approved artifact/component identities and increasing sequence.
+Signing a feed alone does not enable a customer service or qualify a native
+bridge-to-next upgrade. Those remain measured release gates.

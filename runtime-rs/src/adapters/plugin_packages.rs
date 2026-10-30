@@ -123,8 +123,7 @@ impl LocalPluginPackageStore {
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
-        verify_response_schemas(descriptor, package_root)?;
-        super::plugin_data_contracts::verify(&envelope, package_root, &manifest)?;
+        verify_package_metadata(&envelope, package_root, &manifest)?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
         Ok(record)
@@ -273,8 +272,7 @@ impl LocalPluginPackageStore {
             if sha256(&executable_bytes) != expected_executable_sha {
                 return Err("plugin_package_executable_digest_mismatch".to_string());
             }
-            verify_response_schemas(descriptor_contract, &staging)?;
-            super::plugin_data_contracts::verify(&envelope, &staging, &manifest)?;
+            verify_package_metadata(&envelope, &staging, &manifest)?;
 
             let record = InstalledPluginPackage {
                 plugin_ref,
@@ -306,6 +304,23 @@ impl LocalPluginPackageStore {
             let _ = fs::remove_dir_all(&staging);
         }
         result
+    }
+}
+
+fn verify_package_metadata(
+    envelope: &VersionedPackageDescriptor,
+    package_root: &Path,
+    manifest: &Value,
+) -> Result<(), String> {
+    match envelope {
+        VersionedPackageDescriptor::Legacy(descriptor) => {
+            verify_response_schemas(descriptor, package_root)
+        }
+        // V2 response documents must enter the bounded reader and schema-work
+        // checks before any schema compilation, on install AND every reload.
+        VersionedPackageDescriptor::Data(_) => {
+            super::plugin_data_contracts::verify(envelope, package_root, manifest).map(|_| ())
+        }
     }
 }
 

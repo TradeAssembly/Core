@@ -8,6 +8,7 @@ pub mod canonical;
 pub mod data_contract;
 pub mod data_evaluation;
 pub mod data_package;
+pub mod market_data;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

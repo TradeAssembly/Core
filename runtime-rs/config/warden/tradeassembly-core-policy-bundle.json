@@ -100,6 +100,24 @@
       "requires_receipt": true
     },
     {
+      "rule_id": "tradeassembly-data-plan-prepare",
+      "action": "strategy.data_plan.prepare",
+      "resource_kind": "strategy_data_plan",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-data-run-step",
+      "action": "strategy.data_run.step",
+      "resource_kind": "strategy_data_run",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
       "rule_id": "tradeassembly-09-entitlement-manage",
       "action": "entitlement.manage",
       "resource_kind": "entitlement",

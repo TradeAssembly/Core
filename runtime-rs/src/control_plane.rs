@@ -401,6 +401,10 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", "/product/sightline/events") => "sightline.events.list".to_string(),
         ("POST", "/product/strategies/publish") => "strategy.version.publish".to_string(),
         ("POST", "/capabilities/graph/resolve") => "capability.graph.resolve".to_string(),
+        ("POST", "/product/strategies/data-plans/prepare") => {
+            "strategy.data_plan.prepare".to_string()
+        }
+        ("POST", "/product/strategies/data-runs/step") => "strategy.data_run.step".to_string(),
         ("POST", "/capability-graph-revisions") => "capability.binding.revision.save".to_string(),
         ("POST", "/capability-graph-revisions/currentness") => {
             "capability.graph.currentness.check".to_string()
@@ -679,6 +683,10 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.plugin.capability_graph_resolve" => {
             return "capability.graph.resolve".to_string();
         }
+        "tradeassembly.strategy.data_plan.prepare" => {
+            return "strategy.data_plan.prepare".to_string()
+        }
+        "tradeassembly.strategy.data_run.step" => return "strategy.data_run.step".to_string(),
         "tradeassembly.plugin.capability_revision_save" => {
             return "capability.binding.revision.save".to_string();
         }
@@ -1256,6 +1264,12 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
         } else {
             "paper".to_string()
         };
+    }
+    if path == "/product/strategies/data-plans/prepare" {
+        return "mutation".to_string();
+    }
+    if path == "/product/strategies/data-runs/step" {
+        return "research".to_string();
     }
     if path.contains("strategy-execution-configs") {
         return "mutation".to_string();

@@ -180,7 +180,7 @@ impl crate::ports::PluginOperationPort for FixtureSourceAndRealCalculations {
         let mut start = payload.window.event_start_ms;
         while start < payload.window.event_end_ms {
             let index = (start / day - 10) as usize;
-            let value = [1, 4, 2, 8][index];
+            let value = [1, 4, 2, 8, 10][index];
             rows.push(ProviderBar {
                 instrument_id: "BTC/USD".into(),
                 source_event_id: format!("synthetic:{index}"),
@@ -372,7 +372,8 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
             Arc::new(NativeTestSandbox),
         ),
     );
-    let saved_revision=service.handle_http("POST", "/capability-graph-revisions",json!({"configId":"cfg_process_proof","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"source","capability":"test.ohlcv-source","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"close","capability":"data.ohlcv_field","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema1","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema2","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+    let save_graph = |scope: &data_plans::PlanScope| service.handle_http("POST", "/capability-graph-revisions",json!({"configId":"cfg_process_proof","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"source","capability":"test.ohlcv-source","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"close","capability":"data.ohlcv_field","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema1","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"},{"requirementId":"ema2","capability":"indicator.ema","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+    let saved_revision = save_graph(&scope);
     assert_eq!(saved_revision.status, 200, "{}", saved_revision.body);
     let revision = &saved_revision.body;
     assert_eq!(revision["revision"]["graph"]["ok"], true, "{revision:#}");
@@ -384,7 +385,7 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         }],
         interval_ms: Some(86_400_000),
     };
-    let pipeline = PipelineRequest {
+    let mut pipeline = PipelineRequest {
         capability_graph_revision: revision["revision"]["revisionId"].as_str().unwrap().into(),
         mode: "paper".into(),
         trade_instruments: vec![],
@@ -423,26 +424,37 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
             },
         ],
     };
-    let plan = data_plans::save(&service, scope, pipeline, &context).unwrap();
+    // The BTC calculation stream is context; the explicit traded instrument is
+    // SPY. No order or trading eligibility is inferred by this signal journey.
+    pipeline.trade_instruments = vec![InstrumentContext { instrument_id:"SPY".into(), asset_class:"equity".into(), instrument_family:"equity".into() }];
+    use crate::data_strategy::{DataStrategy, Operand, Rule, Sample, Comparison, SignalValue};
+    let output = |sample| Operand::Output { node:"ema2".into(),port:"value".into(),instrument:"BTC/USD".into(),sample };
+    let program = DataStrategy { version:1,nodes:pipeline.nodes.clone(),bindings:pipeline.bindings.clone(),trade_instruments:pipeline.trade_instruments.clone(),
+        entry:Rule::Compare {left:output(Sample::Current),op:Comparison::Greater,right:output(Sample::Previous)},
+        exit:Rule::IsTrue {value:Operand::Boolean {value:false}} };
+    let mut spec:Value=serde_json::from_slice(&fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/strategy-spec/v3/valid/static-equity.json")).unwrap()).unwrap();
+    spec["stages"]["evaluate"]["substeps"][0]["config"]=json!({"tradeassembly.data_strategy":program});
+    let created=service.handle_http("POST","/product/strategies/create",json!({"name":"Typed context signal journey","spec":spec}));
+    assert_eq!(created.status,201,"{}",created.body);
+    let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":created.body["body"]["strategy"]["id"],"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));
+    assert_eq!(published.body["body"]["published"],true,"{}",published.body);
+    assert!(crate::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
+    let version=&published.body["body"]["version"];
+    let scope=data_plans::PlanScope { strategy_id:version["strategyId"].as_str().unwrap().into(),strategy_version_id:version["id"].as_str().unwrap().into(),strategy_spec_hash:version["specHash"].as_str().unwrap().into() };
+    let revision=save_graph(&scope);
+    assert_eq!(revision.status,200,"{}",revision.body);
+    let prepared=service.handle_http("POST","/product/strategies/data-plans/prepare",json!({"scope":scope,"mode":"paper","capabilityGraphRevisionId":revision.body["revision"]["revisionId"],"idempotencyKey":"product-data-plan"}));
+    assert_eq!(prepared.status,200,"{}",prepared.body);
+    assert_eq!(prepared.body["executionAuthorityGranted"],false);
+    let plan:data_plans::StoredDataPlan=serde_json::from_value(prepared.body["plan"].clone()).unwrap();
+
     assert_eq!(plan.content.plan.source_warmup_observations["ema2"], 4);
     let step = |run: &str, index: i64, end: i64, prior: Option<String>, key: &str| {
-        let mut ctx = context.clone();
-        ctx.idempotency_key = IdempotencyKey::new(key).unwrap();
-        host::step(
-            &service,
-            host::EvaluationStep {
-                run_id: run.into(),
-                plan_revision_id: plan.revision_id.clone(),
-                window: EvaluationWindow {
-                    event_start_ms: index * 86_400_000,
-                    event_end_ms: end * 86_400_000,
-                    as_of_ms: end * 86_400_000,
-                },
-                expected_checkpoint_sha256: prior,
-            },
-            &ctx,
-        )
-        .unwrap()
+        let response=service.handle_http("POST","/product/strategies/data-runs/step",json!({"step":host::EvaluationStep {
+            run_id:run.into(),plan_revision_id:plan.revision_id.clone(),window:EvaluationWindow {event_start_ms:index*86_400_000,event_end_ms:end*86_400_000,as_of_ms:end*86_400_000},expected_checkpoint_sha256:prior },"idempotencyKey":key}));
+        assert_eq!(response.status,200,"{}",response.body);
+        assert_eq!(response.body["executionAuthorityGranted"],false);
+        serde_json::from_value::<host::EvaluationReceipt>(response.body["receipt"].clone()).unwrap()
     };
     let batch_first = step("batch", 10, 12, None, "batch-a");
     assert_eq!(batch_first.status, host::EvaluationStatus::WarmingUp);
@@ -453,7 +465,7 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
         Some(batch_first.checkpoint.checkpoint_sha256.clone()),
         "batch-b",
     );
-    assert_eq!(batch.status, host::EvaluationStatus::Ready);
+    assert_eq!(batch.status, host::EvaluationStatus::WarmingUp);
     let mut streamed = vec![];
     let mut prior = None;
     let mut last = None;
@@ -488,7 +500,15 @@ fn saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental
             .map(|p| (&p.result, &p.provenance.content_sha256))
             .collect::<Vec<_>>()
     );
-    assert_eq!(batch.checkpoint.states, last.unwrap().checkpoint.states);
+    let last=last.unwrap();
+    assert_eq!(batch.checkpoint.states, last.checkpoint.states);
+    assert_eq!(batch.checkpoint.last_frame, last.checkpoint.last_frame);
+    assert_eq!(last.signals[0].entry, SignalValue::WarmingUp); // previous composite still warming
+    assert_eq!(last.signals[0].trade_instruments[0].instrument_id,"SPY");
+    assert_eq!(batch.signals.last().unwrap().entry,last.signals[0].entry);
+    let ready=step("stream",14,15,Some(last.checkpoint.checkpoint_sha256.clone()),"stream-ready");
+    assert_eq!(ready.signals[0].entry,SignalValue::Ready {value:true});
+    assert_eq!(ready.status,host::EvaluationStatus::Ready);
     let PointValue::Ready(value) = &batch_points[3].result else {
         panic!("composite not ready")
     };

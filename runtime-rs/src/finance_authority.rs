@@ -183,6 +183,20 @@ action!(
     Write
 );
 action!(
+    DATA_PLAN_PREPARE,
+    "strategy.data_plan.prepare",
+    "strategy_data_plan",
+    "strategy_configuration",
+    Write
+);
+action!(
+    DATA_RUN_STEP,
+    "strategy.data_run.step",
+    "strategy_data_run",
+    "data_calculation",
+    Write
+);
+action!(
     ENTITLEMENT_MANAGE,
     "entitlement.manage",
     "entitlement",
@@ -567,6 +581,8 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     PLUGIN_OPERATION,
     STUDIO_SETUP_OBSERVE,
     CAPABILITY_BINDING_CONFIGURE,
+    DATA_PLAN_PREPARE,
+    DATA_RUN_STEP,
     ENTITLEMENT_MANAGE,
     CREDENTIAL_CONFIGURE,
     CREDENTIAL_TEST,
@@ -654,6 +670,8 @@ pub fn authority_definition(
         "strategy.version.publish" => &STRATEGY_PUBLISH,
         "strategy.duplicate" | "strategy.archive" | "strategy.restore" => &STRATEGY_LIFECYCLE,
         "capability.binding.revision.save" => &CAPABILITY_BINDING_CONFIGURE,
+        "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
+        "strategy.data_run.step" => &DATA_RUN_STEP,
         "plugin.manifest.install"
         | "plugin.package.install"
         | "plugin.instance.create"

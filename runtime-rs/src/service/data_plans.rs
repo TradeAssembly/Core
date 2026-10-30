@@ -142,6 +142,9 @@ fn prepare(
             serde_json::to_string(&errors).unwrap_or_default()
         )
     })?;
+    if let Some(program) = super::data_strategy::program(service, &scope)? {
+        program.validate(&plan)?;
+    }
     Ok(DataPlanContent {
         scope,
         plan,

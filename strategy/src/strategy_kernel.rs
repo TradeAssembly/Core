@@ -180,6 +180,17 @@ impl CompiledStrategy {
                 "portfolio strategy requires timestamped portfolio evaluator",
             ));
         }
+        if spec
+            .stages
+            .evaluate
+            .substeps
+            .iter()
+            .any(|step| step.config.contains_key("tradeassembly.data_strategy"))
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "typed data strategy requires stateful data evaluator",
+            ));
+        }
         let stages = &spec.stages;
         let expected = [
             (&stages.inputs.substeps, "market_data.bars.read@1"),

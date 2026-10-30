@@ -319,6 +319,8 @@ const HTTP_ROUTE_REGISTRY: &[&str] = &[
     "POST /product/strategies/backtests/run",
     "POST /product/strategies/builder-state",
     "POST /product/strategies/create",
+    "POST /product/strategies/data-plans/prepare",
+    "POST /product/strategies/data-runs/step",
     "POST /product/strategies/duplicate",
     "POST /product/strategies/execution-workspace",
     "POST /product/strategies/fill-quality",

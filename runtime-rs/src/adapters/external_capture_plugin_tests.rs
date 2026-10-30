@@ -36,6 +36,31 @@ fn ctx(key: &str) -> SideEffectContext {
         IdempotencyKey::new(key).unwrap(),
     )
 }
+fn fixture_executable() -> &'static [u8] {
+    static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        // Compile the Rust-only fixture against this test build's locked
+        // dependency artifacts; no nested Cargo command or registry access.
+        let deps = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("capture-fixture");
+        let mut command = std::process::Command::new("rustc");
+        command.args(["--edition=2021", "--crate-name", "capture_fixture"])
+            .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/adapters/fixtures/capture_plugin.rs"))
+            .arg("-L").arg(format!("dependency={}", deps.display())).arg("-o").arg(&output);
+        for name in ["serde_json", "sha2", "serde_json_canonicalizer"] {
+            let mut libraries = std::fs::read_dir(&deps).unwrap().filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("lib{name}-")) && e.path().extension().is_some_and(|e|e=="rlib"))
+                .map(|e|e.path()).collect::<Vec<_>>();
+            libraries.sort_by_key(|p|std::fs::metadata(p).unwrap().modified().unwrap());
+            let library = libraries.last().expect("locked Rust fixture dependency artifact");
+            command.arg("--extern").arg(format!("{name}={}",library.display()));
+        }
+        let result=command.output().unwrap();
+        assert!(result.status.success(), "Rust fixture compile failed: {}",String::from_utf8_lossy(&result.stderr));
+        std::fs::read(output).unwrap()
+    })
+}
 fn install_fixture(
     service: &crate::service::TradeAssemblyService,
     root: &std::path::Path,
@@ -90,7 +115,7 @@ fn install_fixture(
         "configuration":{"fields":[{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
-    let script = include_bytes!("fixtures/capture_plugin.py");
+    let script = fixture_executable();
     let response = serde_json::to_vec(&json!({"type":"object"})).unwrap();
     descriptor["package"]["plugin"]["id"] = json!(id);
     descriptor["package"]["manifest"]["sha256"] = json!(sha256(&manifest_bytes));
@@ -579,6 +604,9 @@ fn data_capture_process_tamper_foreign_owner_and_revoked_cached_retry_fail_close
         )
         .unwrap();
     assert!(captures::current(&r.service, "capture_missing").is_err());
+    let missing = r.service.call_mcp_tool("tradeassembly.strategy.data_capture.get",json!({"captureId":"capture_missing"}));
+    assert_eq!(missing["isError"],true,"{missing}");
+
     let alice = r
         .service
         .for_authenticated_invocation("test", "alice", None, None);
@@ -616,6 +644,7 @@ fn data_capture_process_tamper_foreign_owner_and_revoked_cached_retry_fail_close
         json!({"captureId":receipt.capture_id}),
     );
     assert!(mcp.get("capture").is_none());
+    assert_eq!(mcp["isError"],true,"{mcp}");
     r.server.join().unwrap();
 }
 

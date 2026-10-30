@@ -3384,7 +3384,9 @@ impl TradeAssemblyService {
         }
         if let Some(path) = mcp_object_authorization_route(name) {
             if let Some(response) = data_captures::preflight(self, path, &arguments) {
-                return response.body;
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_capture_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Data capture failed closed.", None);
             }
             if let Some(response) = data_strategy::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)

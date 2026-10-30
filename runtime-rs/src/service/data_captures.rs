@@ -348,6 +348,7 @@ fn invoke(
 fn validate_coverage(service: &TradeAssemblyService, r: &CaptureReceipt) -> Result<(), String> {
     let expected = check_policy(&r.policy)? as usize;
     let c = contract(service, &r.replay)?;
+    check_replay_partition(&c, &r.policy.context)?;
     if hash(&c)? != r.replay_contract_sha256
         || r.replay_response.outputs.keys().ne(c.outputs.keys())
         || !r.replay_response.state.is_empty()
@@ -438,6 +439,19 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     validate_coverage(service, &r)?;
     Ok(r)
 }
+fn check_replay_partition(
+    contract: &VersionedOperationData,
+    context: &DataContext,
+) -> Result<(), String> {
+    if contract.v3().is_some_and(|v| {
+        v.history.partitioning
+            == tradeassembly_plugin_sdk::data_history::Partitioning::InstrumentIndependent
+    }) && context.instruments.len() > 1
+    {
+        return Err("data_capture_multi_instrument_independent_replay_unsupported".into());
+    }
+    Ok(())
+}
 pub(crate) fn acquire(
     service: &TradeAssemblyService,
     mut command: CaptureCommand,
@@ -461,6 +475,7 @@ pub(crate) fn acquire(
     let replay_selection = selection(&graph, &command.policy.replay_node)?;
     let replay = data_binding::pin(service, replay_selection)?;
     let c = contract(service, &replay)?;
+    check_replay_partition(&c, &command.policy.context)?;
     if replay_selection.operation.credential_grant_required
         || replay_selection.operation.account_binding_required
         || !replay_selection.operation.traits.deterministic
@@ -884,4 +899,48 @@ pub(crate) fn resolve_parameters(
         node.parameters = receipt.replay_parameters;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+    #[test]
+    fn independent_multi_instrument_replay_rejects_before_acquisition() {
+        use tradeassembly_plugin_sdk::data_history::*;
+        let (_, mut request, contracts) = crate::data_pipeline::tests::fixture();
+        let mut operation = contracts
+            .into_iter()
+            .find(|c| c.contract.inputs.is_empty())
+            .unwrap()
+            .contract;
+        operation.schema_version = tradeassembly_plugin_sdk::data_contract::DataContractVersion::V2;
+        let operation = (*operation).clone();
+        let mut contract = VersionedOperationData::V3(OperationDataV3 {
+            schema_version: HistoryVersion::V3,
+            history: HistoryContract {
+                first_ready: operation
+                    .outputs
+                    .keys()
+                    .map(|k| (k.clone(), BTreeMap::new()))
+                    .collect(),
+                partitioning: Partitioning::InstrumentIndependent,
+                required_input_unavailable: RequiredInputUnavailable::InvokeCompleteFrame,
+                reconstruction: Reconstruction::FiniteWindow,
+            },
+            operation,
+        });
+        let context = &mut request.nodes[0].context;
+        assert!(check_replay_partition(&contract, context).is_ok());
+        let mut b = context.instruments[0].clone();
+        b.instrument_id = "B".into();
+        context.instruments.push(b);
+        assert_eq!(
+            check_replay_partition(&contract, context).unwrap_err(),
+            "data_capture_multi_instrument_independent_replay_unsupported"
+        );
+        if let VersionedOperationData::V3(c) = &mut contract {
+            c.history.partitioning = Partitioning::AllDeclaredContext;
+        }
+        assert!(check_replay_partition(&contract, context).is_ok());
+    }
 }

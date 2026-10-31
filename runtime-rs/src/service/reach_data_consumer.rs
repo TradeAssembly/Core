@@ -186,9 +186,18 @@ pub fn source_binding(
     node: &ReachNodeScope,
 ) -> Result<String, String> {
     node.validate().map_err(|_| "reach_data_node_invalid")?;
-    service
+    let (issuer, session_ref) = service
         .responsible_human_identity()
         .ok_or("reach_data_human_session_required")?;
+    let now = service.runtime().clock.now_ms();
+    let verified = service
+        .runtime()
+        .identity
+        .resolve(session_ref, now)
+        .map_err(|_| "reach_data_current_identity_unavailable")?;
+    if verified.issuer != issuer || verified.expires_at_ms <= now {
+        return Err("reach_data_current_identity_unavailable".into());
+    }
     let owner = service
         .invocation_owner()
         .ok_or("reach_data_human_session_required")?;
@@ -493,7 +502,7 @@ mod tests {
         let service = service.for_authenticated_invocation("fixture", "alice", None, None);
         assert_eq!(
             source_binding(&service, &node).unwrap_err(),
-            "reach_data_configured_source_required"
+            "reach_data_current_identity_unavailable"
         );
     }
 }

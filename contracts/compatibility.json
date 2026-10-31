@@ -60,6 +60,15 @@
         "observe-original-cycle",
         "stopped-recovery"
       ]
+    },
+    {
+      "id": "core.runner.data",
+      "version": "1.0.0",
+      "capabilities": [
+        "dispatch_data",
+        "data_receipt",
+        "data-computation-only"
+      ]
     }
   ],
   "requires": [],

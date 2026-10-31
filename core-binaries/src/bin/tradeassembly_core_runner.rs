@@ -12,6 +12,7 @@ use tradeassembly_runtime::ports::{
 };
 use tradeassembly_runtime::runtime_config::{RuntimeConfig, RuntimeConfigLayer, RuntimeProfile};
 use tradeassembly_runtime::service::core_runner::DurableCoreRunnerBridge;
+use tradeassembly_runtime::service::data_runner::{DataRunnerCommand, DurableCoreDataRunner};
 use tradeassembly_runtime::service::paper_runner::DurableCorePaperRunner;
 use tradeassembly_runtime::service::TradeAssemblyService;
 
@@ -46,6 +47,13 @@ enum ProtocolRequest {
     },
     DispatchPaper {
         command: Box<PaperRunnerCommand>,
+    },
+    DispatchData {
+        command: Value,
+    },
+    DataReceipt {
+        workspace_id: String,
+        command_id: String,
     },
     PaperReceipt {
         workspace_id: String,
@@ -92,6 +100,14 @@ fn main() {
             process::exit(2);
         }
     };
+    let data_bridge = match DurableCoreDataRunner::new(service.clone(), core_release.clone()) {
+        Ok(bridge) => bridge,
+        Err(code) => {
+            write_response(&data_error_response(code)).ok();
+            process::exit(2);
+        }
+    };
+    let data_core_release = core_release.clone();
     let paper_bridge = match DurableCorePaperRunner::new(service, core_release) {
         Ok(bridge) => bridge,
         Err(error) => {
@@ -138,6 +154,19 @@ fn main() {
                 .receipt(&workspace_id, &command_id)
                 .map(|receipt| json!({"ok": true, "receipt": receipt}))
                 .unwrap_or_else(error_response),
+            Ok(ProtocolRequest::DispatchData { command }) => serde_json::to_vec(&command)
+                .map_err(|_| "data_runner_command_invalid".to_string())
+                .and_then(|bytes| DataRunnerCommand::parse(&bytes, &data_core_release))
+                .and_then(|command| data_bridge.dispatch(&command))
+                .map(|receipt| json!({"ok":true,"receipt":receipt}))
+                .unwrap_or_else(data_error_response),
+            Ok(ProtocolRequest::DataReceipt {
+                workspace_id,
+                command_id,
+            }) => data_bridge
+                .receipt(&workspace_id, &command_id)
+                .map(|receipt| json!({"ok":true,"receipt":receipt}))
+                .unwrap_or_else(data_error_response),
             Err(_) => error_response(RunnerBridgeError {
                 code: RunnerBridgeErrorCode::MalformedCommand,
                 message: "runner bridge protocol request is not valid strict JSON".to_string(),
@@ -147,6 +176,10 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn data_error_response(code: String) -> Value {
+    json!({"ok":false,"error":{"code":code,"message":"Data-only runner failed closed."}})
 }
 
 fn resolve_runner_config(

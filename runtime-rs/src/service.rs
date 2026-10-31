@@ -30,6 +30,7 @@ pub mod data_collections;
 pub mod data_evaluation;
 pub mod data_plans;
 pub mod data_recipes;
+pub mod data_runner;
 pub mod data_strategy;
 mod dataset_ingestion;
 mod derivatives;

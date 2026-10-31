@@ -355,6 +355,49 @@ fn validate_batch_with(
     Ok(())
 }
 
+fn validate_stored_receipt(
+    value: Value,
+    request_hash: &str,
+    request: &EvaluationStep,
+) -> Result<EvaluationReceipt, String> {
+    let receipt: EvaluationReceipt =
+        serde_json::from_value(value).map_err(|_| "data_evaluation_receipt_invalid")?;
+    if receipt.request_sha256 != request_hash {
+        return Err("data_evaluation_idempotency_conflict".into());
+    }
+    if receipt_hash(&receipt)? != receipt.receipt_sha256
+        || checkpoint_hash(&receipt.checkpoint)? != receipt.checkpoint.checkpoint_sha256
+        || receipt.checkpoint.run_id != request.run_id
+        || receipt.checkpoint.plan_revision_id != request.plan_revision_id
+    {
+        return Err("data_evaluation_receipt_invalid".into());
+    }
+    validate_state_availability(&receipt.checkpoint)?;
+    Ok(receipt)
+}
+/// Inspect original committed evidence without executing or advancing a run.
+/// Current owner/plan/source/window and request-authority bindings still apply.
+pub(crate) fn inspect_receipt(
+    service: &TradeAssemblyService,
+    request: &EvaluationStep,
+    context: &SideEffectContext,
+) -> Result<EvaluationReceipt, String> {
+    let plan = data_plans::current(service, &request.plan_revision_id)?;
+    super::data_captures::validate_window(service, &plan, &request.window)?;
+    if let Some(program) = super::data_strategy::program(service, &plan.content.scope)? {
+        program.validate(&plan.content.plan)?;
+    }
+    let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
+    let receipt_key = key(&[&run_key, context.idempotency_key.as_str()])?;
+    let value = service
+        .runtime()
+        .storage
+        .get_json(RECEIPTS, &receipt_key)?
+        .ok_or("data_evaluation_receipt_missing")?;
+    let request_hash = hash(&json!({"request":request,"authority":context.authority}))?;
+    validate_stored_receipt(value, &request_hash, request)
+}
+
 pub fn step(
     service: &TradeAssemblyService,
     request: EvaluationStep,
@@ -382,21 +425,9 @@ pub fn step(
     let receipt_key = key(&[&run_key, context.idempotency_key.as_str()])?;
     let runtime = service.runtime();
     if let Some(value) = runtime.storage.get_json(RECEIPTS, &receipt_key)? {
-        let receipt: EvaluationReceipt =
-            serde_json::from_value(value).map_err(|_| "data_evaluation_receipt_invalid")?;
-        if receipt.request_sha256 != request_hash {
-            return Err("data_evaluation_idempotency_conflict".into());
-        }
-        if receipt_hash(&receipt)? != receipt.receipt_sha256
-            || checkpoint_hash(&receipt.checkpoint)? != receipt.checkpoint.checkpoint_sha256
-            || receipt.checkpoint.run_id != request.run_id
-            || receipt.checkpoint.plan_revision_id != request.plan_revision_id
-        {
-            return Err("data_evaluation_receipt_invalid".into());
-        }
-        validate_state_availability(&receipt.checkpoint)?;
-        return Ok(receipt);
+        return validate_stored_receipt(value, &request_hash, &request);
     }
+
     let prior = runtime.storage.get_json(RUNS, &run_key)?;
     let mut checkpoint: EvaluationCheckpoint = match &prior {
         Some(v) => {

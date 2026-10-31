@@ -1626,7 +1626,7 @@ struct PepPackEntry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::adapters::local::sqlite::LocalSqliteStorage;
     use crate::control_plane::{graphql_envelope, http_envelope, mcp_envelope};
@@ -1643,7 +1643,7 @@ mod tests {
     const TEST_TOKEN: &str = "test-warden-token-with-at-least-32-bytes";
 
     #[derive(Clone, Copy, Debug)]
-    enum MockBehavior {
+    pub(crate) enum MockBehavior {
         Allow,
         Deny,
         VersionMismatch,
@@ -1659,8 +1659,8 @@ mod tests {
         receipt: Mutex<Option<Value>>,
     }
 
-    struct MockServer {
-        base_url: String,
+    pub(crate) struct MockServer {
+        pub(crate) base_url: String,
         state: Arc<MockState>,
         shutdown: Option<oneshot::Sender<()>>,
         thread: Option<std::thread::JoinHandle<()>>,
@@ -1677,7 +1677,7 @@ mod tests {
         }
     }
 
-    fn spawn_mock_warden(behavior: MockBehavior) -> MockServer {
+    pub(crate) fn spawn_mock_warden(behavior: MockBehavior) -> MockServer {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock listener");
         listener
             .set_nonblocking(true)

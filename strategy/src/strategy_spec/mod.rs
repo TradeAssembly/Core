@@ -4,6 +4,8 @@ mod migration;
 mod model;
 mod option_selection;
 pub use option_selection::*;
+mod instrument_screen;
+pub use instrument_screen::*;
 mod validation;
 
 pub use canonical::{canonical_bytes, canonical_hash, raw_hash};

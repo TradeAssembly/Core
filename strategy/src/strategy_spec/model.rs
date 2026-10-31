@@ -143,6 +143,8 @@ pub struct InstrumentSelector {
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<Expression>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<super::InstrumentScreen>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -151,6 +153,7 @@ pub enum SelectorType {
     NormalizedInstrument,
     SymbolicAlias,
     Dynamic,
+    Screened,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

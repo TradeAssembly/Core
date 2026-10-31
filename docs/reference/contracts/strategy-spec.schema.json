@@ -444,6 +444,16 @@
               "type": "null"
             }
           ]
+        },
+        "screen": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstrumentScreen"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -457,7 +467,8 @@
       "enum": [
         "normalized_instrument",
         "symbolic_alias",
-        "dynamic"
+        "dynamic",
+        "screened"
       ]
     },
     "Expression": {
@@ -2029,6 +2040,165 @@
         "descending"
       ],
       "type": "string"
+    },
+    "CollectionCoverageRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "complete_pointer": {
+          "description": "RFC6901 pointer whose actual provider value must be boolean true.",
+          "type": "string"
+        },
+        "scope_pointer": {
+          "description": "Exact provider scope identity; the host does not infer a global market.",
+          "type": "string"
+        },
+        "scope_value": true
+      },
+      "required": [
+        "complete_pointer",
+        "scope_pointer",
+        "scope_value"
+      ],
+      "type": "object"
+    },
+    "InstrumentScreen": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_requirement_ref": {
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/$defs/ScreenCoveragePolicy"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ScreenCollectionInput"
+          },
+          "type": "object"
+        },
+        "max_candidates": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "parameters": true,
+        "semantics_version": {
+          "type": "string"
+        },
+        "top_n": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ttl_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "$ref": "#/$defs/InstrumentScreenVersion"
+        }
+      },
+      "required": [
+        "version",
+        "capability_requirement_ref",
+        "semantics_version",
+        "inputs",
+        "parameters",
+        "coverage",
+        "max_candidates",
+        "top_n",
+        "ttl_ms"
+      ],
+      "type": "object"
+    },
+    "InstrumentScreenVersion": {
+      "enum": [
+        "tradeassembly.instrument_screen.v1"
+      ],
+      "type": "string"
+    },
+    "QueryDateBasis": {
+      "enum": [
+        "selection_utc_date"
+      ],
+      "type": "string"
+    },
+    "QueryDateBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/QueryDateBasis"
+        },
+        "offset_calendar_days": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "basis",
+        "offset_calendar_days"
+      ],
+      "type": "object"
+    },
+    "ScreenCollectionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_requirement_ref": {
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/$defs/CollectionCoverageRequirement"
+        },
+        "max_age_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "query": {
+          "$ref": "#/$defs/ScreenQuery"
+        },
+        "response_schema_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability_requirement_ref",
+        "response_schema_ref",
+        "query",
+        "max_age_ms",
+        "coverage"
+      ],
+      "type": "object"
+    },
+    "ScreenCoveragePolicy": {
+      "oneOf": [
+        {
+          "const": "complete_configured_inputs",
+          "description": "Complete only relative to the explicit configured provider input scopes.",
+          "type": "string"
+        }
+      ]
+    },
+    "ScreenQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "date_bindings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/QueryDateBinding"
+          },
+          "type": "object"
+        },
+        "literal": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "literal",
+        "date_bindings"
+      ],
+      "type": "object"
     }
   }
 }

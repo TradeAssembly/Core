@@ -25,6 +25,7 @@ fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,
  service.runtime().storage.put_json("positions","previous-member",json!({"symbol":"OLD","quantity":2,"state":"open"}),&ctx("existing-managed-position")).unwrap();service.runtime().storage.put_json("orders","unrelated-pending",json!({"symbol":"OLD","state":"pending"}),&ctx("existing-pending-order")).unwrap();
  let positions=service.runtime().storage.list_json("positions").unwrap();let orders=service.runtime().storage.list_json("orders").unwrap();
  let request=dispatch::DispatchRequest{occurrence_id:occurrence,scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),subjects:dispatch::SubjectPolicy::AllSelected{max_members:1},event_start_ms:10*86400000,event_end_ms:12*86400000,interval_ms:86400000,max_frames_per_step:2,source_captures_by_subject:BTreeMap::new()};
+ if case=="session_process" {exercise_compiled_session_process(&service,&request,case);return;}
  let job=dispatch::enqueue(&service,request.clone()).unwrap();
  if case=="session_closed" {assert_eq!(job.status,dispatch::Status::Closed);let before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();assert_eq!(dispatch::advance(&service,&job.job_id).unwrap().status,dispatch::Status::Closed);assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);write_screen_interface_evidence(case,"dispatch-final.json",&serde_json::to_value(job).unwrap());return;}
  assert_eq!(job.status,dispatch::Status::Pending);

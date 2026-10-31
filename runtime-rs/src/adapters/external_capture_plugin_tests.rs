@@ -426,12 +426,13 @@ fn screen_process_fixture(case:&str) {
     let (mut dir,service,original_scope,original_request)=data_plans::tests::fixture_service(Some(operations.clone()));
     // Explicit joint runs retain the synthetic database/identity for outcome
     // reconciliation after a harness failure. Never retain customer state here.
-    if std::env::var_os("REACH_DATA_TEST_CORE_BINARY").is_some() {dir.disable_cleanup(true);}
+    if std::env::var_os("REACH_DATA_TEST_CORE_BINARY").is_some() || std::env::var_os("SESSION_PROCESS_TEST_BINARY").is_some() {dir.disable_cleanup(true);}
 
     let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
     let complete=!matches!(case,"incomplete"|"session_partial");
     let session_case=case.starts_with("session_");
     let closed_case=case=="session_closed";
+    let process_case=case=="session_process";
     let acquisition_expected=!matches!(case,"session_closed"|"session_missed");
     let calendar_now=service.runtime().clock.now_ms();
     let server=std::thread::spawn(move|| {
@@ -440,7 +441,7 @@ fn screen_process_fixture(case:&str) {
         if session_case && request_index==0 {
             assert!(request.starts_with("GET /options "));
             let date=chrono::DateTime::from_timestamp_millis(calendar_now).unwrap().date_naive().to_string();
-            let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":calendar_now,"days":[{"sessionDate":date,"session":if closed_case {json!({"status":"closed","reason":"explicit_fixture_holiday"})}else{json!({"status":"open","openAtMs":calendar_now+600000,"closeAtMs":calendar_now+3600000,"earlyClose":true})}}]});
+            let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":calendar_now,"days":[{"sessionDate":date,"session":if closed_case {json!({"status":"closed","reason":"explicit_fixture_holiday"})}else{json!({"status":"open","openAtMs":calendar_now+if process_case{210000}else{600000},"closeAtMs":calendar_now+3600000,"earlyClose":true})}}]});
             let bytes=serde_json::to_vec(&document).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();continue;
         }
         assert!(request.starts_with("GET /observations "));
@@ -458,7 +459,7 @@ fn screen_process_fixture(case:&str) {
     });
     let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
     let calculator=install_screen_package(&service,dir.path());
-    let evaluation_calculator=if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_closed"|"session_missed"){Some(install_fixture_with_recipe(&service,dir.path(),true,86400000,false))}else{None};
+    let evaluation_calculator=if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_closed"|"session_missed"){Some(install_fixture_with_recipe(&service,dir.path(),true,86400000,false))}else{None};
     if let Some(p)=&evaluation_calculator{service.runtime().plugins.put_instance(&p.plugin_ref,json!({"instanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"providerRef":p.plugin_ref,"enabled":true,"activePackageSha256":p.package_sha256,"configuration":{}}),&ctx("selected-evaluation-instance")).unwrap();}
 
     for package in [&source,&calculator] {
@@ -471,7 +472,7 @@ fn screen_process_fixture(case:&str) {
     let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();spec["strategy_id"]=json!(original_scope.strategy_id);
     let mut screen_policy=json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"fixture.screen.v1","inputs":{"contracts":{"capability_requirement_ref":"screen_source","response_schema_ref":"schema://capture-fixture/response@1","query":{"literal":{},"date_bindings":{}},"max_age_ms":300000,"coverage":{"complete_pointer":"/snapshot/coverage/complete","scope_pointer":"/snapshot/coverage/scope","scope_value":"fixture_candidates"}}},"candidate_input":"contracts","candidate_records_pointer":"/snapshot/rows","candidate_id_pointer":"/id","parameters":{"minDte":45,"maxDte":60,"maxOiAgeDays":1},"coverage":"complete_configured_inputs","max_candidates":7,"top_n":1,"ttl_ms":120000});
     if case=="integral" {screen_policy["top_n"]=json!(1.0);}
-    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_closed"|"session_missed") {screen_policy["ttl_ms"]=json!(300000);}
+    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_closed"|"session_missed") {screen_policy["ttl_ms"]=json!(300000);}
     if matches!(case,"no_match"|"selected_empty"|"session_empty") {screen_policy["parameters"]["minDte"]=json!(100);screen_policy["parameters"]["maxDte"]=json!(200);}
     if case=="foreign" {screen_policy["parameters"]["fault"]=json!("foreign_member");}
     if case=="unaccounted" {screen_policy["parameters"]["fault"]=json!("omit_rejections");}
@@ -487,10 +488,11 @@ fn screen_process_fixture(case:&str) {
         spec["capability_requirements"]["required"].as_array_mut().unwrap().push(requirement);
         service.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("screen-grant")).unwrap();
     }
-    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_closed"|"session_missed") {
+    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_closed"|"session_missed") {
         configure_selected_evaluation_fixture(&service,&mut spec,&original_request);
     }
-    if session_case {configure_dispatch_calendar_fixture(&service,&mut spec);if matches!(case,"session_background"|"session_resume"){spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]["max_lateness_ms"]=json!(300000);}}
+    if session_case {configure_dispatch_calendar_fixture(&service,&mut spec);if matches!(case,"session_background"|"session_resume"|"session_process"){spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]["max_lateness_ms"]=json!(300000);}}
+    if process_case {spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["offset_ms"]=json!(-30000);}
     let report=crate::spec::validate_strategy_spec_report(&spec);assert!(report.valid,"{:?}",report.diagnostics);
     assert!(crate::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
     let saved=service.handle_http("POST","/product/strategies/save-draft",json!({"strategyId":original_scope.strategy_id,"spec":spec}));assert_eq!(saved.body["body"]["draftSaved"],true,"{}",saved.body);
@@ -562,7 +564,7 @@ fn screen_process_fixture(case:&str) {
         assert_eq!(selection.instrument_set.candidate_count,7);
         assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="expiry_out_of_range" && r.count==7));
     }
-    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_closed"|"session_missed") {exercise_selected_evaluation_fixture(&service,&selection,case);return;}
+    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_closed"|"session_missed") {exercise_selected_evaluation_fixture(&service,&selection,case);return;}
     let duplicate=service.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
     assert_eq!(duplicate.body["selection"],response.body["selection"]);assert_eq!(duplicate.body["instrumentSet"],response.body["instrumentSet"]);
     let mcp=service.call_mcp_tool("tradeassembly.strategy.instrument_screen.get",json!({"selectionId":selection.selection_id}));assert_eq!(mcp["structuredContent"]["instrumentSet"],response.body["instrumentSet"]);
@@ -2013,3 +2015,11 @@ fn session_background_wake_competing_lease_closed_and_missed_are_bounded(){
 
 #[test]
 fn session_worker_intent_survives_worker_stop_and_service_recreation(){screen_process_fixture("session_resume");}
+
+include!("external_session_process_tests.rs");
+#[test]
+#[ignore="explicit exact frozen Core CLI, owned process driver and synthetic loopback/SRT gate"]
+fn session_actual_compiled_core_process_restart_and_lost_mcp_response(){
+ for name in ["SESSION_PROCESS_TEST_BINARY","SESSION_PROCESS_TEST_SCRIPT","SESSION_PROCESS_TEST_SRT","SCREEN_INTERFACE_EVIDENCE_DIR"]{assert!(std::env::var_os(name).is_some(),"missing process gate input {name}");}
+ screen_process_fixture("session_process");
+}

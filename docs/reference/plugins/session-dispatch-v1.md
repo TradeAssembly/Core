@@ -58,7 +58,25 @@ Native regressions exercise real authored plugin processes over loopback with
 durable local storage: before-due waiting, competing lease refusal, due wake,
 progress-write recovery, closed/missed calendars, empty/incomplete coverage,
 worker stop/service recreation/unchanged-intent resume, and untouched managed
-positions/orders. Whole compiled Core process restart remains a separate gate.
+positions/orders. Whole compiled Core process restart is a separate opt-in gate.
 Remote Reach dispatch negotiation, selection-to-order admission, continuing exit
 management and point-in-time research accounting remain separate integrations.
 This is not production authentication, market-data or brokerage acceptance.
+
+
+## Compiled process gate
+
+The ignored `session_actual_compiled_core_process_restart_and_lost_mcp_response`
+gate uses an explicitly frozen Core CLI and `tests/fixtures/session_process_driver.py`.
+It closes the entire MCP reply pipe after initialization, waits for the domain
+commit, replays the original enqueue in a fresh CLI, enables the owned worker,
+and terminates that process before due. Normal `api` startup must resume the
+same enabled intent, produce native warming/ready frames through SRT, and retain
+the completed job across another API restart without a provider invocation.
+
+Inputs are explicit `SESSION_PROCESS_TEST_BINARY`, `SESSION_PROCESS_TEST_SCRIPT`,
+`SESSION_PROCESS_TEST_SRT` and a new `SCREEN_INTERFACE_EVIDENCE_DIR`. The authored
+fixture is bound to the frozen source revision named by its driver; it is not an
+installer, release qualification or permission to reuse receipts against another
+source. Synthetic state and process logs remain isolated for reconciliation.
+The MCP enqueue loss case does not establish Relay HTTP record-ack loss handling.

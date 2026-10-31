@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+test "$#" = 2
+tag=$1
+record=$2
+renewal=false
+if [[ "$tag" =~ ^update-input-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+ version=${tag#update-input-v}
+elif [[ "$tag" =~ ^update-renewal-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-seq([1-9][0-9]*)$ ]]; then
+ version=${tag#update-renewal-v}; version=${version%-seq*}; renewal=true
+else exit 1; fi
+jq -ce --arg v "$version" --arg t "$tag" --argjson renewal "$renewal" '
+ . as $r | select(.schema=="tradeassembly.private-update-candidate/v1" and .version==$v
+ and .target=="aarch64-apple-darwin" and .publicFeedEnabled==false
+ and (.sequence|type=="number" and floor==. and .>0 and .<=9007199254740991)
+ and ([.archiveSha256,.diskImageSha256,.notarizationBindingSha256]|all(.[];type=="string" and test("^[0-9a-f]{64}$")))
+ and (if $renewal then .renewalOf.releaseTag==("v"+$v)
+   and (.renewalOf.metadataSha256|type=="string" and test("^[0-9a-f]{64}$"))
+   and $t==("update-renewal-v"+$v+"-seq"+(.sequence|tostring))
+ else .renewalOf==null end))
+ | {version:$v,renewal:$renewal,sequence:.sequence,renewalOf:.renewalOf}' "$record"

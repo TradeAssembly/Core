@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+guard=$(cd "$(dirname "$0")/.." && pwd)/update-input-identity
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+jq -n '{schema:"tradeassembly.private-update-candidate/v1",version:"0.3.0",target:"aarch64-apple-darwin",publicFeedEnabled:false,sequence:5,archiveSha256:("a"*64),diskImageSha256:("b"*64),notarizationBindingSha256:("c"*64)}' > "$tmp/input"
+"$guard" update-input-v0.3.0 "$tmp/input" | jq -e '.renewal==false and .version=="0.3.0"' >/dev/null
+jq '.+{renewalOf:{releaseTag:"v0.3.0",metadataSha256:("d"*64)}}' "$tmp/input" > "$tmp/renewal"
+"$guard" update-renewal-v0.3.0-seq5 "$tmp/renewal" | jq -e '.renewal==true and .sequence==5' >/dev/null
+for tag in update-renewal-v0.3.0-seq4 update-renewal-v0.3.1-seq5 update-renewal-v0.3.0-seq05 update-renewal-v0.3.0-seq0 update-renewal-v0.3.0-seq5-rc1 update-input-v0.3.0 refs/heads/main; do
+ if "$guard" "$tag" "$tmp/renewal" >/dev/null 2>&1; then exit 1; fi
+done
+for patch in '.renewalOf.releaseTag="v0.2.9"' '.renewalOf.metadataSha256="bad"' '.publicFeedEnabled=true' '.sequence=9007199254740992' '.sequence=5.5'; do
+ jq "$patch" "$tmp/renewal" > "$tmp/bad"
+ if "$guard" update-renewal-v0.3.0-seq5 "$tmp/bad" >/dev/null 2>&1; then exit 1; fi
+done
+if "$guard" update-renewal-v0.3.0-seq5 "$tmp/input" >/dev/null 2>&1; then exit 1; fi
+echo 'PASS exact input/renewal lanes, fresh sequence identity, published predecessor identity and disabled-feed records'

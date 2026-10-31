@@ -186,6 +186,44 @@ pub fn verify(
     })
 }
 
+/// Keyless release-pipeline renewal preparation. A still-valid authenticated
+/// predecessor and independent exact proof approval are required. This function
+/// never loads a signing key, changes artifact identity, or publishes a feed.
+pub fn prepare_renewal(
+    binding: &[u8],
+    expected_binding_sha256: &str,
+    previous: &[u8],
+    expected_previous_sha256: &str,
+    trusted_public_key: &[u8; 32],
+    next_sequence: u64,
+    now: u64,
+) -> Result<serde_json::Value> {
+    if !hex(expected_previous_sha256, 64) || sha(previous) != expected_previous_sha256 {
+        return Err("renewal_predecessor_not_approved".into());
+    }
+    let mut release = updates::authenticate(previous, trusted_public_key, now)?;
+    if next_sequence <= release.sequence
+        || next_sequence > 9_007_199_254_740_991
+        || now <= release.issued_at
+    {
+        return Err("renewal_sequence_or_clock_not_advanced".into());
+    }
+    let expires = now.checked_add(604_800).ok_or("renewal_clock_overflow")?;
+    if expires <= release.expires_at {
+        return Err("renewal_expiry_not_advanced".into());
+    }
+    release.sequence = next_sequence;
+    release.issued_at = now;
+    release.expires_at = expires;
+    let payload = serde_json::to_vec(&release).map_err(|_| "renewal_payload_invalid")?;
+    let verified = verify(binding, expected_binding_sha256, &payload, now)?;
+    Ok(
+        serde_json::json!({"schema":"tradeassembly.update-renewal-plan/v1",
+        "payload":release,"previousMetadataSha256":expected_previous_sha256,
+        "verification":verified.receipt(),"signed":false,"published":false}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +251,68 @@ mod tests {
             serde_json::to_vec_pretty(&release).unwrap(),
         )
     }
+    #[test]
+    fn renewal_authenticates_predecessor_and_preserves_exact_identity() {
+        let (proof, payload) = fixture();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let old = verify(&proof, &sha(&proof), &payload, 100)
+            .unwrap()
+            .sign_with_key(|| Ok(key.to_bytes()))
+            .unwrap();
+        let old = serde_json::to_vec(&old).unwrap();
+        let renew = |bytes: &[u8], digest: &str, seq, now| {
+            prepare_renewal(
+                &proof,
+                &sha(&proof),
+                bytes,
+                digest,
+                &key.verifying_key().to_bytes(),
+                seq,
+                now,
+            )
+        };
+        let plan = renew(&old, &sha(&old), 2, 150).unwrap();
+        let next: BinaryRelease = serde_json::from_value(plan["payload"].clone()).unwrap();
+        let previous: BinaryRelease = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            PublicationIdentity::release(&next),
+            PublicationIdentity::release(&previous)
+        );
+        assert_eq!(
+            (next.sequence, next.issued_at, next.expires_at),
+            (2, 150, 604_950)
+        );
+        assert_eq!(plan["signed"], false);
+        assert_eq!(plan["published"], false);
+        for (seq, now) in [
+            (1, 150),
+            (0, 150),
+            (2, 100),
+            (2, 200),
+            (9_007_199_254_740_992, 150),
+        ] {
+            assert!(renew(&old, &sha(&old), seq, now).is_err());
+        }
+        assert!(renew(&old, &"a".repeat(64), 2, 150).is_err());
+        let mut changed: SignedBinaryRelease = serde_json::from_slice(&old).unwrap();
+        changed.signature = STANDARD.encode([0u8; 64]);
+        let changed = serde_json::to_vec(&changed).unwrap();
+        assert!(renew(&changed, &sha(&changed), 2, 150).is_err());
+        let mut changed: serde_json::Value = serde_json::from_slice(&proof).unwrap();
+        changed["identity"]["components"]["core"] = serde_json::json!("f".repeat(64));
+        let changed = serde_json::to_vec(&changed).unwrap();
+        assert!(prepare_renewal(
+            &changed,
+            &sha(&changed),
+            &old,
+            &sha(&old),
+            &key.verifying_key().to_bytes(),
+            2,
+            150
+        )
+        .is_err());
+    }
+
     fn try_sign(
         proof: &[u8],
         approved: &str,

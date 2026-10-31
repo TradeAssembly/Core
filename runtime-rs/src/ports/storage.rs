@@ -100,5 +100,28 @@ pub trait StoragePort: VersionedPort {
     ) -> Result<Vec<(String, Value)>, String> {
         Err("paged storage listing is unsupported".to_string())
     }
+    /// Trusted local pre-dispatch durability barrier only. No public export route.
+    fn execution_checkpoint_snapshot(&self, _destination: &std::path::Path) -> Result<(), String> {
+        Err("execution_checkpoint_snapshot_unsupported".into())
+    }
+    /// Bounded, consistent read for the public portability allowlist.
+    fn public_workspace_snapshot(
+        &self,
+        _namespaces: &[&str],
+        _max_rows: usize,
+        _max_bytes: usize,
+    ) -> Result<Vec<(String, String, Value)>, String> {
+        Err("workspace_snapshot_unsupported".to_string())
+    }
+    /// Commit to a completely empty durable workspace, or verify an exact retry.
+    /// Implementations must check emptiness and write the receipt in one transaction.
+    fn import_public_workspace(
+        &self,
+        _writes: &[StorageWrite],
+        _digest: &str,
+        _bootstrap: &[StorageExpectation],
+    ) -> Result<ImmutablePutOutcome, String> {
+        Err("workspace_import_unsupported".to_string())
+    }
     fn clear_namespace(&self, namespace: &str) -> Result<(), String>;
 }

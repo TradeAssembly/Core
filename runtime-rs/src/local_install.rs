@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::fs;
+#[cfg(not(windows))]
+use std::fs::{File, OpenOptions};
+use std::io::ErrorKind;
+#[cfg(not(windows))]
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -61,11 +65,11 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
         verify_version(&binary)?;
         saved
     } else {
-        let entries = fs::read_dir(&state)
-            .map_err(|_| "local_install_state_unavailable")?
-            .count();
-        if entries > 0 {
-            return Err("local_install_state_unrecognized".into());
+        for entry in fs::read_dir(&state).map_err(|_| "local_install_state_unavailable")? {
+            let entry = entry.map_err(|_| "local_install_state_unavailable")?;
+            if !recoverable_staging_name(entry.file_name().to_string_lossy().as_ref()) {
+                return Err("local_install_state_unrecognized".into());
+            }
         }
         verify_version(&binary)?;
         Installation {
@@ -98,6 +102,7 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
     };
 
     let database = state.join("runtime.db");
+    let auth = state.join("auth");
     let warden_database = state.join("warden.sqlite");
     let key = state.join("signing.seed");
     let token = state.join("warden.token");
@@ -131,6 +136,21 @@ pub fn prepare(state_dir: &Path, warden_binary: &Path, port: u16) -> Result<Valu
         database_path: Some(absolute(&database)?.display().to_string()),
         artifact_root: Some(absolute(&state.join("artifacts"))?.display().to_string()),
         oidc_profile: Some("local_owner".into()),
+        // Keep the optional hosted-session binding installation-scoped. The
+        // packaged connection profile derives a Bitwarden item name from this
+        // path; a relative default would make the same installation appear as
+        // a different user session when an MCP host changes its working
+        // directory.
+        oidc_session_path: Some(
+            absolute(&auth.join("cli-session.bin"))?
+                .display()
+                .to_string(),
+        ),
+        oidc_session_key_path: Some(
+            absolute(&auth.join("cli-session.key"))?
+                .display()
+                .to_string(),
+        ),
         legal_receipt_root: Some(
             absolute(&state.join("legal/receipts"))?
                 .display()
@@ -181,9 +201,19 @@ fn bundled_sandbox_command() -> Option<String> {
     if bin.file_name()? != "bin" || !root.join("bundle.json").is_file() {
         return None;
     }
-    let launcher = bin.join("tradeassembly-sandbox");
+    let launcher = bin.join(if cfg!(windows) {
+        "tradeassembly-sandbox.exe"
+    } else {
+        "tradeassembly-sandbox"
+    });
     if !launcher.is_file()
-        || !root.join("runtime/node/bin/node").is_file()
+        || !root
+            .join(if cfg!(windows) {
+                "runtime/node/bin/node.exe"
+            } else {
+                "runtime/node/bin/node"
+            })
+            .is_file()
         || !root
             .join("runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js")
             .is_file()
@@ -324,10 +354,14 @@ fn verify_version(binary: &Path) -> Result<(), String> {
 }
 
 fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
+    let path = system_state_path(path);
     if !path.is_absolute() {
         return Err("local_install_state_must_be_absolute".into());
     }
-    reject_symlinks(path)?;
+    reject_symlinks(&path)?;
+    #[cfg(windows)]
+    crate::windows_private::ensure_directory(&path).map_err(|_| "local_install_state_insecure")?;
+    #[cfg(not(windows))]
     if !path.exists() {
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
@@ -337,13 +371,25 @@ fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
             builder.mode(0o700);
         }
         builder
-            .create(path)
+            .create(&path)
             .map_err(|_| "local_install_state_unavailable")?;
     }
-    let state = validate_state_root(path)?;
+    let state = validate_state_root(&path)?;
     for entry in fs::read_dir(&state).map_err(|_| "local_install_state_unavailable")? {
         let entry = entry.map_err(|_| "local_install_state_unavailable")?;
         let name = entry.file_name();
+        #[cfg(windows)]
+        if recoverable_staging_name(name.to_string_lossy().as_ref()) {
+            // A crashed atomic publication may leave private scratch bytes.
+            // Preserve them; never adopt their content or unlink an active
+            // writer's file. The real handle still must pass owner/DACL and
+            // reparse checks before this exception permits retrying setup.
+            drop(
+                crate::windows_private::open_read(&entry.path())
+                    .map_err(|_| "local_install_state_insecure")?,
+            );
+            continue;
+        }
         if entry
             .file_type()
             .map_err(|_| "local_install_state_unavailable")?
@@ -359,13 +405,17 @@ fn prepare_state_root(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_state_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.is_absolute() || symlink_metadata(path)?.file_type().is_symlink() {
+    let path = system_state_path(path);
+    if !path.is_absolute() || symlink_metadata(&path)?.file_type().is_symlink() {
         return Err("local_install_state_invalid".into());
     }
-    let meta = symlink_metadata(path)?;
+    let meta = symlink_metadata(&path)?;
     if !meta.is_dir() {
         return Err("local_install_state_invalid".into());
     }
+    #[cfg(windows)]
+    crate::windows_private::validate_directory(&path)
+        .map_err(|_| "local_install_state_insecure")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -373,8 +423,21 @@ fn validate_state_root(path: &Path) -> Result<PathBuf, String> {
             return Err("local_install_state_insecure".into());
         }
     }
-    reject_symlinks(path)?;
-    Ok(path.to_path_buf())
+    reject_symlinks(&path)?;
+    Ok(path)
+}
+
+// macOS exposes /tmp as the OS-owned /private/tmp symlink. Normalize only
+// that fixed platform alias before applying the no-user-controlled-symlink
+// rule. All other path components are still checked with lstat below.
+fn system_state_path(path: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(suffix) = path.strip_prefix("/tmp") {
+            return Path::new("/private/tmp").join(suffix);
+        }
+    }
+    path.to_path_buf()
 }
 
 fn recognized(name: &str) -> bool {
@@ -390,6 +453,7 @@ fn recognized(name: &str) -> bool {
             | "warden.sqlite.integrity-key"
             | "warden.sqlite.integrity-lock"
             | "warden.sqlite.integrity-anchor"
+            | "warden.sqlite.integrity-pending"
             | "runtime.db-shm"
             | "runtime.db-wal"
             | "signing.seed"
@@ -405,6 +469,21 @@ fn recognized(name: &str) -> bool {
             | ".local-owner"
             | "runtime.db.local-owner"
     )
+}
+
+fn recoverable_staging_name(name: &str) -> bool {
+    cfg!(windows) && private_staging_name(name)
+}
+
+fn private_staging_name(name: &str) -> bool {
+    name.strip_prefix(".tradeassembly-local-write-")
+        .and_then(|name| name.strip_suffix(".tmp"))
+        .is_some_and(|nonce| {
+            nonce.len() == 32
+                && nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 fn reject_symlinks(path: &Path) -> Result<(), String> {
@@ -429,18 +508,35 @@ fn reject_symlinks(path: &Path) -> Result<(), String> {
 }
 
 fn validate_private_file(path: &Path, size: u64) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| "local_install_secret_invalid")?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != size {
-        return Err("local_install_secret_invalid".into());
-    }
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("local_install_secret_insecure".into());
+        let file =
+            crate::windows_private::open_read(path).map_err(|_| "local_install_secret_insecure")?;
+        if file
+            .metadata()
+            .map_err(|_| "local_install_secret_invalid")?
+            .len()
+            != size
+        {
+            return Err("local_install_secret_invalid".into());
         }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        let metadata = fs::symlink_metadata(path).map_err(|_| "local_install_secret_invalid")?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != size {
+            return Err("local_install_secret_invalid".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err("local_install_secret_insecure".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn private_bytes(path: &Path, size: usize) -> Result<(), String> {
@@ -456,7 +552,7 @@ fn private_bytes(path: &Path, size: usize) -> Result<(), String> {
 fn private_token(path: &Path) -> Result<(), String> {
     if path.exists() {
         validate_private_file(path, 64)?;
-        let bytes = fs::read(path).map_err(|_| "local_install_secret_invalid")?;
+        let bytes = read_private_bytes(path).map_err(|_| "local_install_secret_invalid")?;
         if bytes.len() != 64 || !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
             return Err("local_install_secret_invalid".into());
         }
@@ -470,7 +566,7 @@ fn private_token(path: &Path) -> Result<(), String> {
 fn publish_or_verify_text(path: &Path, text: &str) -> Result<(), String> {
     if path.exists() {
         validate_private_file(path, text.len() as u64)?;
-        if fs::read(path).map_err(|_| "local_install_state_invalid")? != text.as_bytes() {
+        if read_private_bytes(path).map_err(|_| "local_install_state_invalid")? != text.as_bytes() {
             return Err("local_install_policy_integrity_failed".into());
         }
         return Ok(());
@@ -482,7 +578,7 @@ fn publish_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|_| "local_install_state_write_failed")?;
     if path.exists() {
         validate_private_file(path, bytes.len() as u64)?;
-        if fs::read(path).map_err(|_| "local_install_state_invalid")? != bytes {
+        if read_private_bytes(path).map_err(|_| "local_install_state_invalid")? != bytes {
             return Err("local_install_state_integrity_failed".into());
         }
         return Ok(());
@@ -491,50 +587,69 @@ fn publish_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 
 fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut nonce = [0_u8; 16];
-    OsRng.fill_bytes(&mut nonce);
-    let temp = path.with_file_name(format!(
-        ".{}.{}.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy(),
-        hex_encode(&nonce)
-    ));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&temp)
-        .map_err(|_| "local_install_state_write_failed")?;
-    let result = (|| {
-        file.write_all(bytes)
-            .map_err(|_| "local_install_state_write_failed")?;
-        file.sync_all()
-            .map_err(|_| "local_install_state_write_failed")?;
-        match fs::hard_link(&temp, path) {
-            Ok(()) => {
-                if let Some(parent) = path.parent() {
-                    File::open(parent)
-                        .and_then(|f| f.sync_all())
-                        .map_err(|_| "local_install_state_write_failed")?;
-                }
-                Ok(())
-            }
+        match crate::windows_private::write_new(path, bytes) {
+            Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                validate_private_file(path, bytes.len() as u64)?;
-                if fs::read(path).map_err(|_| "local_install_state_write_failed")? == bytes {
+                let existing = crate::windows_private::read(path)
+                    .map_err(|_| "local_install_state_write_failed")?;
+                if existing == bytes {
                     Ok(())
                 } else {
                     Err("local_install_state_integrity_failed".into())
                 }
             }
-            Err(_) => Err("local_install_state_write_failed".to_string()),
+            Err(_) => Err("local_install_state_write_failed".into()),
         }
-    })();
-    let _ = fs::remove_file(temp);
-    result
+    }
+    #[cfg(not(windows))]
+    {
+        let mut nonce = [0_u8; 16];
+        OsRng.fill_bytes(&mut nonce);
+        let temp = path.with_file_name(format!(
+            ".{}.{}.tmp",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            hex_encode(&nonce)
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temp)
+            .map_err(|_| "local_install_state_write_failed")?;
+        let result = (|| {
+            file.write_all(bytes)
+                .map_err(|_| "local_install_state_write_failed")?;
+            file.sync_all()
+                .map_err(|_| "local_install_state_write_failed")?;
+            match fs::hard_link(&temp, path) {
+                Ok(()) => {
+                    if let Some(parent) = path.parent() {
+                        File::open(parent)
+                            .and_then(|f| f.sync_all())
+                            .map_err(|_| "local_install_state_write_failed")?;
+                    }
+                    Ok(())
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    validate_private_file(path, bytes.len() as u64)?;
+                    if fs::read(path).map_err(|_| "local_install_state_write_failed")? == bytes {
+                        Ok(())
+                    } else {
+                        Err("local_install_state_integrity_failed".into())
+                    }
+                }
+                Err(_) => Err("local_install_state_write_failed".to_string()),
+            }
+        })();
+        let _ = fs::remove_file(temp);
+        result
+    }
 }
 
 fn read_installation(path: &Path) -> Result<Installation, String> {
@@ -543,8 +658,21 @@ fn read_installation(path: &Path) -> Result<Installation, String> {
         return Err("local_installation_record_invalid".into());
     }
     validate_private_file(path, metadata.len())?;
-    let bytes = fs::read(path).map_err(|_| "local_installation_record_invalid")?;
+    let bytes = read_private_bytes(path).map_err(|_| "local_installation_record_invalid")?;
     serde_json::from_slice(&bytes).map_err(|_| "local_installation_record_invalid".into())
+}
+
+fn read_private_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        // Validate ownership, DACL and reparse status on the handle used to
+        // read, rather than validating one lookup and reading another.
+        crate::windows_private::read(path)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::read(path)
+    }
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -638,9 +766,65 @@ mod tests {
     }
 
     #[test]
+    fn local_install_preserves_known_warden_recovery_marker_for_authority_validation() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let state = prepare_state_root(&root.join("state")).unwrap();
+        let marker = state.join("warden.sqlite.integrity-pending");
+        publish_bytes(&marker, b"pending authority evidence").unwrap();
+        assert_eq!(prepare_state_root(&state).unwrap(), state);
+        assert_eq!(
+            read_private_bytes(&marker).unwrap(),
+            b"pending authority evidence"
+        );
+        // Recognizing Warden's recovery file is not adopting an unmarked rig
+        // or asserting that its contents pass Warden's integrity verification.
+        let binary = root.join("warden");
+        fs::write(&binary, b"not executed").unwrap();
+        assert_eq!(
+            prepare(&state, &binary, 8181).unwrap_err(),
+            "local_install_state_unrecognized"
+        );
+    }
+
+    #[test]
+    fn local_install_staging_exception_is_exact_and_platform_scoped() {
+        let name = ".tradeassembly-local-write-0123456789abcdef0123456789abcdef.tmp";
+        assert!(private_staging_name(name));
+        assert_eq!(recoverable_staging_name(name), cfg!(windows));
+        for invalid in [
+            ".tradeassembly-local-write-deadbeef.tmp",
+            ".tradeassembly-local-write-0123456789ABCDEF0123456789ABCDEF.tmp",
+            ".tradeassembly-local-write-0123456789abcdef0123456789abcdef.tmp.extra",
+            ".tradeassembly-local-write-../../outside.tmp",
+        ] {
+            assert!(!private_staging_name(invalid));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_install_preserves_private_orphan_without_adopting_it() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let state = prepare_state_root(&root.join("state")).unwrap();
+        let orphan = state.join(".tradeassembly-local-write-0123456789abcdef0123456789abcdef.tmp");
+        crate::windows_private::write_new(&orphan, b"incomplete publication").unwrap();
+        assert_eq!(prepare_state_root(&state).unwrap(), state);
+        assert_eq!(
+            read_private_bytes(&orphan).unwrap(),
+            b"incomplete publication"
+        );
+        // It cannot become a stable authority seed/token/installation record.
+        assert!(!state.join("installation.json").exists());
+        assert!(!state.join("signing.seed").exists());
+        assert!(!state.join("warden.token").exists());
+    }
+
+    #[test]
     fn local_install_private_material_is_stable_and_detects_changes() {
         let root = tempfile::tempdir().unwrap();
-        let state = root.path().canonicalize().unwrap();
+        let state = prepare_state_root(&root.path().canonicalize().unwrap().join("state")).unwrap();
         let key = state.join("key");
         private_bytes(&key, 32).unwrap();
         let before = fs::read(&key).unwrap();
@@ -661,10 +845,23 @@ mod tests {
     fn local_install_rejects_relative_paths_and_unknown_state() {
         assert!(prepare_state_root(Path::new("relative")).is_err());
         let root = tempfile::tempdir().unwrap();
-        let state = root.path().canonicalize().unwrap();
+        let state = prepare_state_root(&root.path().canonicalize().unwrap().join("state")).unwrap();
         fs::write(state.join("unrelated"), b"preserve").unwrap();
         assert!(prepare_state_root(&state).is_err());
         assert_eq!(fs::read(state.join("unrelated")).unwrap(), b"preserve");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_install_normalizes_only_the_system_tmp_alias() {
+        assert_eq!(
+            system_state_path(Path::new("/tmp/tradeassembly-test")),
+            Path::new("/private/tmp/tradeassembly-test")
+        );
+        assert_eq!(
+            system_state_path(Path::new("/Users/example/test")),
+            Path::new("/Users/example/test")
+        );
     }
 
     #[cfg(unix)]

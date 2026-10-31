@@ -6,6 +6,9 @@ use tradeassembly_runtime::local_owner_identity::LocalOwnerIdentity;
 
 fn private_root(directory: &tempfile::TempDir) -> std::path::PathBuf {
     let path = directory.path().join("state");
+    #[cfg(windows)]
+    tradeassembly_runtime::windows_private::create_directory(&path).unwrap();
+    #[cfg(not(windows))]
     fs::create_dir(&path).unwrap();
     #[cfg(unix)]
     {

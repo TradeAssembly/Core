@@ -85,6 +85,31 @@ struct FailingEvidence {
     delegate: Arc<dyn EvidencePort>,
 }
 
+struct FalseAcknowledgementEvidence {
+    delegate: Arc<dyn EvidencePort>,
+    read_error: bool,
+}
+
+impl VersionedPort for FalseAcknowledgementEvidence {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        self.delegate.descriptors()
+    }
+}
+
+impl EvidencePort for FalseAcknowledgementEvidence {
+    fn append(&self, _record: EvidenceRecord) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn list(&self, _aggregate_id: &str) -> Result<Vec<EvidenceRecord>, String> {
+        if self.read_error {
+            Err("injected receipt read secret=hidden".into())
+        } else {
+            Ok(vec![])
+        }
+    }
+}
+
 struct ObservedScheduler {
     delegate: Arc<dyn SchedulerPort>,
     schedules: Arc<AtomicUsize>,
@@ -439,6 +464,33 @@ fn activation_evidence_failure_precedes_all_domain_mutation_and_recovers() {
             .len(),
         1
     );
+}
+
+#[test]
+fn activation_rejects_false_evidence_acknowledgement_and_readback_failure() {
+    for read_error in [false, true] {
+        let fixture = Fixture::new(if read_error {
+            "receipt-read-error"
+        } else {
+            "receipt-missing"
+        });
+        let mut runtime = fixture.runtime.clone();
+        runtime.evidence = Arc::new(FalseAcknowledgementEvidence {
+            delegate: Arc::clone(&fixture.runtime.evidence),
+            read_error,
+        });
+        let failing = TradeAssemblyService::from_runtime(fixture.db.clone(), runtime);
+        let failed = fixture.request(&failing, "receipt-readback-retry");
+        assert_redacted_failure(&failed, "activation_evidence_unavailable");
+        assert_no_activation_state(&failing);
+        let recovered = fixture.recovered_service();
+        let accepted = fixture.request(&recovered, "receipt-readback-retry");
+        assert_eq!(accepted.status, 200, "{:#}", accepted.body);
+        let activation_id = accepted.body["body"]["activationId"].as_str().unwrap();
+        let receipts = recovered.runtime().evidence.list(activation_id).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].payload["activationId"], activation_id);
+    }
 }
 
 #[test]

@@ -30,6 +30,515 @@ use std::sync::{Arc, Mutex};
 
 static SANDBOX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn external_agent_real_activation_dispatches_once_without_scheduler() {
+    run_external_activation(false, false, "live", true);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn external_agent_real_activation_recovers_lost_response_without_resubmit() {
+    run_external_activation(true, false, "live", true);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_submits_once_through_real_warden() {
+    run_external_activation(false, true, "live", true);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_recovers_lost_response_without_resubmit() {
+    run_external_activation(true, true, "live", true);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_paper_submits_once_through_real_warden() {
+    run_external_activation(false, true, "paper", true);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_mcp_paper_recovers_lost_response_without_resubmit() {
+    run_external_activation(true, true, "paper", true);
+}
+
+#[test]
+#[ignore = "requires real Warden, controlled broker, Node and SRT binaries"]
+fn attached_agent_missing_order_grant_never_reaches_sink() {
+    run_external_activation(false, true, "paper", false);
+}
+
+fn run_external_activation(lose_response: bool, via_mcp: bool, mode: &str, order_granted: bool) {
+    assert!(mode == "live" || via_mcp);
+    use crate::runtime_config::{RuntimeConfig, RuntimeConfigLayer};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let db = root.join("runtime.db");
+    let mut warden = controlled_warden::ControlledWarden::start(&root);
+    warden.allow_controlled_submission_for_mode(mode);
+    let owner = LocalOwnerIdentity::for_database(&db).unwrap();
+    let config = RuntimeConfig::resolve(
+        Some(RuntimeConfigLayer {
+            database_path: Some(db.display().to_string()),
+            artifact_root: Some(root.join("artifacts").display().to_string()),
+            oidc_profile: Some("local_owner".into()),
+            warden_sidecar_url: Some(format!("http://127.0.0.1:{}", warden.port)),
+            warden_token_ref: Some(format!(
+                "file://{}",
+                root.join("warden/warden.token").display()
+            )),
+            ..Default::default()
+        }),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
+    let service = TradeAssemblyService::from_config(config)
+        .unwrap()
+        .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+    let package = controlled_broker_package::install_controlled_package_for_mode(
+        &service,
+        &root,
+        &PathBuf::from(
+            std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY").expect("controlled broker"),
+        ),
+        mode,
+    );
+    let instance_ref = format!("mandate-{mode}");
+    let account_ref = format!("account://{instance_ref}/controlled");
+    let saved = service.handle_http(
+        "POST",
+        "/product/strategy-execution-configs/save",
+        json!({
+            "strategyId":"strat_local_btc_demo","orchestrator":"external_agent","mode":mode,
+            "allowedSymbols":["BTC/USD","ETH/USD"],
+            "providerRef":instance_ref,"accountRef":account_ref,
+            "dataProviderRef":instance_ref,"dataAccountRef":account_ref,
+            "legalReceiptRef":"receipt_external_test",
+            "riskLimits":{"max_notional":10,"max_order_quantity":2}
+        }),
+    );
+    assert_eq!(saved.status, 200, "{saved:#?}");
+    let config = &saved.body["body"]["item"];
+    let config_id = config["configId"].as_str().unwrap();
+    let legal = crate::adapters::legal_receipts::tests::bound_fixture(
+        crate::ports::LegalReceiptExpectation {
+            receipt_ref: "receipt_external_test".into(),
+            identity_issuer: owner.issuer.clone(),
+            identity_subject: owner.subject.clone(),
+            resource_ref: format!(
+                "tradeassembly://strategies/{}",
+                config["strategyId"].as_str().unwrap()
+            ),
+            resource_version_refs: vec![
+                format!(
+                    "tradeassembly://strategy-versions/{}",
+                    config["strategyVersionId"].as_str().unwrap()
+                ),
+                config["strategySpecHash"].as_str().unwrap().into(),
+            ],
+            environment: config["legalEnvironment"].as_str().unwrap().into(),
+        },
+        service.runtime().clock.now_ms(),
+    );
+    let sandbox = Arc::new(ControlledSandbox::new(
+        PathBuf::from(std::env::var_os("F2_TEST_SRT_CLI").unwrap())
+            .canonicalize()
+            .unwrap(),
+        PathBuf::from(std::env::var_os("F2_TEST_NODE_BINARY").unwrap())
+            .canonicalize()
+            .unwrap(),
+        &root.join("sandbox"),
+    ));
+    let deps = super::BrokerSubmissionDependencies {
+        storage: service.runtime().storage.clone(),
+        plugins: service.runtime().plugins.clone(),
+        plugin_packages: service.runtime().plugin_packages.clone(),
+        credentials: service.runtime().credentials.clone(),
+        capability_resolver: service.runtime().capability_resolver.clone(),
+        clock: service.runtime().clock.clone(),
+        leases: service.runtime().leases.clone(),
+        owner: owner.clone(),
+    };
+    let operations = Arc::new(
+        crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+            deps.storage.clone(),
+            deps.plugins.clone(),
+            deps.credentials.clone(),
+            deps.plugin_packages.clone(),
+            deps.clock.clone(),
+            sandbox.clone(),
+        )
+        .with_broker_boundary(Arc::new(super::LocalBrokerSubmissionBoundary::new(
+            deps.clone(),
+            Arc::new(warden.authority.clone()),
+        ))),
+    );
+    let mut runtime = service.runtime().as_ref().clone();
+    runtime.legal_receipts = Arc::new(legal.verifier.clone());
+    runtime.plugin_operations = operations.clone();
+    let service = service.with_test_runtime(runtime);
+    let deployment = AgentDeployment {
+        executor: agent_runner::AgentExecutor::ExternalClient,
+        deployment_id: "external-fixture".into(),
+        system_project_id: "system-1".into(),
+        agent_definition_version_id: "agent-v1".into(),
+        execution_config_version_id: config_id.into(),
+        studio_tool_allowlist: if via_mcp && order_granted {
+            vec![
+                "tradeassembly.order.submit".into(),
+                "tradeassembly.order.reconcile".into(),
+            ]
+        } else if via_mcp {
+            vec!["tradeassembly.order.reconcile".into()]
+        } else {
+            vec!["tradeassembly.health".into()]
+        },
+        desired_state: "active".into(),
+        interval_seconds: 60,
+        cron_utc: None,
+        mode: mode.into(),
+        prompt: String::new(),
+        workspace: String::new(),
+        runtime_profile: "local-read-only".into(),
+    };
+    agent_runner::put_deployment(&service.runtime(), &deployment).unwrap();
+    let issued = if mode == "live" {
+        let issued=service.handle_http("POST","/product/live-mandates/issue",json!({"configId":config_id,"expiresAtMs":service.runtime().clock.now_ms()+600_000,"delegateDeploymentId":deployment.deployment_id,"idempotencyKey":"external-mandate"}));
+        assert_eq!(issued.status, 201, "{issued:#?}");
+        issued
+    } else {
+        crate::service::ServiceResponse::ok(json!({}))
+    };
+    let mut activation_request =
+        json!({"configId":config_id,"idempotencyKey":"external-activation"});
+    if mode == "live" {
+        activation_request["localLiveMandateId"] = issued.body["mandate"]["mandateId"].clone();
+    }
+    let activated = service.handle_http(
+        "POST",
+        "/product/strategy-execution-activations/activate",
+        activation_request,
+    );
+    assert_eq!(
+        activated.status, 200,
+        "code={} blockers={:?}",
+        activated.body["error"]["code"], activated.body["error"]["details"]["blockedReasons"]
+    );
+    let activation_id = activated.body["body"]["activationId"].as_str().unwrap();
+    let mut session = service
+        .attach_external_agent_session(&deployment.deployment_id, activation_id, "external-attach")
+        .unwrap();
+    let verified = session.verified_context().unwrap();
+    let run = service
+        .runtime()
+        .storage
+        .get_json("execution_runs", &format!("run_{activation_id}"))
+        .unwrap()
+        .unwrap();
+    let revision = service
+        .runtime()
+        .storage
+        .get_json(
+            "capability_graph_revisions",
+            run["capabilityGraphRevisionId"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    if via_mcp {
+        let selected = revision["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["requirement"]["capability"] == format!("broker.order_submit.{mode}"))
+            .expect("bound broker submit node");
+        let agent_service = service.with_verified_agent_mcp_execution_context(verified);
+        let args = json!({
+            "activation_id": activation_id,
+            "plugin_instance_ref": selected["selected"]["pluginInstanceRef"],
+            "order": {"symbol":"BTC/USD","side":"buy","orderType":"market",
+                "timeInForce":"gtc","clientOrderId":"external-mcp-order","quantity":"1"},
+            "idempotency_key": "external-mcp-order"
+        });
+        if !order_granted {
+            let denied = agent_service.call_mcp_tool("tradeassembly.order.submit", args);
+            assert_eq!(
+                denied["structuredContent"]["error"]["code"], "agent_mcp_tool_not_allowed",
+                "{denied:#?}"
+            );
+            assert_no_controlled_orders(&package.install_root);
+            session.close().unwrap();
+            return;
+        }
+        for (caller, changed, expected) in [
+            (&service, args.clone(), "agent_order_attachment_required"),
+            (
+                &agent_service,
+                json!({"activation_id":"wrong-activation","plugin_instance_ref":instance_ref,
+                    "order":args["order"],"idempotency_key":"wrong-activation"}),
+                "agent_order_activation_mismatch",
+            ),
+            (
+                &agent_service,
+                json!({"activation_id":activation_id,"plugin_instance_ref":"wrong-instance",
+                    "order":args["order"],"idempotency_key":"wrong-instance"}),
+                "agent_order_binding_missing",
+            ),
+            (
+                &agent_service,
+                json!({"activation_id":activation_id,"plugin_instance_ref":instance_ref,
+                    "order":{"symbol":"BTC/USD","side":"buy","orderType":"market",
+                        "timeInForce":"gtc","clientOrderId":"excess-order","quantity":"3"},
+                    "idempotency_key":"excess-order"}),
+                "agent_order_submission_denied",
+            ),
+        ] {
+            let denied = caller.call_mcp_tool("tradeassembly.order.submit", changed);
+            assert_eq!(
+                denied["structuredContent"]["error"]["code"], expected,
+                "{denied:#?}"
+            );
+            assert_no_controlled_orders(&package.install_root);
+        }
+        if lose_response {
+            std::fs::write(
+                package
+                    .install_root
+                    .join(".f2-controlled-broker-lose-response"),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let first = agent_service.call_mcp_tool("tradeassembly.order.submit", args.clone());
+        let duplicate = agent_service.call_mcp_tool("tradeassembly.order.submit", args.clone());
+        if lose_response {
+            assert_eq!(first["isError"], true, "{first:#?}");
+            assert_eq!(duplicate["isError"], true, "{duplicate:#?}");
+            let recovered = agent_service.call_mcp_tool(
+                "tradeassembly.order.reconcile",
+                json!({"original_idempotency_key":"external-mcp-order",
+                    "idempotency_key":"external-mcp-recovery"}),
+            );
+            assert_eq!(
+                recovered["structuredContent"]["state"], "observed",
+                "{recovered:#?}"
+            );
+            assert_eq!(
+                recovered["structuredContent"]["receipt"]["payload"]["submissionCount"],
+                1
+            );
+        } else {
+            assert_eq!(
+                first["structuredContent"]["status"], "submitted",
+                "{first:#?}"
+            );
+            assert_eq!(first, duplicate);
+            let mut conflict = args;
+            conflict["order"]["quantity"] = json!("0.5");
+            let rejected = agent_service.call_mcp_tool("tradeassembly.order.submit", conflict);
+            assert_eq!(
+                rejected["structuredContent"]["error"]["code"], "agent_order_idempotency_conflict",
+                "{rejected:#?}"
+            );
+        }
+        let sink = rusqlite::Connection::open_with_flags(
+            package.install_root.join(".f2-controlled-broker.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let counts: (i64, i64) = sink
+            .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(counts, (1, 1));
+        for namespace in ["scheduler_state", "execution_ticks"] {
+            assert!(service
+                .runtime()
+                .storage
+                .list_json(namespace)
+                .unwrap()
+                .is_empty());
+        }
+        session.close().unwrap();
+        return;
+    }
+    let request = |requirement: &str, operation: &str, purpose: &str, input: Value| {
+        let node = revision["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["requirement"]["requirementId"] == requirement)
+            .unwrap();
+        let selected = &node["selected"];
+        PluginOperationRequest {
+            correlation_id: format!("external-{operation}"),
+            plugin_instance_ref: selected["pluginInstanceRef"].as_str().unwrap().into(),
+            plugin_ref: selected["pluginRef"].as_str().unwrap().into(),
+            manifest_fingerprint: selected["manifestFingerprint"].as_str().unwrap().into(),
+            operation_id: operation.into(),
+            capability: node["requirement"]["capability"].as_str().unwrap().into(),
+            capability_graph_revision_id: run["capabilityGraphRevisionId"].as_str().unwrap().into(),
+            capability_graph_fingerprint: run["capabilityGraphFingerprint"]
+                .as_str()
+                .unwrap()
+                .into(),
+            strategy_id: run["strategyId"].as_str().unwrap().into(),
+            strategy_version_id: run["strategyVersionId"].as_str().unwrap().into(),
+            strategy_spec_hash: run["strategySpecHash"].as_str().unwrap().into(),
+            activation_id: activation_id.into(),
+            attempt_id: "external-attempt".into(),
+            evaluation_tick_id: "external-evaluation".into(),
+            mode: "live".into(),
+            purpose: purpose.into(),
+            account_ref: selected["accountRef"].as_str().map(str::to_owned),
+            timeout_ms: 10_000,
+            fencing_token: None,
+            input,
+            evidence_refs: vec![],
+        }
+    };
+    let context = |key: &str| {
+        SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new(key).unwrap(),
+        )
+        .with_agent_execution(Some(&verified))
+    };
+    let quote = operations
+        .invoke(
+            &request(
+                "execution.risk.quote",
+                "marketdata.quote.read",
+                "market_data_research",
+                json!({"symbol":"BTC/USD"}),
+            ),
+            &context("external-quote"),
+        )
+        .unwrap();
+    let order_node = revision["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| {
+            n["requirement"]["capability"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("broker.order_submit")
+        })
+        .unwrap();
+    let mut order = request(
+        order_node["requirement"]["requirementId"].as_str().unwrap(),
+        "broker.live_order_submit",
+        "live_order_submission",
+        json!({"symbol":"BTC/USD","side":"buy","orderType":"market","timeInForce":"gtc","clientOrderId":"external-order","quantity":"1"}),
+    );
+    order.evidence_refs = quote.evidence_refs;
+    super::load_current_state(&deps, &order, &context("external-order")).unwrap();
+    let other_quote = operations
+        .invoke(
+            &request(
+                "execution.risk.quote",
+                "marketdata.quote.read",
+                "market_data_research",
+                json!({"symbol":"SPY"}),
+            ),
+            &context("external-other-quote"),
+        )
+        .unwrap();
+    let mut outside_universe = order.clone();
+    outside_universe.input["symbol"] = json!("SPY");
+    outside_universe.evidence_refs = other_quote.evidence_refs;
+    let denied = operations.invoke(&outside_universe, &context("external-outside-universe"));
+    assert!(denied.is_err(), "out-of-config instrument was admitted");
+    assert_eq!(sandbox.launches.load(Ordering::SeqCst), 2);
+    if lose_response {
+        std::fs::write(
+            package
+                .install_root
+                .join(".f2-controlled-broker-lose-response"),
+            b"fixture",
+        )
+        .unwrap();
+        assert!(operations
+            .invoke(&order, &context("external-order"))
+            .is_err());
+        assert!(operations
+            .invoke(&order, &context("external-order"))
+            .is_err());
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
+        session.close().unwrap();
+        let revoked=service.handle_http("POST","/product/live-mandates/revoke",json!({"mandateId":issued.body["mandate"]["mandateId"],"idempotencyKey":"external-revoke"}));
+        assert_eq!(revoked.status, 200);
+        warden.stop();
+        let body = json!({"originalIdempotencyKey":"external-order","recoveryIdempotencyKey":"external-recovery"});
+        let recovered = service.handle_http("POST", "/orders/broker-recovery", body.clone());
+        assert_eq!(
+            recovered.status, 200,
+            "code={}",
+            recovered.body["error"]["code"]
+        );
+        assert_eq!(recovered.body["receipt"]["payload"]["submissionCount"], 1);
+        let repeated = service.handle_http("POST", "/orders/broker-recovery", body);
+        assert_eq!(repeated.status, 200);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 4);
+    } else {
+        let first = operations
+            .invoke(&order, &context("external-order"))
+            .unwrap();
+        let second = operations
+            .invoke(&order, &context("external-order"))
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(sandbox.launches.load(Ordering::SeqCst), 3);
+    }
+    let sink = rusqlite::Connection::open_with_flags(
+        package.install_root.join(".f2-controlled-broker.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let counts: (i64, i64) = sink
+        .query_row("SELECT COUNT(*), SUM(submissions) FROM orders", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+    assert!(!service
+        .runtime()
+        .evidence
+        .list(activation_id)
+        .unwrap()
+        .is_empty());
+    for namespace in ["scheduler_state", "execution_ticks"] {
+        assert!(service
+            .runtime()
+            .storage
+            .list_json(namespace)
+            .unwrap()
+            .is_empty());
+    }
+    session.close().unwrap();
+    drop(package);
+}
+
+fn assert_no_controlled_orders(install_root: &Path) {
+    let path = install_root.join(".f2-controlled-broker.sqlite");
+    if !path.exists() {
+        return;
+    }
+    let sink =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let count: i64 = sink
+        .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "rejected order reached controlled broker");
+}
+
 struct ControlledSandbox {
     srt: PathBuf,
     node: PathBuf,
@@ -600,6 +1109,7 @@ fn run_scenario(scenario: Scenario) {
     assert_eq!(saved.status, 200, "{saved:#?}");
     let config_id = saved.body["body"]["item"]["configId"].as_str().unwrap();
     let deployment = AgentDeployment {
+        executor: Default::default(),
         deployment_id: "fixture-agent".into(),
         system_project_id: "system-1".into(),
         agent_definition_version_id: "agent-v1".into(),
@@ -1172,5 +1682,302 @@ fn run_scenario(scenario: Scenario) {
             ) && namespace == crate::finance_authority::OUTCOME_NS),
             "missing {namespace}"
         );
+    }
+}
+
+/// Disposable native fixture process; never used by a production adapter.
+#[cfg(unix)]
+struct OriginalCycleFixtureSandbox;
+#[cfg(unix)]
+impl crate::ports::VersionedPort for OriginalCycleFixtureSandbox {
+    fn descriptors(&self) -> Vec<crate::ports::PortDescriptor> {
+        vec![]
+    }
+}
+#[cfg(unix)]
+impl PluginProcessSandboxPort for OriginalCycleFixtureSandbox {
+    fn spawn(&self, request: &PluginSandboxRequest) -> Result<SandboxedPluginProcess, String> {
+        let child = Command::new(&request.executable)
+            .current_dir(&request.install_root)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "controlled fixture unavailable")?;
+        Ok(SandboxedPluginProcess::new(child, None))
+    }
+}
+
+// Deterministic opt-in owner proof (no provider, Node or SRT dependency):
+// F2_TEST_WARDEN_BINARY=/absolute/warden F2_TEST_CONTROLLED_BROKER_BINARY=/absolute/f2_controlled_broker
+// cargo test --locked -p tradeassembly-runtime --lib scheduler_original_cycle_real_adapter_restore --offline -- --ignored
+#[cfg(unix)]
+#[test]
+#[ignore = "requires explicit real Warden and controlled broker fixture binaries"]
+fn scheduler_original_cycle_real_adapter_restore_never_resubmits() {
+    use sha2::Digest;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    for accepted in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let db = root.join("runtime.db");
+        let base = TradeAssemblyService::test_local(db.to_str().unwrap());
+        let owner = LocalOwnerIdentity::for_database(&db).unwrap();
+        let service = base.for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+        let mut warden = controlled_warden::ControlledWarden::start(&root);
+        warden.allow_controlled_submission_for_mode("paper");
+        let package = controlled_broker_package::install_controlled_package_for_mode(
+            &service,
+            &root,
+            &PathBuf::from(
+                std::env::var_os("F2_TEST_CONTROLLED_BROKER_BINARY").expect("controlled broker"),
+            ),
+            "paper",
+        );
+        if accepted {
+            std::fs::write(
+                package
+                    .install_root
+                    .join(".f2-controlled-broker-lose-response"),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let checkpoint_dir = root.join("checkpoint-handshake");
+        std::fs::create_dir(&checkpoint_dir).unwrap();
+        std::fs::set_permissions(&checkpoint_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let deps = super::BrokerSubmissionDependencies {
+            storage: service.runtime().storage.clone(),
+            plugins: service.runtime().plugins.clone(),
+            plugin_packages: service.runtime().plugin_packages.clone(),
+            credentials: service.runtime().credentials.clone(),
+            capability_resolver: service.runtime().capability_resolver.clone(),
+            clock: service.runtime().clock.clone(),
+            leases: service.runtime().leases.clone(),
+            owner: owner.clone(),
+        };
+        let make_operations = || {
+            crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+                deps.storage.clone(),
+                deps.plugins.clone(),
+                deps.credentials.clone(),
+                deps.plugin_packages.clone(),
+                deps.clock.clone(),
+                Arc::new(OriginalCycleFixtureSandbox),
+            )
+            .with_broker_boundary(Arc::new(super::LocalBrokerSubmissionBoundary::new(
+                deps.clone(),
+                Arc::new(warden.authority.clone()),
+            )))
+        };
+        let operations = make_operations().with_checkpoint_directory(checkpoint_dir.clone());
+        let mut runtime = service.runtime().as_ref().clone();
+        runtime.plugin_operations = Arc::new(operations);
+        let service = service.with_test_runtime(runtime);
+        let saved=service.handle_http("POST","/product/strategy-execution-configs/save",json!({
+            "strategyId":"strat_local_btc_demo","mode":"paper","providerRef":"mandate-paper","accountRef":"account://mandate-paper/controlled",
+            "dataProviderRef":"mandate-paper","dataAccountRef":"account://mandate-paper/controlled",
+            "riskLimits":{"max_notional":25.0,"max_order_quantity":0.001},
+            "capabilityBindings":{"req_bars":{"pluginInstanceRef":"sim","pluginRef":"tradeassembly.simbroker","operationId":"marketdata.bars.read_v1"}}}));
+        assert_eq!(saved.status, 200, "{saved:?}");
+        let activated=service.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":saved.body["body"]["configId"],
+            "idempotencyKey":"original-cycle-activation","acknowledgementIds":["user_logic","user_risk","no_advice"]}));
+        assert_eq!(activated.status, 200, "{activated:?}");
+        let activation_id = activated.body["body"]["activationId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let watcher_dir = checkpoint_dir.clone();
+        let watcher = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let request_path = loop {
+                let request = std::fs::read_dir(&watcher_dir)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path().join("request.json"))
+                    .find(|path| path.is_file());
+                if let Some(path) = request {
+                    break path;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "admission checkpoint missing"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let bytes = std::fs::read(&request_path).unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            let ack = json!({"schemaVersion":"tradeassembly.execution_checkpoint_ack.v1","checkpointId":request["checkpointId"],
+                "snapshotSha256":request["snapshotSha256"],"requestDigest":format!("{:x}",sha2::Sha256::digest(&bytes)),"status":if accepted {"durable"} else {"failed"}});
+            let path = request_path.parent().unwrap().join("ack.pending");
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            file.write_all(&serde_json::to_vec(&ack).unwrap()).unwrap();
+            file.sync_all().unwrap();
+            std::fs::rename(path, request_path.parent().unwrap().join("ack.json")).unwrap();
+            request_path.parent().unwrap().join("runtime.sqlite")
+        });
+        let result=service.handle_http_from_source("scheduler","POST","/scheduler/run",json!({"activationId":activation_id,"workerId":"original-cycle","maxCycles":1,"leaseTtlSeconds":60}));
+        assert_eq!(result.status, 200, "{result:?}");
+        assert!(
+            result.body["body"]["ticks"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty()),
+            "{result:?}"
+        );
+        let snapshot = watcher.join().unwrap_or_else(|_| {
+            panic!(
+                "missing checkpoint: tick={} denials={:?}",
+                result.body["body"]["ticks"],
+                service
+                    .runtime()
+                    .storage
+                    .list_json("plugin_broker_submission_denials")
+                    .unwrap()
+            )
+        });
+        let original_records = service
+            .runtime()
+            .storage
+            .list_json("execution_pending_original_cycles")
+            .unwrap();
+        assert_eq!(original_records.len(), 1, "{result:?}");
+        let original_key = original_records[0].0.clone();
+        let sink = package.install_root.join(".f2-controlled-broker.sqlite");
+        if accepted {
+            assert!(sink.exists(), "order was not accepted");
+            let conn = rusqlite::Connection::open(&sink).unwrap();
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "original order never reached accepted state");
+        } else {
+            assert!(
+                !sink.exists(),
+                "dispatch happened without durability acknowledgement"
+            );
+        }
+        // Reopen the exact owned fixture from its admitted pre-dispatch snapshot.
+        std::fs::copy(&snapshot, &db).unwrap();
+        let base = TradeAssemblyService::test_local(db.to_str().unwrap());
+        let mut runtime = base.runtime().as_ref().clone();
+        runtime.plugin_operations = Arc::new(
+            crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
+                runtime.storage.clone(),
+                runtime.plugins.clone(),
+                runtime.credentials.clone(),
+                runtime.plugin_packages.clone(),
+                runtime.clock.clone(),
+                Arc::new(OriginalCycleFixtureSandbox),
+            ),
+        );
+        let restored = TradeAssemblyService::from_runtime(db.to_str().unwrap(), runtime)
+            .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+        let body = json!({"originalIdempotencyKey":original_key,"recoveryIdempotencyKey":"original-cycle-recovery"});
+        let wrong = restored.for_authenticated_invocation(&owner.issuer, "wrong-owner", None, None);
+        assert_eq!(
+            wrong
+                .handle_http("POST", "/execution/recover-original", body.clone())
+                .status,
+            403
+        );
+        if accepted {
+            for (field, replacement) in [
+                ("accountRef", json!("wrong-account")),
+                ("activePackageSha256", json!("wrong-package")),
+                ("credentialRevision", json!(99)),
+            ] {
+                let current = restored
+                    .runtime()
+                    .plugins
+                    .get_instance("mandate-paper")
+                    .unwrap()
+                    .unwrap();
+                let mut changed = current.clone();
+                changed[field] = replacement;
+                let context = SideEffectContext::new(
+                    AuthorityContext::local_cli(),
+                    IdempotencyKey::new(format!("corrupt-{field}")).unwrap(),
+                );
+                restored
+                    .runtime()
+                    .plugins
+                    .put_instance("mandate-paper", changed, &context)
+                    .unwrap();
+                assert_eq!(
+                    restored
+                        .handle_http("POST", "/execution/recover-original", body.clone())
+                        .status,
+                    403,
+                    "{field}"
+                );
+                restored
+                    .runtime()
+                    .plugins
+                    .put_instance("mandate-paper", current, &context)
+                    .unwrap();
+            }
+            // A transaction interruption after lookup must leave the whole cycle pending.
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TRIGGER cycle_fault BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='execution_original_cycle_recoveries' BEGIN SELECT RAISE(ABORT,'controlled interruption'); END;").unwrap();
+            assert_eq!(
+                restored
+                    .handle_http("POST", "/execution/recover-original", body.clone())
+                    .status,
+                409
+            );
+            assert_eq!(
+                restored
+                    .runtime()
+                    .storage
+                    .get_json("execution_runs", &format!("run_{activation_id}"))
+                    .unwrap()
+                    .unwrap()["cycle"],
+                0
+            );
+            conn.execute_batch("DROP TRIGGER cycle_fault;").unwrap();
+            let recovered =
+                restored.handle_http("POST", "/execution/recover-original", body.clone());
+            assert_eq!(recovered.status, 200, "{recovered:?}");
+            assert_eq!(recovered.body["state"], "recovered");
+            assert_eq!(recovered.body["activationState"], "stopped");
+            assert_eq!(recovered.body["schedulerConfirmed"], false);
+            assert_eq!(
+                recovered.body,
+                restored
+                    .handle_http("POST", "/execution/recover-original", body.clone())
+                    .body
+            );
+            assert_eq!(
+                restored
+                    .runtime()
+                    .storage
+                    .list_json("execution_ticks")
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let conn = rusqlite::Connection::open(&sink).unwrap();
+            let counts: (i64, i64) = conn
+                .query_row("SELECT COUNT(*),SUM(submissions) FROM orders", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(counts, (1, 1));
+        } else {
+            assert_eq!(
+                restored
+                    .handle_http("POST", "/execution/recover-original", body)
+                    .status,
+                409
+            );
+            assert!(!sink.exists(), "recovery dispatched an absent order");
+        }
+        warden.stop();
     }
 }

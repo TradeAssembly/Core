@@ -19,6 +19,12 @@
       "plugin.configure",
       "plugin.operation.invoke",
       "capability.binding.revision.save",
+      "strategy.option_selection.create",
+      "strategy.data_capture.create",
+      "strategy.data_plan.prepare",
+      "strategy.data_recipe.prepare",
+      "strategy.data_recipe.step",
+      "strategy.data_run.step",
       "entitlement.manage",
       "credential.configure",
       "credential.test",
@@ -65,7 +71,10 @@
       "instrument.pack.install",
       "tradeassembly.policy.manage",
       "tradeassembly.install.claim",
-      "tradeassembly.telemetry.manage"
+      "tradeassembly.telemetry.manage",
+      "strategy.data_collection.create",
+      "strategy.instrument_screen.create",
+      "strategy.session_schedule.prepare"
     ],
     "resources": [
       "activation",
@@ -78,6 +87,11 @@
       "broker_receipt",
       "entitlement",
       "execution_config",
+      "strategy_option_selection",
+      "strategy_data_capture",
+      "strategy_data_plan",
+      "strategy_data_recipe",
+      "strategy_data_run",
       "installation",
       "instrument_pack",
       "order",
@@ -97,7 +111,10 @@
       "sightline_session",
       "strategy",
       "strategy_share",
-      "telemetry_preference"
+      "telemetry_preference",
+      "strategy_data_collection",
+      "strategy_instrument_screen",
+      "strategy_session_schedule"
     ],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000
@@ -105,11 +122,19 @@
   {
     "schema_version": "apf.pep_registration.v1",
     "pep_id": "pep-tradeassembly-broker-submission",
-    "owner": {"kind": "application", "id": "tradeassembly-studio-core"},
+    "owner": {
+      "kind": "application",
+      "id": "tradeassembly-studio-core"
+    },
     "coverage_class": "c5",
     "can_block": true,
-    "actions": ["order.submit.live"],
-    "resources": ["brokerage_account"],
+    "actions": [
+      "order.submit.paper",
+      "order.submit.live"
+    ],
+    "resources": [
+      "brokerage_account"
+    ],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000
   }

@@ -1,0 +1,155 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+name: Publish reviewed notarized customer release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: customer-publication-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require an admitted release tag and successful owning CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_CREATED: ${{ github.event.created }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = TradeAssembly/Core
+          test "$GITHUB_EVENT_NAME" = push
+          test "$EVENT_CREATED" = true
+          [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"
+          remote=$(gh api "repos/$GITHUB_REPOSITORY/commits/${GITHUB_REF#refs/tags/}" --jq .sha)
+          test "$remote" = "$GITHUB_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/linux-ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" > "$RUNNER_TEMP/owning-ci.json"
+          jq -e --arg sha "$GITHUB_SHA" 'any(.workflow_runs[]; .head_sha == $sha and .status == "completed" and .conclusion == "success" and (.event == "pull_request" or .event == "push"))' "$RUNNER_TEMP/owning-ci.json"
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
+        with:
+          tool: just@1.54.0
+      - name: Build the existing offline publication-proof verifier
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.0 --profile minimal --no-self-update
+          just build-target tradeassembly-distribution tradeassembly-distribution
+      - name: Obtain only the reviewed draft assets
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          record="packaging/release-approvals/$tag.json"
+          jq -e --arg v "$version" '.schema == "tradeassembly.customer-release-approval/v1" and .version == $v and .target == "aarch64-apple-darwin" and (.updateFeedEnabled | type == "boolean") and (if .updateFeedEnabled then (.sequence | type == "number" and floor == . and . > 0 and . <= 9007199254740991) else true end) and ([.archiveSha256,.diskImageSha256,.notarizationBindingSha256] | all(.[]; type == "string" and test("^[0-9a-f]{64}$")))' "$record"
+          archive="TradeAssembly-$version-production-aarch64-apple-darwin.tar.gz"
+          image="TradeAssembly-$version-macos-arm64.dmg"
+          proof="TradeAssembly-$version-notarization-proof.json"
+          feed="tradeassembly-customer-update-aarch64-apple-darwin.json"
+          enabled=$(jq -er '.updateFeedEnabled | tostring' "$record")
+          echo "feed_enabled=$enabled" >> "$GITHUB_OUTPUT"
+          expected=$(jq -nc --arg a "$archive" --arg d "$image" --arg p "$proof" '[$a,$d,$p,"SHA256SUMS"] | sort')
+          allowed=$expected
+          if test "$enabled" = true; then allowed=$(jq -c --arg f "$feed" '. + [$f] | sort' <<< "$expected"); fi
+          ready=false
+          for attempt in $(seq 1 60); do
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+            jq --arg tag "$tag" '[.[] | select(.tag_name == $tag)] | if length == 1 then .[0] elif length == 0 then empty else error("ambiguous release") end' "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/customer-release.json"
+            if test -s "$RUNNER_TEMP/customer-release.json"; then
+              jq -e --argjson names "$allowed" 'all(.assets[]; .name as $n | $names | index($n) != null)' "$RUNNER_TEMP/customer-release.json"
+              if jq -e --argjson names "$expected" '([.assets[].name | select(. != "tradeassembly-customer-update-aarch64-apple-darwin.json")] | sort) == $names and all(.assets[]; .state == "uploaded")' "$RUNNER_TEMP/customer-release.json" >/dev/null; then ready=true; break; fi
+            fi
+            sleep 10
+          done
+          test "$ready" = true || { echo 'Reviewed draft assets were not staged; no publication.' >&2; exit 1; }
+          jq -e --arg a "$archive" --arg d "$image" --arg p "$proof" 'all(.assets[]; if .name == $p then .size <= 65536 elif .name == "SHA256SUMS" then .size <= 4096 elif .name == "tradeassembly-customer-update-aarch64-apple-darwin.json" then .size <= 65536 else (.name == $a or .name == $d) and .size <= 536870912 end)' "$RUNNER_TEMP/customer-release.json"
+          mkdir "$RUNNER_TEMP/customer-publication"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$archive" --pattern "$image" --pattern "$proof" --pattern SHA256SUMS --dir "$RUNNER_TEMP/customer-publication"
+      - name: Verify exact binaries, notarization binding and component identity
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          record="$GITHUB_WORKSPACE/packaging/release-approvals/$tag.json"
+          root="$RUNNER_TEMP/customer-publication"
+          archive="TradeAssembly-$version-production-aarch64-apple-darwin.tar.gz"
+          image="TradeAssembly-$version-macos-arm64.dmg"
+          proof="TradeAssembly-$version-notarization-proof.json"
+          a=$(jq -er .archiveSha256 "$record")
+          d=$(jq -er .diskImageSha256 "$record")
+          p=$(jq -er .notarizationBindingSha256 "$record")
+          printf '%s  %s\n' "$a" "$archive" "$d" "$image" "$p" "$proof" > "$RUNNER_TEMP/expected-checksums"
+          cmp "$RUNNER_TEMP/expected-checksums" "$root/SHA256SUMS"
+          (cd "$root" && sha256sum -c SHA256SUMS)
+          jq -e --arg a "$a" --arg d "$d" --arg v "$version" '.identity.archive_sha256 == $a and .stapledContainerSha256 == $d and .identity.version == $v' "$root/$proof"
+          now=$(date +%s)
+          jq --argjson now "$now" '.identity + {sequence:1,issued_at:$now,expires_at:($now+3600)}' "$root/$proof" > "$RUNNER_TEMP/verification-payload.json"
+          target/debug/tradeassembly-distribution update-publication-verify --proof "$root/$proof" --expected-proof-sha256 "$p" --payload "$RUNNER_TEMP/verification-payload.json" > "$RUNNER_TEMP/publication-verification.json"
+          cat "$RUNNER_TEMP/publication-verification.json"
+      - name: Sign or verify the explicitly enabled stable metadata
+        if: steps.assets.outputs.feed_enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRADEASSEMBLY_BINARY_UPDATE_SIGNING_KEY: ${{ secrets.TRADEASSEMBLY_BINARY_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          record="$GITHUB_WORKSPACE/packaging/release-approvals/$tag.json"
+          root="$RUNNER_TEMP/customer-publication"
+          proof="$root/TradeAssembly-$version-notarization-proof.json"
+          feed=tradeassembly-customer-update-aarch64-apple-darwin.json
+          digest=$(jq -er .notarizationBindingSha256 "$record")
+          sequence=$(jq -er .sequence "$record")
+          now=$(date +%s)
+          if jq -e --arg f "$feed" 'any(.assets[]; .name == $f)' "$RUNNER_TEMP/customer-release.json" >/dev/null; then
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$feed" --dir "$root"
+            jq -er .payload "$root/$feed" | base64 --decode > "$RUNNER_TEMP/feed-payload.json"
+          else
+            jq -e '.draft == true' "$RUNNER_TEMP/customer-release.json"
+            jq --argjson now "$now" --argjson seq "$sequence" '.identity + {sequence:$seq,issued_at:$now,expires_at:($now+604800)}' "$proof" > "$RUNNER_TEMP/feed-payload.json"
+            target/debug/tradeassembly-distribution update-publication-sign --proof "$proof" --expected-proof-sha256 "$digest" --payload "$RUNNER_TEMP/feed-payload.json" --output "$root/$feed" > "$RUNNER_TEMP/feed-signing-receipt.json"
+          fi
+          # Existing feeds are verified and reused, never silently replaced/resigned.
+          jq -e --argjson seq "$sequence" '.sequence == $seq' "$RUNNER_TEMP/feed-payload.json"
+          target/debug/tradeassembly-distribution update-publication-verify --proof "$proof" --expected-proof-sha256 "$digest" --payload "$RUNNER_TEMP/feed-payload.json"
+          jq '{profile:{mode:"stable"},product,target,version:"0.0.0",state_compatibility,accepted_sequence:0,archive_sha256:("a"*64),bundle_manifest_sha256:("b"*64)}' "$RUNNER_TEMP/feed-payload.json" > "$RUNNER_TEMP/feed-verification-installation.json"
+          target/debug/tradeassembly-distribution update-plan --installation "$RUNNER_TEMP/feed-verification-installation.json" --manifest "$root/$feed" --public-key '+eLR1VtNBt9g9RWYfo4aRRADltCnO5OiQ4izAMCLwZg=' > "$RUNNER_TEMP/feed-verification.json"
+          jq -e '.decision == "stage"' "$RUNNER_TEMP/feed-verification.json"
+          if ! jq -e --arg f "$feed" 'any(.assets[]; .name == $f)' "$RUNNER_TEMP/customer-release.json" >/dev/null; then
+            gh release upload "$tag" "$root/$feed" --repo "$GITHUB_REPOSITORY"
+          fi
+      - name: Publish the verified draft and any approved stable metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF#refs/tags/}
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(printf '%s\n' "$latest" "$tag" | sort -V | tail -1)" = "$tag" || { echo 'A newer release exists; reconcile before publication.' >&2; exit 1; }
+          remote=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+          test "$remote" = "$GITHUB_SHA"
+          id=$(jq -er .id "$RUNNER_TEMP/customer-release.json")
+          if jq -e '.draft == true' "$RUNNER_TEMP/customer-release.json" >/dev/null; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false -f make_latest=true > "$RUNNER_TEMP/published-release.json"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq '.draft == false' | grep -qx true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$tag"

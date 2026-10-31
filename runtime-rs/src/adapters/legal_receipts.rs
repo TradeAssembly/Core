@@ -128,6 +128,7 @@ impl LegalReceiptPort for FileLegalReceiptVerifier {
         expectation: &LegalReceiptExpectation,
         trusted_now_ms: i64,
     ) -> Result<VerifiedLegalReceipt, LegalReceiptFailure> {
+        let build_digest = current_build_digest()?;
         let (export, raw_export) = self.load_export(&expectation.receipt_ref)?;
         let keys = self.load_keys()?;
         let policy = self.load_policy()?;
@@ -173,7 +174,7 @@ impl LegalReceiptPort for FileLegalReceiptVerifier {
             || acknowledgement.environment != expectation.environment
             || acknowledgement.application_id != policy.application_id
             || acknowledgement.application_version != env!("CARGO_PKG_VERSION")
-            || acknowledgement.application_build_digest != current_build_digest()
+            || acknowledgement.application_build_digest != build_digest
             || acknowledgement.document_id != policy.document_id
             || acknowledgement.document_version != policy.document_version
             || acknowledgement.document_locale != policy.document_locale
@@ -394,8 +395,10 @@ fn lifecycle_event_hash(event: &ReceiptLifecycleEvent) -> Result<String, LegalRe
     )?))
 }
 
-fn current_build_digest() -> String {
-    sha256_hex(env!("TRADEASSEMBLY_CORE_REVISION").as_bytes())
+fn current_build_digest() -> Result<String, LegalReceiptFailure> {
+    crate::build_identity::current()
+        .map(|identity| identity.application_digest())
+        .ok_or(LegalReceiptFailure::Unavailable)
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -587,7 +590,7 @@ struct PublishedDocumentPayload<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use chrono::{Duration, TimeZone};
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -596,10 +599,10 @@ mod tests {
     const KEY_ID: &str = "hub-test-key";
     const RECEIPT_REF: &str = "receipt_test_123";
 
-    struct Fixture {
+    pub(crate) struct Fixture {
         _root: TempDir,
         receipt_path: PathBuf,
-        verifier: FileLegalReceiptVerifier,
+        pub(crate) verifier: FileLegalReceiptVerifier,
         expectation: LegalReceiptExpectation,
         signer: SigningKey,
         export: LegalReceiptExport,
@@ -607,6 +610,34 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_at(
+            Utc.with_ymd_and_hms(2026, 8, 3, 18, 0, 0)
+                .single()
+                .expect("time"),
+        )
+    }
+
+    pub(crate) fn bound_fixture(expectation: LegalReceiptExpectation, now_ms: i64) -> Fixture {
+        let mut fixture = fixture_at(Utc.timestamp_millis_opt(now_ms).single().unwrap());
+        let ack = &mut fixture.export.receipt.acknowledgement;
+        ack.escrow_receipt_id = expectation.receipt_ref.clone();
+        ack.identity_issuer = expectation.identity_issuer.clone();
+        ack.identity_subject = expectation.identity_subject.clone();
+        ack.resource_ref = Some(expectation.resource_ref.clone());
+        ack.resource_version_refs = expectation.resource_version_refs.clone();
+        ack.environment = expectation.environment.clone();
+        fixture.receipt_path = fixture
+            .verifier
+            .receipt_root
+            .join(format!("{}.json", expectation.receipt_ref));
+        fixture.expectation = expectation;
+        resign_receipt(&fixture.signer, &mut fixture.export.receipt);
+        write_export(&fixture.signer, &mut fixture.export, &fixture.receipt_path);
+        fixture
+    }
+
+    fn fixture_at(now: DateTime<Utc>) -> Fixture {
+        crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
         let root = tempfile::tempdir().expect("tempdir");
         let receipt_root = root.path().join("receipts");
         fs::create_dir_all(&receipt_root).expect("receipt root");
@@ -640,10 +671,6 @@ mod tests {
             .expect("policy json"),
         )
         .expect("write policy");
-        let now = Utc
-            .with_ymd_and_hms(2026, 8, 3, 18, 0, 0)
-            .single()
-            .expect("time");
         let body = "TradeAssembly live trading disclosure".to_string();
         let metadata = LegalDocumentVersion {
             key: LegalDocumentKey {
@@ -702,7 +729,7 @@ mod tests {
                 environment: "local_live".to_string(),
                 application_id: "tradeassembly_studio".to_string(),
                 application_version: env!("CARGO_PKG_VERSION").to_string(),
-                application_build_digest: current_build_digest(),
+                application_build_digest: current_build_digest().unwrap(),
                 rendered_content_hash: sha256_hex("rendered"),
                 acceptance_statement_hash: sha256_hex("accepted"),
                 acceptance_challenge_id: "challenge_123".to_string(),

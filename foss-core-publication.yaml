@@ -5,11 +5,16 @@ repository: TradeAssembly/Core
 publicationClass: public_core
 
 publicPathPrefixes:
+  - strategy/
+  - simulation/
+  - core-binaries/
+  - runtime-tools/
   - .cargo/
   - .codex/
   - .github/
   - .sdlc/
   - docs/
+  - distribution/
   - examples/
   - identity-sdk/
   - plugin-contracts/
@@ -29,6 +34,9 @@ publicFiles:
   - CLAUDE.md
   - Cargo.lock
   - Cargo.toml
+  - contracts/compatibility.json
+  - contracts/public-workspace.v1.schema.json
+  - contracts/strategy-result-summary.v1.schema.json
   - GEMINI.md
   - Justfile
   - LICENSE
@@ -40,6 +48,9 @@ publicFiles:
   - docker-compose.distributed.yml
   - foss-core-publication.yaml
   - render.yaml
+  - platform/windows_private.rs
+  - platform/control_plane_redaction.rs
+  - platform/workspace_bootstrap.rs
 
 metadataOnlyPathPrefixes:
   - .sdlc/evidence/

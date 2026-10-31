@@ -700,11 +700,33 @@ pub(crate) fn store_credentials(
             return invalid("plugin_credentials_invalid", &message);
         }
     }
+    // The credential map and instance metadata have different custody stores.
+    // Invalidate the old generation before replacing the map so a failed/crashed
+    // metadata save cannot advertise the previous authentication method as current.
+    let revision = next_credential_revision(&record);
+    record["credentialRevision"] = json!(revision);
+    record["credentialAuthentication"] = Value::Null;
+    record["updatedAtMs"] = json!(service.runtime().clock.now_ms());
+    let invalidated = save_instance(service, instance_ref, record.clone());
+    if invalidated.status != 200 {
+        return invalidated;
+    }
     match service.runtime().credentials.store(instance_ref, &fields) {
         Ok(status) => {
-            let revision = next_credential_revision(&record);
-            record["credentialRevision"] = json!(revision);
             record["credentialStatus"] = credential_status(&status, revision);
+            // Derive from the validated map actually accepted by CredentialPort,
+            // never a caller-selected label. Persist only method and generation.
+            let method = match (
+                fields.contains_key("api_key") && fields.contains_key("api_secret"),
+                fields.contains_key("access_token"),
+            ) {
+                (true, false) => "api-key",
+                (false, true) => "oauth",
+                _ => "unavailable",
+            };
+            record["credentialAuthentication"] =
+                json!({"method":method,"revision":revision,"source":"validated_credential_store"});
+            let public_status = public_credential_status(&status, &record);
             record["updatedAtMs"] = json!(service.runtime().clock.now_ms());
             let saved = save_instance(service, instance_ref, record);
             if saved.status != 200 {
@@ -713,7 +735,7 @@ pub(crate) fn store_credentials(
             ServiceResponse::ok(json!({
                 "ok": true,
                 "instanceRef": instance_ref,
-                "credentialStatus": credential_status(&status, revision),
+                "credentialStatus": public_status,
             }))
         }
         Err(message) => invalid("plugin_credentials_store_failed", &message),
@@ -791,7 +813,7 @@ pub(crate) fn credential_status_for(
     let status = service.runtime().credentials.status(instance_ref);
     ServiceResponse::ok(json!({
         "instanceRef": instance_ref,
-        "credentialStatus": credential_status(&status, credential_revision(&record)),
+        "credentialStatus": public_credential_status(&status, &record),
     }))
 }
 
@@ -1715,6 +1737,9 @@ pub(super) fn with_live_status(service: &TradeAssemblyService, mut record: Value
             &service.runtime().credentials.status(&credential_ref),
         );
     }
+    let configured = record["credentialStatus"]["configured"] == true;
+    record["credentialStatus"]["authenticationMethod"] =
+        json!(stored_authentication_method(&record, configured));
     let state = effective_health_state(service, &record);
     record["health"]["state"] = json!(state);
     record["health"]["evidenceCurrent"] = json!(health_evidence_current(&record));
@@ -1733,6 +1758,25 @@ pub(crate) fn live_health_evidence_current(record: &Value) -> bool {
 
 fn health_evidence_current(record: &Value) -> bool {
     live_execution_checks::live_health_evidence_current(record)
+}
+
+fn stored_authentication_method(record: &Value, configured: bool) -> &'static str {
+    if !configured
+        || record["credentialAuthentication"]["source"] != "validated_credential_store"
+        || record["credentialAuthentication"]["revision"] != record["credentialRevision"]
+    {
+        return "unavailable";
+    }
+    match record["credentialAuthentication"]["method"].as_str() {
+        Some("api-key") => "api-key",
+        Some("oauth") => "oauth",
+        _ => "unavailable",
+    }
+}
+fn public_credential_status(status: &crate::ports::CredentialStatus, record: &Value) -> Value {
+    let mut value = credential_status(status, credential_revision(record));
+    value["authenticationMethod"] = json!(stored_authentication_method(record, status.configured));
+    value
 }
 
 fn credential_status(status: &crate::ports::CredentialStatus, revision: u64) -> Value {
@@ -1935,15 +1979,11 @@ mod tests {
         .is_err());
     }
 
-    fn oauth_fixture(alternatives: bool) -> (TradeAssemblyService, String) {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let database = std::env::temp_dir().join(format!(
-            "tradeassembly-oauth-lifecycle-{}-{nonce}.db",
-            std::process::id(),
-        ));
+    fn oauth_fixture(alternatives: bool) -> (tempfile::TempDir, TradeAssemblyService, String) {
+        let nonce = rand::random::<u128>();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let database = root.join("runtime.db");
         let service = TradeAssemblyService::test_local(database.to_string_lossy().to_string());
         let plugin_ref = "fixture.oauth".to_string();
         let instance_ref = format!("fixture-instance-{nonce}");
@@ -1989,7 +2029,7 @@ mod tests {
             }),
         );
         assert_eq!(created.status, 200, "{created:?}");
-        (service, instance_ref)
+        (directory, service, instance_ref)
     }
 
     fn resolved(service: &TradeAssemblyService, instance_ref: &str) -> BTreeMap<String, String> {
@@ -2003,7 +2043,7 @@ mod tests {
 
     #[test]
     fn credential_alternatives_replace_atomically_and_reject_mixed_or_partial_values() {
-        let (service, instance_ref) = oauth_fixture(true);
+        let (_directory, service, instance_ref) = oauth_fixture(true);
         let pair = store_credentials(
             &service,
             &instance_ref,
@@ -2060,7 +2100,7 @@ mod tests {
 
     #[test]
     fn legacy_required_credentials_remain_backward_compatible() {
-        let (service, instance_ref) = oauth_fixture(false);
+        let (_directory, service, instance_ref) = oauth_fixture(false);
         let missing = store_credentials(
             &service,
             &instance_ref,
@@ -2073,5 +2113,138 @@ mod tests {
             json!({"credentials": {"api_key": "key", "api_secret": "secret"}}),
         );
         assert_eq!(complete.status, 200);
+    }
+
+    #[test]
+    fn authentication_method_is_generation_bound_and_only_exposes_safe_enum() {
+        let (_directory, service, instance_ref) = oauth_fixture(true);
+        let missing = credential_status_for(&service, &instance_ref);
+        assert_eq!(
+            missing.body["credentialStatus"]["authenticationMethod"],
+            "unavailable"
+        );
+        let pair = store_credentials(
+            &service,
+            &instance_ref,
+            json!({"authenticationMethod":"oauth","credentials":{"api_key":"DO_NOT_ECHO_KEY","api_secret":"DO_NOT_ECHO_SECRET"}}),
+        );
+        assert_eq!(pair.status, 200);
+        assert_eq!(
+            pair.body["credentialStatus"]["authenticationMethod"],
+            "api-key"
+        );
+        let persisted = credential_status_for(&service, &instance_ref);
+        assert_eq!(
+            persisted.body["credentialStatus"]["authenticationMethod"],
+            "api-key"
+        );
+        let fields = persisted.body["credentialStatus"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            fields,
+            [
+                "authenticationMethod",
+                "configured",
+                "custody",
+                "redactedDisplay",
+                "revisionRef"
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(!persisted.body.to_string().contains("DO_NOT_ECHO"));
+        let bearer = store_credentials(
+            &service,
+            &instance_ref,
+            json!({"credentials":{"access_token":"DO_NOT_ECHO_TOKEN"}}),
+        );
+        assert_eq!(bearer.status, 200);
+        assert_eq!(
+            credential_status_for(&service, &instance_ref).body["credentialStatus"]
+                ["authenticationMethod"],
+            "oauth"
+        );
+        let record = instance(&service, &instance_ref).unwrap();
+        let mut stale = record.clone();
+        stale["credentialRevision"] = json!(credential_revision(&record) + 1);
+        assert_eq!(stored_authentication_method(&stale, true), "unavailable");
+        let revoked = revoke_credentials(&service, &instance_ref);
+        assert_eq!(revoked.status, 200);
+        assert_eq!(
+            credential_status_for(&service, &instance_ref).body["credentialStatus"]
+                ["authenticationMethod"],
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn oauth_lifecycle_projections_and_persisted_metadata_exclude_token_fragments() {
+        let (_directory, service, instance_ref) = oauth_fixture(true);
+        let token = "Q7Vk_OAUTH_LIFECYCLE_CANARY_mN4p";
+        let stored = store_credentials(
+            &service,
+            &instance_ref,
+            json!({"credentials":{"access_token":token}}),
+        );
+        assert_eq!(stored.status, 200);
+        let status = credential_status_for(&service, &instance_ref);
+        let instance = get_instance(&service, &instance_ref);
+        assert_eq!(status.status, 200);
+        assert_eq!(instance.status, 200);
+        let persisted = service
+            .runtime()
+            .plugins
+            .get_instance(&instance_ref)
+            .unwrap()
+            .unwrap();
+        for projection in [&stored.body, &status.body, &instance.body, &persisted] {
+            assert_eq!(
+                projection["credentialStatus"]["redactedDisplay"],
+                "***redacted***"
+            );
+            if projection.get("credentialAuthentication").is_some() {
+                assert_eq!(projection["credentialAuthentication"]["method"], "oauth");
+            } else {
+                assert_eq!(
+                    projection["credentialStatus"]["authenticationMethod"],
+                    "oauth"
+                );
+            }
+            let serialized = projection.to_string();
+            for secret in [token, &token[..4], &token[token.len() - 4..]] {
+                assert!(!serialized.contains(secret));
+            }
+        }
+    }
+
+    #[test]
+    fn authentication_method_is_unavailable_when_post_store_metadata_write_fails() {
+        let (_directory, service, instance_ref) = oauth_fixture(true);
+        let initial = store_credentials(
+            &service,
+            &instance_ref,
+            json!({"credentials":{"api_key":"controlled-key","api_secret":"controlled-secret"}}),
+        );
+        assert_eq!(initial.status, 200);
+        let connection = rusqlite::Connection::open(service.db()).unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_authentication_receipt BEFORE UPDATE ON tradeassembly_kv WHEN NEW.namespace='plugin_instances_v2' AND json_extract(NEW.value_json,'$.credentialAuthentication.method')='oauth' BEGIN SELECT RAISE(ABORT,'controlled_metadata_fault'); END;").unwrap();
+        let changed = store_credentials(
+            &service,
+            &instance_ref,
+            json!({"credentials":{"access_token":"controlled-token"}}),
+        );
+        assert_ne!(changed.status, 200);
+        assert_eq!(
+            credential_status_for(&service, &instance_ref).body["credentialStatus"]
+                ["authenticationMethod"],
+            "unavailable"
+        );
+        connection
+            .execute_batch("DROP TRIGGER fail_authentication_receipt")
+            .unwrap();
     }
 }

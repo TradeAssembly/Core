@@ -1,8 +1,10 @@
 use clap::Parser;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use tradeassembly_runtime::cli::{execute_command, Cli, Command, JournalCommand};
 use tradeassembly_runtime::mcp;
+use tradeassembly_runtime::ports::{AuthorityContext, IdempotencyKey};
 use tradeassembly_runtime::service::TradeAssemblyService;
 
 fn owner_service() -> TradeAssemblyService {
@@ -85,6 +87,69 @@ fn authenticated_cli_and_mcp_export_match_and_have_contract_fields() {
     );
     assert_eq!(replay["mode"], "stored_journal_inspection");
     assert_eq!(replay["strategyEvaluationPerformed"], false);
+}
+
+#[test]
+fn cursor_is_owner_bound_durable_and_empty_is_explicit() {
+    let service = owner_service();
+    let empty = execute_command(
+        &service,
+        Command::Journal {
+            command: JournalCommand::Cursor,
+        },
+    );
+    assert_eq!(empty["schema"], "tradeassembly.local-archive-cursor.v1");
+    assert_eq!(empty["completeness"], "empty");
+    assert_eq!(empty["sequence"], 0);
+    assert_eq!(
+        empty["recordHash"],
+        format!("sha256:{:x}", Sha256::digest(b"[]"))
+    );
+    let unauth = TradeAssemblyService::test_local(":memory:");
+    assert_eq!(
+        unauth
+            .handle_http("GET", "/journal/cursor", json!({}))
+            .status,
+        401
+    );
+}
+
+#[test]
+fn cursor_uses_global_durable_sequence_for_mixed_owners_and_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("cursor.db");
+    let base = TradeAssemblyService::test_local(db.to_string_lossy().to_string());
+    let alice = base.for_authenticated_invocation("https://alice.test", "same", None, None);
+    let bob = base.for_authenticated_invocation("https://bob.test", "same", None, None);
+    alice
+        .record_side_effect(
+            "cursor.alice",
+            json!({"v":1}),
+            Some(AuthorityContext::local_cli()),
+            Some(IdempotencyKey::new("cursor-a").unwrap()),
+        )
+        .unwrap();
+    bob.record_side_effect(
+        "cursor.bob",
+        json!({"v":2}),
+        Some(AuthorityContext::local_cli()),
+        Some(IdempotencyKey::new("cursor-b").unwrap()),
+    )
+    .unwrap();
+    let cursor = alice.handle_http("GET", "/journal/cursor", json!({}));
+    assert_eq!(cursor.status, 200);
+    assert_eq!(cursor.body["sequence"], 1);
+    drop(alice);
+    drop(bob);
+    drop(base);
+    let reopened = TradeAssemblyService::test_local(db.to_string_lossy().to_string())
+        .for_authenticated_invocation("https://alice.test", "same", None, None);
+    assert_eq!(
+        reopened
+            .handle_http("GET", "/journal/cursor", json!({}))
+            .body["sequence"],
+        1
+    );
 }
 
 #[test]

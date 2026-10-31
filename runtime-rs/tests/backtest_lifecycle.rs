@@ -158,6 +158,8 @@ fn snapshot() -> DatasetSnapshot {
                     low: 1.0,
                     close: 1.0,
                     volume: 1.0,
+                    vwap: None,
+                    session: None,
                 }),
             }],
         },

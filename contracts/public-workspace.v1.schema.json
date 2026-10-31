@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "tradeassembly.public-workspace.v1"
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "enum": [
+              "strategies",
+              "strategy_versions",
+              "strategy_drafts",
+              "research_universes",
+              "public_dataset_references_v1",
+              "public_backtest_configurations_v1",
+              "public_backtest_reports_v1",
+              "research_notebooks"
+            ]
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "contentHash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "value": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "namespace",
+          "key",
+          "contentHash",
+          "value"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "strategies"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {},
+                    "name": {},
+                    "symbol": {},
+                    "asset_class": {},
+                    "assetClass": {},
+                    "status": {},
+                    "version": {},
+                    "draft_revision": {},
+                    "draftRevision": {},
+                    "current_version_id": {},
+                    "currentVersionId": {},
+                    "provider_ref": {},
+                    "providerRef": {},
+                    "spec": {},
+                    "latestSpec": {},
+                    "noAdvice": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "strategy_versions"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {},
+                    "strategy_id": {},
+                    "strategyId": {},
+                    "version": {},
+                    "spec": {},
+                    "specHash": {},
+                    "identityAlgorithm": {},
+                    "sourceRepresentation": {},
+                    "normalizedSourceSpecBytes": {},
+                    "normalizedSourceSpecHash": {},
+                    "canonicalSpecBytes": {},
+                    "canonicalSpecHash": {},
+                    "immutable": {},
+                    "publishedAt": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "strategy_drafts"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {},
+                    "strategyId": {},
+                    "strategy_id": {},
+                    "name": {},
+                    "status": {},
+                    "revision": {},
+                    "baseVersionId": {},
+                    "draftHash": {},
+                    "specHash": {},
+                    "identityAlgorithm": {},
+                    "sourceRepresentation": {},
+                    "normalizedSourceSpecHash": {},
+                    "canonicalSpecHash": {},
+                    "spec": {},
+                    "updatedAt": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "research_universes"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {},
+                    "strategyId": {},
+                    "strategy_id": {},
+                    "name": {},
+                    "symbols": {},
+                    "filters": {},
+                    "provider_ref": {},
+                    "metrics": {},
+                    "createdAt": {},
+                    "noAdvice": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "public_dataset_references_v1"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "datasetId": {},
+                    "strategyId": {},
+                    "snapshotRef": {},
+                    "contentHash": {},
+                    "rowCount": {},
+                    "timeSlice": {},
+                    "source": {},
+                    "instruments": {},
+                    "granularity": {},
+                    "timezone": {},
+                    "calendar": {},
+                    "normalizationPolicy": {},
+                    "qualityPolicy": {},
+                    "sourcePluginRef": {},
+                    "configuration": {},
+                    "rawDataIncluded": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "public_backtest_configurations_v1"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "runId": {},
+                    "configuration": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "public_backtest_reports_v1"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "schema": {},
+                    "reportHash": {},
+                    "run": {},
+                    "assumptions": {},
+                    "overview": {},
+                    "trades": {},
+                    "journal": {},
+                    "orders": {},
+                    "fills": {},
+                    "positions": {},
+                    "ledger": {},
+                    "costsAndRisk": {},
+                    "diagnostics": {},
+                    "metadata": {},
+                    "provenance": {},
+                    "rawDataIncluded": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "namespace": {
+                  "const": "research_notebooks"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "schemaVersion": {},
+                    "kind": {},
+                    "ok": {},
+                    "strategyId": {},
+                    "runId": {},
+                    "notebookId": {},
+                    "notebookHash": {},
+                    "summary": {},
+                    "notebook": {},
+                    "warnings": {},
+                    "artifactRefs": {},
+                    "exportRefs": {},
+                    "replayRefs": {},
+                    "noAdvice": {},
+                    "recordHash": {}
+                  },
+                  "required": []
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "settings": {
+      "const": "not_supported_no_durable_settings_namespace"
+    },
+    "legacyBacktestsExcluded": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "bundleHash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "schema",
+    "entries",
+    "settings",
+    "legacyBacktestsExcluded",
+    "bundleHash"
+  ],
+  "description": "Public JSON records only. Core additionally enforces 16 MiB bundle bytes, 2 MiB entry bytes, 48 levels, no duplicate keys/entries, closed typed reports/configuration/notebooks, references, checksums, sensitive-data rejection, and safe stopped restore into an empty local SQLite workspace. Keys are identifiers, never extraction paths."
+}

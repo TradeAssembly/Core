@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tradeassembly_plugin_sdk::{
-    read_response, write_request, EphemeralCredentialGrant, PluginPackageDescriptor, PluginRequest,
-    PluginResponse, Reconciliation, RequestContext, RequestMetadata, RequestPayload,
-    ResponseStatus, DEFAULT_MAX_ENVELOPE_BYTES, SDK_VERSION, WIRE_CONTRACT_VERSION,
+    read_response, write_request, EphemeralCredentialGrant, PluginRequest, PluginResponse,
+    Reconciliation, RequestContext, RequestMetadata, RequestPayload, ResponseStatus,
+    DEFAULT_MAX_ENVELOPE_BYTES, SDK_VERSION, WIRE_CONTRACT_VERSION,
 };
 
 pub struct ExternalPluginHost {
@@ -88,7 +88,7 @@ impl ExternalPluginHost {
         let credential_required = operation["credentialGrantRequired"]
             .as_bool()
             .unwrap_or(false);
-        let credential_ref = required_string(&instance, "credentialRef")?;
+        let credential_ref = credential_reference(&instance, &operation)?;
         let credential_values = if credential_required {
             self.credentials
                 .resolve_fields(credential_ref)?
@@ -162,10 +162,19 @@ impl ExternalPluginHost {
         request: &PluginOperationRequest,
         context: &SideEffectContext,
     ) -> Result<PreparedPluginInvocation, String> {
-        if request.operation_id != "broker.order_lookup"
-            || request.capability != "broker.order_lookup.live"
-            || request.purpose != "recovery"
-            || request.mode != "live"
+        if !matches!(
+            (
+                request.operation_id.as_str(),
+                request.capability.as_str(),
+                request.mode.as_str()
+            ),
+            ("broker.order_lookup", "broker.order_lookup.live", "live")
+                | (
+                    "broker.order_lookup.paper",
+                    "broker.order_lookup.paper",
+                    "paper"
+                )
+        ) || request.purpose != "recovery"
         {
             return Err("broker_recovery_operation_invalid".into());
         }
@@ -181,8 +190,11 @@ fn validate_response_schema_document(
     package: &crate::ports::InstalledPluginPackage,
     response: &PluginResponse,
 ) -> Result<(), String> {
-    let descriptor: PluginPackageDescriptor = serde_json::from_value(package.descriptor.clone())
-        .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
+    let envelope = tradeassembly_plugin_sdk::data_package::VersionedPackageDescriptor::decode(
+        &serde_json::to_vec(&package.descriptor)
+            .map_err(|_| "plugin_package_descriptor_invalid")?,
+    )?;
+    let descriptor = envelope.base();
     let schema = descriptor
         .response_schemas
         .iter()
@@ -203,7 +215,9 @@ fn validate_response_schema_document(
         serde_json::from_slice(&bytes).map_err(|_| "plugin_response_schema_invalid".to_string())?;
     let validator = jsonschema::validator_for(&schema)
         .map_err(|_| "plugin_response_schema_invalid".to_string())?;
-    if !validator.is_valid(&response.payload) {
+    // Failed or uncertain responses have no success payload. Their envelope, declared schema,
+    // installed schema digest, and lexical output policy are still verified.
+    if response.status == ResponseStatus::Succeeded && !validator.is_valid(&response.payload) {
         return Err("plugin_response_payload_schema_mismatch".to_string());
     }
     Ok(())
@@ -298,6 +312,23 @@ fn operation_timeout_ms(manifest: &Value, requested_ms: u64) -> Result<u64, Stri
         Err("plugin_timeout_invalid".to_string())
     } else {
         Ok(timeout)
+    }
+}
+
+// Credential-free, account-free data reads do not manufacture a credential binding.
+// Other operation classes retain the established required-reference behavior.
+fn credential_reference<'a>(instance: &'a Value, operation: &Value) -> Result<&'a str, String> {
+    let credential_free_read = operation["effect"] == "read"
+        && !operation["credentialGrantRequired"]
+            .as_bool()
+            .unwrap_or(false)
+        && !operation["accountBindingRequired"]
+            .as_bool()
+            .unwrap_or(false);
+    if credential_free_read && instance.get("credentialRef").is_none() {
+        Ok("")
+    } else {
+        required_string(instance, "credentialRef")
     }
 }
 
@@ -463,7 +494,12 @@ fn execute(
     };
     let response = reader.join();
     if !status.success() {
-        return Err("plugin_process_failed".to_string());
+        // Exit status is safe operational evidence; never forward plugin stderr,
+        // which can contain provider payloads or credentials.
+        return Err(match status.code() {
+            Some(code) => format!("plugin_process_failed:exit_code={code}"),
+            None => "plugin_process_failed:terminated".to_string(),
+        });
     }
     response.map_err(|_| "plugin_response_invalid".to_string())?
 }
@@ -486,10 +522,7 @@ fn response_from_wire(
         return Err("plugin_response_schema_undeclared".to_string());
     }
     if response.status == ResponseStatus::Failed {
-        return Err(format!(
-            "plugin_operation_failed:{}",
-            response.provider_outcome.code
-        ));
+        return Err(super::plugin_provider_failure::wire_error(&response));
     }
     let reconciliation_required = response.status == ResponseStatus::ReconciliationRequired
         || response.reconciliation == Reconciliation::Required;
@@ -564,17 +597,29 @@ fn short_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::ports::{
-        FailureMode, InstalledPluginPackage, PluginOperationRequest, PortDescriptor, PortKind,
-        SandboxedPluginProcess, VersionedPort,
+        FailureMode, PortDescriptor, PortKind, SandboxedPluginProcess, VersionedPort,
     };
+    use crate::ports::{InstalledPluginPackage, PluginOperationRequest};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
     use tradeassembly_plugin_sdk::{PluginRequest, PluginResponse};
+
+    #[cfg(unix)]
+    mod data_plugin_tests {
+        include!("external_data_plugin_tests.rs");
+    }
+
+    #[cfg(unix)]
+    mod capture_plugin_tests {
+        include!("external_capture_plugin_tests.rs");
+    }
 
     fn operation_request() -> PluginOperationRequest {
         PluginOperationRequest {
@@ -600,6 +645,74 @@ mod tests {
             input: json!({}),
             evidence_refs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn credential_free_data_read_does_not_require_or_resolve_a_credential() {
+        let read =
+            json!({"effect":"read","credentialGrantRequired":false,"accountBindingRequired":false});
+        assert_eq!(credential_reference(&json!({}), &read).unwrap(), "");
+        for operation in [
+            json!({"effect":"write"}),
+            json!({"effect":"read","credentialGrantRequired":true}),
+            json!({"effect":"read","accountBindingRequired":true}),
+        ] {
+            assert!(credential_reference(&json!({}), &operation).is_err());
+        }
+        assert!(credential_reference(&json!({"credentialRef":null}), &read).is_err());
+        assert_eq!(
+            credential_reference(&json!({"credentialRef":"existing"}), &read).unwrap(),
+            "existing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_installed_data_package_prepares_without_any_credential_binding() {
+        use crate::ports::{AuthorityContext, IdempotencyKey};
+        let (_dir, service, scope, pipeline) =
+            crate::service::data_plans::tests::fixture_service(None);
+        let runtime = service.runtime();
+        let record = runtime
+            .plugins
+            .get_manifest("example.derive")
+            .unwrap()
+            .unwrap();
+        let mut request = operation_request();
+        request.plugin_instance_ref = "instance.derive".into();
+        request.plugin_ref = "example.derive".into();
+        request.manifest_fingerprint = record["manifestDigest"].as_str().unwrap().into();
+        request.operation_id = "derive".into();
+        request.capability = "test.derive".into();
+        request.account_ref = None;
+        request.strategy_id = scope.strategy_id;
+        request.strategy_version_id = scope.strategy_version_id;
+        request.strategy_spec_hash = scope.strategy_spec_hash;
+        request.capability_graph_revision_id = pipeline.capability_graph_revision;
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("prepare-data").unwrap(),
+        );
+        let host = ExternalPluginHost::new(
+            runtime.plugins.clone(),
+            runtime.credentials.clone(),
+            runtime.plugin_packages.clone(),
+            runtime.clock.clone(),
+            Arc::new(NativeTestSandbox),
+        );
+        let prepared = host.prepare(&request, &context).unwrap();
+        assert!(prepared.credential_values.is_empty());
+        assert!(prepared.binding.credential_ref.is_empty());
+        assert!(prepared.wire_request.ephemeral_credential_grant.is_none());
+        assert!(prepared.wire_request.context.account_id.is_none());
+        assert!(prepared.allowed_domains.is_empty());
+        assert!(runtime
+            .plugins
+            .get_instance("instance.derive")
+            .unwrap()
+            .unwrap()
+            .get("credentialRef")
+            .is_none());
     }
 
     fn wire_request() -> PluginRequest {
@@ -704,8 +817,10 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     struct NativeTestSandbox;
 
+    #[cfg(unix)]
     impl VersionedPort for NativeTestSandbox {
         fn descriptors(&self) -> Vec<PortDescriptor> {
             let mut descriptor = PortDescriptor::new(PortKind::Plugins, "test.plugin-sandbox");
@@ -714,6 +829,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl PluginProcessSandboxPort for NativeTestSandbox {
         fn spawn(&self, request: &PluginSandboxRequest) -> Result<SandboxedPluginProcess, String> {
             let child = Command::new(&request.executable)
@@ -878,6 +994,14 @@ mod tests {
             validate_response_schema_document(&package, &wire_response(json!({"account": 42}))),
             Err("plugin_response_payload_schema_mismatch".to_string())
         );
+        let mut failed = wire_response(json!({}));
+        failed.status = ResponseStatus::Failed;
+        failed.provider_outcome.code = "provider_order_absent".into();
+        assert!(validate_response_schema_document(&package, &failed).is_ok());
+        let mut uncertain = wire_response(json!({"error": "provider_timeout"}));
+        uncertain.status = ResponseStatus::ReconciliationRequired;
+        uncertain.reconciliation = Reconciliation::Required;
+        assert!(validate_response_schema_document(&package, &uncertain).is_ok());
         fs::write(
             directory.path().join("schemas/account.json"),
             br#"{"type":"object"}"#,
@@ -890,6 +1014,120 @@ mod tests {
             ),
             Err("plugin_response_schema_digest_mismatch".to_string())
         );
+        assert_eq!(
+            validate_response_schema_document(&package, &failed),
+            Err("plugin_response_schema_digest_mismatch".to_string())
+        );
+        assert_eq!(
+            validate_response_schema_document(&package, &uncertain),
+            Err("plugin_response_schema_digest_mismatch".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires ALPACA_TEST_PACKAGE_ROOT containing an extracted native plugin package"]
+    fn actual_alpaca_lookup_process_passes_core_receipt_validation() {
+        use std::io::{BufRead, Write};
+        use std::net::TcpListener;
+        use tradeassembly_plugin_sdk::RequestPayload;
+        let root = std::path::PathBuf::from(
+            std::env::var_os("ALPACA_TEST_PACKAGE_ROOT").expect("extracted package required"),
+        );
+        let descriptor: Value =
+            serde_json::from_slice(&fs::read(root.join("tradeassembly-plugin.json")).unwrap())
+                .unwrap();
+        let target = descriptor["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|value| value["target"] == tradeassembly_plugin_sdk::host_target())
+            .unwrap();
+        let binary = root.join(target["binary"]["path"].as_str().unwrap());
+        assert_eq!(
+            format!("{:x}", Sha256::digest(fs::read(&binary).unwrap())),
+            target["binary"]["sha256"].as_str().unwrap()
+        );
+        let package = InstalledPluginPackage {
+            plugin_ref: "tradeassembly.alpaca".into(),
+            version: descriptor["plugin"]["version"].as_str().unwrap().into(),
+            package_sha256: "test-package".into(),
+            manifest_sha256: "test-manifest".into(),
+            manifest: json!({}),
+            descriptor,
+            install_root: root.clone(),
+            executable_path: binary.clone(),
+            host_contract: "1".into(),
+            sdk_version: "0.1.0".into(),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "lookup was not sent");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("local fixture accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut input = BufReader::new(&stream);
+            let mut line = String::new();
+            input.read_line(&mut line).unwrap();
+            assert!(line.starts_with("GET /v2/orders:by_client_order_id?client_order_id=original "));
+            loop {
+                line.clear();
+                assert!(input.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let body = json!({"id":"provider-original","client_order_id":"original","symbol":"BTC/USD","side":"buy","type":"market","time_in_force":"gtc","qty":"0.0001","filled_qty":"0.0001","filled_avg_price":"67000","status":"filled","private":"provider-canary"}).to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut wire = wire_request();
+        wire.metadata.operation_id = "broker.order_lookup.paper".into();
+        wire.context.account_id = Some("account://fixture".into());
+        wire.context.timeout_ms = 2000;
+        wire.payload = RequestPayload::Operation(
+            json!({"config":{"tradingApiUrl":format!("http://{address}")},"clientOrderId":"original"}),
+        );
+        wire.ephemeral_credential_grant = Some(EphemeralCredentialGrant::new(BTreeMap::from([
+            ("api_key".into(), "key-canary".into()),
+            ("api_secret".into(), "secret-canary".into()),
+        ])));
+        let response = execute(&NativeTestSandbox, &binary, &root, vec![], &wire, 2000).unwrap();
+        server.join().unwrap();
+        assert_eq!(response.status, ResponseStatus::Succeeded);
+        let operation = json!({"effect":"read","traits":{"outputSchemaRefs":["schema://broker/order-receipt@1"]}});
+        crate::adapters::plugin_output_policy::validate_plugin_response_policy(
+            &wire,
+            &response,
+            &operation,
+            &BTreeMap::from([
+                ("api_key".into(), "key-canary".into()),
+                ("api_secret".into(), "secret-canary".into()),
+            ]),
+        )
+        .unwrap();
+        validate_response_schema_document(&package, &response).unwrap();
+        let projected =
+            response_from_wire(&operation_request(), &wire, response, &operation, 42).unwrap();
+        assert_eq!(projected.payload["accountRef"], "account://fixture");
+        assert_eq!(projected.payload["providerOrderId"], "provider-original");
+        assert_eq!(projected.payload["clientOrderId"], "original");
+        assert_eq!(projected.payload["quantity"], "0.0001");
+        assert_eq!(projected.payload["timeInForce"], "gtc");
+        assert!(!serde_json::to_string(&projected)
+            .unwrap()
+            .contains("canary"));
     }
 
     #[cfg(unix)]
@@ -940,7 +1178,7 @@ mod tests {
                     1_000,
                 )
                 .unwrap_err(),
-                "plugin_process_failed"
+                "plugin_process_failed:exit_code=7"
             );
         }
     }

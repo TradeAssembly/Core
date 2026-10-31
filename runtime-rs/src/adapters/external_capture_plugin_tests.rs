@@ -2057,3 +2057,5 @@ include!("external_order_submission_tests.rs");
 include!("external_dynamic_execution_tests.rs");
 
 include!("external_financial_joint_tests.rs");
+
+include!("external_financial_resume_tests.rs");

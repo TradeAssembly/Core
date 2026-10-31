@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 fn digest(v: &Value) -> String {
-    Sha256::digest(serde_json_canonicalizer::to_vec(v).unwrap())
+    Sha256::digest(serde_json_canonicalizer::pipe(&serde_json::to_string(v).unwrap()).unwrap().as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()

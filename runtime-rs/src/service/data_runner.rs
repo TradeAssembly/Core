@@ -1,4 +1,4 @@
-//! Explicit data-computation runner protocol. No activation or broker operation.
+//! Finite versioned computation and paper-financial runner; C5 stays independent.
 //! Remote installation authentication is owned by its transport, not authorityRef.
 use super::{
     data_evaluation, data_plans, data_recipes, instrument_screens, selection_plans,
@@ -403,6 +403,48 @@ pub struct DurableCoreDataRunner {
     service: TradeAssemblyService,
     expected_release: String,
 }
+/// Single-use, process-local evidence from the POST-accept validation round.
+/// It cannot cross transport/storage or confer execution authority. Actual HTTP
+/// admission and C5 still revalidate mutable inputs immediately before effects.
+pub(crate) struct VerifiedFinancialDispatch {
+    runtime: std::sync::Arc<ServiceRuntime>,
+    database: String,
+    release: String,
+    binding: DataMutationBinding,
+}
+impl VerifiedFinancialDispatch {
+    pub(crate) fn binding(&self) -> &DataMutationBinding {
+        &self.binding
+    }
+    fn check(&self, runner: &DurableCoreDataRunner, c: &DataRunnerCommand) -> Result<(), String> {
+        if !c.financial()
+            || !std::sync::Arc::ptr_eq(&self.runtime, &runner.service.runtime())
+            || self.database != runner.service.db()
+            || self.release != runner.expected_release
+            || self.binding.command_sha256 != c.canonical_hash()?
+            || self.binding.owner_binding_sha256
+                != runner
+                    .service
+                    .invocation_owner()
+                    .map(|o| hash(&o))
+                    .transpose()?
+            || self.binding.policy_sha256
+                != runner
+                    .service
+                    .runtime()
+                    .finance_authority
+                    .command_policy_sha256()?
+            || Some(self.binding.core_revision.as_str())
+                != crate::build_identity::current()
+                    .as_ref()
+                    .map(|v| v.revision())
+            || self.binding.execution_authority_granted
+        {
+            return Err("financial_dispatch_witness_mismatch".into());
+        }
+        Ok(())
+    }
+}
 /// Current read-only facts used to bind a remote command. This is not a grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -467,8 +509,28 @@ impl DurableCoreDataRunner {
             execution_authority_granted: false,
         })
     }
-    fn persist_financial_binding(&self, c: &DataRunnerCommand) -> Result<(), String> {
-        let binding = self.financial_binding(c)?;
+    pub(crate) fn verify_financial_dispatch(
+        &self,
+        c: &DataRunnerCommand,
+    ) -> Result<VerifiedFinancialDispatch, String> {
+        c.validate(&self.expected_release)?;
+        if !c.financial() {
+            return Err("financial_runner_operation_required".into());
+        }
+        Ok(VerifiedFinancialDispatch {
+            runtime: self.service.runtime(),
+            database: self.service.db().into(),
+            release: self.expected_release.clone(),
+            // A concurrent completion is reporting-only, just as on the
+            // existing mutation_binding/dispatch path. Never restart its effect.
+            binding: self.mutation_binding(c)?,
+        })
+    }
+    fn persist_financial_binding(
+        &self,
+        c: &DataRunnerCommand,
+        binding: DataMutationBinding,
+    ) -> Result<(), String> {
         let record = json!({"schemaVersion":"tradeassembly.financial_original_binding.v1","commandSha256":c.canonical_hash()?,"ownerSha256":self.service.invocation_owner().map(|o|hash(&o)).transpose()?,"bindingSha256":hash(&binding)?,"binding":binding});
         self.service.runtime().storage.put_json_if_absent(
             "financial_original_bindings_v1",
@@ -1087,6 +1149,61 @@ impl DurableCoreDataRunner {
         Ok(r)
     }
     pub fn dispatch(&self, c: &DataRunnerCommand) -> Result<DataRunnerReceipt, String> {
+        self.dispatch_inner(c, None)
+    }
+    pub(crate) fn dispatch_verified(
+        &self,
+        c: &DataRunnerCommand,
+        witness: VerifiedFinancialDispatch,
+    ) -> Result<DataRunnerReceipt, String> {
+        witness.check(self, c)?;
+        self.dispatch_inner(c, Some(witness))
+    }
+    #[cfg(test)]
+    pub(crate) fn assert_financial_witness_custody(
+        &self,
+        c: &DataRunnerCommand,
+        witness: &VerifiedFinancialDispatch,
+    ) {
+        witness.check(self, c).unwrap();
+        let mut changed = c.clone();
+        changed.authority_ref.push_str(".changed");
+        assert_eq!(
+            witness.check(self, &changed).unwrap_err(),
+            "financial_dispatch_witness_mismatch"
+        );
+        let foreign = Self::new(
+            self.service
+                .for_authenticated_invocation("fixture", "foreign", None, None),
+            self.expected_release.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            witness.check(&foreign, c).unwrap_err(),
+            "financial_dispatch_witness_mismatch"
+        );
+        let owner = self.service.invocation_owner().unwrap();
+        let distinct_runtime = TradeAssemblyService::from_runtime(
+            self.service.db(),
+            (*self.service.runtime()).clone(),
+        )
+        .for_authenticated_invocation(&owner.issuer, &owner.subject, None, None);
+        let distinct = Self::new(distinct_runtime, self.expected_release.clone()).unwrap();
+        assert_eq!(
+            witness.check(&distinct, c).unwrap_err(),
+            "financial_dispatch_witness_mismatch"
+        );
+        let wrong_release = Self::new(self.service.clone(), "other.release".into()).unwrap();
+        assert_eq!(
+            witness.check(&wrong_release, c).unwrap_err(),
+            "financial_dispatch_witness_mismatch"
+        );
+    }
+    fn dispatch_inner(
+        &self,
+        c: &DataRunnerCommand,
+        witness: Option<VerifiedFinancialDispatch>,
+    ) -> Result<DataRunnerReceipt, String> {
         c.validate(&self.expected_release)?;
         if c.financial() {
             if let Some(r) = self.receipt(&c.workspace_id, &c.command_id)? {
@@ -1103,7 +1220,14 @@ impl DurableCoreDataRunner {
         }
         let (path, body, _) = self.preflight(c)?;
         if c.financial() {
-            self.persist_financial_binding(c)?;
+            let binding = match witness {
+                Some(verified) => {
+                    verified.check(self, c)?;
+                    verified.binding
+                }
+                None => self.financial_binding(c)?,
+            };
+            self.persist_financial_binding(c, binding)?;
         }
         let command_hash = c.canonical_hash()?;
         let command_key = key(&c.workspace_id, &c.command_id)?;

@@ -65,7 +65,7 @@ fn financial_native_call(s:&crate::service::TradeAssemblyService,op:crate::servi
  let runner=DurableCoreDataRunner::new(s.clone(),"fixture.release".into()).unwrap();
  let c=DataRunnerCommand{schema_version:DATA_RUNNER_SCHEMA_V4.into(),core_release:"fixture.release".into(),workspace_id:"fixture.financial".into(),command_id:key.into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new(key).unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:s.runtime().clock.now_ms(),operation:DataRunnerOperation::Financial{financial:op}};
  let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();let foreign=DurableCoreDataRunner::new(s.for_authenticated_invocation("fixture","foreign",None,None),"fixture.release".into()).unwrap();assert!(foreign.mutation_binding(&c).is_err());assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);
- let result=runner.dispatch(&c);
+ let result=runner.verify_financial_dispatch(&c).and_then(|witness|{runner.assert_financial_witness_custody(&c,&witness);runner.dispatch_verified(&c,witness)});
  match result{
   Ok(receipt)=>{
    write_screen_interface_evidence("financial_v4",&format!("{key}-{}.json",receipt.command_sha256),&json!({"command":c,"receipt":receipt}));

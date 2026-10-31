@@ -396,6 +396,18 @@ impl ReachDataConsumer {
         }
         let receipt = if final_prior {
             prior.unwrap()
+        } else if c.command.financial() {
+            // Never carry mutable validation across the accept network call.
+            // Validate now, compare the real resource, and consume the opaque
+            // evidence immediately. Dispatch/C5 retain their fresh checks.
+            let verified = self.runner.verify_financial_dispatch(&c.command)?;
+            c.validate_bindings(
+                &self.node,
+                &self.source,
+                verified.binding(),
+                self.service.runtime().clock.now_ms(),
+            )?;
+            self.runner.dispatch_verified(&c.command, verified)?
         } else {
             c.validate_bindings(
                 &self.node,

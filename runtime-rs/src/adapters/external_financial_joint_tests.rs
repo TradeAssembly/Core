@@ -65,3 +65,25 @@ fn financial_v4_actual_core_relay_http_broker_joint() {
     crate::build_identity::install(config["coreRevision"].as_str().unwrap()).unwrap();
     native_execution_plan_fixture(Some("financial_joint"));
 }
+
+struct FinancialWitnessClock{base:Arc<dyn ClockPort>,offset:Arc<std::sync::atomic::AtomicI64>}
+impl VersionedPort for FinancialWitnessClock{fn descriptors(&self)->Vec<PortDescriptor>{vec![]}}
+impl ClockPort for FinancialWitnessClock{fn now_ms(&self)->i64{self.base.now_ms()+self.offset.load(std::sync::atomic::Ordering::SeqCst)}}
+fn exercise_financial_witness_refusal(s:&crate::service::TradeAssemblyService, command:crate::service::order_plans::PrepareCommand,offset:Option<Arc<std::sync::atomic::AtomicI64>>){
+ use crate::service::data_runner::*;
+ let runner=DurableCoreDataRunner::new(s.clone(),"fixture.release".into()).unwrap();
+ let c=DataRunnerCommand{schema_version:DATA_RUNNER_SCHEMA_V4.into(),core_release:"fixture.release".into(),workspace_id:"fixture.financial".into(),command_id:"witness-revoked".into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new("witness-revoked").unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:s.runtime().clock.now_ms(),operation:DataRunnerOperation::Financial{financial:crate::service::order_plans::remote::FinancialOperation::Prepare{order_plan:command}}};
+ let witness=runner.verify_financial_dispatch(&c).unwrap();runner.assert_financial_witness_custody(&c,&witness);
+ let operations=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+ let case=if let Some(clock)=offset{clock.store(31000,std::sync::atomic::Ordering::SeqCst);"expired-after-verification"}else{let mut source=s.runtime().plugins.get_instance("capture.source").unwrap().unwrap();source["enabled"]=json!(false);s.runtime().plugins.put_instance("capture.source",source,&ctx("witness-revocation")).unwrap();"revocation-before-effect"};
+ let receipt=runner.dispatch_verified(&c,witness).unwrap();assert_eq!(receipt.state,DataRunnerState::Failed);assert!(receipt.result.is_none());assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),operations);assert!(s.runtime().storage.list_json("execution_order_plans_v1").unwrap().is_empty());assert!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap().is_empty());
+ if case=="expired-after-verification"{assert_eq!(receipt.error.as_deref(),Some("order_plan_observation_stale"));}
+ write_screen_interface_evidence("financial_witness",&format!("{case}.json"),&json!({"receipt":receipt,"newPluginInvocations":0,"plans":0,"cashHolds":0,"brokerSubmissions":0}));
+}
+#[test]
+#[ignore="focused opaque financial witness currentness under native source revocation"]
+fn financial_dispatch_witness_cannot_bypass_current_source_revocation(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_token_revoke"));}
+
+#[test]
+#[ignore="focused opaque financial witness expires before actual preparation"]
+fn financial_dispatch_witness_cannot_bypass_expired_quote(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_token_expire"));}

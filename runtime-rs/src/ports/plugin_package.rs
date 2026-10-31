@@ -31,6 +31,17 @@ pub struct InstalledPluginPackage {
     pub sdk_version: String,
 }
 
+/// A single current, verified package read with requested operation metadata.
+/// It carries immutable data only, never invocation or account authority.
+#[derive(Clone)]
+pub struct OperationDataSnapshot {
+    pub package: InstalledPluginPackage,
+    pub contracts: std::collections::BTreeMap<
+        String,
+        tradeassembly_plugin_sdk::data_history::VersionedOperationData,
+    >,
+}
+
 pub trait PluginPackagePort: VersionedPort {
     fn install(
         &self,
@@ -59,6 +70,29 @@ pub trait PluginPackagePort: VersionedPort {
     {
         self.data_contract(package_sha256, operation_id)
             .map(|record| record.map(Into::into))
+    }
+
+    /// Implementations may share byte verification within this one lookup. The
+    /// default preserves existing adapters; no snapshot survives a caller's
+    /// current-validation boundary or replaces invocation checks.
+    fn operation_data_snapshot(
+        &self,
+        package_sha256: &str,
+        operations: &[String],
+    ) -> Result<Option<OperationDataSnapshot>, String> {
+        if operations.len() > tradeassembly_plugin_sdk::data_package::MAX_DATA_CONTRACTS {
+            return Err("plugin_data_snapshot_bounds_invalid".into());
+        }
+        let Some(package) = self.get(package_sha256)? else {
+            return Ok(None);
+        };
+        let mut contracts = std::collections::BTreeMap::new();
+        for operation in operations {
+            if let Some(contract) = self.operation_data(package_sha256, operation)? {
+                contracts.insert(operation.clone(), contract);
+            }
+        }
+        Ok(Some(OperationDataSnapshot { package, contracts }))
     }
 
     fn data_schema(

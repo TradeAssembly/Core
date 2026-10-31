@@ -510,6 +510,7 @@ fn data_capture_real_process_product_admission_replay_and_service_recreation() {
     drop(r.service);
     drop(r.operations);
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(r.dir.path().join("package-store")).unwrap());
     runtime.plugin_operations = Arc::new(
         crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
             runtime.storage.clone(),
@@ -936,6 +937,7 @@ fn data_capture_external_provider_package_admits_replays_and_reopens_without_liv
     drop(service);
     drop(operations);
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(dir.path().join("package-store")).unwrap());
     runtime.plugin_operations = Arc::new(
         crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(
             runtime.storage.clone(),
@@ -1172,6 +1174,7 @@ fn option_selection_real_process_causal_signal_selection_restart_and_no_match() 
     drop(r.operations);
     let clock_advance = Arc::new(std::sync::atomic::AtomicI64::new(0));
     let mut runtime = crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages = Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(r.dir.path().join("package-store")).unwrap());
     runtime.clock = Arc::new(AdvancedClock {
         base: runtime.clock.clone(),
         advance: clock_advance.clone(),

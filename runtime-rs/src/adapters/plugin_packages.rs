@@ -1,8 +1,8 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
 use crate::ports::{
-    FailureMode, InstalledPluginPackage, PluginPackageInstallRequest, PluginPackagePort,
-    PortDescriptor, PortKind, VersionedPort,
+    FailureMode, InstalledPluginPackage, OperationDataSnapshot, PluginPackageInstallRequest,
+    PluginPackagePort, PortDescriptor, PortKind, VersionedPort,
 };
 use flate2::read::GzDecoder;
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
@@ -52,6 +52,7 @@ impl PackageAddressResolver for SystemPackageAddressResolver {
 
 pub struct LocalPluginPackageStore {
     root: PathBuf,
+    metadata: super::plugin_data_contracts::VerificationCache,
 }
 
 impl LocalPluginPackageStore {
@@ -63,7 +64,10 @@ impl LocalPluginPackageStore {
             .map_err(|_| "plugin_package_store_unavailable".to_string())?;
         let root =
             fs::canonicalize(root).map_err(|_| "plugin_package_store_unavailable".to_string())?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            metadata: Default::default(),
+        })
     }
 
     fn package_root(&self, digest: &str) -> PathBuf {
@@ -123,10 +127,26 @@ impl LocalPluginPackageStore {
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
-        verify_package_metadata(&envelope, package_root, &manifest)?;
+        self.verify_metadata(&envelope, package_root, &manifest)?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
         Ok(record)
+    }
+
+    fn verify_metadata(
+        &self,
+        envelope: &VersionedPackageDescriptor,
+        root: &Path,
+        manifest: &Value,
+    ) -> Result<(), String> {
+        match envelope {
+            VersionedPackageDescriptor::Legacy(descriptor) => {
+                verify_response_schemas(descriptor, root)
+            }
+            VersionedPackageDescriptor::Data(_) => {
+                self.metadata.get(envelope, root, manifest).map(|_| ())
+            }
+        }
     }
 
     fn read_source(&self, request: &PluginPackageInstallRequest) -> Result<Vec<u8>, String> {
@@ -272,7 +292,7 @@ impl LocalPluginPackageStore {
             if sha256(&executable_bytes) != expected_executable_sha {
                 return Err("plugin_package_executable_digest_mismatch".to_string());
             }
-            verify_package_metadata(&envelope, &staging, &manifest)?;
+            self.verify_metadata(&envelope, &staging, &manifest)?;
 
             let record = InstalledPluginPackage {
                 plugin_ref,
@@ -304,23 +324,6 @@ impl LocalPluginPackageStore {
             let _ = fs::remove_dir_all(&staging);
         }
         result
-    }
-}
-
-fn verify_package_metadata(
-    envelope: &VersionedPackageDescriptor,
-    package_root: &Path,
-    manifest: &Value,
-) -> Result<(), String> {
-    match envelope {
-        VersionedPackageDescriptor::Legacy(descriptor) => {
-            verify_response_schemas(descriptor, package_root)
-        }
-        // V2 response documents must enter the bounded reader and schema-work
-        // checks before any schema compilation, on install AND every reload.
-        VersionedPackageDescriptor::Data(_) => {
-            super::plugin_data_contracts::verify(envelope, package_root, manifest).map(|_| ())
-        }
     }
 }
 
@@ -581,12 +584,40 @@ impl PluginPackagePort for LocalPluginPackageStore {
             &serde_json::to_vec(&package.descriptor)
                 .map_err(|_| "plugin_package_descriptor_invalid")?,
         )?;
-        let mut contracts = super::plugin_data_contracts::verify(
-            &envelope,
-            &package.install_root,
-            &package.manifest,
+        let metadata = self
+            .metadata
+            .get(&envelope, &package.install_root, &package.manifest)?;
+        Ok(metadata.contracts.get(operation_id).cloned())
+    }
+
+    fn operation_data_snapshot(
+        &self,
+        package_sha256: &str,
+        operations: &[String],
+    ) -> Result<Option<OperationDataSnapshot>, String> {
+        if operations.len() > tradeassembly_plugin_sdk::data_package::MAX_DATA_CONTRACTS {
+            return Err("plugin_data_snapshot_bounds_invalid".into());
+        }
+        let Some(package) = self.get(package_sha256)? else {
+            return Ok(None);
+        };
+        let envelope = VersionedPackageDescriptor::decode(
+            &serde_json::to_vec(&package.descriptor)
+                .map_err(|_| "plugin_package_descriptor_invalid")?,
         )?;
-        Ok(contracts.remove(operation_id))
+        let metadata = self
+            .metadata
+            .get(&envelope, &package.install_root, &package.manifest)?;
+        let contracts = operations
+            .iter()
+            .filter_map(|id| {
+                metadata
+                    .contracts
+                    .get(id)
+                    .map(|contract| (id.clone(), contract.clone()))
+            })
+            .collect();
+        Ok(Some(OperationDataSnapshot { package, contracts }))
     }
 
     fn data_schema(&self, package_sha256: &str, schema_ref: &str) -> Result<Option<Value>, String> {
@@ -597,12 +628,10 @@ impl PluginPackagePort for LocalPluginPackageStore {
             &serde_json::to_vec(&package.descriptor)
                 .map_err(|_| "plugin_package_descriptor_invalid")?,
         )?;
-        super::plugin_data_contracts::schema(
-            &envelope,
-            &package.install_root,
-            &package.manifest,
-            schema_ref,
-        )
+        let metadata = self
+            .metadata
+            .get(&envelope, &package.install_root, &package.manifest)?;
+        Ok(metadata.schemas.get(schema_ref).cloned())
     }
 
     fn remove(&self, package_sha256: &str) -> Result<bool, String> {

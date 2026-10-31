@@ -189,6 +189,12 @@ pub(crate) fn fixture_service_with_history(
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("service.db").to_string_lossy().into_owned();
     let mut fixture_runtime = crate::adapters::local::test_runtime(&db);
+    fixture_runtime.plugin_packages = std::sync::Arc::new(
+        crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+            dir.path().join("package-store"),
+        )
+        .unwrap(),
+    );
     if let Some(operations) = plugin_operations {
         fixture_runtime.plugin_operations = operations;
     }

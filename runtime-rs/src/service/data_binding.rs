@@ -18,6 +18,22 @@ pub(crate) fn pin(
     service: &TradeAssemblyService,
     selected: &CapabilitySelection,
 ) -> Result<PinnedOperation, String> {
+    pin_with_package_loader(service, selected, |digest| {
+        service
+            .runtime()
+            .plugin_packages
+            .get(digest)?
+            .ok_or("data_plan_package_missing".into())
+    })
+}
+
+/// Only immutable package data may be reused inside one current-validation call.
+/// Instance, ownership, configuration and credential bindings are always read now.
+pub(crate) fn pin_with_package_loader(
+    service: &TradeAssemblyService,
+    selected: &CapabilitySelection,
+    load: impl FnOnce(&str) -> Result<crate::ports::InstalledPluginPackage, String>,
+) -> Result<PinnedOperation, String> {
     service
         .require_object("plugin_instance", &selected.plugin_instance_ref)
         .map_err(|_| "data_plan_not_available")?;
@@ -45,11 +61,9 @@ pub(crate) fn pin(
     {
         return Err("data_plan_package_binding_mismatch".into());
     }
-    let package = runtime
-        .plugin_packages
-        .get(digest)?
-        .ok_or("data_plan_package_missing")?;
-    if package.plugin_ref != selected.plugin_ref
+    let package = load(digest)?;
+    if package.package_sha256 != digest
+        || package.plugin_ref != selected.plugin_ref
         || package.manifest_sha256 != selected.manifest_fingerprint
     {
         return Err("data_plan_package_binding_mismatch".into());

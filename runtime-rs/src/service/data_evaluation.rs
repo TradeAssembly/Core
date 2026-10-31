@@ -297,6 +297,18 @@ pub(crate) fn validate_batch(
     batch: &DataBatch,
     window: &EvaluationWindow,
 ) -> Result<(), String> {
+    validate_batch_with(port, context, batch, window, |identity, value| {
+        schema_valid(service, package, identity, value)
+    })
+}
+
+fn validate_batch_with(
+    port: &DataPort,
+    context: &DataContext,
+    batch: &DataBatch,
+    window: &EvaluationWindow,
+    validate: impl FnOnce(&SchemaIdentity, &Value) -> Result<(), String>,
+) -> Result<(), String> {
     if batch.schema != port.schema || batch.shape != port.shape || batch.points.len() > MAX_POINTS {
         return Err("data_evaluation_batch_contract_invalid".into());
     }
@@ -338,7 +350,7 @@ pub(crate) fn validate_batch(
         .iter()
         .any(|p| matches!(p.result, PointValue::Ready(_)))
     {
-        schema_valid(service, package, &port.schema, &schema_values(batch)?)?;
+        validate(&port.schema, &schema_values(batch)?)?;
     }
     Ok(())
 }
@@ -454,6 +466,7 @@ pub fn step(
             receipt_key,
             request_hash,
             started,
+            validators: Default::default(),
         }
         .evaluate(&mut checkpoint, &mut claim)
     })();
@@ -481,8 +494,61 @@ struct StepEnvironment<'a> {
     receipt_key: String,
     request_hash: String,
     started: std::time::Instant,
+    validators: std::cell::RefCell<BTreeMap<(String, String, String), jsonschema::Validator>>,
 }
 impl StepEnvironment<'_> {
+    /// Step-local compiled immutable schemas only. Every dispatch and the final
+    /// commit still revalidate the full plan/package artifact closure. A changed
+    /// artifact after dispatch cannot commit even when a validator was reused.
+    fn validate_schema(
+        &self,
+        package: &str,
+        identity: &SchemaIdentity,
+        value: &Value,
+    ) -> Result<(), String> {
+        let key = (
+            package.to_owned(),
+            identity.schema_ref.clone(),
+            identity.sha256.clone(),
+        );
+        let mut cache = self.validators.borrow_mut();
+        if !cache.contains_key(&key) {
+            let schema = self
+                .service
+                .runtime()
+                .plugin_packages
+                .data_schema(package, &identity.schema_ref)?
+                .ok_or("data_evaluation_schema_missing")?;
+            if hash(&schema)? != identity.sha256 {
+                return Err("data_evaluation_schema_changed".into());
+            }
+            let validator =
+                jsonschema::validator_for(&schema).map_err(|_| "data_evaluation_schema_invalid")?;
+            // Bounded eviction preserves validity for plans using more schemas;
+            // no new admissibility or runtime resource limit is relaxed.
+            if cache.len() >= 64 {
+                cache.pop_first();
+            }
+            cache.insert(key.clone(), validator);
+        }
+        if !cache[&key].is_valid(value) {
+            return Err("data_evaluation_value_schema_invalid".into());
+        }
+        Ok(())
+    }
+    fn validate_batch(
+        &self,
+        package: &str,
+        port: &DataPort,
+        context: &DataContext,
+        batch: &DataBatch,
+        window: &EvaluationWindow,
+    ) -> Result<(), String> {
+        validate_batch_with(port, context, batch, window, |identity, value| {
+            self.validate_schema(package, identity, value)
+        })
+    }
+
     fn check_budget(&self) -> Result<(), String> {
         if self.started.elapsed() >= MAX_STEP_DURATION {
             return Err("data_evaluation_deadline_exceeded".into());
@@ -553,8 +619,7 @@ impl StepEnvironment<'_> {
                 if batch.points.len() > request.max_points as usize {
                     return Err("data_evaluation_source_partition_budget_invalid".into());
                 }
-                validate_batch(
-                    self.service,
+                self.validate_batch(
                     &self.plan.content.package_sha256[&node.graph_node_id],
                     &contract.outputs[&port],
                     &singleton.context,
@@ -660,8 +725,7 @@ impl StepEnvironment<'_> {
                     .outputs
                     .get(&port)
                     .ok_or("data_evaluation_output_undeclared")?;
-                validate_batch(
-                    self.service,
+                self.validate_batch(
                     &package.package_sha256,
                     declaration,
                     &node.context,
@@ -1385,8 +1449,7 @@ impl StepEnvironment<'_> {
                 point.provenance.content_sha256 =
                     point_sha256(point).map_err(|_| "data_evaluation_output_hash_invalid")?;
             }
-            validate_batch(
-                self.service,
+            self.validate_batch(
                 package,
                 contract
                     .outputs
@@ -1430,7 +1493,7 @@ impl StepEnvironment<'_> {
                     return Err("data_evaluation_state_partition_invalid".into());
                 }
                 for value in response.state.values() {
-                    schema_valid(self.service, package, &state.schema, value)?;
+                    self.validate_schema(package, &state.schema, value)?;
                 }
             }
         }

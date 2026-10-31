@@ -285,3 +285,152 @@ fn data_package_reload_bounds_response_before_schema_compilation() {
         "plugin_data_document_too_large"
     );
 }
+
+/// Explicit local diagnostic, never enabled by the normal test suite. No plugin
+/// executable is run; the caller supplies an already retained package archive.
+#[test]
+#[ignore = "requires an explicit local diagnostic package"]
+fn data_package_bounded_lookup_cost_probe() {
+    use std::time::Instant;
+    let path = PathBuf::from(std::env::var_os("DATA_PACKAGE_PROBE").expect("DATA_PACKAGE_PROBE"));
+    let bytes = fs::read(&path).unwrap();
+    let mut archive = Archive::new(GzDecoder::new(Cursor::new(&bytes)));
+    let manifest_bytes = archive
+        .entries()
+        .unwrap()
+        .map(Result::unwrap)
+        .find_map(|mut entry| {
+            (entry.path().unwrap().as_ref() == Path::new("manifest.json")).then(|| {
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                bytes
+            })
+        })
+        .expect("manifest.json");
+    let manifest: Value = serde_json::from_slice(&manifest_bytes).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalPluginPackageStore::new(dir.path()).unwrap();
+    let started = Instant::now();
+    let installed = store
+        .install(&PluginPackageInstallRequest {
+            source_type: "file".into(),
+            locator: path.to_string_lossy().into(),
+            package_sha256: sha256(&bytes),
+            manifest_sha256: canonical(&manifest).unwrap(),
+            offline: true,
+        })
+        .unwrap();
+    let install_us = started.elapsed().as_micros();
+    let envelope =
+        VersionedPackageDescriptor::decode(&serde_json::to_vec(&installed.descriptor).unwrap())
+            .unwrap();
+    let VersionedPackageDescriptor::Data(data) = envelope else {
+        panic!("data package")
+    };
+    let operation = &data.data_contracts[0].operation_id;
+    let schema = &data.data_schemas[0].schema_ref;
+    let mut timings = std::collections::BTreeMap::new();
+    for action in ["get", "operation_data", "data_schema"] {
+        let started = Instant::now();
+        for _ in 0..10 {
+            match action {
+                "get" => {
+                    store.get(&installed.package_sha256).unwrap().unwrap();
+                }
+                "operation_data" => {
+                    store
+                        .operation_data(&installed.package_sha256, operation)
+                        .unwrap()
+                        .unwrap();
+                }
+                _ => {
+                    store
+                        .data_schema(&installed.package_sha256, schema)
+                        .unwrap()
+                        .unwrap();
+                }
+            }
+        }
+        timings.insert(action, started.elapsed().as_micros());
+    }
+    let raw_record = fs::read(installed.install_root.join(INSTALLED_RECORD)).unwrap();
+    let raw_manifest = fs::read(installed.install_root.join(&data.package.manifest.path)).unwrap();
+    let target = target_record(&data.package).unwrap();
+    let raw_executable = fs::read(installed.install_root.join(&target.binary.path)).unwrap();
+    let mut phases = std::collections::BTreeMap::new();
+    for action in [
+        "parse_record",
+        "parse_manifest_yaml",
+        "manifest_canonical",
+        "hash_executable",
+    ] {
+        let started = Instant::now();
+        for _ in 0..10 {
+            match action {
+                "parse_record" => {
+                    std::hint::black_box(
+                        serde_json::from_slice::<InstalledPluginPackage>(&raw_record).unwrap(),
+                    );
+                }
+                "parse_manifest_yaml" => {
+                    std::hint::black_box(serde_yaml::from_slice::<Value>(&raw_manifest).unwrap());
+                }
+                "manifest_canonical" => {
+                    std::hint::black_box(canonical(&manifest).unwrap());
+                }
+                _ => {
+                    std::hint::black_box(sha256(&raw_executable));
+                }
+            }
+        }
+        phases.insert(action, started.elapsed().as_micros());
+    }
+    eprintln!(
+        "PACKAGE_PHASE_PROBE {}",
+        json!({"iterations":10,"phaseMicros":phases})
+    );
+    eprintln!(
+        "PACKAGE_COST_PROBE {}",
+        json!({"archiveSha256":installed.package_sha256,"contractCount":data.data_contracts.len(),"iterations":10,"installMicros":install_us,"lookupMicros":timings,"executesPlugin":false})
+    );
+}
+
+#[test]
+fn data_package_snapshot_is_current_bounded_and_returns_independent_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let (descriptor, contract, schema, manifest) = materials();
+    let (store, installed) = install(dir.path(), &descriptor, contract, schema, &manifest).unwrap();
+    let operations = vec!["provide".to_owned()];
+    let first = store
+        .operation_data_snapshot(&installed.package_sha256, &operations)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.contracts["provide"].operation_id, "provide");
+    let mut changed = first.package.clone();
+    changed.manifest["metadata"]["version"] = json!("changed-by-caller");
+    assert_eq!(
+        store
+            .get(&installed.package_sha256)
+            .unwrap()
+            .unwrap()
+            .manifest["metadata"]["version"],
+        "1"
+    );
+    let too_many =
+        vec!["provide".to_owned(); tradeassembly_plugin_sdk::data_package::MAX_DATA_CONTRACTS + 1];
+    assert_eq!(
+        store
+            .operation_data_snapshot(&installed.package_sha256, &too_many)
+            .err()
+            .unwrap(),
+        "plugin_data_snapshot_bounds_invalid"
+    );
+    fs::write(&installed.executable_path, b"tampered-executable").unwrap();
+    assert_eq!(
+        store
+            .operation_data_snapshot(&installed.package_sha256, &operations)
+            .err()
+            .unwrap(),
+        "plugin_package_integrity_invalid"
+    );
+}

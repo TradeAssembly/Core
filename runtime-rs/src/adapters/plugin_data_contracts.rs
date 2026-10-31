@@ -7,12 +7,17 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path},
+    sync::{Arc, Mutex},
 };
 use tradeassembly_plugin_sdk::{
     data_history::VersionedOperationData, data_package::*, DigestedPackagePath,
 };
 
-fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result<Value, String> {
+fn document_bytes(
+    root: &Path,
+    doc: &DigestedPackagePath,
+    total: &mut usize,
+) -> Result<Vec<u8>, String> {
     if fs::symlink_metadata(root)
         .map_err(|_| "plugin_data_document_missing")?
         .file_type()
@@ -58,19 +63,92 @@ fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result
     if format!("{:x}", Sha256::digest(&bytes)) != doc.sha256 {
         return Err("plugin_data_artifact_digest_mismatch".into());
     }
+    Ok(bytes)
+}
+
+fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result<Value, String> {
+    let bytes = document_bytes(root, doc, total)?;
     let value: Value =
         serde_json::from_slice(&bytes).map_err(|_| "plugin_data_document_invalid")?;
     metadata_budget(&value)?;
     Ok(value)
 }
 
+/// One bounded immutable metadata entry per package-store instance. No ownership,
+/// credentials, graph, registry or acquisition state is cached here. Every hit
+/// rereads all declared documents with the same path/byte/aggregate bounds.
+#[derive(Default)]
+pub(crate) struct VerificationCache {
+    entry: Mutex<Option<(String, Arc<VerifiedMetadata>)>>,
+}
+#[derive(Clone, Default)]
+pub(crate) struct VerifiedMetadata {
+    pub contracts: BTreeMap<String, VersionedOperationData>,
+    pub schemas: BTreeMap<String, Value>,
+}
+impl VerificationCache {
+    pub fn get(
+        &self,
+        envelope: &VersionedPackageDescriptor,
+        root: &Path,
+        manifest: &Value,
+    ) -> Result<Arc<VerifiedMetadata>, String> {
+        let VersionedPackageDescriptor::Data(data) = envelope else {
+            return Ok(Arc::new(VerifiedMetadata::default()));
+        };
+        let identity = canonical_sha256(&serde_json::json!({
+            "root": root, "descriptor": data, "manifest": manifest
+        }))
+        .map_err(|_| "plugin_data_cache_identity_invalid")?;
+        let cached = self
+            .entry
+            .lock()
+            .map_err(|_| "plugin_data_cache_unavailable")?
+            .as_ref()
+            .filter(|(key, _)| key == &identity)
+            .map(|(_, value)| Arc::clone(value));
+        if let Some(cached) = cached {
+            // Identity includes every expected digest. Recheck the entire artifact
+            // closure, including unrelated operations, rather than trusting mtime.
+            let mut total = 0;
+            for document in data
+                .package
+                .response_schemas
+                .iter()
+                .map(|s| &s.document)
+                .chain(data.data_schemas.iter().map(|s| &s.document))
+                .chain(data.data_contracts.iter().map(|c| &c.document))
+            {
+                document_bytes(root, document, &mut total)?;
+            }
+            return Ok(cached);
+        }
+        let verified = Arc::new(load_metadata(envelope, root, manifest)?);
+        *self
+            .entry
+            .lock()
+            .map_err(|_| "plugin_data_cache_unavailable")? =
+            Some((identity, Arc::clone(&verified)));
+        Ok(verified)
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn verify(
     envelope: &VersionedPackageDescriptor,
     root: &Path,
     manifest: &Value,
 ) -> Result<BTreeMap<String, VersionedOperationData>, String> {
+    load_metadata(envelope, root, manifest).map(|metadata| metadata.contracts)
+}
+
+fn load_metadata(
+    envelope: &VersionedPackageDescriptor,
+    root: &Path,
+    manifest: &Value,
+) -> Result<VerifiedMetadata, String> {
     let VersionedPackageDescriptor::Data(data) = envelope else {
-        return Ok(BTreeMap::new());
+        return Ok(VerifiedMetadata::default());
     };
     if serde_json::to_vec(manifest)
         .map_err(|_| "plugin_data_manifest_invalid")?
@@ -98,6 +176,7 @@ pub(crate) fn verify(
     let mut total = 0;
     // Base response schemas are metadata too, even though their V1 descriptor
     // binds byte hashes rather than canonical schema identities.
+    let mut documents = BTreeMap::new();
     for response in &data.package.response_schemas {
         let value = document(root, &response.document, &mut total)?;
         if !local_schema_refs(&value) {
@@ -107,6 +186,7 @@ pub(crate) fn verify(
         if jsonschema::validator_for(&value).is_err() {
             return Err("plugin_data_schema_invalid".into());
         }
+        documents.insert(response.schema_ref.clone(), value);
     }
 
     let mut schemas = BTreeMap::new();
@@ -125,6 +205,7 @@ pub(crate) fn verify(
             return Err("plugin_data_schema_invalid".into());
         }
         schemas.insert(schema.schema_ref.clone(), schema.canonical_sha256.clone());
+        documents.insert(schema.schema_ref.clone(), value);
     }
     let mut contracts = BTreeMap::new();
     for entry in &data.data_contracts {
@@ -175,33 +256,10 @@ pub(crate) fn verify(
         }
         contracts.insert(entry.operation_id.clone(), contract);
     }
-    Ok(contracts)
-}
-
-/// Only called after package verification; each read still verifies byte identity.
-pub(crate) fn schema(
-    envelope: &VersionedPackageDescriptor,
-    root: &Path,
-    manifest: &Value,
-    schema_ref: &str,
-) -> Result<Option<Value>, String> {
-    verify(envelope, root, manifest)?;
-    let VersionedPackageDescriptor::Data(data) = envelope else {
-        return Ok(None);
-    };
-    data.data_schemas
-        .iter()
-        .find(|schema| schema.schema_ref == schema_ref)
-        .map(|schema| &schema.document)
-        .or_else(|| {
-            data.package
-                .response_schemas
-                .iter()
-                .find(|s| s.schema_ref == schema_ref)
-                .map(|s| &s.document)
-        })
-        .map(|doc| document(root, doc, &mut 0))
-        .transpose()
+    Ok(VerifiedMetadata {
+        contracts,
+        schemas: documents,
+    })
 }
 
 #[cfg(test)]
@@ -250,6 +308,106 @@ mod manifest_budget_tests {
         assert_eq!(
             verify(&envelope, dir.path(), &manifest(512)).unwrap_err(),
             "plugin_data_document_missing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use serde_json::json;
+    fn fixture(root: &Path) -> (VersionedPackageDescriptor, Value) {
+        let (mut descriptor, contract, schema, mut manifest) =
+            crate::adapters::plugin_packages::data_package_tests::materials();
+        fs::write(root.join("contract.json"), &contract).unwrap();
+        fs::write(root.join("schema.json"), schema).unwrap();
+        let mut unrelated: Value = serde_json::from_slice(&contract).unwrap();
+        unrelated["operationId"] = json!("unrelated");
+        let bytes = serde_json::to_vec(&unrelated).unwrap();
+        fs::write(root.join("unrelated.json"), &bytes).unwrap();
+        let mut operation = manifest["operations"][0].clone();
+        operation["id"] = json!("unrelated");
+        manifest["operations"]
+            .as_array_mut()
+            .unwrap()
+            .push(operation);
+        descriptor["dataContracts"].as_array_mut().unwrap().push(json!({
+            "operationId":"unrelated", "document":{"path":"unrelated.json","sha256":format!("{:x}",Sha256::digest(&bytes))},
+            "canonicalSha256":canonical_sha256(&unrelated).unwrap()
+        }));
+        (
+            VersionedPackageDescriptor::decode(&serde_json::to_vec(&descriptor).unwrap()).unwrap(),
+            manifest,
+        )
+    }
+    #[test]
+    fn cache_reuses_verified_metadata_but_hashes_unrelated_artifacts_on_every_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (descriptor, manifest) = fixture(dir.path());
+        let cache = VerificationCache::default();
+        let first = cache.get(&descriptor, dir.path(), &manifest).unwrap();
+        let second = cache.get(&descriptor, dir.path(), &manifest).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "reuse parsed verified metadata"
+        );
+        assert!(second.contracts.contains_key("provide"));
+        let path = dir.path().join("unrelated.json");
+        let bytes = fs::read(&path).unwrap();
+        let mut changed = bytes.clone();
+        changed[0] = b' ';
+        fs::write(&path, changed).unwrap();
+        assert_eq!(
+            cache.get(&descriptor, dir.path(), &manifest).err().unwrap(),
+            "plugin_data_artifact_digest_mismatch"
+        );
+        fs::write(&path, &bytes).unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &cache.get(&descriptor, dir.path(), &manifest).unwrap()
+        ));
+        fs::write(&path, vec![b' '; MAX_METADATA_DOCUMENT_BYTES + 1]).unwrap();
+        assert_eq!(
+            cache.get(&descriptor, dir.path(), &manifest).err().unwrap(),
+            "plugin_data_document_too_large"
+        );
+    }
+    #[test]
+    fn cache_identity_covers_manifest_root_and_single_entry_eviction() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let (descriptor, manifest) = fixture(a.path());
+        fixture(b.path());
+        let cache = VerificationCache::default();
+        let first = cache.get(&descriptor, a.path(), &manifest).unwrap();
+        let mut invalid = manifest.clone();
+        invalid["operations"][0]["traits"]["outputSchemaRefs"] = json!([]);
+        assert_eq!(
+            cache.get(&descriptor, a.path(), &invalid).err().unwrap(),
+            "plugin_data_output_schema_undeclared"
+        );
+        let other = cache.get(&descriptor, b.path(), &manifest).unwrap();
+        assert!(!Arc::ptr_eq(&first, &other));
+        let again = cache.get(&descriptor, a.path(), &manifest).unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &again),
+            "only one retained cache entry"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cached_metadata_does_not_hide_replaced_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let (descriptor, manifest) = fixture(dir.path());
+        let cache = VerificationCache::default();
+        cache.get(&descriptor, dir.path(), &manifest).unwrap();
+        let file = dir.path().join("unrelated.json");
+        let other = dir.path().join("same-bytes.json");
+        fs::rename(&file, &other).unwrap();
+        std::os::unix::fs::symlink(&other, &file).unwrap();
+        assert_eq!(
+            cache.get(&descriptor, dir.path(), &manifest).err().unwrap(),
+            "plugin_data_symlink_rejected"
         );
     }
 }

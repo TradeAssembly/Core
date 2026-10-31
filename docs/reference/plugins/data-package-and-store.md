@@ -16,7 +16,8 @@ parsing rejects V2 fields, and unsupported outer versions fail closed.
 
 Install and installed-record reads validate all declared data documents offline.
 Paths must be package-relative, without symlink components. Documents are capped
-at 1 MiB; packages allow at most 64 contracts and 256 schemas. Schema references
+at 1 MiB and 16 MiB in aggregate; packages allow at most 256 contracts and
+256 schemas. Schema references
 must be local fragments. Port and state schemas must have verified artifacts,
 and input/output schema references must be declared by the manifest operation.
 A contract is returned only after the package is revalidated through the existing
@@ -78,3 +79,32 @@ calculation readiness, state reconstruction, installed instance authority and
 broker eligibility. V1/V2 warmup metadata still has its existing meaning; a
 capacity increase does not make undeclared composite histories or reset policies
 executable. Such semantics require a separately versioned operation contract.
+
+## Bounded verification reuse
+
+A local package store retains at most one parsed, validated data-metadata entry.
+Its identity covers the package root, complete descriptor and manifest. A hit
+rereads and hashes every declared response schema, data schema and operation
+contract, including unrelated operations, through the same path, symlink,
+per-document and aggregate limits. Package reads still validate installed-record,
+manifest and executable identity. Failed reads cannot produce a trusted snapshot.
+The cache contains no ownership, credentials, configuration, graph or account
+authorization; a cached schema or contract grants no invocation permission.
+
+Plan preparation uses one verified package-and-requested-contract snapshot per
+unique package within that preparation call. Every node still checks its current
+object access, instance, manifest and configuration/credential bindings. The
+snapshot is discarded after the current-validation call. Evaluation dispatch and
+final atomic commit retain their current-plan checks; the external plugin host
+still revalidates the exact executable and current invocation authority. No
+cross-step plan cache, process reuse, deadline increase or sandbox change is
+introduced. Existing package adapters retain a conservative default snapshot
+implementation. The snapshot is an in-process port value, not a new wire format.
+
+During one evaluation step, at most 64 compiled schema validators are retained,
+keyed by package digest, schema reference and canonical schema digest. Eviction
+revalidates and recompiles on the next use, so it does not reject larger valid
+plans. Every returned value is still validated. The cache is discarded with the
+step, including on failure; it is never checkpoint state. Schema reuse cannot
+skip the full artifact revalidation before dispatch or before the atomic commit.
+Changes made after the last dispatch still reject the transaction.

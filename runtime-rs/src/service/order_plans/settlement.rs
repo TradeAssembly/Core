@@ -524,3 +524,67 @@ pub(super) fn verify_record(
     }
     Ok(())
 }
+
+/// Closed historical projection; never a broker permission or a current balance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Projection {
+    pub schema_version: String,
+    pub receipt_sha256: String,
+    pub canonical_account_sha256: String,
+    pub posting_id: String,
+    pub posting_sequence: u64,
+    pub provider_response_sha256: String,
+    pub source_binding_sha256: String,
+    pub account_checkpoint_sha256: String,
+    pub currency: Currency,
+    pub gross_exposure_floor: Decimal,
+    pub historical_outcome: bool,
+    pub posted_debit: Decimal,
+    pub gross_cash: Decimal,
+    pub fee_cash: Decimal,
+    pub released_hold: Decimal,
+    pub checkpoint_epoch: String,
+    pub checkpoint_sequence: u64,
+    pub available_cash_ceiling: Decimal,
+    pub execution_authority_granted: bool,
+}
+pub(super) fn projection(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    id: &str,
+) -> Result<Projection, String> {
+    let r = read_receipt(s, id)?;
+    if r.plan_id != p.plan_id || r.account_key != p.account_key {
+        return Err("cash_settlement_receipt_invalid".into());
+    }
+    Ok(Projection {
+        schema_version: "tradeassembly.cash_settlement_projection.v1".into(),
+        receipt_sha256: r.receipt_sha256,
+        canonical_account_sha256: r.observation.canonical_account_sha256,
+        posting_id: r.observation.posting_id.clone(),
+        posting_sequence: r.observation.posting_sequence,
+        provider_response_sha256: r.provider_response_sha256.clone(),
+        source_binding_sha256: hash(&r.source_binding)?,
+        account_checkpoint_sha256: hash(&r.observation.checkpoint)?,
+        currency: r.observation.checkpoint.account.currency.clone(),
+        gross_exposure_floor: gross_floor(&r.observation.checkpoint.account)?,
+        historical_outcome: true,
+        posted_debit: *r.observation.order.cash_spent.required()?,
+        gross_cash: r.observation.gross_cash,
+        fee_cash: r.observation.fee_cash,
+        released_hold: r.released_hold,
+        checkpoint_epoch: r.observation.checkpoint.ledger_epoch,
+        checkpoint_sequence: r.observation.checkpoint.sequence,
+        available_cash_ceiling: funding_capacity(&r.observation.checkpoint.account)?,
+        execution_authority_granted: false,
+    })
+}
+pub(super) fn preflight(s: &TradeAssemblyService, p: &OrderPlan) -> Result<(), String> {
+    let (_, record) = submission::record(s, p)?.ok_or("broker_v2_state_missing")?;
+    if p.account_currency.is_none() {
+        return Err("cash_settlement_currency_pin_required".into());
+    }
+    current_source(s, p, &record)?;
+    Ok(())
+}

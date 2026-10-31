@@ -474,4 +474,36 @@ mod tests {
             assert!(bad.validate().is_err(), "variant {n}");
         }
     }
+    #[test]
+    fn settlement_reach_v5_couples_action_resource_scope_and_versions() {
+        let mut c = fixture();
+        c.command.operation = super::super::data_runner::DataRunnerOperation::Financial {
+            financial: super::super::order_plans::remote::FinancialOperation::Settle {
+                scope: c.resource.scope.clone(),
+                plan_id: "owned-plan".into(),
+            },
+        };
+        c.command.schema_version = super::super::data_runner::DATA_RUNNER_SCHEMA_V5.into();
+        c.schema = c.command.reach_schema().into();
+        c.resource.schema_version = c.command.binding_schema().into();
+        c.resource.command_sha256 = c.command.canonical_hash().unwrap();
+        c.resource.action = "strategy.order_plan.settle".into();
+        c.resource.resource_kind = Some("strategy_order_plan".into());
+        c.validate().unwrap();
+        for n in 0..6 {
+            let mut bad = c.clone();
+            match n {
+                0 => bad.schema = "tradeassembly.relay.reach-data-command/v4".into(),
+                1 => {
+                    bad.resource.schema_version =
+                        "tradeassembly.core-data-mutation-binding.v4".into()
+                }
+                2 => bad.resource.action = "strategy.order_plan.submit".into(),
+                3 => bad.resource.resource_kind = Some("broker_account".into()),
+                4 => bad.resource.scope.strategy_id = "foreign".into(),
+                _ => bad.resource.execution_authority_granted = true,
+            };
+            assert!(bad.validate().is_err());
+        }
+    }
 }

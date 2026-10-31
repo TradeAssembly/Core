@@ -44,7 +44,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  base.runtime().plugins.put_instance(&replay.plugin_ref,json!({"instanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"providerRef":replay.plugin_ref,"enabled":true,"activePackageSha256":replay.package_sha256,"configuration":{}}),&ctx("execution-replay-instance")).unwrap();
  let dynamic_fixture=if dynamic{Some(setup_dynamic_execution_fixture(&base,dir.path(),v2_case==Some("financial_screen_refresh")))}else{None};
  let financial_clock_offset=(v2_case==Some("financial_token_expire")).then(||Arc::new(std::sync::atomic::AtomicI64::new(0)));
- let db=std::path::Path::new(base.db()).canonicalize().unwrap();let owner=crate::local_owner_identity::LocalOwnerIdentity::for_database(&db).unwrap();let mut rt=(*base.runtime()).clone();if v2_case.is_some_and(|c|c.starts_with("financial_")){rt.finance_authority=Arc::new(FixtureFinancialAuthority);}
+ let db=std::path::Path::new(base.db()).canonicalize().unwrap();let owner=crate::local_owner_identity::LocalOwnerIdentity::for_database(&db).unwrap();let mut rt=(*base.runtime()).clone();if v2_case.is_some_and(|c|c.starts_with("financial_")||c.starts_with("settlement_")){rt.finance_authority=Arc::new(FixtureFinancialAuthority);}
  if let Some(offset)=&financial_clock_offset {rt.clock=Arc::new(FinancialWitnessClock{base:rt.clock.clone(),offset:offset.clone()});}
  rt.identity=Arc::new(crate::adapters::local::system::LocalOwnerIdentityPort::new(db.to_str().unwrap()).unwrap());
  let service=crate::service::TradeAssemblyService::from_runtime(base.db(),rt).for_authenticated_invocation(&owner.issuer,&owner.stable_identity_id,None,None);

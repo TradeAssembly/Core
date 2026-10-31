@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use tradeassembly_plugin_sdk::instrument_set::InstrumentSet;
 pub const DATA_RUNNER_SCHEMA: &str = "tradeassembly.core-data-runner.v1";
 pub const DATA_RUNNER_SCHEMA_V2: &str = "tradeassembly.core-data-runner.v2";
+pub const DATA_RUNNER_SCHEMA_V5: &str = "tradeassembly.core-data-runner.v5";
 pub const DATA_RUNNER_SCHEMA_V4: &str = "tradeassembly.core-data-runner.v4";
 pub const DATA_RUNNER_SCHEMA_V3: &str = "tradeassembly.core-data-runner.v3";
 pub const MAX_DATA_COMMAND_BYTES: usize = 262144;
@@ -193,7 +194,9 @@ impl DataRunnerCommand {
         }
         budget(&v, 0, &mut 0)?;
         if self.schema_version
-            != if self.financial() {
+            != if self.settlement() {
+                DATA_RUNNER_SCHEMA_V5
+            } else if self.financial() {
                 DATA_RUNNER_SCHEMA_V4
             } else if self.scheduler_dispatch() {
                 DATA_RUNNER_SCHEMA_V3
@@ -232,6 +235,9 @@ impl DataRunnerCommand {
         hash(self)?;
         Ok(())
     }
+    pub fn settlement(&self) -> bool {
+        matches!(&self.operation, DataRunnerOperation::Financial { financial } if financial.settlement())
+    }
     pub fn financial(&self) -> bool {
         matches!(self.operation, DataRunnerOperation::Financial { .. })
     }
@@ -239,7 +245,9 @@ impl DataRunnerCommand {
         matches!(&self.operation, DataRunnerOperation::DispatchSession { .. })
     }
     pub fn reach_schema(&self) -> &'static str {
-        if self.financial() {
+        if self.settlement() {
+            "tradeassembly.relay.reach-data-command/v5"
+        } else if self.financial() {
             "tradeassembly.relay.reach-data-command/v4"
         } else if self.scheduler_dispatch() {
             "tradeassembly.relay.reach-data-command/v3"
@@ -250,7 +258,9 @@ impl DataRunnerCommand {
         }
     }
     pub fn preparation_schema(&self) -> &'static str {
-        if self.financial() {
+        if self.settlement() {
+            "tradeassembly.relay.reach-data-preparation/v5"
+        } else if self.financial() {
             "tradeassembly.relay.reach-data-preparation/v4"
         } else if self.scheduler_dispatch() {
             "tradeassembly.relay.reach-data-preparation/v3"
@@ -267,7 +277,9 @@ impl DataRunnerCommand {
         )
     }
     pub fn receipt_schema(&self) -> &'static str {
-        if self.financial() {
+        if self.settlement() {
+            "tradeassembly.core-data-runner.receipt.v5"
+        } else if self.financial() {
             "tradeassembly.core-data-runner.receipt.v4"
         } else if self.scheduler_dispatch() {
             "tradeassembly.core-data-runner.receipt.v3"
@@ -278,7 +290,9 @@ impl DataRunnerCommand {
         }
     }
     pub fn binding_schema(&self) -> &'static str {
-        if self.financial() {
+        if self.settlement() {
+            "tradeassembly.core-data-mutation-binding.v5"
+        } else if self.financial() {
             "tradeassembly.core-data-mutation-binding.v4"
         } else if self.scheduler_dispatch() {
             "tradeassembly.core-data-mutation-binding.v3"
@@ -1648,5 +1662,65 @@ mod tests {
             )
             .is_err());
         }
+    }
+    #[test]
+    fn settlement_v5_is_finite_and_old_financial_versions_remain_closed() {
+        let mut v = command();
+        v["schemaVersion"] = json!(DATA_RUNNER_SCHEMA_V5);
+        v["operation"] = json!({"kind":"financial","financial":{"kind":"settle","scope":{"strategyId":"strategy","strategyVersionId":"version","strategySpecHash":"sha256:spec"},"planId":"owned-plan"}});
+        let good =
+            DataRunnerCommand::parse(&serde_json::to_vec(&v).unwrap(), "fixture.release").unwrap();
+        assert!(good.settlement());
+        assert_eq!(
+            good.reach_schema(),
+            "tradeassembly.relay.reach-data-command/v5"
+        );
+        assert_eq!(
+            good.preparation_schema(),
+            "tradeassembly.relay.reach-data-preparation/v5"
+        );
+        assert_eq!(
+            good.receipt_schema(),
+            "tradeassembly.core-data-runner.receipt.v5"
+        );
+        assert_eq!(
+            good.binding_schema(),
+            "tradeassembly.core-data-mutation-binding.v5"
+        );
+        for schema in [
+            DATA_RUNNER_SCHEMA,
+            DATA_RUNNER_SCHEMA_V2,
+            DATA_RUNNER_SCHEMA_V3,
+            DATA_RUNNER_SCHEMA_V4,
+        ] {
+            let mut bad = v.clone();
+            bad["schemaVersion"] = json!(schema);
+            assert!(DataRunnerCommand::parse(
+                &serde_json::to_vec(&bad).unwrap(),
+                "fixture.release"
+            )
+            .is_err());
+        }
+        for mode in ["live", "backtest"] {
+            let mut bad = v.clone();
+            bad["mode"] = json!(mode);
+            assert!(DataRunnerCommand::parse(
+                &serde_json::to_vec(&bad).unwrap(),
+                "fixture.release"
+            )
+            .is_err());
+        }
+        let mut bad = v.clone();
+        bad["operation"]["financial"]["kind"] = json!("submit");
+        assert!(
+            DataRunnerCommand::parse(&serde_json::to_vec(&bad).unwrap(), "fixture.release")
+                .is_err()
+        );
+        let mut bad = v;
+        bad["operation"]["financial"]["quantity"] = json!("1");
+        assert!(
+            DataRunnerCommand::parse(&serde_json::to_vec(&bad).unwrap(), "fixture.release")
+                .is_err()
+        );
     }
 }

@@ -36,8 +36,22 @@ pub enum FinancialOperation {
         scope: data_plans::PlanScope,
         plan_id: String,
     },
+    Settle {
+        scope: data_plans::PlanScope,
+        plan_id: String,
+    },
 }
 impl FinancialOperation {
+    pub fn settlement(&self) -> bool {
+        matches!(self, Self::Settle { .. })
+    }
+    pub fn snapshot_schema(&self) -> &'static str {
+        if self.settlement() {
+            "tradeassembly.financial_snapshot.v2"
+        } else {
+            "tradeassembly.financial_snapshot.v1"
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
         let label = |v: &str| !v.is_empty() && v.len() <= 256 && !v.chars().any(char::is_control);
         let scope = self.scope();
@@ -87,6 +101,7 @@ impl FinancialOperation {
             Self::Submit { scope, submission } => {
                 (SUBMIT, json!({"scope":scope,"submission":submission}))
             }
+            Self::Settle { scope, plan_id } => (SETTLE, json!({"scope":scope,"planId":plan_id})),
             Self::Reconcile { scope, plan_id } => {
                 (RECONCILE, json!({"scope":scope,"planId":plan_id}))
             }
@@ -101,6 +116,7 @@ impl FinancialOperation {
                 "strategy.order_plan.submit"
             }
             Self::Reconcile { .. } => "strategy.order_plan.reconcile",
+            Self::Settle { .. } => "strategy.order_plan.settle",
         }
     }
     pub(crate) fn scope(&self) -> &data_plans::PlanScope {
@@ -111,14 +127,16 @@ impl FinancialOperation {
             | Self::Decide { scope, .. }
             | Self::Select { scope, .. }
             | Self::Submit { scope, .. }
-            | Self::Reconcile { scope, .. } => scope,
+            | Self::Reconcile { scope, .. }
+            | Self::Settle { scope, .. } => scope,
         }
     }
     fn plan_id(&self) -> Option<&str> {
         match self {
             Self::Reserve { plan_id, .. }
             | Self::Release { plan_id, .. }
-            | Self::Reconcile { plan_id, .. } => Some(plan_id),
+            | Self::Reconcile { plan_id, .. }
+            | Self::Settle { plan_id, .. } => Some(plan_id),
             Self::Decide { decision, .. } => Some(&decision.plan_id),
             Self::Submit { submission, .. } => Some(&submission.plan_id),
             _ => None,
@@ -245,6 +263,9 @@ pub(crate) fn binding(
                         let (r, cfg) = decision::run(s, &c.activation_id)?;
                         decision::check_plan_with_signal(s, &p, &r, &cfg, &signal)?;
                     }
+                    FinancialOperation::Settle { .. } => {
+                        settlement::preflight(s, &p)?;
+                    }
                     FinancialOperation::Reconcile { .. }
                         if submission::source(s, &p.plan_id)?.state()?.is_none() =>
                     {
@@ -286,6 +307,8 @@ pub struct FinancialSnapshot {
     pub observation: Option<tradeassembly_plugin_sdk::broker_v2::OrderObservation>,
     pub submission: Option<transport::SubmissionCommand>,
     pub selection_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<settlement::Projection>,
     pub observed_at_ms: i64,
     pub execution_authority_granted: bool,
     pub snapshot_sha256: String,
@@ -304,7 +327,8 @@ pub(crate) fn validate_snapshot(
 ) -> Result<(), String> {
     s.require_object("strategy", &op.scope().strategy_id)
         .map_err(|_| "financial_runner_not_available")?;
-    if v.schema_version != "tradeassembly.financial_snapshot.v1"
+    if v.schema_version != op.snapshot_schema()
+        || v.settlement.is_some() != op.settlement()
         || v.command_sha256 != command
         || v.scope != *op.scope()
         || v.execution_authority_granted
@@ -335,7 +359,7 @@ pub(crate) fn project(
         return Ok(v);
     }
     let mut v = FinancialSnapshot {
-        schema_version: "tradeassembly.financial_snapshot.v1".into(),
+        schema_version: op.snapshot_schema().into(),
         command_sha256: command.into(),
         operation: op.action().into(),
         scope: op.scope().clone(),
@@ -349,6 +373,7 @@ pub(crate) fn project(
         observation: None,
         submission: None,
         selection_binding_sha256: None,
+        settlement: None,
         observed_at_ms: s.runtime().clock.trusted_now_ms()?,
         execution_authority_granted: false,
         snapshot_sha256: String::new(),
@@ -435,6 +460,22 @@ pub(crate) fn project(
                 v.submission = Some(cmd);
                 v.selection_binding_sha256 =
                     body["selectionBindingSha256"].as_str().map(str::to_owned);
+            }
+            FinancialOperation::Settle { .. } => {
+                let projection = settlement::projection(
+                    s,
+                    &p,
+                    body["receiptSha256"]
+                        .as_str()
+                        .ok_or("financial_runner_settlement_missing")?,
+                )?;
+                let (_, record) = submission::record(s, &p)?.ok_or("broker_v2_state_missing")?;
+                v.valid_until_ms = None;
+                v.cash_amount = Some(record.retained_cash);
+                v.cash_reserved = record.retained_cash.positive();
+                v.phase = Some(record.phase);
+                v.observation = record.observation;
+                v.settlement = Some(projection);
             }
             FinancialOperation::Submit { .. } | FinancialOperation::Reconcile { .. } => {
                 let phase: submission::Phase =

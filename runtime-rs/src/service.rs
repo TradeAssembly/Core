@@ -1363,6 +1363,9 @@ impl TradeAssemblyService {
             ("POST", "/product/strategies/order-plans/submit") => {
                 order_plans::response(self, order_plans::SUBMIT, body)
             }
+            ("POST", "/product/strategies/order-plans/settle") => {
+                order_plans::response(self, order_plans::SETTLE, body)
+            }
             ("POST", "/product/strategies/order-plans/reconcile") => {
                 order_plans::response(self, order_plans::RECONCILE, body)
             }
@@ -3513,6 +3516,7 @@ impl TradeAssemblyService {
                         | "tradeassembly.strategy.order_plan.select"
                         | "tradeassembly.strategy.order_plan.submit"
                         | "tradeassembly.strategy.order_plan.reconcile"
+                        | "tradeassembly.strategy.order_plan.settle"
                         | "tradeassembly.strategy.order_plan.status"
                         | "tradeassembly.strategy.instrument_screen.create"
                         | "tradeassembly.strategy.data_recipe.prepare"
@@ -3910,6 +3914,10 @@ impl TradeAssemblyService {
             }
             "tradeassembly.strategy.order_plan.submit" => {
                 self.dispatch_http("POST", order_plans::SUBMIT, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.settle" => {
+                self.dispatch_http("POST", order_plans::SETTLE, arguments)
                     .body
             }
             "tradeassembly.strategy.order_plan.reconcile" => {
@@ -4553,6 +4561,7 @@ impl TradeAssemblyService {
                 | "tradeassembly.strategy.order_plan.select"
                 | "tradeassembly.strategy.order_plan.submit"
                 | "tradeassembly.strategy.order_plan.reconcile"
+                | "tradeassembly.strategy.order_plan.settle"
                 | "tradeassembly.strategy.order_plan.status"
                 | "tradeassembly.strategy.data_recipe.prepare"
                 | "tradeassembly.strategy.data_recipe.step"
@@ -5499,6 +5508,7 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
         "tradeassembly.strategy.order_plan.select" => Some(order_plans::SELECT),
         "tradeassembly.strategy.order_plan.submit" => Some(order_plans::SUBMIT),
         "tradeassembly.strategy.order_plan.reconcile" => Some(order_plans::RECONCILE),
+        "tradeassembly.strategy.order_plan.settle" => Some(order_plans::SETTLE),
         "tradeassembly.strategy.selection_plan.prepare" => Some(selection_plans::PATH),
         "tradeassembly.strategy.session_schedule.prepare" => {
             Some("/product/strategies/session-schedules/prepare")

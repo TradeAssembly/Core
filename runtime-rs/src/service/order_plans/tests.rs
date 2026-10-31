@@ -86,6 +86,8 @@ fn fixture() -> (tempfile::TempDir, TradeAssemblyService, Facts, Policy) {
         account_binding_sha256: None,
         available: number("100"),
         valid_until: service.runtime().clock.now_ms() + 30000,
+        capital_checkpoint_sha256: None,
+        gross_floor: Decimal::ZERO,
     };
     let policy = Policy {
         schema_version: "tradeassembly.order_plan_policy.v1".into(),
@@ -167,6 +169,8 @@ fn plan(s: &TradeAssemblyService, f: &Facts, p: &Policy, id: &str) -> OrderPlan 
         account_key: f.account_key.clone(),
         canonical_account: f.canonical_account.clone(),
         account_binding_sha256: f.account_binding_sha256.clone(),
+        account_currency: Some(f.account.currency.clone()),
+        capital_checkpoint_sha256: f.capital_checkpoint_sha256.clone(),
         owner_sha256: owner(s).unwrap(),
         prepared_at_ms: s.runtime().clock.now_ms(),
         valid_until_ms: f.valid_until,
@@ -650,4 +654,370 @@ fn recreated_service_retains_unknown_send_and_recovers_original_hold() {
         .unwrap();
     assert!(!held(&restored, &p).unwrap());
     assert_eq!(source.state().unwrap().unwrap().original_key, "submit");
+}
+
+// These tests exercise the real atomic capital boundary with authored provider
+// observations. They do not qualify provider acquisition, C3/C5 or OS sandboxing.
+fn settlement_binding() -> crate::ports::broker_submission::BrokerPreparedBinding {
+    crate::ports::broker_submission::BrokerPreparedBinding {
+        plugin_instance_ref: "fixture".into(),
+        plugin_ref: "fixture".into(),
+        package_sha256: "a".repeat(64),
+        manifest_fingerprint: "b".repeat(64),
+        configuration_digest: "c".repeat(64),
+        credential_ref: "fixture-only".into(),
+        credential_generation: 1,
+    }
+}
+fn settlement_fixture(
+    id: &str,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    Facts,
+    OrderPlan,
+    submission::OrderPlanSource,
+) {
+    let (dir, s, mut f, p, source) = lifecycle_fixture(id);
+    f.account.provider_account_id = "fixture".into();
+    source.begin(&p,json!({"planId":p.plan_id,"accountRef":f.account.account_ref,"idempotencyKey":"settlement-submit"}),&context("settlement-submit")).unwrap();
+    source.admitted(&context("settlement-submit")).unwrap();
+    source.before_send(&context("settlement-submit")).unwrap();
+    (dir, s, f, p, source)
+}
+fn settlement_observation(
+    s: &TradeAssemblyService,
+    f: &Facts,
+    p: &OrderPlan,
+    partial: bool,
+) -> tradeassembly_plugin_sdk::cash_settlement::Observation {
+    use tradeassembly_plugin_sdk::{
+        broker_v2::OrderStatus,
+        cash_settlement::{AccountCheckpoint, Observation},
+    };
+    let now = s.runtime().clock.now_ms();
+    let mut account = f.account.clone();
+    account.time.observed_at_ms = now;
+    account.time.known_at_ms = now;
+    let (quantity, gross, fee, cash, status) = if partial {
+        ("0.2", "20", "0.25", "79.75", OrderStatus::Cancelled)
+    } else {
+        ("0.6", "60", "0", "40", OrderStatus::Filled)
+    };
+    account.cash_balance = av(number(cash));
+    account.non_marginable_buying_power = av(number(cash));
+    account.gross_exposure = av(number(gross));
+    account.positions = av(vec![
+        tradeassembly_plugin_sdk::execution_snapshot::Position {
+            instrument_id: "SPY".into(),
+            side: HoldingSide::Long,
+            quantity: number(quantity),
+            gross_value: av(number(gross)),
+        },
+    ]);
+    Observation {
+        schema_version: "tradeassembly.cash_settlement_observation.v1".into(),
+        canonical_account_sha256: "a".repeat(64),
+        order: observed(
+            p,
+            status,
+            av(number(quantity)),
+            av(number(gross).checked_add(number(fee)).unwrap()),
+            now,
+        ),
+        posting_id: "provider.final.posting".into(),
+        posting_sequence: 2,
+        gross_cash: number(gross),
+        fee_cash: number(fee),
+        fees_final: true,
+        checkpoint: AccountCheckpoint {
+            ledger_epoch: "provider.epoch.1".into(),
+            sequence: 2,
+            account,
+        },
+    }
+}
+fn commit_settlement(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    o: tradeassembly_plugin_sdk::cash_settlement::Observation,
+    key: &str,
+) -> Result<Value, String> {
+    settlement::commit(
+        s,
+        p,
+        settlement_binding(),
+        "d".repeat(64),
+        o,
+        key,
+        &context(key),
+    )
+}
+fn rebased_facts(s: &TradeAssemblyService, f: &Facts) -> Facts {
+    let mut f = f.clone();
+    let (available, gross, digest) =
+        settlement::funding_floor(s, &f.account_key, number("100")).unwrap();
+    f.available = available;
+    f.gross_floor = gross;
+    f.capital_checkpoint_sha256 = digest;
+    f
+}
+#[test]
+fn settlement_final_posting_rebases_stale_cash_and_survives_service_restart() {
+    let (_dir, s, f, p, source) = settlement_fixture("settled");
+    let o = settlement_observation(&s, &f, &p, false);
+    source
+        .observe(o.order.clone(), &context("settlement-submit"))
+        .unwrap();
+    assert_eq!(source.state().unwrap().unwrap().retained_cash, number("61"));
+    let result = commit_settlement(&s, &p, o.clone(), "settle").unwrap();
+    assert_eq!(result["releasedHold"], "61");
+    let db = s.db().to_string();
+    drop(source);
+    drop(s);
+    let restored =
+        TradeAssemblyService::from_runtime(&db, crate::adapters::local::test_runtime(&db))
+            .for_authenticated_invocation("fixture", "cash-owner", None, None);
+    let source = submission::source(&restored, &p.plan_id).unwrap();
+    let state = source.state().unwrap().unwrap();
+    assert_eq!(state.retained_cash, Decimal::ZERO);
+    assert!(!held(&restored, &p).unwrap());
+    assert_eq!(
+        cash(&restored, &f).unwrap_err(),
+        "order_plan_capital_checkpoint_changed"
+    );
+    let mut updated = rebased_facts(&restored, &f);
+    assert_eq!(updated.available, number("40"));
+    assert_eq!(updated.gross_floor, number("60"));
+    assert_eq!(cash(&restored, &updated).unwrap().2, number("40"));
+    let mut next = p.order.clone();
+    next.quantity = number("0.3");
+    let mut policy = p.policy.clone();
+    policy.max_premium_gross = number("85");
+    assert_eq!(
+        risk(&policy, &updated, &next, number("40")).unwrap_err(),
+        "order_plan_risk_limit_exceeded"
+    );
+    policy.max_premium_gross = number("200");
+    let a = plan(&restored, &updated, &policy, "reuse-a");
+    let b = plan(&restored, &updated, &policy, "reuse-b");
+    let mut a = a;
+    let mut b = b;
+    // Recompute actual affordable orders and immutable identities, never inflate balance.
+    for p in [&mut a, &mut b] {
+        p.order.quantity = number("0.3");
+        p.purchase_cash = risk(&p.policy, &updated, &p.order, number("40")).unwrap();
+        p.plan_id.clear();
+        p.plan_id = format!("orderplan_{}", hash(p).unwrap());
+    }
+    let (old_a, ledger_a, _) = cash(&restored, &updated).unwrap();
+    let (old_b, ledger_b, _) = cash(&restored, &updated).unwrap();
+    persist_prepared(
+        &restored,
+        &a,
+        "reuse-a",
+        old_a,
+        ledger_a,
+        &context("reuse-a"),
+    )
+    .unwrap();
+    assert!(persist_prepared(
+        &restored,
+        &b,
+        "reuse-b",
+        old_b,
+        ledger_b,
+        &context("reuse-b")
+    )
+    .is_err());
+    assert_eq!(cash(&restored, &updated).unwrap().2, number("9"));
+    let replay = commit_settlement(&restored, &p, o, "settle-new-observation").unwrap();
+    assert_eq!(replay["releasedHold"], "0");
+    assert_eq!(
+        source.state().unwrap().unwrap().settlement_receipt_sha256,
+        state.settlement_receipt_sha256
+    );
+    updated = rebased_facts(&restored, &updated);
+    assert_eq!(cash(&restored, &updated).unwrap().2, number("9"));
+}
+#[test]
+fn settlement_partial_cancel_and_final_fees_release_only_after_complete_evidence() {
+    let (_dir, s, f, p, source) = settlement_fixture("settled-partial");
+    let o = settlement_observation(&s, &f, &p, true);
+    let before = source.state().unwrap().unwrap();
+    let cash_before = s.runtime().storage.get_json(CASH, &p.account_key).unwrap();
+    for mutation in [
+        "unknown",
+        "fees",
+        "incomplete",
+        "unposted",
+        "stale",
+        "currency",
+    ] {
+        let mut bad = o.clone();
+        match mutation {
+            "unknown" => {
+                bad.order.status = tradeassembly_plugin_sdk::broker_v2::OrderStatus::Unknown
+            }
+            "fees" => bad.fees_final = false,
+            "incomplete" => bad.checkpoint.account.coverage.open_orders_complete = false,
+            "unposted" => bad.posting_sequence = 3,
+            "stale" => {
+                bad.checkpoint.account.time.observed_at_ms -= 30000;
+                bad.checkpoint.account.time.known_at_ms -= 30000;
+            }
+            "currency" => bad.checkpoint.account.currency.code = "EUR".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            commit_settlement(&s, &p, bad, mutation).is_err(),
+            "{mutation}"
+        );
+        assert_eq!(source.state().unwrap().unwrap(), before);
+        assert_eq!(
+            s.runtime().storage.get_json(CASH, &p.account_key).unwrap(),
+            cash_before
+        );
+    }
+    commit_settlement(&s, &p, o.clone(), "settle-partial").unwrap();
+    assert_eq!(rebased_facts(&s, &f).available, number("79.75"));
+    assert_eq!(
+        source.state().unwrap().unwrap().phase,
+        submission::Phase::Consumed
+    );
+    let settled = source.state().unwrap().unwrap();
+    for mutation in [
+        "epoch",
+        "sequence",
+        "same-sequence-cash",
+        "changed-final-fee",
+    ] {
+        let mut bad = o.clone();
+        match mutation {
+            "epoch" => bad.checkpoint.ledger_epoch = "different.epoch".into(),
+            "sequence" => {
+                bad.posting_sequence = 1;
+                bad.checkpoint.sequence = 1;
+            }
+            "same-sequence-cash" => bad.checkpoint.account.cash_balance = av(number("100")),
+            "changed-final-fee" => {
+                bad.fee_cash = number("0.5");
+                bad.order.cash_spent = av(number("20.5"));
+                bad.checkpoint.sequence = 3;
+            }
+            _ => unreachable!(),
+        };
+        assert!(
+            commit_settlement(&s, &p, bad, mutation).is_err(),
+            "{mutation}"
+        );
+        assert_eq!(source.state().unwrap().unwrap(), settled);
+    }
+}
+#[test]
+fn settlement_commit_failure_keeps_hold_and_receipts_atomic() {
+    let (_dir, s, f, p, source) = settlement_fixture("settlement-atomic");
+    let o = settlement_observation(&s, &f, &p, false);
+    let before = source.state().unwrap().unwrap();
+    let ledger = s.runtime().storage.get_json(CASH, &p.account_key).unwrap();
+    let db = rusqlite::Connection::open(s.db()).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_settlement BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='execution_order_plan_submissions_v2' BEGIN SELECT RAISE(ABORT,'authored settlement failure'); END;").unwrap();
+    assert!(commit_settlement(&s, &p, o.clone(), "atomic-settle").is_err());
+    assert_eq!(source.state().unwrap().unwrap(), before);
+    assert_eq!(
+        s.runtime().storage.get_json(CASH, &p.account_key).unwrap(),
+        ledger
+    );
+    for ns in [
+        "execution_cash_settlement_receipts_v1",
+        "execution_cash_settlement_keys_v1",
+    ] {
+        assert!(s.runtime().storage.list_json(ns).unwrap().is_empty());
+    }
+    db.execute_batch("DROP TRIGGER fail_settlement").unwrap();
+    commit_settlement(&s, &p, o, "atomic-settle").unwrap();
+    assert_eq!(
+        source.state().unwrap().unwrap().retained_cash,
+        Decimal::ZERO
+    );
+}
+#[test]
+fn settlement_keeps_other_unknown_acceptance_hold_and_legacy_wire_bytes() {
+    let (_dir, s, f, p, _source) = settlement_fixture("settlement-other");
+    let mut other = plan(&s, &f, &p.policy, "other-unknown");
+    other.order.quantity = number("0.2");
+    other.purchase_cash = number("21");
+    other.canonical_account = p.canonical_account.clone();
+    other.account_binding_sha256 = p.account_binding_sha256.clone();
+    other.plan_id.clear();
+    other.plan_id = format!("orderplan_{}", hash(&other).unwrap());
+    let (old, ledger, _) = cash(&s, &f).unwrap();
+    persist_prepared(
+        &s,
+        &other,
+        "other-unknown",
+        old,
+        ledger,
+        &context("other-unknown"),
+    )
+    .unwrap();
+    let source = submission::source(&s, &other.plan_id).unwrap();
+    begin_lifecycle(&other, &source, "other-submit");
+    source.admitted(&context("other-submit")).unwrap();
+    source.before_send(&context("other-submit")).unwrap();
+    let before = source.state().unwrap().unwrap();
+    commit_settlement(
+        &s,
+        &p,
+        settlement_observation(&s, &f, &p, true),
+        "settlement-one-only",
+    )
+    .unwrap();
+    let rebased = rebased_facts(&s, &f);
+    assert_eq!(cash(&s, &rebased).unwrap().2, number("58.75"));
+    assert_eq!(source.state().unwrap().unwrap(), before);
+    let mut legacy = value(&p).unwrap();
+    legacy.as_object_mut().unwrap().remove("accountCurrency");
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("capitalCheckpointSha256");
+    let restored: OrderPlan = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(value(&restored).unwrap(), legacy);
+    let legacy_ledger =
+        json!({"ownerSha256":owner(&s).unwrap(),"reservations":{},"grossLimit":"200"});
+    let ledger: Ledger = serde_json::from_value(legacy_ledger.clone()).unwrap();
+    assert_eq!(value(&ledger).unwrap(), legacy_ledger);
+}
+#[test]
+fn settlement_generation_bound_refuses_before_any_capital_commit() {
+    let (_dir, s, f, p, source) = settlement_fixture("settlement-generation");
+    let mut record = source.state().unwrap().unwrap();
+    record.generation = 10000;
+    record.record_sha256 = submission::record_hash(&record).unwrap();
+    s.runtime()
+        .storage
+        .put_json(
+            submission::STATE,
+            &p.plan_id,
+            value(&record).unwrap(),
+            &context("authored-generation-bound"),
+        )
+        .unwrap();
+    let ledger = s.runtime().storage.get_json(CASH, &p.account_key).unwrap();
+    assert_eq!(
+        commit_settlement(
+            &s,
+            &p,
+            settlement_observation(&s, &f, &p, false),
+            "generation-exhausted"
+        )
+        .unwrap_err(),
+        "cash_settlement_generation_invalid"
+    );
+    assert_eq!(source.state().unwrap().unwrap(), record);
+    assert_eq!(
+        s.runtime().storage.get_json(CASH, &p.account_key).unwrap(),
+        ledger
+    );
 }

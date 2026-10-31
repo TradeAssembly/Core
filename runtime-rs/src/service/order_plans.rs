@@ -13,6 +13,7 @@ use tradeassembly_plugin_sdk::{
 };
 pub mod decision;
 pub mod remote;
+pub mod settlement;
 pub mod submission;
 pub mod transport;
 const CONFIG: &str = "tradeassembly.order_plan";
@@ -25,6 +26,7 @@ const RELEASES: &str = "execution_cash_releases_v1";
 pub(super) const PREPARE: &str = "/product/strategies/order-plans/prepare";
 pub(super) const RESERVE: &str = "/product/strategies/order-plans/reserve";
 pub(super) const RECONCILE: &str = "/product/strategies/order-plans/reconcile";
+pub(super) const SETTLE: &str = "/product/strategies/order-plans/settle";
 pub(super) const DECIDE: &str = "/product/strategies/order-plans/decide";
 pub(super) const SELECT: &str = "/product/strategies/order-plans/select";
 pub(super) const SUBMIT: &str = "/product/strategies/order-plans/submit";
@@ -75,6 +77,10 @@ pub struct OrderPlan {
         Option<crate::broker_submission::account_identity::CanonicalAccountIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_currency: Option<Currency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capital_checkpoint_sha256: Option<String>,
     pub owner_sha256: String,
     pub prepared_at_ms: i64,
     pub valid_until_ms: i64,
@@ -90,6 +96,8 @@ struct Ledger {
     reservations: BTreeMap<String, Decimal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gross_limit: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capital_checkpoint: Option<settlement::CapitalCheckpoint>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -115,6 +123,9 @@ fn ledger_owned(s: &TradeAssemblyService, raw: Value) -> Result<Ledger, String> 
         || ledger.reservations.values().any(|v| !v.positive())
     {
         return Err("order_plan_reservations_unavailable".into());
+    }
+    if let Some(checkpoint) = &ledger.capital_checkpoint {
+        settlement::verify_checkpoint(s, checkpoint)?;
     }
     Ok(ledger)
 }
@@ -174,6 +185,7 @@ pub fn release(
                 owner_sha256: owner(s)?,
                 reservations: BTreeMap::new(),
                 gross_limit: None,
+                capital_checkpoint: None,
             },
         };
         let amount = ledger.reservations.remove(id).unwrap_or(Decimal::ZERO);
@@ -212,6 +224,7 @@ pub fn release(
     }
     Err("order_plan_release_contention".into())
 }
+#[derive(Clone)]
 struct Facts {
     entry_id: String,
     account: AccountSnapshot,
@@ -223,6 +236,8 @@ struct Facts {
     account_binding_sha256: Option<String>,
     available: Decimal,
     valid_until: i64,
+    capital_checkpoint_sha256: Option<String>,
+    gross_floor: Decimal,
 }
 fn hash<T: Serialize>(v: &T) -> Result<String, String> {
     canonical_sha256(v).map_err(|_| "order_plan_encoding_invalid".into())
@@ -589,7 +604,8 @@ fn facts_with_signal(
             return Err("order_plan_legacy_reservations_require_release".into());
         }
     }
-    let available = funding_capacity(&account)?;
+    let (available, gross_floor, capital_checkpoint_sha256) =
+        settlement::funding_floor(s, &account_key, funding_capacity(&account)?)?;
     let receipts = BTreeMap::from([
         ("signal".into(), signal.receipt_sha256.clone()),
         ("account".into(), ar.receipt_sha256),
@@ -615,6 +631,8 @@ fn facts_with_signal(
         account_binding_sha256: Some(witness.binding_sha256),
         available,
         valid_until,
+        capital_checkpoint_sha256,
+        gross_floor,
     })
 }
 fn calculation(
@@ -775,17 +793,24 @@ fn calculation(
 fn cash(s: &TradeAssemblyService, f: &Facts) -> Result<(Option<Value>, Ledger, Decimal), String> {
     let old = s.runtime().storage.get_json(CASH, &f.account_key)?;
     let ledger: Ledger = match &old {
-        Some(v) => {
-            serde_json::from_value(v.clone()).map_err(|_| "order_plan_reservations_invalid")?
-        }
+        Some(v) => ledger_owned(s, v.clone())?,
         None => Ledger {
             owner_sha256: owner(s)?,
             reservations: BTreeMap::new(),
             gross_limit: None,
+            capital_checkpoint: None,
         },
     };
     if ledger.owner_sha256 != owner(s)? || ledger.reservations.len() > 256 {
         return Err("order_plan_reservations_unavailable".into());
+    }
+    if ledger
+        .capital_checkpoint
+        .as_ref()
+        .map(|c| &c.receipt_sha256)
+        != f.capital_checkpoint_sha256.as_ref()
+    {
+        return Err("order_plan_capital_checkpoint_changed".into());
     }
     let mut reserved = Decimal::ZERO;
     for amount in ledger.reservations.values() {
@@ -858,7 +883,12 @@ fn risk(
     within(purchase, p.max_purchase_cash)?;
     within(purchase, available)?;
     let already_reserved = f.available.checked_subtract(available)?;
-    let mut gross = *f.account.gross_exposure.required()?;
+    let provider_gross = *f.account.gross_exposure.required()?;
+    let mut gross = if provider_gross.compare(f.gross_floor)?.is_lt() {
+        f.gross_floor
+    } else {
+        provider_gross
+    };
     if gross.negative() {
         return Err("order_plan_gross_exposure_invalid".into());
     }
@@ -1014,6 +1044,7 @@ pub fn prepare(
     if fresh.receipts != f.receipts
         || fresh.canonical_account != f.canonical_account
         || fresh.account_binding_sha256 != f.account_binding_sha256
+        || fresh.capital_checkpoint_sha256 != f.capital_checkpoint_sha256
         || measured("calculation.pin", || calculation(s, &c, &p, &fresh))?.2 != pin
     {
         return Err("order_plan_sources_changed".into());
@@ -1028,6 +1059,8 @@ pub fn prepare(
         account_key: f.account_key,
         canonical_account: f.canonical_account,
         account_binding_sha256: f.account_binding_sha256,
+        account_currency: Some(f.account.currency.clone()),
+        capital_checkpoint_sha256: f.capital_checkpoint_sha256,
         owner_sha256: owner(s)?,
         prepared_at_ms: s.runtime().clock.now_ms(),
         valid_until_ms: f.valid_until,
@@ -1082,6 +1115,11 @@ fn persist_prepared(
         StorageExpectation::new(ENTRIES, &result.entry_id, None),
         StorageExpectation::new(COMMANDS, &hash(&(owner(s)?, &result.command))?, None),
     ];
+    expectations.push(StorageExpectation::new(
+        CASH,
+        &result.account_key,
+        ledger_old,
+    ));
     if result.command.reserve_cash {
         ledger
             .reservations
@@ -1091,11 +1129,6 @@ fn persist_prepared(
             &result.account_key,
             value(&ledger)?,
             ctx.clone(),
-        ));
-        expectations.push(StorageExpectation::new(
-            CASH,
-            &result.account_key,
-            ledger_old,
         ));
     }
     if s.runtime().clock.now_ms() >= result.valid_until_ms {
@@ -1204,6 +1237,7 @@ fn checked_current_with_signal(
         || r.account_key != f.account_key
         || r.canonical_account != f.canonical_account
         || r.account_binding_sha256 != f.account_binding_sha256
+        || r.capital_checkpoint_sha256 != f.capital_checkpoint_sha256
         || measured("calculation.pin", || calculation(s, &r.command, &p, &f))?.2 != r.calculation
         || risk(&p, &f, &r.order, r.available_cash)? != r.purchase_cash
     {
@@ -1298,6 +1332,7 @@ pub(super) fn preflight(
         && path != RECONCILE
         && path != DECIDE
         && path != SELECT
+        && path != SETTLE
     {
         return None;
     }
@@ -1383,6 +1418,19 @@ pub(super) fn response(s: &TradeAssemblyService, path: &str, body: Value) -> Ser
                 s,
                 serde_json::from_value(body["selection"].clone())
                     .map_err(|_| "typed_selection_command_invalid")?,
+                &ctx,
+            )
+        } else if path == SETTLE {
+            settlement::settle(
+                s,
+                settlement::Command {
+                    scope: serde_json::from_value(body["scope"].clone())
+                        .map_err(|_| "cash_settlement_scope_invalid")?,
+                    plan_id: body["planId"]
+                        .as_str()
+                        .ok_or("order_plan_id_required")?
+                        .into(),
+                },
                 &ctx,
             )
         } else if path == RECONCILE {

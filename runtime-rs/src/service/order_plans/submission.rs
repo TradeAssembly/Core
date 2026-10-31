@@ -37,9 +37,11 @@ pub struct SubmissionRecord {
     pub filled_quantity: Decimal,
     pub provider_order_id: Option<String>,
     pub observation: Option<OrderObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_receipt_sha256: Option<String>,
     pub record_sha256: String,
 }
-fn record_hash(r: &SubmissionRecord) -> Result<String, String> {
+pub(super) fn record_hash(r: &SubmissionRecord) -> Result<String, String> {
     let mut r = r.clone();
     r.record_sha256.clear();
     hash(&r)
@@ -51,7 +53,7 @@ pub(crate) fn source(s: &TradeAssemblyService, id: &str) -> Result<OrderPlanSour
         id: id.into(),
     })
 }
-fn record(
+pub(super) fn record(
     s: &TradeAssemblyService,
     p: &OrderPlan,
 ) -> Result<Option<(Value, SubmissionRecord)>, String> {
@@ -73,6 +75,7 @@ fn record(
     {
         return Err("broker_v2_state_invalid".into());
     }
+    super::settlement::verify_record(s, p, &r)?;
     Ok(Some((raw, r)))
 }
 pub(crate) fn release_guard(
@@ -170,6 +173,7 @@ impl OrderPlanSource {
             filled_quantity: Decimal::ZERO,
             provider_order_id: None,
             observation: None,
+            settlement_receipt_sha256: None,
             record_sha256: String::new(),
         };
         r.record_sha256 = record_hash(&r)?;

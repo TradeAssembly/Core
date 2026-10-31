@@ -375,7 +375,7 @@ pub struct RecoveryPlan {
     pub(crate) envelope: ControlPlaneCommandEnvelope,
     pub(crate) kind: RecoveryKind,
 }
-fn original_envelope(
+pub(crate) fn original_envelope(
     intent: Value,
     request: &PluginOperationRequest,
     key: &str,

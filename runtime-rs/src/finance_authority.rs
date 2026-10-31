@@ -765,7 +765,8 @@ pub fn authority_definition(
         "strategy.order_plan.prepare"
         | "strategy.order_plan.reserve"
         | "strategy.order_plan.release"
-        | "strategy.order_plan.reconcile" => &ORDER_PLAN_MANAGE,
+        | "strategy.order_plan.reconcile"
+        | "strategy.order_plan.settle" => &ORDER_PLAN_MANAGE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
         "strategy.data_recipe.prepare" => &DATA_RECIPE_PREPARE,
         "strategy.data_recipe.step" => &DATA_RECIPE_STEP,

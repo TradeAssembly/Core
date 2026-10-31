@@ -410,6 +410,7 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/order-plans/decide")
         | ("POST", "/product/strategies/order-plans/select")
         | ("POST", "/product/strategies/order-plans/submit") => "strategy.order_plan.submit".into(),
+        ("POST", "/product/strategies/order-plans/settle") => "strategy.order_plan.settle".into(),
         ("POST", "/product/strategies/order-plans/reconcile") => {
             "strategy.order_plan.reconcile".into()
         }
@@ -737,6 +738,7 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.strategy.order_plan.submit"
         | "tradeassembly.strategy.order_plan.decide"
         | "tradeassembly.strategy.order_plan.select" => return "strategy.order_plan.submit".into(),
+        "tradeassembly.strategy.order_plan.settle" => return "strategy.order_plan.settle".into(),
         "tradeassembly.strategy.order_plan.reconcile" => {
             return "strategy.order_plan.reconcile".into()
         }
@@ -915,6 +917,9 @@ fn mcp_route_path(name: &str, command_name: &str) -> String {
         }
         "tradeassembly.strategy.order_plan.select" => {
             "/product/strategies/order-plans/select".into()
+        }
+        "tradeassembly.strategy.order_plan.settle" => {
+            "/product/strategies/order-plans/settle".into()
         }
         "tradeassembly.strategy.order_plan.reconcile" => {
             "/product/strategies/order-plans/reconcile".into()
@@ -1529,7 +1534,8 @@ fn target_object(path: &str, body: &Value) -> Option<String> {
         | "/product/strategies/order-plans/decide"
         | "/product/strategies/order-plans/select"
         | "/product/strategies/order-plans/submit"
-        | "/product/strategies/order-plans/reconcile" => Some("/scope/strategyId"),
+        | "/product/strategies/order-plans/reconcile"
+        | "/product/strategies/order-plans/settle" => Some("/scope/strategyId"),
         _ => None,
     };
     if let Some(pointer) = scope {

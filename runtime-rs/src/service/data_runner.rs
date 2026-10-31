@@ -16,6 +16,28 @@ const COMMANDS: &str = "data_runner_commands_v1";
 const BINDINGS: &str = "data_runner_idempotency_v1";
 const RECEIPTS: &str = "data_runner_receipts_v1";
 const HISTORY: &str = "data_runner_receipt_revisions_v1";
+const FENCES: &str = "data_runner_dispatch_fences_v1";
+const COMMAND_LEASE_MS: i64 = 120_000;
+
+struct DispatchLease {
+    repository: std::sync::Arc<dyn LeaseRepository>,
+    claim: LeaseClaim,
+}
+impl DispatchLease {
+    fn current(&self, now: i64) -> Result<(), String> {
+        let current = self.repository.current(&self.claim.resource)?;
+        if now <= 0 || current.as_ref() != Some(&self.claim) || self.claim.expires_at_ms <= now {
+            return Err("data_runner_dispatch_lease_stale".into());
+        }
+        Ok(())
+    }
+}
+impl Drop for DispatchLease {
+    fn drop(&mut self) {
+        // A superseded owner cannot release its replacement's fence.
+        let _ = self.repository.release(&self.claim);
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataRunnerMode {
@@ -352,6 +374,15 @@ impl DurableCoreDataRunner {
     }
     fn preflight(&self, c: &DataRunnerCommand) -> Result<(&'static str, Value), String> {
         let (path, body) = self.body(c)?;
+        if let Some(response) = super::object_authorization::authorize_private_request(
+            &self.service,
+            "POST",
+            path,
+            &body,
+        ) {
+            return Err(super::service_error_code(&response.body)
+                .unwrap_or_else(|| "data_runner_owner_unavailable".into()));
+        }
         let rejection = super::data_strategy::preflight(&self.service, path, &body)
             .or_else(|| data_recipes::preflight(&self.service, path, &body))
             .or_else(|| instrument_screens::preflight(&self.service, path, &body))
@@ -669,6 +700,49 @@ impl DurableCoreDataRunner {
         {
             return Err("data_runner_resume_revision_mismatch".into());
         }
+        let repository = self.service.runtime().leases.clone();
+        let Some(claim) = repository.acquire(
+            &format!("data-runner:{command_hash}"),
+            &format!("dispatch:{:032x}", rand::random::<u128>()),
+            self.service.runtime().clock.now_ms(),
+            COMMAND_LEASE_MS,
+        )?
+        else {
+            // Another exact invocation owns the effect. Pending is not failure
+            // and must not replace that invocation's eventual result.
+            return self.load_bound_receipt(c);
+        };
+        let lease = DispatchLease { repository, claim };
+        lease.current(self.service.runtime().clock.now_ms())?;
+        let accepted = self.load_bound_receipt(c)?;
+        if matches!(
+            accepted.state,
+            DataRunnerState::Completed | DataRunnerState::Failed
+        ) {
+            return Ok(accepted);
+        }
+        let prior_fence = storage.get_json(FENCES, &command_key)?;
+        if prior_fence.as_ref().is_some_and(|v| {
+            v["fencingToken"]
+                .as_i64()
+                .is_none_or(|token| token >= lease.claim.fencing_token)
+        }) {
+            return Err("data_runner_dispatch_fence_invalid".into());
+        }
+        let fence =
+            serde_json::to_value(&lease.claim).map_err(|_| "data_runner_encoding_invalid")?;
+        if storage.put_json_batch(
+            &[StorageWrite::new(
+                FENCES,
+                &command_key,
+                fence.clone(),
+                ctx.clone(),
+            )],
+            &[StorageExpectation::new(FENCES, &command_key, prior_fence)],
+        )? != ComparePutOutcome::Updated
+        {
+            return Err("data_runner_dispatch_fence_conflict".into());
+        }
         let response = self
             .service
             .handle_http_from_source("core-data-runner", "POST", path, body);
@@ -694,6 +768,7 @@ impl DurableCoreDataRunner {
             }
         };
         if state == DataRunnerState::Uncertain && accepted.state == DataRunnerState::Uncertain {
+            lease.current(self.service.runtime().clock.now_ms())?;
             return Ok(accepted);
         }
         let mut r = DataRunnerReceipt {
@@ -720,6 +795,7 @@ impl DurableCoreDataRunner {
         {
             return Err("data_runner_receipt_bounds_invalid".into());
         }
+        lease.current(self.service.runtime().clock.now_ms())?;
         match storage
             .put_json_batch(
                 &[
@@ -727,6 +803,7 @@ impl DurableCoreDataRunner {
                     StorageWrite::new(HISTORY, &r.receipt_sha256, value, ctx),
                 ],
                 &[
+                    StorageExpectation::new(FENCES, &command_key, Some(fence)),
                     StorageExpectation::new(
                         RECEIPTS,
                         &command_key,
@@ -787,6 +864,38 @@ impl DurableCoreDataRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dispatch_lease_expiry_and_replacement_fences_old_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lease.db").to_string_lossy().into_owned();
+        let runtime = crate::adapters::local::test_runtime(&db);
+        let repository = runtime.leases.clone();
+        let claim = repository
+            .acquire("command", "first", 1000, 100)
+            .unwrap()
+            .unwrap();
+        let old = DispatchLease {
+            repository: repository.clone(),
+            claim,
+        };
+        old.current(1001).unwrap();
+        assert_eq!(
+            old.current(1100).unwrap_err(),
+            "data_runner_dispatch_lease_stale"
+        );
+        assert!(repository
+            .acquire("command", "second", 1001, 100)
+            .unwrap()
+            .is_none());
+        let replacement = repository
+            .acquire("command", "second", 1101, 100)
+            .unwrap()
+            .unwrap();
+        assert!(replacement.fencing_token > old.claim.fencing_token);
+        assert!(old.current(1102).is_err());
+        drop(old);
+        assert_eq!(repository.current("command").unwrap(), Some(replacement));
+    }
     fn command() -> Value {
         json!({"schemaVersion":DATA_RUNNER_SCHEMA,"coreRelease":"fixture.release","workspaceId":"fixture.workspace","commandId":"fixture.command","authorityRef":"provenance.only","idempotencyKey":"fixture.key","mode":"paper","submittedAtMs":1000,"operation":{"kind":"prepare_session","schedule":{"scope":{"strategyId":"fixture.strategy","strategyVersionId":"fixture.version","strategySpecHash":"sha256:fixture"},"capabilityGraphRevision":"fixture.graph","mode":"paper","triggerRef":"preopen","sessionDate":"2026-10-31","calendarCollectionId":"fixture.calendar","executionCalendarCollectionId":"fixture.calendar","knowledgeCutoffMs":1000}}})
     }

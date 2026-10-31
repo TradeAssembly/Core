@@ -1887,6 +1887,14 @@ fn session_calendar_process_fixture(closed:bool){
  use crate::service::data_runner::{DataRunnerCommand,DataRunnerMode,DataRunnerOperation,DataRunnerState,DurableCoreDataRunner};
  let runner_command=DataRunnerCommand{schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:"fixture.command".into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new("fixture.command").unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:service.runtime().clock.now_ms(),operation:DataRunnerOperation::PrepareSession{schedule:command.clone()}};
  let runner=DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();
+ // An in-flight identical command must remain pending without dispatching a
+ // competing domain mutation or committing a false failure.
+ let held=service.runtime().leases.acquire(&format!("data-runner:{}",runner_command.canonical_hash().unwrap()),"fixture.concurrent.owner",service.runtime().clock.now_ms(),120000).unwrap().unwrap();
+ let operations_before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+ let pending=runner.dispatch(&runner_command).unwrap();assert_eq!(pending.state,DataRunnerState::Accepted);
+ assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),operations_before);
+ assert!(service.runtime().storage.list_json("data_runner_dispatch_fences_v1").unwrap().is_empty());
+ service.runtime().leases.release(&held).unwrap();
  if !closed {
   let connection=rusqlite::Connection::open(dir.path().join("service.db")).unwrap();connection.execute_batch("CREATE TRIGGER fail_data_runner_complete BEFORE UPDATE ON tradeassembly_kv WHEN NEW.namespace='data_runner_receipts_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
   assert_eq!(runner.dispatch(&runner_command).unwrap_err(),"data_runner_complete_commit_failed");let accepted=runner.receipt("fixture.workspace","fixture.command").unwrap().unwrap();assert_eq!(accepted.state,DataRunnerState::Accepted);assert_eq!(service.runtime().storage.list_json("data_runner_receipt_revisions_v1").unwrap().len(),1);connection.execute_batch("DROP TRIGGER fail_data_runner_complete;").unwrap();

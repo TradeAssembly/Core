@@ -82,6 +82,8 @@ fn fixture() -> (tempfile::TempDir, TradeAssemblyService, Facts, Policy) {
         quote,
         receipts: BTreeMap::new(),
         account_key: "shared.fixture.paper".into(),
+        canonical_account: None,
+        account_binding_sha256: None,
         available: number("100"),
         valid_until: service.runtime().clock.now_ms() + 30000,
     };
@@ -163,6 +165,8 @@ fn plan(s: &TradeAssemblyService, f: &Facts, p: &Policy, id: &str) -> OrderPlan 
         },
         source_receipts: BTreeMap::new(),
         account_key: f.account_key.clone(),
+        canonical_account: f.canonical_account.clone(),
+        account_binding_sha256: f.account_binding_sha256.clone(),
         owner_sha256: owner(s).unwrap(),
         prepared_at_ms: s.runtime().clock.now_ms(),
         valid_until_ms: f.valid_until,

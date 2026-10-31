@@ -22,6 +22,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod admission;
+pub mod account_identity;
 mod observation;
 pub(crate) use observation::validate_order_identity;
 mod recovery;

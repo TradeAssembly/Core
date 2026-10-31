@@ -62,6 +62,11 @@ pub struct OrderPlan {
     pub calculation: data_binding::PinnedOperation,
     pub source_receipts: BTreeMap<String, String>,
     pub account_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_account:
+        Option<crate::broker_submission::account_identity::CanonicalAccountIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_binding_sha256: Option<String>,
     pub owner_sha256: String,
     pub prepared_at_ms: i64,
     pub valid_until_ms: i64,
@@ -201,6 +206,8 @@ struct Facts {
     quote: Quote,
     receipts: BTreeMap<String, String>,
     account_key: String,
+    canonical_account: Option<crate::broker_submission::account_identity::CanonicalAccountIdentity>,
+    account_binding_sha256: Option<String>,
     available: Decimal,
     valid_until: i64,
 }
@@ -468,13 +475,39 @@ fn facts(s: &TradeAssemblyService, c: &PrepareCommand, p: &Policy) -> Result<Fac
     metadata.quantity_increment.required()?;
     metadata.price_increment.required()?;
     metadata.multiplier.required()?;
-    let account_key = hash(&(
+    let legacy_key = hash(&(
         "tradeassembly.cash_account.v1",
         &ar.acquisition.plugin_ref,
         &account.provider_account_id,
         &account.currency,
         &account.mode,
     ))?;
+    let runtime = s.runtime();
+    let witness = crate::broker_submission::account_identity::current(
+        runtime.plugins.as_ref(),
+        runtime.plugin_packages.as_ref(),
+        runtime.credentials.as_ref(),
+        &json!({"pluginInstanceRef":ar.acquisition.plugin_instance_ref,"pluginRef":ar.acquisition.plugin_ref,"manifestFingerprint":ar.acquisition.manifest_sha256,"accountRef":ar.acquisition.account_ref}),
+        now,
+        "paper",
+    )?;
+    if witness.identity.provider_account_id != account.provider_account_id
+        || witness.account_ref != account.account_ref
+    {
+        return Err("order_plan_canonical_account_mismatch".into());
+    }
+    let account_key = hash(&(
+        "tradeassembly.cash_account.v2",
+        &witness.identity.identity_sha256,
+        &account.currency,
+    ))?;
+    // Old proposal/checkpoint bytes are untouched. An outstanding legacy hold
+    // cannot silently disappear into a newly keyed ledger.
+    if let Some(raw) = runtime.storage.get_json(CASH, &legacy_key)? {
+        if !ledger_owned(s, raw)?.reservations.is_empty() {
+            return Err("order_plan_legacy_reservations_require_release".into());
+        }
+    }
     let available = funding_capacity(&account)?;
     let receipts = BTreeMap::from([
         ("signal".into(), signal.receipt_sha256),
@@ -497,6 +530,8 @@ fn facts(s: &TradeAssemblyService, c: &PrepareCommand, p: &Policy) -> Result<Fac
         quote,
         receipts,
         account_key,
+        canonical_account: Some(witness.identity),
+        account_binding_sha256: Some(witness.binding_sha256),
         available,
         valid_until,
     })
@@ -884,7 +919,11 @@ pub fn prepare(
     };
     let purchase = risk(&p, &f, &order, available)?;
     let fresh = facts(s, &c, &p)?;
-    if fresh.receipts != f.receipts || calculation(s, &c, &p, &fresh)?.2 != pin {
+    if fresh.receipts != f.receipts
+        || fresh.canonical_account != f.canonical_account
+        || fresh.account_binding_sha256 != f.account_binding_sha256
+        || calculation(s, &c, &p, &fresh)?.2 != pin
+    {
         return Err("order_plan_sources_changed".into());
     }
     let mut result = OrderPlan {
@@ -895,6 +934,8 @@ pub fn prepare(
         calculation: pin,
         source_receipts: f.receipts,
         account_key: f.account_key,
+        canonical_account: f.canonical_account,
+        account_binding_sha256: f.account_binding_sha256,
         owner_sha256: owner(s)?,
         prepared_at_ms: s.runtime().clock.now_ms(),
         valid_until_ms: f.valid_until,
@@ -1047,6 +1088,8 @@ pub fn current(s: &TradeAssemblyService, id: &str) -> Result<OrderPlan, String> 
     if r.entry_id != f.entry_id
         || r.source_receipts != f.receipts
         || r.account_key != f.account_key
+        || r.canonical_account != f.canonical_account
+        || r.account_binding_sha256 != f.account_binding_sha256
         || calculation(s, &r.command, &p, &f)?.2 != r.calculation
         || risk(&p, &f, &r.order, r.available_cash)? != r.purchase_cash
     {

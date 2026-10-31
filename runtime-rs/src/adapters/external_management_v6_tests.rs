@@ -674,7 +674,12 @@ fn management_v6_actual_process_refuses_legacy_and_foreign_position_without_effe
     let binary =
         std::env::var_os("DATA_RUNNER_PROCESS_BINARY").expect("explicit selected clean binary");
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("service.db");
+    // macOS's /var alias is a symlink; installation-owner state deliberately
+    // rejects symlink path components. Use an isolated canonical directory.
+    let root = dir.path().canonicalize().unwrap();
+    let db = root.join("service.db");
+    let token = root.join("synthetic-warden.token");
+    fs::write(&token, "synthetic-v6-refusal-fixture-not-a-real-secret").unwrap();
     let mut pids = std::collections::BTreeSet::new();
     for version in [
         "tradeassembly.core-data-runner.v5",
@@ -689,8 +694,11 @@ fn management_v6_actual_process_refuses_legacy_and_foreign_position_without_effe
                 "--core-release",
                 "fixture.release",
             ])
-            .current_dir(dir.path())
+            .current_dir(&root)
             .env_clear()
+            .env("TRADEASSEMBLY_AUTH_PROFILE", "local_owner")
+            .env("TRADEASSEMBLY_WARDEN_TOKEN_REF", format!("file://{}", token.display()))
+            .env("TRADEASSEMBLY_ARTIFACT_ROOT", root.join("artifacts"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -720,6 +728,15 @@ fn management_v6_actual_process_refuses_legacy_and_foreign_position_without_effe
         );
         let output: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output["ok"], false, "{output}");
+        assert_eq!(
+            output["error"]["code"],
+            if version.ends_with("v5") {
+                "data_runner_version_unsupported"
+            } else {
+                "managed_position_not_available"
+            },
+            "runtime initialization failure is not command refusal: {output}"
+        );
         let store = crate::adapters::local::test_runtime(db.to_str().unwrap()).storage;
         for ns in [
             "execution_managed_positions_v1",

@@ -65,3 +65,19 @@ Existing V1 `evaluate_strategy` may consume the resulting prepared plan under it
 original `strategy.data_run.step` binding. That does not imply automatic scheduler
 execution, sizing/risk/order admission, exit management or a released remote
 workflow. Actual Core/Relay process qualification is a separate owning gate.
+
+## Local process regression
+
+The explicit ignored `reach_data_selected_plan_actual_core_relay_process_journey`
+gate exercises separately compiled Core CLI and Relay processes over loopback,
+with synthetic installation/human/Warden identities and authored native plugin
+data. It covers signed V2 admission, plan commit followed by failed completion
+storage, reconciliation in a fresh CLI process, original receipt readback, missing
+identity refusal and subsequent V1 evaluation through the configured SRT adapter.
+Its explicit local-egress opt-in is for the synthetic loopback provider only.
+The retained fixture database supports outcome diagnosis after a failed gate.
+
+This gate is separate from production authentication, provider entitlement and
+market-data provenance, distributed database acceptance, installer qualification,
+order execution and release acceptance. Transport response loss is distinct from
+the injected local completion-storage failure and needs its own proof.

@@ -423,7 +423,11 @@ fn screen_process_fixture(case:&str) {
     use crate::service::{data_collections as collections,instrument_screens as screens};
     use tradeassembly_plugin_sdk::instrument_screen as wire;
     let operations=Arc::new(ForwardNative::default());
-    let (dir,service,original_scope,original_request)=data_plans::tests::fixture_service(Some(operations.clone()));
+    let (mut dir,service,original_scope,original_request)=data_plans::tests::fixture_service(Some(operations.clone()));
+    // Explicit joint runs retain the synthetic database/identity for outcome
+    // reconciliation after a harness failure. Never retain customer state here.
+    if std::env::var_os("REACH_DATA_TEST_CORE_BINARY").is_some() {dir.disable_cleanup(true);}
+
     let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
     let complete=case!="incomplete";
     let server=std::thread::spawn(move|| {
@@ -1971,4 +1975,11 @@ include!("external_reach_data_process_tests.rs");
 fn reach_data_actual_core_relay_process_journey(){
  for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
  session_calendar_process_fixture(false);
+}
+
+#[test]
+#[ignore="explicit pinned Core CLI and V2 local Relay fixture gate"]
+fn reach_data_selected_plan_actual_core_relay_process_journey(){
+ for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH","REACH_DATA_TEST_SRT"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
+ screen_process_fixture("selected_eval");
 }

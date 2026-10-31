@@ -21,6 +21,14 @@ fn exercise_selected_evaluation_fixture(service:&crate::service::TradeAssemblySe
         write_screen_interface_evidence(case,"selected-empty-refusal.json",&response.body);return;
     }
     assert_eq!(response.status,200,"{}",response.body);
+    if std::env::var_os("REACH_DATA_TEST_CORE_BINARY").is_some() {
+        use crate::service::data_runner::{DataRunnerCommand,DataRunnerMode,DataRunnerOperation};
+        let runner=DataRunnerCommand{schema_version:"tradeassembly.core-data-runner.v2".into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:"fixture.selected.create".into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new("fixture.selected.create").unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:service.runtime().clock.now_ms(),operation:DataRunnerOperation::PrepareSelectionPlan{selection_plan:command.clone()}};
+        let root=std::path::Path::new(service.db()).parent().unwrap();
+        maybe_run_joint_reach_data_process(root,service,&runner,case);
+        return;
+    }
+
     let plan:data_plans::StoredDataPlan=serde_json::from_value(response.body["plan"].clone()).unwrap();
     assert_eq!(plan.content.plan.request.trade_instruments[0].instrument_id,"A");assert!(plan.content.plan.request.nodes.iter().all(|n|n.context.instruments[0].instrument_id=="A"));
     write_screen_interface_evidence(case,"selected-plan.json",&response.body);

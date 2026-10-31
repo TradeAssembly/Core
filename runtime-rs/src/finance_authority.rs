@@ -984,9 +984,8 @@ impl WardenSidecarAuthority {
 
 impl FinanceAuthorityPort for WardenSidecarAuthority {
     fn command_policy_sha256(&self) -> Result<String, String> {
-        let bytes = serde_json_canonicalizer::to_vec(&self.policy_bundle)
-            .map_err(|_| "command_policy_identity_invalid")?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        crate::data_pipeline::canonical_sha256(&self.policy_bundle)
+            .map_err(|_| "command_policy_identity_invalid".into())
     }
     fn verify_broker_boundary(&self) -> Result<(), String> {
         self.preflight()
@@ -1892,6 +1891,27 @@ pub(crate) mod tests {
         let original: Value = serde_json::from_str(TRADEASSEMBLY_POLICY_BUNDLE).unwrap();
         assert_eq!(authority.policy_bundle, original);
         let original_digest = authority.command_policy_sha256().unwrap();
+        assert_eq!(
+            original_digest,
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json_canonicalizer::to_vec(&original).unwrap())
+            ),
+            "normal shipping policy identity remains unchanged"
+        );
+        for unsafe_integer in [9_007_199_254_740_992u64, 9_007_199_254_740_993] {
+            let mut bundle = original.clone();
+            bundle["identity_test_limit"] = json!(unsafe_integer);
+            assert_eq!(
+                authority
+                    .clone()
+                    .with_policy_bundle(bundle)
+                    .unwrap()
+                    .command_policy_sha256()
+                    .unwrap_err(),
+                "command_policy_identity_invalid"
+            );
+        }
         assert_eq!(
             original_digest,
             authority.clone().command_policy_sha256().unwrap()

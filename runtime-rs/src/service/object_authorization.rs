@@ -462,3 +462,57 @@ fn guard_child(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn foreign_owner_collection_and_screen_creates_are_mcp_errors_without_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("service.db").to_string_lossy().into_owned();
+        let service =
+            TradeAssemblyService::from_runtime(&db, crate::adapters::local::test_runtime(&db));
+        let alice = service.for_authenticated_invocation("test", "alice", None, None);
+        alice
+            .bind_owned_object("strategy", "private-strategy")
+            .unwrap();
+        let bob = service.for_authenticated_invocation("test", "bob", None, None);
+        let namespaces = [
+            "plugin_operation_receipts",
+            "data_collection_receipts_v1",
+            "data_collection_keys_v1",
+            "instrument_screen_receipts_v1",
+            "instrument_screen_keys_v1",
+            "control_plane_commands",
+        ];
+        let before: Vec<_> = namespaces
+            .iter()
+            .map(|n| service.runtime().storage.list_json(n).unwrap())
+            .collect();
+        for (tool, field) in [
+            (
+                "tradeassembly.strategy.data_collection.create",
+                "collection",
+            ),
+            ("tradeassembly.strategy.instrument_screen.create", "screen"),
+        ] {
+            // Deliberately no provider/graph is installed: ownership must refuse
+            // before parsing/acquiring or admitting an outer command.
+            let mut body = json!({"idempotencyKey":"foreign-create"});
+            body[field] = json!({"scope":{"strategyId":"private-strategy"}});
+            let response = bob.call_mcp_tool(tool, body);
+            assert_eq!(response["isError"], true, "{tool}: {response}");
+            assert_eq!(
+                response["structuredContent"]["error"]["code"], "object_not_available",
+                "{response}"
+            );
+        }
+        let after: Vec<_> = namespaces
+            .iter()
+            .map(|n| service.runtime().storage.list_json(n).unwrap())
+            .collect();
+        assert_eq!(before, after);
+    }
+}

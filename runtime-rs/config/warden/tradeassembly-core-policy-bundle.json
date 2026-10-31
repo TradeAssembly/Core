@@ -575,6 +575,15 @@
       "min_pep_coverage": "c3",
       "required_decision": "allow",
       "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-data-collection-create",
+      "action": "strategy.data_collection.create",
+      "resource_kind": "strategy_data_collection",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
     }
   ],
   "extension_schemas": [],

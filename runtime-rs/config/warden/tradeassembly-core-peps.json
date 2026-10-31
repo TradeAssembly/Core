@@ -71,7 +71,8 @@
       "instrument.pack.install",
       "tradeassembly.policy.manage",
       "tradeassembly.install.claim",
-      "tradeassembly.telemetry.manage"
+      "tradeassembly.telemetry.manage",
+      "strategy.data_collection.create"
     ],
     "resources": [
       "activation",
@@ -108,7 +109,8 @@
       "sightline_session",
       "strategy",
       "strategy_share",
-      "telemetry_preference"
+      "telemetry_preference",
+      "strategy_data_collection"
     ],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000

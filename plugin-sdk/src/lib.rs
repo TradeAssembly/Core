@@ -10,6 +10,7 @@ pub mod data_evaluation;
 pub mod data_history;
 pub mod data_package;
 pub mod data_recipe;
+pub mod instrument_set;
 pub mod market_data;
 
 use serde::{Deserialize, Serialize};

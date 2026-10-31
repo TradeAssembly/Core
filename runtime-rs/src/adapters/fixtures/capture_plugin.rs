@@ -17,19 +17,22 @@ fn digest(v: &Value) -> String {
 fn synthetic_broker_http(request: &Value, payload: &Value) -> Value {
     let port = payload["config"]["dataApiUrl"].as_str().unwrap()
         .strip_prefix("http://127.0.0.1:").unwrap().parse::<u16>().unwrap();
-    let submit = request["metadata"]["operationId"] == "broker.paper_order_submit_v2";
+    let operation=request["metadata"]["operationId"].as_str().unwrap();
+    let route=match operation{"broker.paper_order_submit_v2"=>"submit","broker.order_lookup.paper_v2"=>"lookup","account.health"=>"health","broker.cash_settlement.paper_v1"=>"settlement",_=>panic!("closed synthetic HTTP operation required")};
+    let submit=route=="submit";
     let mut body = payload.clone(); body.as_object_mut().unwrap().remove("config");
     if submit { tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&body).unwrap()).unwrap(); }
     let bytes=serde_json::to_vec(&body).unwrap(); assert!(bytes.len()<=32768);
     let mut stream=TcpStream::connect(("127.0.0.1",port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(25))).unwrap();
     stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    write!(stream,"POST /{} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",if submit {"submit"}else{"lookup"},bytes.len()).unwrap();
+    write!(stream,"POST /{} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",route,bytes.len()).unwrap();
     stream.write_all(&bytes).unwrap();let mut raw=Vec::new();stream.take(65537).read_to_end(&mut raw).unwrap();assert!(raw.len()<=65536);
     let response=String::from_utf8(raw).unwrap();let (headers,body)=response.split_once("\r\n\r\n").unwrap();assert!(headers.starts_with("HTTP/1.1 200 ")||headers.starts_with("HTTP/1.0 200 "));
     let value:Value=serde_json::from_str(body).unwrap();
     // Core owns independent SDK/schema/identity validation of this response.
-    assert_eq!(value["schemaVersion"],"tradeassembly.broker_order_observation.v2");value
+    if route=="health"{assert_eq!(value["account"]["mode"],"paper");}
+    else{assert_eq!(value["schemaVersion"],if route=="settlement"{"tradeassembly.cash_settlement_observation.v1"}else{"tradeassembly.broker_order_observation.v2"});}value
 }
 
 fn main() {
@@ -203,12 +206,17 @@ fn main() {
             }
         }
         "account.health" | "broker.cash_settlement.paper_v1" => {
+            if payload["config"]["dataApiUrl"].is_string(){
+                assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
+                (synthetic_broker_http(&request,payload),if request["metadata"]["operationId"]=="account.health"{"schema://fixture/account-health-response@1"}else{tradeassembly_plugin_sdk::cash_settlement::RESPONSE_SCHEMA})
+            }else{
             // New explicit synthetic provider identity; old retained archives are unchanged.
             use std::fs::{self,OpenOptions};let root=std::path::Path::new(payload["config"]["fixtureStore"].as_str().unwrap());assert_eq!(fs::read_to_string(root.join("SYNTHETIC_BROKER_ONLY")).unwrap(),"synthetic only\n");assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
             let health=request["metadata"]["operationId"]=="account.health";let mut log=OpenOptions::new().create(true).append(true).open(root.join(if health{"health.log"}else{"settlement.log"})).unwrap();writeln!(log,"read").unwrap();log.sync_all().unwrap();
             if health{(json!({"account":{"id":"fixture.paper.provider","mode":"paper","status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false}}),"schema://fixture/account-health-response@1")}
             else{let original:Value=serde_json::from_slice(&fs::read(root.join("accepted-request.json")).unwrap()).unwrap();assert_eq!(payload["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(payload["canonicalAccountSha256"],original["canonicalAccountSha256"]);let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;let av=|value:Value|json!({"status":"available","value":value});
             (json!({"schemaVersion":"tradeassembly.cash_settlement_observation.v1","canonicalAccountSha256":original["canonicalAccountSha256"],"order":{"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":"fixture.broker.order.1","status":"filled","filledQuantity":av(original["order"]["quantity"].clone()),"cashSpent":av(json!("40")),"observedAtMs":now,"knownAtMs":now},"postingId":"synthetic.final.posting.1","postingSequence":2,"grossCash":"40","feeCash":"0","feesFinal":true,"checkpoint":{"ledgerEpoch":"synthetic.epoch.1","sequence":2,"account":{"schemaVersion":"tradeassembly.execution_account_snapshot.v1","accountRef":"account://fixture.broker.v2/fixture.paper.provider","providerAccountId":"fixture.paper.provider","mode":"paper","currency":{"code":"USD","decimals":2},"time":{"observedAtMs":now,"knownAtMs":now,"basis":"provider_observed"},"coverage":{"accountComplete":true,"positionsComplete":true,"openOrdersComplete":true},"cashBalance":av(json!("60")),"nonMarginableBuyingPower":av(json!("60")),"borrowingDebt":av(json!("0")),"grossExposure":av(json!("40")),"instrumentPermissions":[{"assetClass":"equity","instrumentFamily":"equity","actions":av(json!(["buy_to_open"]))}],"positions":av(json!([{"instrumentId":"SPY","side":"long","quantity":original["order"]["quantity"],"grossValue":av(json!("40"))}])),"openOrders":av(json!([]))}}}),tradeassembly_plugin_sdk::cash_settlement::RESPONSE_SCHEMA)}
+            }
         }
         "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" => {
             if payload["config"]["dataApiUrl"].is_string() {

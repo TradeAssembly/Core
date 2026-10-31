@@ -53,6 +53,9 @@ fn ctx(key: &str) -> SideEffectContext {
 fn fixture_executable() -> &'static [u8] {
     static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
+        if let Some(path)=std::env::var_os("CAPTURE_FIXTURE_BINARY"){
+            let path=std::path::PathBuf::from(path);assert!(path.is_absolute());let meta=std::fs::symlink_metadata(&path).unwrap();assert!(meta.is_file()&&!meta.file_type().is_symlink());let bytes=std::fs::read(path).unwrap();assert_eq!(sha256(&bytes),std::env::var("CAPTURE_FIXTURE_SHA256").expect("explicit frozen fixture binary hash"));return bytes;
+        }
         // Compile the Rust-only fixture against this test build's locked
         // dependency artifacts; no nested Cargo command or registry access.
         let deps = std::env::current_exe()

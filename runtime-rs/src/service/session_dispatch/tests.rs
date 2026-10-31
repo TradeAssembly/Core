@@ -15,6 +15,7 @@ fn request() -> DispatchRequest {
         interval_ms: 86400000,
         max_frames_per_step: 1,
         source_captures_by_subject: BTreeMap::new(),
+        execution_activation_id: None,
     }
 }
 #[test]

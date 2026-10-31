@@ -211,6 +211,10 @@ impl DataRunnerCommand {
         if (self.financial() || self.scheduler_dispatch()) && self.mode != DataRunnerMode::Paper {
             return Err("data_runner_mode_mismatch".into());
         }
+        if matches!(&self.operation,DataRunnerOperation::DispatchSession{dispatch:super::session_dispatch::RemoteRequest::Enqueue{job}} if job.execution_activation_id.is_some())
+        {
+            return Err("session_dispatch_remote_financial_authority_unsupported".into());
+        }
         if let DataRunnerOperation::Financial { financial } = &self.operation {
             financial.validate()?;
         }

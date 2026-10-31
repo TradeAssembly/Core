@@ -13,7 +13,10 @@ pub struct SelectionCommand {
     pub activation_id: String,
     pub plan_revision_id: String,
 }
-pub(super) fn run(s: &TradeAssemblyService, id: &str) -> Result<(Value, Value), String> {
+pub(in crate::service) fn run(
+    s: &TradeAssemblyService,
+    id: &str,
+) -> Result<(Value, Value), String> {
     s.require_object("execution_activation", id)
         .map_err(|_| "typed_entry_activation_not_available")?;
     let r = s
@@ -274,7 +277,11 @@ pub(crate) fn decide(
             .runtime()
             .storage
             .get_json("execution_attempts", &attempt)?;
-        let approval = json!({"planId":p.plan_id,"entryId":p.entry_id,"signalReceiptSha256":p.command.signal_receipt_sha256,"canonicalAccountSha256":p.canonical_account.as_ref().ok_or("typed_entry_account_required")?.identity_sha256,"leaseResource":lease.resource,"leaseOwner":lease.owner,"leaseFence":lease.fencing_token,"selectionBindingSha256":selection,"attemptId":attempt});
+        let mut approval = json!({"planId":p.plan_id,"entryId":p.entry_id,"signalReceiptSha256":p.command.signal_receipt_sha256,"canonicalAccountSha256":p.canonical_account.as_ref().ok_or("typed_entry_account_required")?.identity_sha256,"leaseResource":lease.resource,"leaseOwner":lease.owner,"leaseFence":lease.fencing_token,"selectionBindingSha256":selection,"attemptId":attempt});
+        if !r["orderPlanApprovals"][&p.plan_id]["executionWindow"].is_null() {
+            approval["executionWindow"] =
+                r["orderPlanApprovals"][&p.plan_id]["executionWindow"].clone();
+        }
         if r["orderPlanApprovals"]
             .as_object()
             .is_none_or(|a| a.len() >= 256 && !a.contains_key(&p.plan_id))

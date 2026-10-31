@@ -37,6 +37,8 @@ pub struct DispatchRequest {
     pub interval_ms: u64,
     pub max_frames_per_step: u64,
     pub source_captures_by_subject: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_activation_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(
@@ -46,7 +48,7 @@ pub struct DispatchRequest {
     deny_unknown_fields
 )]
 pub enum Request {
-    Enqueue { job: DispatchRequest },
+    Enqueue { job: Box<DispatchRequest> },
     Advance { job_id: String },
     Inspect { job_id: String },
     StartWorker { job_id: String },
@@ -63,7 +65,7 @@ pub enum Request {
     deny_unknown_fields
 )]
 pub enum RemoteRequest {
-    Enqueue { job: DispatchRequest },
+    Enqueue { job: Box<DispatchRequest> },
     Advance { job_id: String },
     Inspect { job_id: String },
     Pause { job_id: String, paused: bool },
@@ -79,7 +81,7 @@ pub(crate) fn remote_binding(
 ) -> Result<(data_plans::PlanScope, String, String), String> {
     let who = owner(s)?;
     let request = match r {
-        RemoteRequest::Enqueue { job } => job.clone(),
+        RemoteRequest::Enqueue { job } => job.as_ref().clone(),
         RemoteRequest::Advance { job_id }
         | RemoteRequest::Inspect { job_id }
         | RemoteRequest::Pause { job_id, .. } => {
@@ -96,6 +98,9 @@ pub(crate) fn remote_binding(
             job.request
         }
     };
+    if request.execution_activation_id.is_some() {
+        return Err("session_dispatch_remote_financial_authority_unsupported".into());
+    }
     let schedule = validate_request(s, &request)?;
     let domain = hash(&(
         "tradeassembly.session_dispatch.remote.v1",
@@ -663,7 +668,7 @@ fn next(s: &TradeAssemblyService, j: &mut Job) -> Result<Option<Child>, String> 
         }
         let mut start = r.event_start_ms;
         let mut checkpoint = None;
-        let mut n = 0;
+        let mut n: usize = 0;
         while start < r.event_end_ms {
             let key = format!("evaluate:{subject}:{n}");
             let delta = r
@@ -703,11 +708,71 @@ fn next(s: &TradeAssemblyService, j: &mut Job) -> Result<Option<Child>, String> 
             start = end;
             n += 1;
         }
+        if let Some(activation) = &r.execution_activation_id {
+            let (_, config) = super::order_plans::decision::run(s, activation)?;
+            let automatic = super::execution::typed_cycle::automatic(&config)?;
+            if j.subjects
+                .as_ref()
+                .is_none_or(|subjects| subjects.len() > automatic.max_subjects_per_occurrence)
+            {
+                return Err("typed_cycle_subject_limit".into());
+            }
+            let signal = j
+                .results
+                .get(&format!(
+                    "evaluate:{subject}:{}",
+                    n.checked_sub(1).ok_or("typed_cycle_signal_missing")?
+                ))
+                .and_then(|v| v["receiptSha256"].as_str())
+                .ok_or("typed_cycle_signal_missing")?;
+            for phase in 0..8 {
+                let key = format!("execute:{subject}:{phase}");
+                if let Some(result) = j.results.get(&key) {
+                    match result["status"].as_str() {
+                        Some("complete" | "skipped") => break,
+                        Some("running") => continue,
+                        Some("uncertain") => {
+                            j.status = Status::Uncertain;
+                            j.error = Some("typed_cycle_reconciliation_required".into());
+                            return Ok(None);
+                        }
+                        Some("blocked") => {
+                            j.status = Status::Failed;
+                            j.error = Some(
+                                result["error"]
+                                    .as_str()
+                                    .unwrap_or("typed_cycle_blocked")
+                                    .into(),
+                            );
+                            return Ok(None);
+                        }
+                        _ => return Err("typed_cycle_result_invalid".into()),
+                    }
+                }
+                return Ok(Some(child(
+                    j,
+                    key,
+                    super::execution::typed_cycle::INTERNAL,
+                    json!({"cycle":{"scope":r.scope,"activationId":activation,"occurrenceId":r.occurrence_id,"planRevisionId":plan_id,"signalReceiptSha256":signal}}),
+                )));
+            }
+        }
     }
     j.status = Status::Complete;
     Ok(None)
 }
 fn projection(c: &Child, body: &Value) -> Result<Value, String> {
+    if c.path == super::execution::typed_cycle::INTERNAL {
+        if body["executionAuthorityGranted"] != false
+            || !matches!(
+                body["status"].as_str(),
+                Some("running" | "complete" | "skipped" | "blocked" | "uncertain")
+            )
+        {
+            return Err("typed_cycle_result_invalid".into());
+        }
+        return Ok(body.clone());
+    }
     if c.key.starts_with("collection:") {
         return Ok(
             json!({"collectionId":body["collection"]["collectionId"].as_str().ok_or("session_dispatch_collection_result_invalid")?}),
@@ -836,13 +901,35 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
         j.attempts += 1;
         persist(s, old, &mut j)?;
         old = value(&j)?;
-        let response = s.handle_http("POST", &c.path, c.body.clone());
+        let response = if c.path == super::execution::typed_cycle::INTERNAL {
+            super::execution::typed_cycle::response(s, &c.body)
+        } else {
+            s.handle_http("POST", &c.path, c.body.clone())
+        };
         // Even if authority expires during the child, retain original domain
         // evidence and pending request. Never commit through a stale lease.
         owner(s)?;
         let current = s.runtime().leases.current(&lease.resource)?;
         if current.as_ref() != Some(&lease) || lease.expires_at_ms <= s.runtime().clock.now_ms() {
             return Err("session_dispatch_lease_stale".into());
+        }
+        if response.status == 200
+            && c.path == super::execution::typed_cycle::INTERNAL
+            && response.body["nextAttemptAtMs"]
+                .as_i64()
+                .is_some_and(|time| time > s.runtime().clock.now_ms())
+        {
+            j.next_attempt_at_ms = response.body["nextAttemptAtMs"].as_i64().unwrap();
+            j.attempts = 0;
+            j.error = None;
+            persist(s, old, &mut j)?;
+            s.runtime().queue.retry(
+                &delivery.message_id,
+                delivery.fencing_token,
+                j.next_attempt_at_ms,
+                "waiting for declared execution session",
+            )?;
+            return Ok(j.clone());
         }
         if response.status == 200 {
             j.results
@@ -903,7 +990,7 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
         let r: Request =
             serde_json::from_value(input).map_err(|_| "session_dispatch_command_invalid")?;
         match r {
-            Request::Enqueue { job } => enqueue(s, job),
+            Request::Enqueue { job } => enqueue(s, *job),
             Request::Advance { job_id } => advance(s, &job_id),
             Request::Inspect { job_id } => Ok(read(s, &job_id)?.0),
             Request::StartWorker { job_id } => {

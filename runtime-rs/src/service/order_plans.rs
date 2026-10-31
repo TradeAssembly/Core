@@ -265,7 +265,7 @@ fn within(a: Decimal, b: Decimal) -> Result<(), String> {
 fn policy(s: &TradeAssemblyService, c: &PrepareCommand) -> Result<Policy, String> {
     published_policy(s, &c.scope)
 }
-pub(super) fn published_policy(
+pub(in crate::service) fn published_policy(
     s: &TradeAssemblyService,
     scope: &data_plans::PlanScope,
 ) -> Result<Policy, String> {

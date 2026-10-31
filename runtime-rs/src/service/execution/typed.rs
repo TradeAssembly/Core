@@ -9,6 +9,8 @@ pub struct ConfigCommand {
     pub scope: PlanScope,
     pub capability_graph_revision: String,
     pub broker_requirement_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_execution: Option<super::typed_cycle::AutomaticConfig>,
 }
 pub(crate) fn is_typed(v: &Value) -> bool {
     v["executionContractVersion"] == VERSION
@@ -19,6 +21,9 @@ fn text<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("typed_execution_{k}_required"))
 }
 fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
+    if let Some(a) = &c.automatic_execution {
+        a.validate()?;
+    }
     let owner = s
         .invocation_owner()
         .ok_or("typed_execution_owner_required")?;
@@ -51,7 +56,30 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
         return Err("typed_execution_declared_broker_required".into());
     }
 
-    let selected = super::super::selection_plans::template(s, &c.scope)?.is_some();
+    let selected_template = super::super::selection_plans::template(s, &c.scope)?;
+    let selected = selected_template.is_some();
+    if c.automatic_execution.is_some() {
+        let entry_only = if let Some((_, template)) = &selected_template {
+            matches!(
+                &template.exit,
+                crate::selection_strategy::RuleTemplate::IsTrue {
+                    value: crate::selection_strategy::OperandTemplate::Boolean { value: false }
+                }
+            )
+        } else {
+            super::super::data_strategy::program(s, &c.scope)?.is_some_and(|program| {
+                matches!(
+                    program.exit,
+                    crate::data_strategy::Rule::IsTrue {
+                        value: crate::data_strategy::Operand::Boolean { value: false }
+                    }
+                )
+            })
+        };
+        if !entry_only || version["spec"]["stages"]["exit_policy"]["enabled"] != false {
+            return Err("typed_cycle_exit_admission_not_supported".into());
+        }
+    }
     if !selected && super::super::data_strategy::program(s, &c.scope)?.is_none() {
         return Err("typed_execution_program_required".into());
     }
@@ -175,7 +203,13 @@ pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
     });
     match result {
         Ok(()) => {
-            json!({"ready":true,"blockedReasons":[],"capabilityGraphRevision":s.runtime().storage.get_json("capability_graph_revisions",config["capabilityGraphRevisionId"].as_str().unwrap_or_default()).ok().flatten(),"executionContractVersion":VERSION,"continuousExecution":false,"entryDecisionRequired":true})
+            let mut result = json!({"ready":true,"blockedReasons":[],"capabilityGraphRevision":s.runtime().storage.get_json("capability_graph_revisions",config["capabilityGraphRevisionId"].as_str().unwrap_or_default()).ok().flatten(),"executionContractVersion":VERSION,"continuousExecution":false,"entryDecisionRequired":true});
+            if !config["typedExecution"]["automaticExecution"].is_null() {
+                result["scheduledFinancialEntrySupported"] = json!(true);
+                result["automaticExecutionScope"] = json!("entry_only");
+                result["syntheticExitAdmissionSupported"] = json!(false);
+            }
+            result
         }
         Err(code) => {
             json!({"ready":false,"blockedReasons":[{"code":code}],"executionContractVersion":VERSION})

@@ -219,6 +219,11 @@ fn validate(
     {
         return Err("broker_v2_authority_or_data_expired".into());
     }
+    validate_execution_window(
+        &state.run["orderPlanApprovals"][&p.plan_id]["executionWindow"],
+        &p.command.scope,
+        final_now,
+    )?;
     Ok((state, p, intent))
 }
 fn envelope(
@@ -586,4 +591,65 @@ pub(crate) fn observation_from_response(
         return Err("broker_v2_observation_binding_mismatch".into());
     }
     Ok(o)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExecutionWindowConstraint {
+    schema_version: String,
+    scope: crate::service::data_plans::PlanScope,
+    occurrence_id: String,
+    schedule_receipt_sha256: String,
+    open_at_ms: i64,
+    close_at_ms: i64,
+}
+fn validate_execution_window(
+    value: &Value,
+    scope: &crate::service::data_plans::PlanScope,
+    now: i64,
+) -> Result<(), String> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let window: ExecutionWindowConstraint =
+        serde_json::from_value(value.clone()).map_err(|_| "broker_v2_execution_window_invalid")?;
+    if window.schema_version != "tradeassembly.execution_window_constraint.v1"
+        || window.scope != *scope
+        || !window.occurrence_id.starts_with("occurrence_")
+        || window.schedule_receipt_sha256.len() != 64
+        || !window
+            .schedule_receipt_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || window.open_at_ms <= 0
+        || window.close_at_ms <= window.open_at_ms
+        || window.close_at_ms > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64
+    {
+        return Err("broker_v2_execution_window_invalid".into());
+    }
+    if now < window.open_at_ms || now >= window.close_at_ms {
+        return Err("broker_v2_outside_execution_window".into());
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    #[test]
+    fn scheduled_window_is_checked_at_final_c5_time_and_legacy_stays_optional() {
+        let scope = crate::service::data_plans::PlanScope {
+            strategy_id: "s".into(),
+            strategy_version_id: "v".into(),
+            strategy_spec_hash: "h".into(),
+        };
+        let window = json!({"schemaVersion":"tradeassembly.execution_window_constraint.v1","scope":scope,"occurrenceId":"occurrence_fixture","scheduleReceiptSha256":"a".repeat(64),"openAtMs":1000,"closeAtMs":2000});
+        for now in [999, 2000] {
+            assert_eq!(
+                validate_execution_window(&window, &scope, now).unwrap_err(),
+                "broker_v2_outside_execution_window"
+            );
+        }
+        assert!(validate_execution_window(&window, &scope, 1000).is_ok());
+        assert!(validate_execution_window(&Value::Null, &scope, 2000).is_ok());
+    }
 }

@@ -1,4 +1,5 @@
 pub(crate) mod typed;
+pub(crate) mod typed_cycle;
 use super::{
     api_result, capability_graph, orders, positions, risk, workspace, ServiceResponse,
     TradeAssemblyService, LEGAL_BOUNDARY,

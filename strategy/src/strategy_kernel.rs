@@ -169,6 +169,11 @@ impl CompiledStrategy {
     }
 
     pub fn compile(spec: &StrategySpec) -> Result<Self, KernelError> {
+        if !spec.stages.market_clock.policy.session_triggers.is_empty() {
+            return Err(KernelError::UnsupportedSemantics(
+                "session trigger requires occurrence-aware evaluator",
+            ));
+        }
         if spec
             .signal_market_requirements
             .iter()

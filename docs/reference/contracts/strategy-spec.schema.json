@@ -1699,6 +1699,12 @@
               "type": "null"
             }
           ]
+        },
+        "session_triggers": {
+          "items": {
+            "$ref": "#/$defs/SessionTrigger"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
@@ -2212,6 +2218,193 @@
         "date_bindings"
       ],
       "type": "object"
+    },
+    "MissedSessionPolicy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "skip",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "max_lateness_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "policy": {
+              "const": "catch_up",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "max_lateness_ms"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionAnchor": {
+      "enum": [
+        "open",
+        "close"
+      ],
+      "type": "string"
+    },
+    "SessionCalendarBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "calendar_ref": {
+          "type": "string"
+        },
+        "capability_requirement_ref": {
+          "type": "string"
+        },
+        "max_age_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_scope": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability_requirement_ref",
+        "calendar_ref",
+        "timezone",
+        "session_scope",
+        "max_age_ms"
+      ],
+      "type": "object"
+    },
+    "SessionExecutionWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "calendar": {
+          "$ref": "#/$defs/SessionCalendarBinding"
+        },
+        "close_offset_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "open_offset_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "calendar",
+        "open_offset_ms",
+        "close_offset_ms"
+      ],
+      "type": "object"
+    },
+    "SessionRetryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "backoff_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_attempts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_attempts",
+        "backoff_ms"
+      ],
+      "type": "object"
+    },
+    "SessionSelectionTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "selector_ref": {
+          "type": "string"
+        },
+        "signal_requirement_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "signal_requirement_ref",
+        "selector_ref"
+      ],
+      "type": "object"
+    },
+    "SessionTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/SessionAnchor"
+        },
+        "calendar": {
+          "$ref": "#/$defs/SessionCalendarBinding"
+        },
+        "execution_window": {
+          "$ref": "#/$defs/SessionExecutionWindow"
+        },
+        "missed_run": {
+          "$ref": "#/$defs/MissedSessionPolicy"
+        },
+        "offset_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "retry": {
+          "$ref": "#/$defs/SessionRetryPolicy"
+        },
+        "selections": {
+          "items": {
+            "$ref": "#/$defs/SessionSelectionTarget"
+          },
+          "type": "array"
+        },
+        "trigger_id": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/SessionTriggerVersion"
+        }
+      },
+      "required": [
+        "version",
+        "trigger_id",
+        "calendar",
+        "anchor",
+        "offset_ms",
+        "missed_run",
+        "retry",
+        "execution_window",
+        "selections"
+      ],
+      "type": "object"
+    },
+    "SessionTriggerVersion": {
+      "enum": [
+        "tradeassembly.session_trigger.v1"
+      ],
+      "type": "string"
     }
   }
 }

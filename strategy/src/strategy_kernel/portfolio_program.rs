@@ -122,6 +122,11 @@ impl PortfolioProgram {
     }
 
     pub fn compile(spec: &StrategySpec) -> Result<Self, KernelError> {
+        if !spec.stages.market_clock.policy.session_triggers.is_empty() {
+            return Err(KernelError::UnsupportedSemantics(
+                "session trigger requires occurrence-aware evaluator",
+            ));
+        }
         static_universe(spec)?;
         let unsupported = || KernelError::UnsupportedSemantics("portfolio operation pipeline");
         for (name, operation) in [

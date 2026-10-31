@@ -13,6 +13,7 @@ pub mod data_recipe;
 pub mod instrument_screen;
 pub mod instrument_set;
 pub mod market_data;
+pub mod session_calendar;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -96,6 +96,64 @@ fn execute(args: &[String]) -> Result<i32> {
             };
             serde_json::to_value(decision).map_err(|_| "update_output_invalid")?
         }
+        "update-renewal-plan" => {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            use std::io::Read;
+            let allowed = [
+                "--proof",
+                "--expected-proof-sha256",
+                "--previous-manifest",
+                "--expected-previous-sha256",
+                "--public-key",
+                "--sequence",
+            ];
+            if args.len() != 13
+                || args[1..]
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| !allowed.contains(&pair[0].as_str()))
+            {
+                return Err("renewal_options_invalid".into());
+            }
+            let bounded = |path: &str| -> Result<Vec<u8>> {
+                let meta =
+                    std::fs::symlink_metadata(path).map_err(|_| "renewal_input_unavailable")?;
+                if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 65_536 {
+                    return Err("renewal_input_type_or_limit".into());
+                }
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)
+                    .map_err(|_| "renewal_input_unavailable")?
+                    .take(65_537)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "renewal_input_unavailable")?;
+                if bytes.len() > 65_536 {
+                    return Err("renewal_input_type_or_limit".into());
+                }
+                Ok(bytes)
+            };
+            let key: [u8; 32] = STANDARD
+                .decode(required(args, "--public-key")?)
+                .map_err(|_| "update_key_invalid")?
+                .try_into()
+                .map_err(|_| "update_key_invalid")?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "publication_clock_invalid")?
+                .as_secs();
+            tradeassembly_distribution::update_publication::prepare_renewal(
+                &bounded(&required(args, "--proof")?)?,
+                &required(args, "--expected-proof-sha256")?,
+                &bounded(&required(args, "--previous-manifest")?)?,
+                &required(args, "--expected-previous-sha256")?,
+                &key,
+                required(args, "--sequence")?
+                    .parse()
+                    .map_err(|_| "renewal_sequence_invalid")?,
+                now,
+            )?
+        }
         "update-publication-verify" | "update-publication-sign" => {
             use std::io::{Read, Write};
             let signing = command == "update-publication-sign";

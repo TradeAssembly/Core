@@ -60,6 +60,10 @@ pub struct InstrumentScreen {
     pub capability_requirement_ref: String,
     pub semantics_version: String,
     pub inputs: BTreeMap<String, ScreenCollectionInput>,
+    /// Exact candidate table and ID projection in one admitted named input.
+    pub candidate_input: String,
+    pub candidate_records_pointer: String,
+    pub candidate_id_pointer: String,
     pub parameters: Value,
     pub coverage: ScreenCoveragePolicy,
     pub max_candidates: u32,
@@ -130,6 +134,10 @@ impl InstrumentScreen {
             > 65536
             || self.inputs.is_empty()
             || self.inputs.len() > 8
+            || !self.inputs.contains_key(&self.candidate_input)
+            || (!self.candidate_records_pointer.is_empty()
+                && !pointer(&self.candidate_records_pointer))
+            || (!self.candidate_id_pointer.is_empty() && !pointer(&self.candidate_id_pointer))
             || self.top_n == 0
             || self.top_n > 256
             || self.max_candidates < self.top_n
@@ -194,7 +202,7 @@ impl InstrumentScreen {
 mod tests {
     use super::*;
     fn policy() -> Value {
-        serde_json::json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"oi.rank.v1","inputs":{"contracts":{"capability_requirement_ref":"contracts","response_schema_ref":"schema://test/contracts@1","query":{"literal":{"instruments":["SPY"]},"date_bindings":{"asOfDate":{"basis":"selection_utc_date","offset_calendar_days":0},"expirationDateGte":{"basis":"selection_utc_date","offset_calendar_days":45},"expirationDateLte":{"basis":"selection_utc_date","offset_calendar_days":60}}},"max_age_ms":60000,"coverage":{"complete_pointer":"/coverage/complete","scope_pointer":"/coverage/scope","scope_value":"configured_underlyings"}}},"parameters":{"right":"call","rank":"open_interest","tie":"instrument_id"},"coverage":"complete_configured_inputs","max_candidates":4096,"top_n":5,"ttl_ms":60000})
+        serde_json::json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"oi.rank.v1","inputs":{"contracts":{"capability_requirement_ref":"contracts","response_schema_ref":"schema://test/contracts@1","query":{"literal":{"instruments":["SPY"]},"date_bindings":{"asOfDate":{"basis":"selection_utc_date","offset_calendar_days":0},"expirationDateGte":{"basis":"selection_utc_date","offset_calendar_days":45},"expirationDateLte":{"basis":"selection_utc_date","offset_calendar_days":60}}},"max_age_ms":60000,"coverage":{"complete_pointer":"/coverage/complete","scope_pointer":"/coverage/scope","scope_value":"configured_underlyings"}}},"candidate_input":"contracts","candidate_records_pointer":"/observations","candidate_id_pointer":"/instrumentId","parameters":{"right":"call","rank":"open_interest","tie":"instrument_id"},"coverage":"complete_configured_inputs","max_candidates":4096,"top_n":5,"ttl_ms":60000})
     }
     #[test]
     fn screen_policy_is_closed_bounded_and_explicit() {
@@ -288,6 +296,12 @@ mod tests {
         let spec = bound_spec();
         let report = crate::spec::validate(&spec);
         assert!(report.valid, "{:?}", report.diagnostics);
+        assert!(matches!(
+            crate::strategy_kernel::CompiledStrategy::compile_json(&spec),
+            Err(crate::strategy_kernel::KernelError::UnsupportedSemantics(
+                "screened selector requires instrument-selection evaluator"
+            ))
+        ));
         let requirements = spec["capability_requirements"]["required"]
             .as_array()
             .unwrap();

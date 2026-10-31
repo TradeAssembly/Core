@@ -2097,6 +2097,16 @@
         },
         "version": {
           "$ref": "#/$defs/InstrumentScreenVersion"
+        },
+        "candidate_id_pointer": {
+          "type": "string"
+        },
+        "candidate_input": {
+          "description": "Exact candidate table and ID projection in one admitted named input.",
+          "type": "string"
+        },
+        "candidate_records_pointer": {
+          "type": "string"
         }
       },
       "required": [
@@ -2104,6 +2114,9 @@
         "capability_requirement_ref",
         "semantics_version",
         "inputs",
+        "candidate_input",
+        "candidate_records_pointer",
+        "candidate_id_pointer",
         "parameters",
         "coverage",
         "max_candidates",

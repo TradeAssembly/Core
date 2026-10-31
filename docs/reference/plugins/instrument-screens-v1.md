@@ -48,3 +48,36 @@ remain independently gated. This V1 input policy covers admitted collections;
 indicator-result inputs and generic phase execution still need explicit runtime
 contracts. Candidate membership remains separate from managed positions and
 pending orders, whose exit monitoring must survive reselection.
+
+## Stateless document-operation protocol
+
+The SDK `instrument_screen` module defines a closed request
+`tradeassembly.instrument_screen_evaluation.v1` and result
+`tradeassembly.instrument_screen_result.v1` inside existing plugin wire V1.
+Schema refs and canonical identities are exported by request_identity(),
+input_identity() and result_identity(). There are no new runtime credentials,
+bar intervals or state checkpoints in this protocol.
+
+The policy explicitly names `candidate_input`, `candidate_records_pointer` and
+`candidate_id_pointer`. Candidate IDs must be unique and bounded. A complete
+result must account for every candidate with either a ranked member or rejection
+reason; unselected eligible candidates need an explicit rank-cutoff reason.
+Foreign, duplicate and unaccounted candidates reject. Empty, partial and failed
+results remain distinct. Filtering/ranking calculations remain in the plugin.
+
+Named inputs carry an admitted document plus its actual schema identity, collection
+and receipt references, observation and host-known times. The host validates the
+nested payload against its verified provider schema before dispatch. The shared
+input-wrapper schema does not substitute for that nested validation or imply a
+provider supports every required field. Overall request/result bounds remain
+512 KiB; individual inputs cannot multiply the transport budget.
+
+The initial host adapter accepts stateless named-document operation_data.v2
+contracts with one-observation readiness, exact SDK input-wrapper schemas and one
+`instruments` output using the SDK result schema, all with no fixed interval.
+The operation must declare deterministic/replayable read-only behavior with no
+credential/account/network privilege. Old fixed-interval evaluators cannot
+silently execute screened strategies as static symbols; they fail unsupported
+until the selection-aware lifecycle is integrated. The host constructs source
+provenance, membership/ranking identities and expiry; these are not self-authored
+plugin authority. Actual runtime/process qualification remains separate.

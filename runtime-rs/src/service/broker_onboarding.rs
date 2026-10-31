@@ -1012,6 +1012,7 @@ mod tests {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         })
     }
 

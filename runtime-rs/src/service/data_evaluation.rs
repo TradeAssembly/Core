@@ -15,6 +15,69 @@ use tradeassembly_plugin_sdk::{
     data_history::{Partitioning, VersionedOperationData},
 };
 
+/// One host request's verified immutable plan, not a package/tenant-wide cache.
+/// Mutable authority, artifacts and bindings are still fully checked at every
+/// plugin dispatch and immediately before atomic result commitment.
+pub(super) struct DataStepRequest {
+    started: std::time::Instant,
+    verified: std::sync::Mutex<Option<(EvaluationStep, data_plans::StoredDataPlan)>>,
+}
+pub(super) fn request_service(service: &TradeAssemblyService) -> TradeAssemblyService {
+    let mut scoped = service.clone();
+    scoped.data_step_request = Some(std::sync::Arc::new(DataStepRequest {
+        started: std::time::Instant::now(),
+        verified: Default::default(),
+    }));
+    scoped
+}
+fn request_budget(service: &TradeAssemblyService) -> Result<(), String> {
+    if service
+        .data_step_request
+        .as_ref()
+        .is_some_and(|r| r.started.elapsed() >= MAX_STEP_DURATION)
+    {
+        return Err("data_evaluation_deadline_exceeded".into());
+    }
+    Ok(())
+}
+pub(super) fn request_plan(
+    service: &TradeAssemblyService,
+    request: &EvaluationStep,
+) -> Result<data_plans::StoredDataPlan, String> {
+    request_budget(service)?;
+    if let Some(context) = &service.data_step_request {
+        let cached = context
+            .verified
+            .lock()
+            .map_err(|_| "data_evaluation_request_context_unavailable")?
+            .clone();
+        if let Some((original, plan)) = cached {
+            if original == *request {
+                // Owner and immutable storage identity are cheap and always fresh.
+                if data_plans::read_owned(service, &request.plan_revision_id)? != plan {
+                    return Err("data_plan_stale".into());
+                }
+                return Ok(plan);
+            }
+        }
+    }
+    data_plans::current(service, &request.plan_revision_id)
+}
+pub(super) fn remember_request_plan(
+    service: &TradeAssemblyService,
+    request: &EvaluationStep,
+    plan: &data_plans::StoredDataPlan,
+) -> Result<(), String> {
+    request_budget(service)?;
+    if let Some(context) = &service.data_step_request {
+        *context
+            .verified
+            .lock()
+            .map_err(|_| "data_evaluation_request_context_unavailable")? =
+            Some((request.clone(), plan.clone()));
+    }
+    Ok(())
+}
 const RUNS: &str = "data_evaluation_checkpoints_v1";
 const RECEIPTS: &str = "data_evaluation_receipts_v1";
 const SOURCES: &str = "data_evaluation_sources_v1";
@@ -27,7 +90,7 @@ const MAX_STATE_BYTES: usize = 256 * 1024;
 const LEASE_MS: i64 = 60_000;
 const MAX_STEP_DURATION: std::time::Duration = std::time::Duration::from_secs(45);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationStep {
     pub run_id: String,
@@ -220,6 +283,7 @@ fn invoke(
     context: &SideEffectContext,
 ) -> Result<DataEvaluationResponse, String> {
     data_plans::current(service, &plan.revision_id)?;
+    request_budget(service)?;
     live_lease(service, claim)?;
     *claim = service
         .runtime()
@@ -403,6 +467,9 @@ pub fn step(
     request: EvaluationStep,
     context: &SideEffectContext,
 ) -> Result<EvaluationReceipt, String> {
+    if service.data_step_request.is_none() {
+        return step(&request_service(service), request, context);
+    }
     if request.run_id.is_empty()
         || request.run_id.len() > 128
         || request.window.event_start_ms >= request.window.event_end_ms
@@ -411,8 +478,13 @@ pub fn step(
     {
         return Err("data_evaluation_request_invalid".into());
     }
-    let started = std::time::Instant::now();
-    let plan = data_plans::current(service, &request.plan_revision_id)?;
+    let started = service
+        .data_step_request
+        .as_ref()
+        .expect("host request initialized")
+        .started;
+    let plan = request_plan(service, &request)?;
+    request_budget(service)?;
     super::data_captures::validate_window(service, &plan, &request.window)?;
     if plan.content.plan.execution_order.len() > MAX_NODES {
         return Err("data_evaluation_plan_too_large".into());
@@ -1039,6 +1111,7 @@ impl StepEnvironment<'_> {
         receipt.receipt_sha256 = receipt_hash(&receipt)?;
         self.check_budget()?;
         data_plans::current(self.service, &self.plan.revision_id)?;
+        self.check_budget()?;
         live_lease(self.service, claim)?;
         let mut writes = vec![
             StorageWrite::new(

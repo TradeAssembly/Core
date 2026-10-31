@@ -273,6 +273,8 @@ pub struct TradeAssemblyService {
     hosted_oauth_actor: Option<String>,
     invocation_actor_kind: &'static str,
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
+    // Private, one-public-request lifetime; never serialized or shared by roots.
+    data_step_request: Option<Arc<data_evaluation::DataStepRequest>>,
 }
 
 impl fmt::Debug for TradeAssemblyService {
@@ -359,6 +361,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         };
         execution::resume_local_scheduler_workers(&service);
         service
@@ -496,6 +499,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         };
         execution::resume_local_scheduler_workers(&service);
         service
@@ -535,6 +539,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         })
     }
 
@@ -560,6 +565,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         }
     }
 
@@ -1045,6 +1051,16 @@ impl TradeAssemblyService {
         path: &str,
         body: Value,
     ) -> ServiceResponse {
+        if method.eq_ignore_ascii_case("POST")
+            && matches!(
+                normalize_path(path).as_str(),
+                "/product/strategies/data-recipes/step" | "/product/strategies/data-runs/step"
+            )
+            && self.data_step_request.is_none()
+        {
+            let scoped = data_evaluation::request_service(self);
+            return scoped.handle_http_from_source(source_interface, method, path, body);
+        }
         if method.eq_ignore_ascii_case("POST")
             && matches!(
                 normalize_path(path).as_str(),
@@ -3295,6 +3311,13 @@ impl TradeAssemblyService {
     }
 
     pub fn call_mcp_tool(&self, name: &str, arguments: Value) -> Value {
+        if matches!(
+            name,
+            "tradeassembly.strategy.data_recipe.step" | "tradeassembly.strategy.data_run.step"
+        ) && self.data_step_request.is_none()
+        {
+            return data_evaluation::request_service(self).call_mcp_tool(name, arguments);
+        }
         if matches!(
             name,
             "tradeassembly.account.login"

@@ -20,11 +20,16 @@ pub enum InputValue {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutomaticConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management: Option<crate::service::order_plans::management::automation::Config>,
     pub source_inputs: BTreeMap<String, BTreeMap<String, InputValue>>,
     pub max_subjects_per_occurrence: usize,
 }
 impl AutomaticConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(management) = &self.management {
+            management.validate()?;
+        }
         if self.max_subjects_per_occurrence == 0
             || self.max_subjects_per_occurrence > 32
             || self

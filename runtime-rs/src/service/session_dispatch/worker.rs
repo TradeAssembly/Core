@@ -146,6 +146,12 @@ pub(super) fn wake(s: &TradeAssemblyService, id: &str) {
 pub(super) fn enabled(s: &TradeAssemblyService, id: &str) -> Result<bool, String> {
     Ok(intent(s, id)?.is_some_and(|i| i.enabled))
 }
+fn management_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
+    crate::service::order_plans::management::automation::has_work(s, j)
+}
+fn has_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
+    Ok(!j.status.terminal() || management_work(s, j)?)
+}
 pub(super) fn start(s: &TradeAssemblyService, id: &str) -> Result<(), String> {
     if s.agent_mcp_execution_context().is_some() {
         return Err("session_dispatch_background_agent_delegation_unsupported".into());
@@ -155,7 +161,7 @@ pub(super) fn start(s: &TradeAssemblyService, id: &str) -> Result<(), String> {
     if j.core_revision != revision()? {
         return Err("session_dispatch_source_changed".into());
     }
-    if j.status.terminal() {
+    if !has_work(s, &j)? {
         return Err("session_dispatch_job_terminal".into());
     }
     if j.paused {
@@ -224,7 +230,8 @@ fn spawn(service: TradeAssemblyService, id: String) -> Result<(), String> {
             if retry
                 && owner(&service).is_ok()
                 && enabled(&service, &id) == Ok(true)
-                && read(&service, &id).is_ok_and(|(j, _)| !j.paused && !j.status.terminal())
+                && read(&service, &id)
+                    .is_ok_and(|(j, _)| !j.paused && has_work(&service, &j) == Ok(true))
             {
                 if let Err(code) = spawn(service.clone(), id.clone()) {
                     if let Some(v) = registry()
@@ -270,14 +277,19 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
             return Ok(());
         }
         let (j, _) = read(s, id)?;
-        if j.status.terminal() || j.paused {
+        if j.paused || !has_work(s, &j)? {
             return Ok(());
         }
         iteration = iteration
             .checked_add(1)
             .ok_or("session_dispatch_worker_iteration_exhausted")?;
+        let now = s.runtime().clock.trusted_now_ms()?;
+        let management_ready = management_work(s, &j)?
+            && crate::service::order_plans::management::automation::next_due(s, &j)? <= now;
+        // Existing positions get bounded turns while selection/warmup is pending too.
+        let manage = j.status.terminal() || (management_ready && iteration.is_multiple_of(2));
         // Fresh transport command; the durable domain child ID/body never changes.
-        let response=s.handle_http("POST","/scheduler/run",json!({"accountMode":"paper","sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("session-worker:{transport_run}:{iteration}")}));
+        let response=s.handle_http("POST","/scheduler/run",json!({"accountMode":"paper","sessionDispatch":{"kind":if manage{"manage"}else{"advance"},"jobId":id},"idempotencyKey":format!("session-worker:{transport_run}:{iteration}")}));
         if let Some(v) = registry()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -290,7 +302,7 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
                 .unwrap_or_else(|| "session_dispatch_worker_command_failed".into()));
         }
         let (j, _) = read(s, id)?;
-        if j.status.terminal() || j.paused {
+        if j.paused || !has_work(s, &j)? {
             return Ok(());
         }
         let schedule = session_schedules::current(s, &j.request.occurrence_id)?;
@@ -300,10 +312,25 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         } else {
             now
         };
-        let target = due.max(j.next_attempt_at_ms);
+        let mut target = due.max(j.next_attempt_at_ms);
+        let management_remaining = management_work(s, &j)?;
+        if management_remaining {
+            let management_due =
+                crate::service::order_plans::management::automation::next_due(s, &j)?;
+            target = if j.status.terminal() {
+                management_due
+            } else {
+                target.min(management_due)
+            };
+        }
+        if manage {
+            if let Some(next) = response.body["body"]["management"]["nextAttemptAtMs"].as_i64() {
+                target = target.max(next)
+            }
+        }
         let delay = if target > now {
             (target - now) as u64
-        } else if j.pending.is_some() {
+        } else if j.pending.is_some() && !management_remaining {
             5000
         } else {
             1
@@ -327,7 +354,7 @@ pub(super) fn resume_owned(s: &TradeAssemblyService) -> Result<usize, String> {
             continue;
         }
         let (j, _) = read(s, &id)?;
-        if j.status.terminal() || j.paused {
+        if j.paused || !has_work(s, &j)? {
             continue;
         }
         match start(s, &id) {

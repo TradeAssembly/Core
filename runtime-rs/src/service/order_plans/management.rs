@@ -1,5 +1,6 @@
 //! Owned long positions and immutable synthetic exit proposals. Never a broker permit.
 use super::*;
+pub(crate) mod automation;
 #[path = "../position_management/rules.rs"]
 mod rules;
 use rules::ExitRules;
@@ -202,6 +203,12 @@ pub(crate) fn policy(
         return Err("managed_exit_declaration_mismatch".into());
     }
     Ok(Some(p))
+}
+pub(crate) fn validate_automatic_policy(policy: &ExitPolicy) -> Result<(), String> {
+    if policy.rules.reversal_signal.is_some() {
+        return Err("management_automation_reversal_evidence_unsupported".into());
+    }
+    Ok(())
 }
 pub(crate) fn management_run(s: &TradeAssemblyService, id: &str) -> Result<(Value, Value), String> {
     s.require_object("execution_activation", id)
@@ -1659,5 +1666,15 @@ mod tests {
             "managed_reversal_predates_entry"
         );
         assert!(causal_reversal(&entry, Some(&first), &first).is_ok());
+    }
+    #[test]
+    fn unsupported_automatic_reversal_is_rejected_before_entry() {
+        let mut p:ExitPolicy=serde_json::from_value(json!({"entryBasis":"provider_final_gross_excluding_fees","rules":{"schemaVersion":"tradeassembly.position_exit_rules.v1","priceBasis":"bid","stopLossRatio":"0.1","trailingRatio":"0.2","trailingStart":{"kind":"immediate"},"reversalSignal":null,"precedence":["stop_loss","trailing"],"maxQuoteAgeMs":30000},"feeCashCap":"1","maxLimitSlippageRatio":"0.01","timeInForce":"day","maxReversalAgeMs":30000})).unwrap();
+        assert!(validate_automatic_policy(&p).is_ok());
+        p.rules.reversal_signal = Some("typed.exit".into());
+        assert_eq!(
+            validate_automatic_policy(&p).unwrap_err(),
+            "management_automation_reversal_evidence_unsupported"
+        );
     }
 }

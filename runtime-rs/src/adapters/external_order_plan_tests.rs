@@ -36,7 +36,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  use tradeassembly_plugin_sdk::execution_snapshot as obs;
  let forward=Arc::new(ForwardNative::default());let (mut dir,base,_,_)=data_plans::tests::fixture_service(Some(forward.clone()));
  if v2_case.is_some_and(|c|c.starts_with("financial_screen_auto")){dir.disable_cleanup(true);eprintln!("retained automatic fixture root {}",dir.path().display());}
- let automatic=v2_case.is_some_and(|c|c.starts_with("financial_screen_auto"));let managed=v2_case==Some("financial_screen_auto_managed");
+ let automatic=v2_case.is_some_and(|c|c.starts_with("financial_screen_auto"));let managed=matches!(v2_case,Some("financial_screen_auto_managed"|"financial_screen_auto_worker"));let background=v2_case==Some("financial_screen_auto_worker");
  let dynamic=v2_case.is_some_and(|c|c.starts_with("financial_screen_"));
  let replay=install_fixture_variant(&base,dir.path(),false,60000,false,dynamic,true);
  let facts=install_execution_package(&base,dir.path(),false);let sizing=install_execution_package(&base,dir.path(),true);
@@ -90,7 +90,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let step=json!({"runId":"execution-signal","planRevisionId":prepared.body["plan"]["revisionId"],"window":{"eventStartMs":now-60000,"eventEndMs":now,"asOfMs":service.runtime().clock.now_ms()},"expectedCheckpointSha256":null});
  let signal=service.handle_http("POST","/product/strategies/data-runs/step",json!({"step":step,"idempotencyKey":"execution-signal-step"}));assert_eq!(signal.status,200,"{}",signal.body);assert_eq!(signal.body["receipt"]["signals"][0]["entry"],json!({"status":"ready","value":true}));
  if matches!(v2_case,Some("financial_joint"|"financial_settlement_joint")) {let root=dir.keep();prepare_financial_joint_driver(&service,&root,&scope,revision,&prepared.body,&signal.body,&warden.as_ref().unwrap().base_url);return;}
- if automatic{exercise_native_automatic_cycle(&service,&scope,revision,&snapshot,dir.path());if managed {exercise_native_managed_close(&service,&scope,revision,dir.path());}
+ if automatic{exercise_native_automatic_cycle(&service,&scope,revision,&snapshot,dir.path(),background);if managed&&!background {exercise_native_managed_close(&service,&scope,revision,dir.path());}
  if let Some((_,server))=dynamic_fixture{server.join().unwrap();}return;}
  let orders=service.runtime().storage.list_json("orders").unwrap();let positions=service.runtime().storage.list_json("positions").unwrap();
  let acquire=|node:&str,schema:&str,key:&str| collections::acquire(&service,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:node.into(),mode:"paper".into(),response_schema_ref:schema.into(),input:json!({})},&ctx(key)).unwrap().collection_id;

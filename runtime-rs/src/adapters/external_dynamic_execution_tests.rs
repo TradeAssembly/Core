@@ -36,7 +36,7 @@ fn refuse_removed_dynamic_entry(s:&crate::service::TradeAssemblyService,scope:&d
 #[ignore="explicit native screened selection, normal typed admission and removal fixture"]
 fn financial_v4_screened_subject_entry_and_refresh_preserve_management(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();for case in ["financial_screen_reject","financial_screen_refresh"]{native_execution_plan_fixture(Some(case));}}
 
-fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,snapshot:&Value,root:&std::path::Path){
+fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,snapshot:&Value,root:&std::path::Path,background:bool){
  use crate::service::{data_collections as collections,session_schedules as schedules,session_dispatch as dispatch};
  let calendar=collections::acquire(s,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:"calendar".into(),mode:"paper".into(),response_schema_ref:tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),input:json!({})},&ctx("auto-calendar")).unwrap();
  let now=s.runtime().clock.now_ms();let date=chrono::DateTime::from_timestamp_millis(now).unwrap().date_naive().to_string();
@@ -44,6 +44,7 @@ fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope
  let request=dispatch::DispatchRequest{occurrence_id:schedule.body["schedule"]["occurrence"]["occurrenceId"].as_str().unwrap().into(),scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),subjects:dispatch::SubjectPolicy::AllSelected{max_members:1},event_start_ms:snapshot["start"].as_i64().unwrap(),event_end_ms:snapshot["start"].as_i64().unwrap()+60000,interval_ms:60000,max_frames_per_step:1,source_captures_by_subject:BTreeMap::new(),execution_activation_id:Some("fixture-v2-activation".into())};
  let remote=crate::service::data_runner::DataRunnerCommand{schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA_V3.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:"auto-refuses-old-remote".into(),authority_ref:"provenance-only".into(),idempotency_key:IdempotencyKey::new("auto-refuses-old-remote").unwrap(),mode:crate::service::data_runner::DataRunnerMode::Paper,submitted_at_ms:now,operation:crate::service::data_runner::DataRunnerOperation::DispatchSession{dispatch:dispatch::RemoteRequest::Enqueue{job:Box::new(request.clone())}}};assert_eq!(remote.validate("fixture.release").unwrap_err(),"session_dispatch_remote_financial_authority_unsupported");
  let enqueued=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"enqueue","job":request},"idempotencyKey":"auto-enqueue"}));assert_eq!(enqueued.status,200,"{}",enqueued.body);let id=enqueued.body["body"]["job"]["jobId"].as_str().unwrap();
+ if background{exercise_native_background_management(s,scope,id,root);return;}
  let positions=s.runtime().storage.list_json("positions").unwrap();let orders=s.runtime().storage.list_json("orders").unwrap();let mut final_job=None;
  for step in 0..24{
   let active=if step>=5{crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None)}else{s.clone()};
@@ -96,3 +97,31 @@ fn exercise_native_managed_close(s:&crate::service::TradeAssemblyService,scope:&
 #[test]
 #[ignore="explicit native automatic entry, owned position, close C5, final proceeds and journal fixture"]
 fn native_automatic_entry_owned_exit_final_proceeds_and_journal(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_auto_managed"));}
+fn exercise_native_background_management(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,id:&str,root:&std::path::Path){
+ use crate::service::{session_dispatch as dispatch,order_plans as plans};
+ let start=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"start_worker","jobId":id},"idempotencyKey":"managed-background-start"}));assert_eq!(start.status,200,"{}",start.body);assert_eq!(start.body["ok"],true,"{}",start.body);
+ let deadline=std::time::Instant::now()+std::time::Duration::from_secs(180);let mut restarted=false;
+ let final_position=loop{
+  assert!(std::time::Instant::now()<deadline,"autonomous management deadline: {:?}",s.runtime().storage.list_json("execution_management_automation_v1"));
+  let rows=s.runtime().storage.list_json("execution_managed_positions_v1").unwrap();
+  if !rows.is_empty()&&!restarted{
+   dispatch::halt_worker_for_test(s,id);
+   for _ in 0..100{let inspected=dispatch::worker_status_for_test(s,id);if inspected["running"]==false{break;}std::thread::sleep(std::time::Duration::from_millis(20));}
+   let paused=s.handle_http("POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"background-pause-entry"}));assert_eq!(paused.status,200,"{}",paused.body);
+   let mut run=s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();run["selectionHead"]=json!({"members":[],"qualification":"authored membership removal, independent background management"});s.runtime().storage.put_json("execution_runs","run_fixture-v2-activation",run,&ctx("background-selection-removed")).unwrap();
+   let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);
+   let resume=restored.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"resume_workers"},"idempotencyKey":"background-resume-owned-worker"}));assert_eq!(resume.status,200,"{}",resume.body);assert_eq!(resume.body["ok"],true,"{}",resume.body);assert_eq!(resume.body["body"]["workersResumed"],1,"{}",resume.body);restarted=true;
+  }
+  if let Some((key,pos))=rows.first(){if pos["closedQuantity"]=="0.4"&&pos["reservations"]==json!({}){let view=s.handle_http("GET",&format!("/product/strategies/positions/{key}"),json!({}));assert_eq!(view.status,200,"{}",view.body);break view.body;}}
+  let inspected=dispatch::worker_status_for_test(s,id);if inspected["running"]==false{let error=&inspected["lastError"];assert!(error.is_null(),"background worker stopped: {} state {:?}",inspected,s.runtime().storage.list_json("execution_management_automation_v1"));}
+  std::thread::sleep(std::time::Duration::from_millis(25));
+ };
+ let stop=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"stop_worker","jobId":id},"idempotencyKey":"background-stop-owned-worker"}));assert_eq!(stop.status,200,"{}",stop.body);assert!(restarted);
+ let calls=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();assert_eq!(calls.lines().filter(|v|*v=="submit").count(),2);assert_eq!(calls.lines().filter(|v|*v=="lookup").count(),2);assert!(final_position["journal"].as_array().unwrap().len()>=3);
+ let job=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"inspect","jobId":id},"idempotencyKey":"background-final-inspect"}));assert_eq!(job.body["body"]["job"]["status"],"complete");
+ write_screen_interface_evidence("automatic_management","background-entry-close-settlement.json",&json!({"scope":scope,"job":job.body,"position":final_position,"manager":s.runtime().storage.list_json("execution_management_automation_v1").unwrap(),"syntheticSubmits":2,"syntheticLookups":2,"manualPhaseAdvances":0,"workerStoppedAndResumedAfterPositionRegistered":true,"actualProcessRestartQualified":false,"oldV4V5RemoteCloseQualified":false,"realBrokerCalls":0,"qualification":"actual background worker+Core HTTP/C5 with synthetic native provider/mock Warden/traced sandbox; same occurrence, stop-loss; no next-day/MA-TSI/whole-process/SRT qualification inferred"}));
+ let _ = plans::management::REGISTER;
+}
+#[test]
+#[ignore="explicit actual background auto-entry/owned-management/close/proceeds fixture"]
+fn native_background_worker_drives_owned_close_after_selection_completion_and_resume(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_auto_worker"));}

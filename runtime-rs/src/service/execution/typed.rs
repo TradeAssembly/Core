@@ -57,6 +57,14 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
     }
 
     let managed_exit_policy = order_plans::management::policy(s, &c.scope)?;
+    if let Some(automatic) = &c.automatic_execution {
+        if let Some(policy) = &managed_exit_policy {
+            order_plans::management::validate_automatic_policy(policy)?;
+        }
+        if managed_exit_policy.is_some() != automatic.management.is_some() {
+            return Err("typed_automatic_management_policy_required".into());
+        }
+    }
     let selected_template = super::super::selection_plans::template(s, &c.scope)?;
     let selected = selected_template.is_some();
     if c.automatic_execution.is_some() {
@@ -211,8 +219,17 @@ pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
             let mut result = json!({"ready":true,"blockedReasons":[],"capabilityGraphRevision":s.runtime().storage.get_json("capability_graph_revisions",config["capabilityGraphRevisionId"].as_str().unwrap_or_default()).ok().flatten(),"executionContractVersion":VERSION,"continuousExecution":false,"entryDecisionRequired":true});
             if !config["typedExecution"]["automaticExecution"].is_null() {
                 result["scheduledFinancialEntrySupported"] = json!(true);
-                result["automaticExecutionScope"] = json!("entry_only");
-                result["syntheticExitAdmissionSupported"] = json!(false);
+                let management =
+                    !config["typedExecution"]["automaticExecution"]["management"].is_null();
+                result["automaticExecutionScope"] = json!(if management {
+                    "same_occurrence_entry_and_owned_position_management"
+                } else {
+                    "entry_only"
+                });
+                result["syntheticExitAdmissionSupported"] = json!(management);
+                result["automaticReversalSupported"] = json!(false);
+                result["nextSessionRolloverSupported"] = json!(false);
+                result["localSessionWorkerStartRequired"] = json!(management);
             }
             result
         }

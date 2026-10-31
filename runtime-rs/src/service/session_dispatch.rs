@@ -50,6 +50,7 @@ pub struct DispatchRequest {
 pub enum Request {
     Enqueue { job: Box<DispatchRequest> },
     Advance { job_id: String },
+    Manage { job_id: String },
     Inspect { job_id: String },
     StartWorker { job_id: String },
     StopWorker { job_id: String },
@@ -974,6 +975,25 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
     result
 }
 pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
+    if input.get("kind") == Some(&json!("manage")) {
+        let result = (|| {
+            let Request::Manage { job_id } = serde_json::from_value(input.clone())
+                .map_err(|_| "session_dispatch_command_invalid")?
+            else {
+                return Err("session_dispatch_command_invalid".to_string());
+            };
+            owner(s)?;
+            let (job, _) = read(s, &job_id)?;
+            if job.paused {
+                return Err("session_dispatch_job_paused".into());
+            }
+            crate::service::order_plans::management::automation::advance(s, &job)
+        })();
+        return match result {
+            Ok(v) => json!({"ok":true,"body":{"management":v,"executionAuthorityGranted":false}}),
+            Err(e) => json!({"ok":false,"error":{"code":e}}),
+        };
+    }
     if input.get("kind") == Some(&json!("resume_workers")) {
         let parsed = serde_json::from_value::<Request>(input.clone());
         return match parsed {
@@ -992,6 +1012,9 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
         match r {
             Request::Enqueue { job } => enqueue(s, *job),
             Request::Advance { job_id } => advance(s, &job_id),
+            Request::Manage { .. } => {
+                Err("session_dispatch_management_requires_dedicated_result".into())
+            }
             Request::Inspect { job_id } => Ok(read(s, &job_id)?.0),
             Request::StartWorker { job_id } => {
                 worker::start(s, &job_id)?;
@@ -1010,7 +1033,11 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
                 j.paused = paused;
                 persist(s, old, &mut j)?;
                 worker::wake(s, &job_id);
-                if !paused && worker::enabled(s, &job_id)? && !j.status.terminal() {
+                if !paused
+                    && worker::enabled(s, &job_id)?
+                    && (!j.status.terminal()
+                        || crate::service::order_plans::management::automation::has_work(s, &j)?)
+                {
                     worker::start(s, &job_id)?;
                 }
                 Ok(j)
@@ -1041,4 +1068,9 @@ pub(crate) fn wake_for_test(s: &TradeAssemblyService, id: &str) {
 #[cfg(test)]
 pub(crate) fn halt_worker_for_test(s: &TradeAssemblyService, id: &str) {
     worker::halt_for_test(s, id);
+}
+
+#[cfg(test)]
+pub(crate) fn worker_status_for_test(s: &TradeAssemblyService, id: &str) -> Value {
+    worker::status(s, id)
 }

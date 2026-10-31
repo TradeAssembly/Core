@@ -3,7 +3,7 @@ fn install_v2_broker_fixture(s:&crate::service::TradeAssemblyService,root:&std::
  use crate::adapters::plugin_packages::data_package_tests::{archive_files,materials};
  use tradeassembly_plugin_sdk::broker_v2 as wire;
  use std::os::unix::fs::PermissionsExt;
- let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed";
+ let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker";
  let id="fixture.broker.v2";let state=root.join("synthetic-broker");fs::create_dir(&state).unwrap();fs::set_permissions(&state,fs::Permissions::from_mode(0o700)).unwrap();fs::write(state.join("SYNTHETIC_BROKER_ONLY"),b"synthetic only\n").unwrap();
  let template=crate::data_pipeline::tests::fixture().0.nodes.into_iter().find_map(|n|n.selected).unwrap();
  let lookup="schema://tradeassembly/broker-lookup@2";
@@ -63,6 +63,7 @@ fn native_v2_c5_rejection_and_unknown_acceptance_reconcile_without_resubmission(
 
 fn activate_native_typed_execution(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,scenario:&str){
  let mut typed=json!({"scope":scope,"capabilityGraphRevision":revision,"brokerRequirementRef":"exec_broker"});if scenario.starts_with("financial_screen_auto"){typed["automaticExecution"]=json!({"sourceInputs":{"account_data":{},"instrument_metadata":{},"pricing_quote":{}},"maxSubjectsPerOccurrence":1});}
+ if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{typed["automaticExecution"]["management"]=json!({"cadenceMs":1000,"maxPositionsPerRound":1,"sourceInputs":{"account_data":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"instrument_metadata":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"pricing_quote":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}}}});}
  let saved=s.handle_http("POST","/product/strategy-execution-configs/save",json!({"strategyId":scope.strategy_id,"typedExecution":typed,"mode":"paper","accountMode":"paper","idempotencyKey":"normal-typed-save"}));assert_eq!(saved.status,200,"{}",saved.body);let config=saved.body["body"]["configId"].as_str().unwrap_or_else(||panic!("normal config missing: {}",saved.body));
  let active=s.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":config,"activationId":"fixture-v2-activation","accountMode":"paper","mode":"paper","idempotencyKey":"normal-typed-activation"}));assert_eq!(active.status,200,"{}",active.body);assert_eq!(active.body["body"]["run"]["orchestrator"],"typed_pipeline","{}",active.body);assert_eq!(active.body["body"]["scheduler"]["continuousExecution"],false);write_screen_interface_evidence("typed_execution",&format!("{scenario}-activation.json"),&active.body);
  let legacy=s.handle_http("POST","/product/strategy-execution-activations/fixture-v2-activation/evaluate-tick",json!({"activationId":"fixture-v2-activation","accountMode":"paper","idempotencyKey":"typed-refuses-legacy"}));assert_ne!(legacy.status,200);

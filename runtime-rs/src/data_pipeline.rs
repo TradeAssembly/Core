@@ -46,9 +46,18 @@ pub struct PortBinding {
     pub input_port: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PipelineOutput {
+    pub node: String,
+    pub port: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PipelineRequest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_outputs: Vec<PipelineOutput>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_captures: BTreeMap<String, String>,
     pub capability_graph_revision: String,
@@ -113,6 +122,8 @@ pub struct CompiledDataPlan {
     pub source_warmup_observations: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_history_by_output: BTreeMap<String, BTreeMap<String, BTreeMap<String, u64>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub selected_source_history: BTreeMap<String, u64>,
     pub plan_sha256: String,
 }
 
@@ -129,6 +140,8 @@ pub enum DataPlanVersion {
     V3,
     #[serde(rename = "tradeassembly.compiled_data_plan.v4")]
     V4,
+    #[serde(rename = "tradeassembly.compiled_data_plan.v5")]
+    V5,
 }
 
 fn issue(
@@ -219,6 +232,7 @@ fn valid_context(context: &DataContext) -> bool {
 pub(crate) fn normalize_request(request: &mut PipelineRequest) -> Vec<PlanDiagnostic> {
     use PlanDiagnosticCode::*;
     let mut errors = Vec::new();
+    request.selected_outputs.sort();
     request
         .nodes
         .sort_by(|a, b| a.graph_node_id.cmp(&b.graph_node_id));
@@ -605,6 +619,29 @@ pub fn compile_data_plan(
             }
         }
     }
+    let mut selected = BTreeSet::new();
+    if request.selected_outputs.len() > 256 {
+        errors.push(issue(
+            InvalidContract,
+            None,
+            None,
+            "Select at most 256 output ports.",
+        ));
+    }
+    for output in &request.selected_outputs {
+        if !selected.insert(output)
+            || !metadata
+                .get(output.node.as_str())
+                .is_some_and(|binding| binding.contract.outputs.contains_key(&output.port))
+        {
+            errors.push(issue(
+                UnknownPort,
+                Some(&output.node),
+                Some(&output.port),
+                "Select each declared node/output port at most once.",
+            ));
+        }
+    }
     let mut remaining = dependencies.clone();
     let mut order = Vec::new();
     while !remaining.is_empty() {
@@ -687,7 +724,18 @@ pub fn compile_data_plan(
         source_warmup.insert(id.clone(), total);
         history_by_output.insert(id.clone(), output_histories);
     }
-    let version = if !request.source_captures.is_empty() {
+    let mut selected_source_history = BTreeMap::<String, u64>::new();
+    for selected in &request.selected_outputs {
+        for (source, count) in &history_by_output[&selected.node][&selected.port] {
+            selected_source_history
+                .entry(source.clone())
+                .and_modify(|value| *value = (*value).max(*count))
+                .or_insert(*count);
+        }
+    }
+    let version = if !request.selected_outputs.is_empty() {
+        DataPlanVersion::V5
+    } else if !request.source_captures.is_empty() {
         DataPlanVersion::V4
     } else if has_v3 {
         DataPlanVersion::V3
@@ -712,6 +760,7 @@ pub fn compile_data_plan(
         } else {
             BTreeMap::new()
         },
+        selected_source_history,
         plan_sha256: String::new(),
     };
     plan.plan_sha256 = canonical_sha256(&plan).map_err(|_| {

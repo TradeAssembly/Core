@@ -948,11 +948,31 @@ impl StepEnvironment<'_> {
                 .flat_map(|b| &b.points)
                 .any(|p| matches!(p.result, PointValue::Ready(_)));
         }
+        if !plan.request.selected_outputs.is_empty() && !frames.is_empty() {
+            any_ready = plan.request.selected_outputs.iter().all(|selected| {
+                outputs
+                    .get(&selected.node)
+                    .and_then(|frames| frames.last())
+                    .and_then(|response| response.outputs.get(&selected.port))
+                    .is_some_and(|batch| {
+                        !batch.points.is_empty()
+                            && batch
+                                .points
+                                .iter()
+                                .all(|point| matches!(point.result, PointValue::Ready(_)))
+                    })
+            });
+        }
         if program.is_some() && !signals.is_empty() {
-            any_ready = signals.last().is_some_and(|s| {
+            let signals_ready = signals.last().is_some_and(|s| {
                 matches!(s.entry, crate::data_strategy::SignalValue::Ready { .. })
                     && matches!(s.exit, crate::data_strategy::SignalValue::Ready { .. })
             });
+            any_ready = if plan.request.selected_outputs.is_empty() {
+                signals_ready
+            } else {
+                any_ready && signals_ready
+            };
         }
         let status = if frames.is_empty() {
             if any_points {

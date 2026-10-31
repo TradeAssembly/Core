@@ -127,6 +127,24 @@
       "requires_receipt": true
     },
     {
+      "rule_id": "tradeassembly-data-recipe-prepare",
+      "action": "strategy.data_recipe.prepare",
+      "resource_kind": "strategy_data_recipe",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-data-recipe-step",
+      "action": "strategy.data_recipe.step",
+      "resource_kind": "strategy_data_recipe",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
       "rule_id": "tradeassembly-data-run-step",
       "action": "strategy.data_run.step",
       "resource_kind": "strategy_data_run",

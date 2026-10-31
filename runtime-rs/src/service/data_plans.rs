@@ -23,6 +23,8 @@ pub struct PlanScope {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataPlanContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_source: Option<super::data_recipes::RecipePlanSource>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_authentication: BTreeMap<String, super::data_captures::SourceAuthentication>,
     pub scope: PlanScope,
@@ -136,6 +138,7 @@ pub(crate) fn prepare(
     let source_authentication =
         super::data_captures::validate_plan_sources(service, &scope, &graph, &plan)?;
     Ok(DataPlanContent {
+        recipe_source: None,
         source_authentication,
         scope,
         plan,
@@ -171,11 +174,18 @@ pub fn current(
     if record(stored.content.clone())? != stored || stored.revision_id != revision_id {
         return Err("data_plan_record_invalid".into());
     }
-    let fresh = prepare(
-        service,
-        stored.content.scope.clone(),
-        stored.content.plan.request.clone(),
-    )?;
+    let fresh = match &stored.content.recipe_source {
+        Some(source) => super::data_recipes::prepare(
+            service,
+            stored.content.scope.clone(),
+            source.program.clone(),
+        )?,
+        None => prepare(
+            service,
+            stored.content.scope.clone(),
+            stored.content.plan.request.clone(),
+        )?,
+    };
     if fresh != stored.content {
         return Err("data_plan_stale".into());
     }
@@ -198,7 +208,7 @@ fn record(content: DataPlanContent) -> Result<StoredDataPlan, String> {
     })
 }
 
-fn persist(
+pub(crate) fn persist(
     storage: &dyn StoragePort,
     content: DataPlanContent,
     context: &SideEffectContext,

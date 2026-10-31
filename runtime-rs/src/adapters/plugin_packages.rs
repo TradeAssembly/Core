@@ -143,7 +143,7 @@ impl LocalPluginPackageStore {
             VersionedPackageDescriptor::Legacy(descriptor) => {
                 verify_response_schemas(descriptor, root)
             }
-            VersionedPackageDescriptor::Data(_) => {
+            VersionedPackageDescriptor::Data(_) | VersionedPackageDescriptor::Recipes(_) => {
                 self.metadata.get(envelope, root, manifest).map(|_| ())
             }
         }
@@ -620,6 +620,24 @@ impl PluginPackagePort for LocalPluginPackageStore {
         Ok(Some(OperationDataSnapshot { package, contracts }))
     }
 
+    fn data_recipe(
+        &self,
+        package_sha256: &str,
+        recipe_id: &str,
+    ) -> Result<Option<tradeassembly_plugin_sdk::data_recipe::DataRecipe>, String> {
+        let package = self
+            .get(package_sha256)?
+            .ok_or("plugin_package_not_installed")?;
+        let envelope = VersionedPackageDescriptor::decode(
+            &serde_json::to_vec(&package.descriptor)
+                .map_err(|_| "plugin_package_descriptor_invalid")?,
+        )?;
+        let metadata = self
+            .metadata
+            .get(&envelope, &package.install_root, &package.manifest)?;
+        Ok(metadata.recipes.get(recipe_id).cloned())
+    }
+
     fn data_schema(&self, package_sha256: &str, schema_ref: &str) -> Result<Option<Value>, String> {
         let package = self
             .get(package_sha256)?
@@ -714,12 +732,14 @@ fn read_manifest_file(
         VersionedPackageDescriptor::Legacy(_) => {
             fs::read(path).map_err(|_| "plugin_package_manifest_missing".into())
         }
-        VersionedPackageDescriptor::Data(_) => read_metadata_file(
-            path,
-            MAX_METADATA_DOCUMENT_BYTES,
-            "plugin_package_manifest_missing",
-            "plugin_data_manifest_too_large",
-        ),
+        VersionedPackageDescriptor::Data(_) | VersionedPackageDescriptor::Recipes(_) => {
+            read_metadata_file(
+                path,
+                MAX_METADATA_DOCUMENT_BYTES,
+                "plugin_package_manifest_missing",
+                "plugin_data_manifest_too_large",
+            )
+        }
     }
 }
 

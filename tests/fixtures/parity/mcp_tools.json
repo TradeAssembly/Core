@@ -153,5 +153,7 @@
   "tradeassembly.strategy.data_capture.create",
   "tradeassembly.strategy.data_capture.get",
   "tradeassembly.strategy.data_plan.prepare",
+  "tradeassembly.strategy.data_recipe.prepare",
+  "tradeassembly.strategy.data_recipe.step",
   "tradeassembly.strategy.data_run.step"
 ]

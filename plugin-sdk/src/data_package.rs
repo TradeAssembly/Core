@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 /// Bounded V2 metadata capacity; this does not expand wire frames or runtime DAGs.
 pub const MAX_DATA_CONTRACTS: usize = 256;
 pub const MAX_DATA_SCHEMAS: usize = 256;
+pub const MAX_DATA_RECIPES: usize = 256;
 pub const MAX_DESCRIPTOR_BYTES: usize = 1_048_576;
 pub const MAX_METADATA_DOCUMENT_BYTES: usize = 1_048_576;
 pub const MAX_METADATA_TOTAL_BYTES: usize = 16 * 1_048_576;
@@ -122,10 +123,40 @@ pub struct DataPackageDescriptor {
     pub data_contracts: Vec<DataContractDocument>,
     pub data_schemas: Vec<DataSchemaDocument>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RecipePackageVersion {
+    #[serde(rename = "3")]
+    V3,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DataRecipeDocument {
+    pub recipe_id: String,
+    pub document: DigestedPackagePath,
+    pub canonical_sha256: String,
+}
+/// V1 and V2 stay closed; recipes require their own explicit package envelope.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecipePackageDescriptor {
+    pub package_contract_version: RecipePackageVersion,
+    pub package: PluginPackageDescriptor,
+    pub data_contracts: Vec<DataContractDocument>,
+    pub data_schemas: Vec<DataSchemaDocument>,
+    pub recipes: Vec<DataRecipeDocument>,
+}
+#[derive(Clone, Copy, Serialize)]
+pub struct DataPackageView<'a> {
+    pub package: &'a PluginPackageDescriptor,
+    pub data_contracts: &'a [DataContractDocument],
+    pub data_schemas: &'a [DataSchemaDocument],
+    pub recipes: &'a [DataRecipeDocument],
+}
 #[derive(Clone, Debug)]
 pub enum VersionedPackageDescriptor {
     Legacy(PluginPackageDescriptor),
     Data(DataPackageDescriptor),
+    Recipes(RecipePackageDescriptor),
 }
 impl VersionedPackageDescriptor {
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
@@ -145,23 +176,31 @@ impl VersionedPackageDescriptor {
                         .map_err(|_| "plugin_package_descriptor_invalid")?,
                 )
             }
+            Some("3") => {
+                metadata_budget(&value)?;
+                Self::Recipes(
+                    serde_json::from_value(value)
+                        .map_err(|_| "plugin_package_descriptor_invalid")?,
+                )
+            }
             _ => return Err("plugin_package_version_unsupported".into()),
         };
         result
             .base()
             .validate()
             .map_err(|_| "plugin_package_descriptor_invalid")?;
-        if let Self::Data(data) = &result {
-            if data.data_contracts.is_empty()
+        if let Some(data) = result.data() {
+            if (data.data_contracts.is_empty() && data.recipes.is_empty())
                 || data.data_contracts.len() > MAX_DATA_CONTRACTS
                 || data.data_schemas.len() > MAX_DATA_SCHEMAS
                 || data.package.response_schemas.len() > MAX_DATA_SCHEMAS
+                || data.recipes.len() > MAX_DATA_RECIPES
             {
                 return Err("plugin_data_package_bounds_invalid".into());
             }
             let mut operations = BTreeSet::new();
             let mut schemas = BTreeSet::new();
-            for c in &data.data_contracts {
+            for c in data.data_contracts {
                 if c.operation_id.is_empty()
                     || !operations.insert(&c.operation_id)
                     || !digest(&c.canonical_sha256)
@@ -172,7 +211,7 @@ impl VersionedPackageDescriptor {
                     .validate()
                     .map_err(|_| "plugin_data_contract_path_invalid")?;
             }
-            for s in &data.data_schemas {
+            for s in data.data_schemas {
                 if s.schema_ref.is_empty()
                     || !schemas.insert(&s.schema_ref)
                     || !digest(&s.canonical_sha256)
@@ -183,13 +222,46 @@ impl VersionedPackageDescriptor {
                     .validate()
                     .map_err(|_| "plugin_data_schema_path_invalid")?;
             }
+            let mut recipe_ids = BTreeSet::new();
+            for recipe in data.recipes {
+                if recipe.recipe_id.is_empty()
+                    || recipe.recipe_id.len() > 128
+                    || !recipe_ids.insert(&recipe.recipe_id)
+                    || !digest(&recipe.canonical_sha256)
+                {
+                    return Err("plugin_data_recipe_identity_invalid".into());
+                }
+                recipe
+                    .document
+                    .validate()
+                    .map_err(|_| "plugin_data_recipe_path_invalid")?;
+            }
         }
         Ok(result)
     }
+    pub fn data(&self) -> Option<DataPackageView<'_>> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Data(d) => Some(DataPackageView {
+                package: &d.package,
+                data_contracts: &d.data_contracts,
+                data_schemas: &d.data_schemas,
+                recipes: &[],
+            }),
+            Self::Recipes(d) => Some(DataPackageView {
+                package: &d.package,
+                data_contracts: &d.data_contracts,
+                data_schemas: &d.data_schemas,
+                recipes: &d.recipes,
+            }),
+        }
+    }
+
     pub fn base(&self) -> &PluginPackageDescriptor {
         match self {
             Self::Legacy(d) => d,
             Self::Data(d) => &d.package,
+            Self::Recipes(d) => &d.package,
         }
     }
 }
@@ -243,7 +315,7 @@ mod tests {
             VersionedPackageDescriptor::decode(&serde_json::to_vec(&schemas).unwrap()).unwrap_err(),
             "plugin_data_package_bounds_invalid"
         );
-        d["packageContractVersion"] = json!("3");
+        d["packageContractVersion"] = json!("4");
         assert_eq!(
             VersionedPackageDescriptor::decode(&serde_json::to_vec(&d).unwrap()).unwrap_err(),
             "plugin_package_version_unsupported"
@@ -280,5 +352,49 @@ mod tests {
             &json!({"parameterSchema":{"$ref":"#/$defs/n","$defs":{"n":{"type":"number"}}}})
         )
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod recipe_package_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    fn package(count: usize) -> Value {
+        let hash = "a".repeat(64);
+        json!({"packageContractVersion":"3","package":{"packageContractVersion":"1","plugin":{"id":"recipes","version":"1"},"manifest":{"path":"manifest.json","sha256":hash},"targets":[{"target":"test","binary":{"path":"bin/plugin","sha256":hash}}],"compatibility":{"hostContract":{"minimum":"1","maximum":"1"},"sdkVersion":"test"}},"dataContracts":[],"dataSchemas":[],"recipes":(0..count).map(|i|json!({"recipeId":format!("recipe.{i}"),"document":{"path":format!("recipes/{i}.json"),"sha256":hash},"canonicalSha256":hash})).collect::<Vec<_>>()})
+    }
+    fn decode(value: &Value) -> Result<VersionedPackageDescriptor, String> {
+        VersionedPackageDescriptor::decode(&serde_json::to_vec(value).unwrap())
+    }
+    #[test]
+    fn recipes_require_explicit_version_and_bounded_distinct_artifact_identities() {
+        assert!(decode(&package(1)).is_ok());
+        assert!(decode(&package(MAX_DATA_RECIPES)).is_ok());
+        assert_eq!(
+            decode(&package(0)).unwrap_err(),
+            "plugin_data_package_bounds_invalid"
+        );
+        assert_eq!(
+            decode(&package(MAX_DATA_RECIPES + 1)).unwrap_err(),
+            "plugin_data_package_bounds_invalid"
+        );
+        let mut value = package(2);
+        value["recipes"][1] = value["recipes"][0].clone();
+        assert_eq!(
+            decode(&value).unwrap_err(),
+            "plugin_data_recipe_identity_invalid"
+        );
+        let mut value = package(1);
+        value["recipes"][0]["document"]["path"] = json!("../recipe.json");
+        assert_eq!(
+            decode(&value).unwrap_err(),
+            "plugin_data_recipe_path_invalid"
+        );
+        let mut value = package(1);
+        value["packageContractVersion"] = json!("2");
+        assert_eq!(
+            decode(&value).unwrap_err(),
+            "plugin_package_descriptor_invalid"
+        );
     }
 }

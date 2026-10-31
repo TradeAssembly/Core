@@ -95,6 +95,14 @@ pub trait PluginPackagePort: VersionedPort {
         Ok(Some(OperationDataSnapshot { package, contracts }))
     }
 
+    fn data_recipe(
+        &self,
+        _package_sha256: &str,
+        _recipe_id: &str,
+    ) -> Result<Option<tradeassembly_plugin_sdk::data_recipe::DataRecipe>, String> {
+        Err("plugin_data_recipe_loading_unsupported".into())
+    }
+
     fn data_schema(
         &self,
         _package_sha256: &str,

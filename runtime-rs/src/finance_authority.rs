@@ -197,6 +197,20 @@ action!(
     Write
 );
 action!(
+    DATA_RECIPE_STEP,
+    "strategy.data_recipe.step",
+    "strategy_data_recipe",
+    "data_calculation",
+    Write
+);
+action!(
+    DATA_RECIPE_PREPARE,
+    "strategy.data_recipe.prepare",
+    "strategy_data_recipe",
+    "strategy_configuration",
+    Write
+);
+action!(
     DATA_PLAN_PREPARE,
     "strategy.data_plan.prepare",
     "strategy_data_plan",
@@ -598,6 +612,8 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     OPTION_SELECTION_CREATE,
     DATA_CAPTURE_CREATE,
     DATA_PLAN_PREPARE,
+    DATA_RECIPE_PREPARE,
+    DATA_RECIPE_STEP,
     DATA_RUN_STEP,
     ENTITLEMENT_MANAGE,
     CREDENTIAL_CONFIGURE,
@@ -689,6 +705,8 @@ pub fn authority_definition(
         "strategy.option_selection.create" => &OPTION_SELECTION_CREATE,
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
+        "strategy.data_recipe.prepare" => &DATA_RECIPE_PREPARE,
+        "strategy.data_recipe.step" => &DATA_RECIPE_STEP,
         "strategy.data_run.step" => &DATA_RUN_STEP,
         "plugin.manifest.install"
         | "plugin.package.install"

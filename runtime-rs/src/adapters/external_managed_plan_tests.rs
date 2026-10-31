@@ -146,13 +146,78 @@ fn exercise_native_managed_plan(
         id
     );
     let plan = prepared["plan"]["revisionId"].as_str().unwrap();
+    // Preserve the normal finite routes and exact refusal bodies. Only the
+    // actual-math lane moves these nonfinancial checks out of the final budget.
+    let check_entry_refusals_and_pause = |receipt: &Value| {
+        let ids = managed_plan_fixture_observations(s, scope, revision, "managed-plan-entry-refusal");
+        let noentry=s.handle_http("POST","/product/strategies/order-plans/prepare",json!({"orderPlan":{"scope":scope,"capabilityGraphRevision":revision,"mode":"paper","reserveCash":true,"signalReceiptSha256":receipt["receiptSha256"],"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"]},"accountMode":"paper","idempotencyKey":"managed-plan-cannot-enter"}));
+        assert_eq!(noentry.status, 409, "{}", noentry.body);
+        assert_eq!(
+            noentry.body["error"]["code"],
+            "order_plan_managed_exit_evidence_cannot_enter"
+        );
+        let select=s.handle_http("POST","/product/strategies/order-plans/select",json!({"scope":scope,"selection":{"activationId":"fixture-v2-activation","planRevisionId":plan},"accountMode":"paper","idempotencyKey":"managed-plan-cannot-select"}));
+        assert_eq!(select.status, 409, "{}", select.body);
+        post(
+            "/product/strategy-execution-activations/control",
+            json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"managed-plan-pause-entries"}),
+        );
+        (noentry, select)
+    };
+    let prepare_execution_schedule = || {
+        let calendar = collections::acquire(
+            s,
+            collections::CollectionCommand {
+                scope: scope.clone(),
+                capability_graph_revision: revision.into(),
+                acquisition_node: "calendar".into(),
+                mode: "paper".into(),
+                response_schema_ref:
+                    tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),
+                input: json!({}),
+            },
+            &ctx("managed-plan-calendar"),
+        )
+        .unwrap();
+        let now = s.runtime().clock.now_ms();
+        let date = chrono::DateTime::from_timestamp_millis(now)
+            .unwrap()
+            .date_naive()
+            .to_string();
+        post(
+            "/product/strategies/session-schedules/prepare",
+            json!({"schedule":schedules::ScheduleCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:calendar.collection_id.clone(),execution_calendar_collection_id:calendar.collection_id,knowledge_cutoff_ms:now},"idempotencyKey":"managed-plan-schedule"}),
+        )
+    };
+    let mut entry_refusals = None;
+    let mut execution_schedule = None;
     let mut checkpoint = Value::Null;
     let mut receipts = Vec::new();
-    // Give both completed one-ms frames a causal endpoint after the final fill.
+    // Generic parity frames remain completed one-ms observations. The actual
+    // math lane declares a prospective SYNTHETIC24h-grid phase before warmup;
+    // this is not an exchange/UTC calendar or a user daily-market strategy.
     std::thread::sleep(std::time::Duration::from_millis(4));
-    let end = (s.runtime().clock.now_ms() - 2) & !1;
+    let scheduled_at = s.runtime().clock.trusted_now_ms().unwrap();
+    let end = if actual_math {
+        scheduled_at.checked_add(120000).unwrap()
+    } else {
+        (scheduled_at - 2) & !1
+    };
     let count = if actual_math { 4 } else { 2 };
     let interval = if actual_math { 86400000 } else { 1 };
+    let mut frame_timing = Vec::new();
+    if actual_math {
+        let pinned:data_plans::StoredDataPlan=serde_json::from_value(prepared["plan"].clone()).unwrap();
+        let snapshot=&pinned.content.plan.request.nodes.iter().find(|node|node.graph_node_id=="exec_signal").unwrap().parameters["snapshot"];
+        assert_eq!(snapshot["fixtureFallingDaily"],true);
+        assert_eq!(snapshot["interval"],86400000);
+        let original_observed=snapshot["observedAtMs"].as_i64().unwrap();
+        // The exact pinned source definition then yields103,102,101,100 at
+        // final-3days,...,final. No price or timestamp is rewritten after warmup.
+        assert!((0..interval).contains(&(end-original_observed)),"synthetic phase moved beyond the pinned oracle's domain");
+        eprintln!("synthetic 24h math phase selected at {scheduled_at}: historical ends {:?}; final completed endpoint {end}; source observedAt {original_observed}",[end-3*interval,end-2*interval,end-interval]);
+        write_screen_interface_evidence("managed_plan","synthetic-daily-grid-plan.json",&json!({"selectedAtMs":scheduled_at,"intervalMs":interval,"originalPublishedSnapshot":snapshot,"warmupEventEndsMs":[end-3*interval,end-2*interval,end-interval],"finalEventEndMs":end,"unchangedMaxReversalAgeMs":30000,"exchangeCalendarAlignmentClaimed":false,"userDailyBtcStrategyQualified":false,"qualification":"prospective phase of authored SPY numeric-series functional fixture; literal24h intervals, no market availability claim"}));
+    }
     assert!(
         end >= registered["position"]["entryTime"]["knownAtMs"]
             .as_i64()
@@ -172,8 +237,41 @@ fn exercise_native_managed_plan(
         } else {
             end + index
         };
-        let r=restored.handle_http("POST","/product/strategies/data-runs/step",json!({"step":{"runId":"managed-position-reversal","planRevisionId":plan,"window":{"eventStartMs":t-interval,"eventEndMs":t,"asOfMs":restored.runtime().clock.now_ms()},"expectedCheckpointSha256":checkpoint},"idempotencyKey":format!("managed-plan-frame-{index}")}));
+        let mut waits = Vec::new();
+        if actual_math && index == 3 {
+            loop {
+                let now=restored.runtime().clock.trusted_now_ms().unwrap();
+                assert!(now < end.checked_add(30000).unwrap(),"cold warmup overran the final synthetic bar's unchanged freshness deadline");
+                if now >= end { break; }
+                let wait_ms=(end-now).min(45000);
+                eprintln!("synthetic 24h math waiting at {now} for completed endpoint {end}: sleep {wait_ms} ms (maximum 45000)");
+                waits.push(json!({"waitStartedAtMs":now,"targetEventEndMs":end,"sleepMs":wait_ms}));
+                write_screen_interface_evidence("managed_plan",&format!("synthetic-daily-grid-wait-{}.json",waits.len()),&json!({"selectedAtMs":scheduled_at,"finalEventEndMs":end,"waits":waits}));
+                std::thread::sleep(std::time::Duration::from_millis(u64::try_from(wait_ms).unwrap()));
+            }
+            // Managed-plan currentness checks account health before invoking the
+            // calculation. These are genuine reads after the completed-bar wait,
+            // never a timestamp rewrite or a freshness exception.
+            let preparation_started = restored.runtime().clock.trusted_now_ms().unwrap();
+            refresh_managed_math_account_health(s, root, "before-final");
+            execution_schedule = Some(prepare_execution_schedule());
+            let preparation_finished = restored.runtime().clock.trusted_now_ms().unwrap();
+            eprintln!("synthetic 24h final preparation {preparation_started}..{preparation_finished}: both health reads and execution calendar ready; final endpoint {end}");
+            write_screen_interface_evidence("managed_plan", "synthetic-daily-grid-final-preparation.json", &json!({"finalEventEndMs":end,"preparationStartedAtMs":preparation_started,"preparationFinishedAtMs":preparation_finished,"healthPhase":"before-final","providerHealthReadsPerSource":3,"executionSchedule":execution_schedule,"financialCloseAttempted":false}));
+            assert!(preparation_finished < end.checked_add(30000).unwrap(), "real health/calendar preparation exhausted the unchanged final freshness budget");
+        }
+        let requested_at=restored.runtime().clock.trusted_now_ms().unwrap();
+        assert!(t<=requested_at,"fixture cannot request a future event window");
+        if actual_math {eprintln!("synthetic 24h math frame {index} completed window {}..{t}; actual request at {requested_at}",t-interval);}
+        let r=restored.handle_http("POST","/product/strategies/data-runs/step",json!({"step":{"runId":"managed-position-reversal","planRevisionId":plan,"window":{"eventStartMs":t-interval,"eventEndMs":t,"asOfMs":requested_at},"expectedCheckpointSha256":checkpoint},"idempotencyKey":format!("managed-plan-frame-{index}")}));
+        let processed_at=restored.runtime().clock.trusted_now_ms().unwrap();
+        if actual_math {
+            frame_timing.push(json!({"frame":index,"eventStartMs":t-interval,"eventEndMs":t,"requestedAtMs":requested_at,"processedAtMs":processed_at,"responseStatus":r.status,"waits":waits}));
+            eprintln!("synthetic 24h math frame {index} response at {processed_at}; event age {} ms",processed_at-t);
+            write_screen_interface_evidence("managed_plan",&format!("synthetic-daily-grid-frame-{index}.json"),&json!({"selectedAtMs":scheduled_at,"finalEventEndMs":end,"frames":frame_timing}));
+        }
         assert_eq!(r.status, 200, "{}", r.body);
+        if actual_math && index==3 {assert!(processed_at-end<30000,"final actual calculation exceeded the unchanged reversal freshness deadline");}
         assert_eq!(
             r.body["receipt"]["signals"][0]["entry"],
             json!({"status":"ready","value":false})
@@ -191,43 +289,25 @@ fn exercise_native_managed_plan(
             assert_managed_math_frame(&r.body["receipt"], index);
         }
         receipts.push(r.body["receipt"].clone());
+        if actual_math && index == 0 {
+            refresh_managed_math_account_health(s, root, "before-entry-refusal");
+            entry_refusals = Some(check_entry_refusals_and_pause(receipts.last().unwrap()));
+        }
     }
-    let ids = managed_plan_fixture_observations(s, scope, revision, "managed-plan-entry-refusal");
-    let noentry=s.handle_http("POST","/product/strategies/order-plans/prepare",json!({"orderPlan":{"scope":scope,"capabilityGraphRevision":revision,"mode":"paper","reserveCash":true,"signalReceiptSha256":receipts[receipts.len()-1]["receiptSha256"],"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"]},"accountMode":"paper","idempotencyKey":"managed-plan-cannot-enter"}));
-    assert_eq!(noentry.status, 409, "{}", noentry.body);
-    assert_eq!(
-        noentry.body["error"]["code"],
-        "order_plan_managed_exit_evidence_cannot_enter"
-    );
-    let select=s.handle_http("POST","/product/strategies/order-plans/select",json!({"scope":scope,"selection":{"activationId":"fixture-v2-activation","planRevisionId":plan},"accountMode":"paper","idempotencyKey":"managed-plan-cannot-select"}));
-    assert_eq!(select.status, 409, "{}", select.body);
-    post(
-        "/product/strategy-execution-activations/control",
-        json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"managed-plan-pause-entries"}),
-    );
-    let calendar = collections::acquire(
-        s,
-        collections::CollectionCommand {
-            scope: scope.clone(),
-            capability_graph_revision: revision.into(),
-            acquisition_node: "calendar".into(),
-            mode: "paper".into(),
-            response_schema_ref:
-                tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),
-            input: json!({}),
-        },
-        &ctx("managed-plan-calendar"),
-    )
-    .unwrap();
-    let now = s.runtime().clock.now_ms();
-    let date = chrono::DateTime::from_timestamp_millis(now)
-        .unwrap()
-        .date_naive()
-        .to_string();
-    let schedule = post(
-        "/product/strategies/session-schedules/prepare",
-        json!({"schedule":schedules::ScheduleCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:calendar.collection_id.clone(),execution_calendar_collection_id:calendar.collection_id,knowledge_cutoff_ms:now},"idempotencyKey":"managed-plan-schedule"}),
-    );
+    if actual_math {
+        // This normal graph check and the collection acquisitions below must
+        // retain the exact saved selection after genuine provider refreshes.
+        let epoch=chrono::DateTime::from_timestamp_millis(s.runtime().clock.now_ms()).unwrap().to_rfc3339();
+        let graph=s.handle_http("POST","/capability-graph-revisions/currentness",json!({"revisionId":revision,"evaluationEpoch":epoch}));
+        assert_eq!(graph.status,200,"{}",graph.body);
+        assert_eq!(graph.body["current"],true,"{}",graph.body);
+    }
+    if !actual_math {
+        entry_refusals = Some(check_entry_refusals_and_pause(receipts.last().unwrap()));
+        execution_schedule = Some(prepare_execution_schedule());
+    }
+    let (noentry, select) = entry_refusals.expect("entry refusals and entry pause completed");
+    let schedule = execution_schedule.expect("fresh execution calendar prepared before close");
     let advance = |receipt: &Value, key: &str| {
         let ids = managed_plan_fixture_observations(s, scope, revision, key);
         s.handle_http("POST",plans::management::ADVANCE,json!({"scope":scope,"advance":{"executionOccurrenceId":schedule["schedule"]["occurrence"]["occurrenceId"],"positionId":id,"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"],"reversalSignalReceiptSha256":receipt["receiptSha256"]},"accountMode":"paper","idempotencyKey":key}))
@@ -302,7 +382,7 @@ fn exercise_native_managed_plan(
     write_screen_interface_evidence(
         "managed_plan",
         "generic-reversal-owned-removed-member.json",
-        &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":if actual_math{Some(MANAGED_MATH_PACK_SHA)}else{None},"qualification":if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture; four daily frames, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
+        &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"synthetic24hFrameTiming":frame_timing,"exchangeCalendarAlignmentQualified":false,"userDailyBtcStrategyQualified":false,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":if actual_math{Some(MANAGED_MATH_PACK_SHA)}else{None},"qualification":if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture; four daily frames, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
     );
 }
 #[test]
@@ -319,11 +399,11 @@ fn native_managed_plan_generic_reversal_stale_refuses() {
 }
 
 const MANAGED_MATH_PACK_SHA: &str =
-    "46e790d5433f3ad5ce993047842972dacd2e656f09dbea71073186f964aead57";
+    "91e9f96dff7cfa8c567a7b86a2dc1a340ac14fd912d71b94df72bd67b7b95d06";
 fn install_managed_math_pack(s: &crate::service::TradeAssemblyService) -> InstalledPluginPackage {
     let path = std::path::PathBuf::from(
         std::env::var_os("MANAGED_MATH_TEST_PACKAGE")
-            .expect("explicit immutable0.62.0 pack archive required"),
+            .expect("explicit immutable0.69.0 pack archive required"),
     );
     assert_eq!(
         sha256(&fs::read(&path).unwrap()),
@@ -337,12 +417,12 @@ fn install_managed_math_pack(s: &crate::service::TradeAssemblyService) -> Instal
             source_type: "file".into(),
             locator: path.to_string_lossy().into(),
             package_sha256: MANAGED_MATH_PACK_SHA.into(),
-            manifest_sha256: "d4049874a7c2ebb14f9e0a64a4829820acadc2247c3cf7971d36c8feb319baae"
+            manifest_sha256: "74192f68757593a8f3d7f7b81a7df1ccddef788c2866333a94666b2c3197c0c4"
                 .into(),
             offline: true,
         })
         .unwrap();
-    assert_eq!(p.version, "0.62.0");
+    assert_eq!(p.version, "0.69.0");
     assert_eq!(p.plugin_ref, "tradeassembly.default-indicators");
     s.runtime().plugins.install_manifest(&p.plugin_ref,json!({"pluginRef":p.plugin_ref,"manifest":p.manifest,"manifestDigest":p.manifest_sha256,"package":{"packageSha256":p.package_sha256},"trust":{"level":"test"}}),&ctx("managed-real-pack-install")).unwrap();
     s.runtime().plugins.put_instance("managed-real-calculation",json!({"instanceRef":"managed-real-calculation","pluginRef":p.plugin_ref,"providerRef":p.plugin_ref,"enabled":true,"activePackageSha256":p.package_sha256,"configuration":{}}),&ctx("managed-real-pack-instance")).unwrap();
@@ -419,7 +499,10 @@ fn configure_managed_math_native_spec(
         r["stage_refs"] = json!(["evaluate"]);
         r["substep_refs"] = json!([]);
         r["dependency_refs"] = json!([]);
-        r["constraints"] = json!({"schema_refs":["schema://tradeassembly/number-series@1"],"data_shapes":["series"],"fields":[],"input_paths":[],"operations":[operation],"deterministic":true,"replayable":true});
+        // The package advertises schemas and determinism in legacy traits.
+        // Series/time compatibility remains mandatory in its pinned V3 ports
+        // and in each actual evaluation batch, not an undeclared legacy trait.
+        r["constraints"] = json!({"schema_refs":["schema://tradeassembly/number-series@1"],"data_shapes":[],"fields":[],"input_paths":[],"operations":[operation],"deterministic":true,"replayable":true});
         spec["capability_requirements"]["required"]
             .as_array_mut()
             .unwrap()
@@ -449,7 +532,8 @@ fn assert_managed_math_frame(receipt: &Value, index: i64) {
     if index < 3 {
         assert_eq!(point("managed_tsi")["state"], "warming_up");
     } else {
-        assert_eq!(point("managed_tsi")["value"], json!(-100.0));
+        let actual = point("managed_tsi")["value"].as_f64().unwrap();
+        assert!((actual + 100.0).abs() < 1e-12, "TSI sample{index}: {actual}");
     }
 }
 #[test]
@@ -457,4 +541,36 @@ fn assert_managed_math_frame(receipt: &Value, index: i64) {
 fn native_managed_plan_real_pack_ema_tsi_reversal_survives_removed_membership() {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     native_execution_plan_fixture(Some("financial_screen_managed_plan_math"));
+}
+
+// Actual native health reads for BOTH account-bound sources. The facts-only
+// package flag installs its schema/operation/store before graph preparation.
+fn refresh_managed_math_account_health(s:&crate::service::TradeAssemblyService,root:&std::path::Path,phase:&str){
+    let expected=match phase{"bootstrap"=>1,"before-entry-refusal"=>2,"before-final"=>3,_=>panic!("unknown native math health phase")};
+    let mut evidence=Vec::new();
+    for (instance,store) in [("fixture.broker.v2","synthetic-broker"),("fixture.execution.facts","facts-health")]{
+        let before=s.runtime().plugins.get_instance(instance).unwrap().unwrap();
+        let binding=crate::live_execution_checks::live_health_evidence_binding(&before);
+        let refreshed=s.handle_http("POST",&format!("/plugins/instances/{instance}/health:refresh"),json!({"idempotencyKey":format!("managed-math-health-{phase}-{instance}")}));
+        assert_eq!(refreshed.status,200,"{}",refreshed.body);
+        let after=s.runtime().plugins.get_instance(instance).unwrap().unwrap();
+        for field in ["instanceRef","pluginRef","activePackageSha256","configuration","credentialRef","credentialRevision","accountRef","accountMode","lifecycleRevision"]{
+            assert_eq!(before[field],after[field],"health changed {instance} identity field {field}");
+        }
+        assert_eq!(after["health"]["binding"],binding);
+        assert_eq!(after["health"]["state"],"ready");
+        assert_eq!(after["health"]["connectivityChecked"],true);
+        assert_eq!(after["health"]["account"]["id"],"fixture.paper.provider");
+        assert_eq!(after["health"]["account"]["mode"],"paper");
+        assert_eq!(after["credentialStatus"]["revisionRef"],"credential-generation:1");
+        assert_eq!(after["health"]["revision"],expected);
+        assert!(after["health"]["checkedAtMs"].as_i64().unwrap()>=before["health"]["checkedAtMs"].as_i64().unwrap());
+        if phase!="bootstrap"{
+            assert_eq!(before["credentialStatus"]["revisionRef"],after["credentialStatus"]["revisionRef"],"post-bootstrap credential posture changed");
+            assert_eq!(before["health"]["binding"],after["health"]["binding"]);
+        }
+        assert_eq!(fs::read_to_string(root.join(store).join("health.log")).unwrap().lines().count(),expected);
+        evidence.push(json!({"instanceRef":instance,"normalHealthRefresh":refreshed.body,"sourceBindingPreserved":true,"credentialRevisionRef":after["credentialStatus"]["revisionRef"],"providerHealthReads":expected}));
+    }
+    write_screen_interface_evidence("managed_plan",&format!("provider-health-{phase}.json"),&json!({"phase":phase,"sources":evidence,"manuallyRedatedObservations":0,"realProviderCalls":0,"qualification":"actual normal account.health route/native authored synthetic paper observations for broker and facts; separate isolated provider stores; no freshness relaxation"}));
 }

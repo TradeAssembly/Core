@@ -1,15 +1,27 @@
 // Native authored paper observations and pure sizing proposal, not broker data.
 fn install_execution_package(s:&crate::service::TradeAssemblyService,root:&std::path::Path,calculator:bool)->InstalledPluginPackage{
+ install_execution_package_with_health(s,root,calculator,false)
+}
+fn install_execution_package_with_health(s:&crate::service::TradeAssemblyService,root:&std::path::Path,calculator:bool,health:bool)->InstalledPluginPackage{
+ assert!(!health||!calculator,"only explicit math facts package declares health");
  use crate::adapters::plugin_packages::data_package_tests::{archive_files,materials};
  use tradeassembly_plugin_sdk::{execution_snapshot as obs,execution_calculation as calc};
  let (mut descriptor,_,_,_)=materials();let id=if calculator{"fixture.execution.calculation"}else{"fixture.execution.facts"};
  let template=crate::data_pipeline::tests::fixture().0.nodes.into_iter().find_map(|n|n.selected).unwrap();
- let schema_docs=vec![(obs::ACCOUNT_SCHEMA,obs::account_schema()),(obs::METADATA_SCHEMA,obs::metadata_schema()),(obs::QUOTE_SCHEMA,obs::quote_schema()),("schema://tradeassembly/execution-decimal@1",obs::decimal_schema()),(calc::INPUT_SCHEMA,calc::input_schema()),(calc::OUTPUT_SCHEMA,calc::output_schema())];
+ let mut schema_docs=vec![(obs::ACCOUNT_SCHEMA,obs::account_schema()),(obs::METADATA_SCHEMA,obs::metadata_schema()),(obs::QUOTE_SCHEMA,obs::quote_schema()),("schema://tradeassembly/execution-decimal@1",obs::decimal_schema()),(calc::INPUT_SCHEMA,calc::input_schema()),(calc::OUTPUT_SCHEMA,calc::output_schema())];
+ if health{
+  schema_docs.push(("schema://fixture/account-health-request@1",json!({"type":"object","additionalProperties":false,"properties":{}})));
+  schema_docs.push(("schema://fixture/account-health-response@1",json!({"type":"object","required":["account"],"properties":{"account":{"type":"object"}}})));
+ }
  let doc=|name:&str|{let (_,v)=schema_docs.iter().find(|(id,_)|*id==name).unwrap();json!({"schema":{"schemaRef":name,"sha256":canonical_sha256(v).unwrap()},"shape":"scalar","time":{"intervalMs":null,"completedOnly":true}})};
  let mut operations=vec![];
  for (opid,schema) in if calculator{vec![("plan_calculate",calc::OUTPUT_SCHEMA)]}else{vec![("execution_account",obs::ACCOUNT_SCHEMA),("execution_metadata",obs::METADATA_SCHEMA),("execution_quote",obs::QUOTE_SCHEMA)]}{
   let mut op=serde_json::to_value(&template.operation).unwrap();op["id"]=json!(opid);op["capability"]=json!(format!("test.execution.{opid}@1"));op["protocol"]=json!("stdio");op["apfActionId"]=json!("calculation.read");op["financeResourceType"]=json!("plugin_operation");op["dependencies"]=json!([]);op["credentialGrantRequired"]=json!(false);op["accountBindingRequired"]=json!(!calculator);
   op["traits"]=json!({"modes":["paper"],"instrumentFamilies":["equity"],"inputSchemaRefs":if calculator{vec![calc::INPUT_SCHEMA,obs::ACCOUNT_SCHEMA,obs::METADATA_SCHEMA,obs::QUOTE_SCHEMA,"schema://tradeassembly/execution-decimal@1"]}else{vec![]},"outputSchemaRefs":[schema],"deterministic":calculator,"replayable":calculator});operations.push(op);
+ }
+ if health{
+  let mut op=operations[0].clone();op["id"]=json!("account.health");op["capability"]=json!("account.health");op["purpose"]=json!("account_health");op["effect"]=json!("read");op["apfActionId"]=json!("broker.order.observe");op["financeResourceType"]=json!("broker_account");op["credentialGrantRequired"]=json!(true);op["accountBindingRequired"]=json!(true);
+  op["traits"]=json!({"modes":["paper"],"instrumentFamilies":["equity"],"inputSchemaRefs":["schema://fixture/account-health-request@1"],"outputSchemaRefs":["schema://fixture/account-health-response@1"],"deterministic":false,"replayable":false});operations.push(op);
  }
  let inputs=if calculator{json!({"account":{"data":doc(obs::ACCOUNT_SCHEMA),"required":true,"dependencyId":"account"},"metadata":{"data":doc(obs::METADATA_SCHEMA),"required":true,"dependencyId":"metadata"},"quote":{"data":doc(obs::QUOTE_SCHEMA),"required":true,"dependencyId":"quote"},"availableCash":{"data":doc("schema://tradeassembly/execution-decimal@1"),"required":true,"dependencyId":"available_cash"}})}else{json!({})};
  let opid=if calculator{"plan_calculate"}else{"execution_account"};
@@ -23,6 +35,11 @@ fn install_execution_package(s:&crate::service::TradeAssemblyService,root:&std::
  let archive=archive_files(files.iter().map(|(n,b)|(n.as_str(),b.clone())).collect());let path=root.join(format!("{id}.tgz"));fs::write(&path,&archive).unwrap();let package=s.runtime().plugin_packages.install(&PluginPackageInstallRequest{source_type:"file".into(),locator:path.to_string_lossy().into(),package_sha256:sha256(&archive),manifest_sha256:canonical_sha256(&manifest).unwrap(),offline:true}).unwrap();
  s.runtime().plugins.install_manifest(id,json!({"pluginRef":id,"manifest":manifest,"manifestDigest":package.manifest_sha256,"package":{"packageSha256":package.package_sha256},"trust":{"level":"test"}}),&ctx("execution-package")).unwrap();
  let mut instance=json!({"instanceRef":id,"pluginRef":id,"providerRef":id,"accountRef":if calculator{Value::Null}else{json!("account://fixture.execution.facts/fixture.paper.provider")},"enabled":true,"activePackageSha256":package.package_sha256,"configuration":{}});
+ if health{
+  use std::os::unix::fs::PermissionsExt;
+  let store=root.join("facts-health");fs::create_dir(&store).unwrap();fs::set_permissions(&store,fs::Permissions::from_mode(0o700)).unwrap();fs::write(store.join("SYNTHETIC_BROKER_ONLY"),b"synthetic only\n").unwrap();
+  instance["configuration"]=json!({"fixtureStore":store,"mode":"paper"});
+ }
  if !calculator{instance["credentialRef"]=json!("authored-execution-fixture-handle");s.runtime().credentials.store("authored-execution-fixture-handle",&BTreeMap::from([("api_key".into(),"fake-execution-key-no-access".into()),("api_secret".into(),"fake-execution-secret-no-access".into())])).unwrap();}
  if !calculator {instance["accountMode"]=json!("paper");instance["credentialRevision"]=json!(1);instance["credentialStatus"]=json!({"configured":true});instance["health"]=json!({"state":"ready","checkedAtMs":s.runtime().clock.now_ms(),"connectivityChecked":true,"evidenceCurrent":true,"account":{"id":"fixture.paper.provider","mode":"paper","status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false}});instance["health"]["binding"]=crate::live_execution_checks::live_health_evidence_binding(&instance);}
  s.runtime().plugins.put_instance(id,instance,&ctx("execution-instance")).unwrap();package
@@ -41,7 +58,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let dynamic=v2_case.is_some_and(|c|c.starts_with("financial_screen_"));
  let replay=install_fixture_variant_number_series(&base,dir.path(),false,signal_interval,false,dynamic,true,actual_math);
  let actual_pack=actual_math.then(||install_managed_math_pack(&base));
- let facts=install_execution_package(&base,dir.path(),false);let sizing=install_execution_package(&base,dir.path(),true);
+ let facts=install_execution_package_with_health(&base,dir.path(),false,actual_math);let sizing=install_execution_package(&base,dir.path(),true);
  let broker=v2_case.map(|case|install_v2_broker_fixture(&base,dir.path(),case));
  let warden=v2_case.map(|_|crate::finance_authority::tests::spawn_mock_warden(crate::finance_authority::tests::MockBehavior::Allow));
 
@@ -57,6 +74,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let mut native=crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(runtime.storage.clone(),runtime.plugins.clone(),runtime.credentials.clone(),runtime.plugin_packages.clone(),runtime.clock.clone(),Arc::new(TracedFixtureSandbox));
  if let Some(warden)=&warden {native=native.with_broker_boundary(Arc::new(crate::broker_submission::LocalBrokerSubmissionBoundary::new(crate::broker_submission::BrokerSubmissionDependencies{storage:runtime.storage.clone(),plugins:runtime.plugins.clone(),plugin_packages:runtime.plugin_packages.clone(),credentials:runtime.credentials.clone(),capability_resolver:runtime.capability_resolver.clone(),clock:runtime.clock.clone(),leases:runtime.leases.clone(),owner:owner.clone()},Arc::new(crate::finance_authority::WardenSidecarAuthority::new(&warden.base_url,"test-warden-token-with-at-least-32-bytes",crate::finance_authority::REQUIRED_WARDEN_SERVICE_VERSION).unwrap()))));}
  *forward.0.lock().unwrap()=Some(native);
+ if actual_math{refresh_managed_math_account_health(&service,dir.path(),"bootstrap");}
  if v2_case==Some("financial_settlement_joint"){let health=service.handle_http("POST","/plugins/instances/fixture.broker.v2/health:refresh",json!({"idempotencyKey":"bootstrap-genuine-health-read"}));assert_eq!(health.status,200,"{}",health.body);assert_eq!(health.body["instance"]["health"]["connectivityChecked"],true,"{}",health.body);assert_eq!(health.body["instance"]["health"]["account"]["id"],"fixture.paper.provider","{}",health.body);}
  for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
 

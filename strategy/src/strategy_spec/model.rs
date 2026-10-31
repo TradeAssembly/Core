@@ -805,6 +805,9 @@ pub struct StrategySpec {
 
 impl StrategySpec {
     pub fn model_validate(payload: Value) -> Result<Self, String> {
-        serde_json::from_value(payload).map_err(|error| error.to_string())
+        // The validator and spec hash use this canonical representation too.
+        // Integral JSON numbers such as 1.0 must not validate then fail loading.
+        serde_json::from_slice(&super::canonical::canonical_bytes(&payload)?)
+            .map_err(|error| error.to_string())
     }
 }

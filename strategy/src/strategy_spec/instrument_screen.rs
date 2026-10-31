@@ -336,4 +336,25 @@ mod tests {
             .iter()
             .any(|d| d.code == "SPEC_CAPABILITY_CYCLE"));
     }
+    #[test]
+    fn canonical_integer_forms_validate_hash_and_load_identically() {
+        let baseline = bound_spec();
+        let mut integral = baseline.clone();
+        integral["signal_market_requirements"][0]["selectors"][1]["screen"]["top_n"] =
+            serde_json::json!(5.0);
+        assert!(crate::spec::validate(&integral).valid);
+        assert_eq!(
+            crate::spec::canonical_hash(&baseline).unwrap(),
+            crate::spec::canonical_hash(&integral).unwrap()
+        );
+        let parsed = crate::spec::StrategySpec::model_validate(integral).unwrap();
+        assert_eq!(
+            parsed.signal_market_requirements[0].selectors[1]
+                .screen
+                .as_ref()
+                .unwrap()
+                .top_n,
+            5
+        );
+    }
 }

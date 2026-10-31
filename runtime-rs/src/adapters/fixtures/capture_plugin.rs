@@ -13,6 +13,25 @@ fn digest(v: &Value) -> String {
         .collect()
 }
 
+// Test-only HTTP broker: the plugin has no filesystem state/permissions.
+fn synthetic_broker_http(request: &Value, payload: &Value) -> Value {
+    let port = payload["config"]["dataApiUrl"].as_str().unwrap()
+        .strip_prefix("http://127.0.0.1:").unwrap().parse::<u16>().unwrap();
+    let submit = request["metadata"]["operationId"] == "broker.paper_order_submit_v2";
+    let mut body = payload.clone(); body.as_object_mut().unwrap().remove("config");
+    if submit { tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&body).unwrap()).unwrap(); }
+    let bytes=serde_json::to_vec(&body).unwrap(); assert!(bytes.len()<=32768);
+    let mut stream=TcpStream::connect(("127.0.0.1",port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(25))).unwrap();
+    stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+    write!(stream,"POST /{} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",if submit {"submit"}else{"lookup"},bytes.len()).unwrap();
+    stream.write_all(&bytes).unwrap();let mut raw=Vec::new();stream.take(65537).read_to_end(&mut raw).unwrap();assert!(raw.len()<=65536);
+    let response=String::from_utf8(raw).unwrap();let (headers,body)=response.split_once("\r\n\r\n").unwrap();assert!(headers.starts_with("HTTP/1.1 200 ")||headers.starts_with("HTTP/1.0 200 "));
+    let value:Value=serde_json::from_str(body).unwrap();
+    // Core owns independent SDK/schema/identity validation of this response.
+    assert_eq!(value["schemaVersion"],"tradeassembly.broker_order_observation.v2");value
+}
+
 fn main() {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).unwrap();
@@ -184,6 +203,10 @@ fn main() {
             }
         }
         "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" => {
+            if payload["config"]["dataApiUrl"].is_string() {
+                assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
+                (synthetic_broker_http(&request,payload),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
+            } else {
             use std::fs::{self,OpenOptions};
             let config=&payload["config"];let root=std::path::Path::new(config["fixtureStore"].as_str().unwrap());assert_eq!(fs::read_to_string(root.join("SYNTHETIC_BROKER_ONLY")).unwrap(),"synthetic only\n");
             assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
@@ -195,6 +218,7 @@ fn main() {
             let status=if config["scenario"]=="reject"{"rejected"}else if submit{"open"}else{"filled"};
             let filled=if status=="filled"{original["order"]["quantity"].clone()}else{json!("0")};let cash=if status=="filled"{json!("40")}else{json!("0")};let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;
             (json!({"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":if status=="rejected"{Value::Null}else{json!("fixture.broker.order.1")},"status":status,"filledQuantity":{"status":"available","value":filled},"cashSpent":{"status":"available","value":cash},"observedAtMs":now,"knownAtMs":now}),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
+            }
         }
         "plan_calculate" => {
             assert!(request["ephemeralCredentialGrant"].is_null());

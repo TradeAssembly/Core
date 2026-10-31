@@ -38,6 +38,7 @@ pub mod domain_store;
 pub mod engine;
 pub mod events;
 pub mod execution_contracts;
+pub mod execution_types;
 pub mod exit;
 pub mod finance_authority;
 pub mod golden;

@@ -80,6 +80,7 @@ pub(super) fn remember_request_plan(
 }
 const RUNS: &str = "data_evaluation_checkpoints_v1";
 const RECEIPTS: &str = "data_evaluation_receipts_v1";
+const RECEIPT_INDEX: &str = "data_evaluation_receipt_hash_index_v1";
 const SOURCES: &str = "data_evaluation_sources_v1";
 const FENCES: &str = "data_evaluation_fences_v1";
 const MAX_POINTS: usize = 256;
@@ -460,6 +461,54 @@ pub(crate) fn inspect_receipt(
         .ok_or("data_evaluation_receipt_missing")?;
     let request_hash = hash(&json!({"request":request,"authority":context.authority}))?;
     validate_stored_receipt(value, &request_hash, request)
+}
+
+/// Read immutable signal evidence by its host-committed index. This grants no
+/// order authority; owner/current plan and receipt integrity are independently checked.
+/// Resolve owned immutable evidence by its digest. This performs current plan
+/// validation and never grants downstream invocation or execution authority.
+pub fn indexed_receipt(
+    service: &TradeAssemblyService,
+    digest: &str,
+) -> Result<(data_plans::StoredDataPlan, EvaluationReceipt), String> {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("data_evaluation_receipt_missing".into());
+    }
+    let index = service
+        .runtime()
+        .storage
+        .get_json(RECEIPT_INDEX, digest)?
+        .ok_or("data_evaluation_receipt_index_missing")?;
+    let plan = data_plans::current(
+        service,
+        index["planRevisionId"]
+            .as_str()
+            .ok_or("data_evaluation_receipt_invalid")?,
+    )?;
+    let raw = service
+        .runtime()
+        .storage
+        .get_json(
+            RECEIPTS,
+            index["receiptKey"]
+                .as_str()
+                .ok_or("data_evaluation_receipt_invalid")?,
+        )?
+        .ok_or("data_evaluation_receipt_missing")?;
+    let receipt: EvaluationReceipt =
+        serde_json::from_value(raw).map_err(|_| "data_evaluation_receipt_invalid")?;
+    if receipt.receipt_sha256 != digest
+        || receipt_hash(&receipt)? != digest
+        || checkpoint_hash(&receipt.checkpoint)? != receipt.checkpoint.checkpoint_sha256
+        || receipt.checkpoint.plan_revision_id != plan.revision_id
+    {
+        return Err("data_evaluation_receipt_invalid".into());
+    }
+    Ok((plan, receipt))
 }
 
 pub fn step(
@@ -1146,7 +1195,37 @@ impl StepEnvironment<'_> {
                 self.context.clone(),
             ),
         ];
+        let prior_index = self
+            .service
+            .runtime()
+            .storage
+            .get_json(RECEIPT_INDEX, &receipt.receipt_sha256)?;
+        if let Some(index) = &prior_index {
+            let original = self.service.runtime().storage.get_json(
+                RECEIPTS,
+                index["receiptKey"]
+                    .as_str()
+                    .ok_or("data_evaluation_receipt_index_invalid")?,
+            )?;
+            if index["planRevisionId"] != self.plan.revision_id
+                || original
+                    != Some(
+                        serde_json::to_value(&receipt)
+                            .map_err(|_| "data_evaluation_receipt_invalid")?,
+                    )
+            {
+                return Err("data_evaluation_receipt_index_conflict".into());
+            }
+        } else {
+            writes.push(StorageWrite::new(
+                RECEIPT_INDEX,
+                &receipt.receipt_sha256,
+                json!({"receiptKey":self.receipt_key,"planRevisionId":self.plan.revision_id}),
+                self.context.clone(),
+            ));
+        }
         let mut expectations = vec![
+            StorageExpectation::new(RECEIPT_INDEX, &receipt.receipt_sha256, prior_index),
             StorageExpectation::new(RUNS, &self.run_key, self.prior.clone()),
             StorageExpectation::new(RECEIPTS, &self.receipt_key, None),
             StorageExpectation::new(FENCES, &self.run_key, Some(self.fence.clone())),

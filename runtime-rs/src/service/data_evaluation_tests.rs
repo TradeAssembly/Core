@@ -1675,3 +1675,59 @@ fn exercise_selected_runner_original_receipt(
         "data_runner_version_unsupported"
     );
 }
+
+#[test]
+fn receipt_digest_index_preserves_duplicate_no_data_and_refuses_tampering() {
+    let (_dir, service, plan, _ops) = rig();
+    let first = step(
+        &service,
+        request(&plan, "indexed-run", 10, 15, None),
+        &context("indexed-first"),
+    )
+    .unwrap();
+    assert_eq!(
+        indexed_receipt(&service, &first.receipt_sha256).unwrap().1,
+        first
+    );
+    let duplicate = request(
+        &plan,
+        "indexed-run",
+        10,
+        15,
+        Some(first.checkpoint.checkpoint_sha256.clone()),
+    );
+    let a = step(&service, duplicate.clone(), &context("indexed-duplicate-a")).unwrap();
+    let b = step(&service, duplicate, &context("indexed-duplicate-b")).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.status, EvaluationStatus::NoNewData);
+    assert_eq!(indexed_receipt(&service, &a.receipt_sha256).unwrap().1, a);
+    let saved = service
+        .runtime()
+        .storage
+        .get_json(RECEIPT_INDEX, &first.receipt_sha256)
+        .unwrap()
+        .unwrap();
+    service
+        .runtime()
+        .storage
+        .put_json(
+            RECEIPT_INDEX,
+            &first.receipt_sha256,
+            json!({"planRevisionId":plan.revision_id,"receiptKey":"missing"}),
+            &context("tampered-index"),
+        )
+        .unwrap();
+    assert!(indexed_receipt(&service, &first.receipt_sha256).is_err());
+    service
+        .runtime()
+        .storage
+        .put_json(
+            RECEIPT_INDEX,
+            &first.receipt_sha256,
+            saved,
+            &context("restore-index"),
+        )
+        .unwrap();
+    let foreign = service.for_authenticated_invocation("fixture", "foreign", None, None);
+    assert!(indexed_receipt(&foreign, &first.receipt_sha256).is_err());
+}

@@ -3429,6 +3429,8 @@ impl TradeAssemblyService {
                 if matches!(
                     name,
                     "tradeassembly.strategy.option_selection.create"
+                        | "tradeassembly.strategy.data_collection.create"
+                        | "tradeassembly.strategy.instrument_screen.create"
                         | "tradeassembly.strategy.data_recipe.prepare"
                         | "tradeassembly.strategy.data_recipe.step"
                 ) {

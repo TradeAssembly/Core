@@ -3442,6 +3442,10 @@ impl TradeAssemblyService {
                         | "tradeassembly.strategy.instrument_screen.create"
                         | "tradeassembly.strategy.data_recipe.prepare"
                         | "tradeassembly.strategy.data_recipe.step"
+                        | "tradeassembly.strategy.session_schedule.prepare"
+                        | "tradeassembly.strategy.data_capture.create"
+                        | "tradeassembly.strategy.data_plan.prepare"
+                        | "tradeassembly.strategy.data_run.step"
                 ) {
                     let code = service_error_code(&response.body)
                         .unwrap_or_else(|| "option_selection_not_available".into());

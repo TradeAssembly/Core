@@ -275,6 +275,15 @@ fn rig_with_options(options: bool) -> Rig { rig_configuration(options,false) }
 fn rig_configuration(options:bool,recipes:bool)->Rig {
     let operations = Arc::new(ForwardNative::default());
     let (dir, service, scope, _) = data_plans::tests::fixture_service(Some(operations.clone()));
+    // Share the exact window with the provider fixture. Setup and acquisition
+    // may cross a minute boundary; that must not manufacture a coverage gap.
+    let interval_ms = if options { 60000 } else { 86400000 };
+    let event_end_ms = if options {
+        service.runtime().clock.now_ms() / interval_ms * interval_ms
+    } else {
+        13 * interval_ms
+    };
+    let event_start_ms = event_end_ms - 3 * interval_ms;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
@@ -288,15 +297,9 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
                 "/options"
             };
             assert!(String::from_utf8_lossy(&buf[..n]).starts_with(&format!("GET {path} ")));
-            let day = 86400000_i64;
             let now = chrono::Utc::now();
-            let start = if options {
-                now.timestamp_millis() / 60000 * 60000 - 3 * 60000
-            } else {
-                10 * day
-            };
             let body = if index == 0 {
-                json!({"values":[10,20,30],"start":start,"interval":if options {60000}else{day},"instrument":"TEST"})
+                json!({"values":[10,20,30],"start":event_start_ms,"interval":interval_ms,"instrument":"TEST"})
             } else {
                 let expiry = (now.date_naive() + chrono::Days::new(21))
                     .format("%Y-%m-%d")
@@ -386,18 +389,10 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
                     asset_class: "equity".into(),
                     instrument_family: "equity".into(),
                 }],
-                interval_ms: Some(if options { 60000 } else { 86400000 }),
+                interval_ms: Some(interval_ms.try_into().unwrap()),
             },
-            event_start_ms: if options {
-                service.runtime().clock.now_ms() / 60000 * 60000 - 3 * 60000
-            } else {
-                10 * 86400000
-            },
-            event_end_ms: if options {
-                service.runtime().clock.now_ms() / 60000 * 60000
-            } else {
-                13 * 86400000
-            },
+            event_start_ms,
+            event_end_ms,
             gap_policy: captures::GapPolicy::StrictFixedInterval,
         },
         input: json!({}),
@@ -1909,6 +1904,7 @@ fn session_calendar_process_fixture(closed:bool){
   connection.execute_batch("DROP TRIGGER fail_upstream_complete;").unwrap();let recovered=runner.dispatch(&uncertain).unwrap();assert_eq!(recovered.state,DataRunnerState::Completed);assert_eq!(recovered.previous_receipt_sha256,Some(result.receipt_sha256));assert_eq!(runner.dispatch(&uncertain).unwrap(),recovered);write_screen_interface_evidence(case,"data-runner-uncertain-recovered.json",&serde_json::to_value(&recovered).unwrap());
  }
  maybe_run_data_runner_process(dir.path(),&runner_command,case);
+ if !closed {maybe_run_joint_reach_data_process(dir.path(),&service,&runner_command,case);}
  write_screen_interface_evidence(case,"data-runner-command.json",&serde_json::to_value(&runner_command).unwrap());write_screen_interface_evidence(case,"data-runner-receipt.json",&serde_json::to_value(&runner_receipt).unwrap());
  drop(runner);
  let db=dir.path().join("service.db").to_string_lossy().into_owned();drop(service);drop(operations);
@@ -1946,4 +1942,13 @@ fn maybe_run_data_runner_process(root:&std::path::Path,command:&crate::service::
   for r in &responses[1..4]{assert_eq!(r["ok"],true,"{r}");assert_eq!(r["receipt"]["executionAuthorityGranted"],false,"{r}");assert_eq!(r["receipt"]["coreRevision"],revision);assert_eq!(r["receipt"]["state"],if deny{"failed"}else{"completed"},"{r}");if deny{assert!(r["receipt"]["result"].is_null());}else{assert_eq!(r["receipt"]["result"]["kind"],"session");}}
   assert_eq!(responses[1],responses[2]);assert_eq!(responses[1],responses[3]);write_screen_interface_evidence(case,if deny{"process-deny.json"}else{"process-allow.json"},&serde_json::to_value(responses).unwrap());
  }
+}
+
+include!("external_reach_data_process_tests.rs");
+
+#[test]
+#[ignore="explicit actual Core and local Relay fixture process gate"]
+fn reach_data_actual_core_relay_process_journey(){
+ for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
+ session_calendar_process_fixture(false);
 }

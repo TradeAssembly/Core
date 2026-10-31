@@ -69,6 +69,25 @@ impl ReachDataCommand {
             }
         };
         if self.schema != REACH_DATA_SCHEMA
+            || [
+                &self.command.core_release,
+                &self.command.workspace_id,
+                &self.command.command_id,
+                &self.command.authority_ref,
+                &self.resource.capability_graph_revision,
+                &self.resource.scope.strategy_id,
+                &self.resource.scope.strategy_version_id,
+                &self.resource.scope.strategy_spec_hash,
+            ]
+            .iter()
+            .any(|s| s.is_empty() || s.len() > 200 || !s.bytes().all(|b| b.is_ascii_graphic()))
+            || self.command.idempotency_key.as_str().len() > 200
+            || !self
+                .command
+                .idempotency_key
+                .as_str()
+                .bytes()
+                .all(|b| b.is_ascii_graphic())
             || encoded.len() > MAX_REACH_DATA_BYTES
             || self.request_id != self.command.command_id
             || self.idempotency_key != self.command.idempotency_key.as_str()
@@ -114,13 +133,33 @@ impl ReachDataCommand {
         current_resource: &DataMutationBinding,
         now_ms: i64,
     ) -> Result<(), String> {
+        self.validate_reconciliation_bindings(
+            enrolled_node,
+            registered_source_sha256,
+            current_resource,
+            now_ms,
+        )?;
+        if now_ms >= self.expires_at_ms {
+            return Err("reach_data_binding_unavailable".into());
+        }
+        Ok(())
+    }
+    /// Current scope check for reporting an already-final ORIGINAL Core receipt.
+    /// Expiry is tolerated only by that read/reconciliation path; this method
+    /// must never admit another computation or substitute a synthetic clock.
+    pub(crate) fn validate_reconciliation_bindings(
+        &self,
+        enrolled_node: &ReachNodeScope,
+        registered_source_sha256: &str,
+        current_resource: &DataMutationBinding,
+        now_ms: i64,
+    ) -> Result<(), String> {
         self.validate()?;
         if &self.node != enrolled_node
             || self.source_binding_sha256 != registered_source_sha256
             || &self.resource != current_resource
             || now_ms <= 0
             || self.issued_at_ms > now_ms.saturating_add(5000)
-            || now_ms >= self.expires_at_ms
         {
             return Err("reach_data_binding_unavailable".into());
         }
@@ -197,6 +236,9 @@ mod tests {
         let mut value = serde_json::to_value(&c).unwrap();
         value["unknown"] = json!(true);
         assert!(serde_json::from_value::<ReachDataCommand>(value).is_err());
+        let mut oversized_label = c.clone();
+        oversized_label.command.authority_ref = "a".repeat(201);
+        assert!(oversized_label.validate().is_err());
         assert!(serde_json::from_value::<crate::ports::ReachCommand>(
             serde_json::to_value(&c).unwrap()
         )

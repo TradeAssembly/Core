@@ -67,6 +67,7 @@ mod robustness;
 pub mod robustness_lifecycle;
 mod scheduler;
 pub mod selection_plans;
+pub mod session_dispatch;
 pub mod session_schedules;
 mod sightline;
 mod strategy;
@@ -4319,7 +4320,16 @@ impl TradeAssemblyService {
                     .body
             }
             "tradeassembly.execution.scheduler.run" => {
-                self.dispatch_http("POST", "/scheduler/run", arguments).body
+                let session = arguments.get("sessionDispatch").is_some();
+                let response = self.dispatch_http("POST", "/scheduler/run", arguments).body;
+                if session && response["ok"] == false {
+                    let code = service_error_code(&response)
+                        .unwrap_or_else(|| "session_dispatch_failed".into());
+                    let error = mcp::tool_error(name, &code, &code, None);
+                    return self.complete_mcp_command_or_error(name, &command_envelope, 400, error);
+                } else {
+                    response
+                }
             }
             "tradeassembly.execution.scheduler.stop" => {
                 self.dispatch_http("POST", "/product/scheduler/stop", arguments)

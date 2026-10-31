@@ -932,12 +932,12 @@ fn grant_is_expired(grant: &EntitlementGrant, evaluation_epoch: Option<&str>) ->
     let Some(expires_at) = grant.expires_at.as_deref() else {
         return false;
     };
-    let Some(expires_at) = normalize_rfc3339_second(expires_at) else {
+    let Some(expires_at) = parse_entitlement_instant(expires_at) else {
         return evaluation_epoch.is_some();
     };
     let evaluated_at = match evaluation_epoch {
-        Some(epoch) => normalize_rfc3339_second(epoch),
-        None => now_rfc3339_second(),
+        Some(epoch) => parse_entitlement_instant(epoch),
+        None => Some(chrono::Utc::now().fixed_offset()),
     };
     evaluated_at.is_none_or(|evaluated_at| expires_at <= evaluated_at)
 }
@@ -1560,15 +1560,8 @@ fn fingerprint(parts: &[&str]) -> String {
     format!("sha256:{hex}")
 }
 
-fn normalize_rfc3339_second(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.len() < 20 || value.as_bytes().get(4).is_none_or(|byte| *byte != b'-') {
-        return None;
-    }
-    if !value.ends_with('Z') {
-        return None;
-    }
-    Some(value[..20].to_string())
+fn parse_entitlement_instant(value: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(value.trim()).ok()
 }
 
 pub(crate) fn now_rfc3339_second() -> Option<String> {
@@ -2045,6 +2038,42 @@ mod tests {
         let mut opaque_request = graph_request(vec![requirement("bars", capability)]);
         opaque_request.evaluation_epoch = "catalog-v1".to_string();
         assert!(!resolve_graph(opaque_request, catalog).ok);
+    }
+
+    #[test]
+    fn entitlement_expiry_compares_rfc3339_offsets_and_fractional_instants() {
+        let mut grant = entitlement_with_capability("test.timestamp", BTreeMap::new());
+        grant.expires_at = Some("2030-01-01T00:00:00.500Z".into());
+        for before in [
+            "2030-01-01T00:00:00.499+00:00",
+            "2029-12-31T19:00:00.499-05:00",
+        ] {
+            assert!(!grant_is_expired(&grant, Some(before)), "fresh {before}");
+        }
+        for expired in [
+            "2030-01-01T00:00:00.500+00:00",
+            "2029-12-31T19:00:00.500-05:00",
+            "2030-01-01T00:00:00.501Z",
+        ] {
+            assert!(grant_is_expired(&grant, Some(expired)), "expired {expired}");
+        }
+        for invalid in [
+            "catalog-v1",
+            "2030-13-01T00:00:00Z",
+            "2030-01-01T00:00:00",
+            "",
+        ] {
+            assert!(
+                grant_is_expired(&grant, Some(invalid)),
+                "invalid epoch {invalid}"
+            );
+            grant.expires_at = Some(invalid.into());
+            assert!(
+                grant_is_expired(&grant, Some("2030-01-01T00:00:00Z")),
+                "invalid expiry {invalid}"
+            );
+            grant.expires_at = Some("2030-01-01T00:00:00.500Z".into());
+        }
     }
 
     #[test]

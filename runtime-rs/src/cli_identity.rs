@@ -296,6 +296,15 @@ pub fn authenticated_service_from_config(
     Ok(service)
 }
 
+/// Existing verified identity with scheduler-free data-host startup.
+pub fn authenticated_data_service_from_config(
+    config: RuntimeConfig,
+    verified_session: VerifiedCliSession,
+) -> Result<TradeAssemblyService, String> {
+    let service = TradeAssemblyService::from_config_data_only(config)?;
+    bind_authenticated_service(&service, verified_session.identity)
+}
+
 fn bind_authenticated_service(
     service: &TradeAssemblyService,
     identity: CliIdentity,

@@ -114,13 +114,33 @@ impl ReachDataCommand {
         current_resource: &DataMutationBinding,
         now_ms: i64,
     ) -> Result<(), String> {
+        self.validate_reconciliation_bindings(
+            enrolled_node,
+            registered_source_sha256,
+            current_resource,
+            now_ms,
+        )?;
+        if now_ms >= self.expires_at_ms {
+            return Err("reach_data_binding_unavailable".into());
+        }
+        Ok(())
+    }
+    /// Current scope check for reporting an already-final ORIGINAL Core receipt.
+    /// Expiry is tolerated only by that read/reconciliation path; this method
+    /// must never admit another computation or substitute a synthetic clock.
+    pub(crate) fn validate_reconciliation_bindings(
+        &self,
+        enrolled_node: &ReachNodeScope,
+        registered_source_sha256: &str,
+        current_resource: &DataMutationBinding,
+        now_ms: i64,
+    ) -> Result<(), String> {
         self.validate()?;
         if &self.node != enrolled_node
             || self.source_binding_sha256 != registered_source_sha256
             || &self.resource != current_resource
             || now_ms <= 0
             || self.issued_at_ms > now_ms.saturating_add(5000)
-            || now_ms >= self.expires_at_ms
         {
             return Err("reach_data_binding_unavailable".into());
         }

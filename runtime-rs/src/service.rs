@@ -57,6 +57,7 @@ mod providers;
 pub mod public_workspace;
 pub mod reach;
 pub mod reach_data;
+pub mod reach_data_consumer;
 mod replay;
 mod research;
 mod research_notebook;

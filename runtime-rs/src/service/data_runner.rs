@@ -14,6 +14,7 @@ pub const DATA_RUNNER_SCHEMA_V2: &str = "tradeassembly.core-data-runner.v2";
 pub const DATA_RUNNER_SCHEMA_V3: &str = "tradeassembly.core-data-runner.v3";
 pub const MAX_DATA_COMMAND_BYTES: usize = 262144;
 pub const MAX_DATA_RECEIPT_BYTES: usize = 307200;
+type SchedulerBinding = (data_plans::PlanScope, String, String);
 const COMMANDS: &str = "data_runner_commands_v1";
 const BINDINGS: &str = "data_runner_idempotency_v1";
 const RECEIPTS: &str = "data_runner_receipts_v1";
@@ -410,10 +411,10 @@ impl DurableCoreDataRunner {
     }
     pub fn mutation_binding(&self, c: &DataRunnerCommand) -> Result<DataMutationBinding, String> {
         c.validate(&self.expected_release)?;
-        let (path, body) = self.preflight(c)?;
+        let (path, body, scheduler_binding) = self.preflight(c)?;
         let (scope, graph, domain) = match &c.operation {
-            DataRunnerOperation::DispatchSession { dispatch } => {
-                session_dispatch::remote_binding(&self.service, dispatch)?
+            DataRunnerOperation::DispatchSession { .. } => {
+                scheduler_binding.ok_or("data_runner_scheduler_binding_missing")?
             }
             DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } => (
                 p.scope.clone(),
@@ -501,7 +502,11 @@ impl DurableCoreDataRunner {
             execution_authority_granted: false,
         })
     }
-    fn body(&self, c: &DataRunnerCommand) -> Result<(&'static str, Value), String> {
+    fn body(
+        &self,
+        c: &DataRunnerCommand,
+    ) -> Result<(&'static str, Value, Option<SchedulerBinding>), String> {
+        let mut scheduler_binding = None;
         let now = self.service.runtime().clock.now_ms();
         if c.submitted_at_ms > now.saturating_add(5000) {
             return Err("data_runner_submission_future".into());
@@ -509,7 +514,8 @@ impl DurableCoreDataRunner {
         let mode = c.mode.name();
         let (path, mut body) = match &c.operation {
             DataRunnerOperation::DispatchSession { dispatch } => {
-                session_dispatch::remote_binding(&self.service, dispatch)?;
+                scheduler_binding =
+                    Some(session_dispatch::remote_binding(&self.service, dispatch)?);
                 (
                     "/scheduler/run",
                     json!({"sessionDispatch":dispatch.local()?}),
@@ -579,10 +585,13 @@ impl DurableCoreDataRunner {
         // authorityRef is deliberately absent from this authorization context.
         body["idempotencyKey"] = json!(format!("data-runner:{}", c.canonical_hash()?));
         body["accountMode"] = json!("paper");
-        Ok((path, body))
+        Ok((path, body, scheduler_binding))
     }
-    fn preflight(&self, c: &DataRunnerCommand) -> Result<(&'static str, Value), String> {
-        let (path, body) = self.body(c)?;
+    fn preflight(
+        &self,
+        c: &DataRunnerCommand,
+    ) -> Result<(&'static str, Value, Option<SchedulerBinding>), String> {
+        let (path, body, scheduler_binding) = self.body(c)?;
         if let Some(response) = super::object_authorization::authorize_private_request(
             &self.service,
             "POST",
@@ -601,7 +610,7 @@ impl DurableCoreDataRunner {
             return Err(super::service_error_code(&response.body)
                 .unwrap_or_else(|| "data_runner_preflight_failed".into()));
         }
-        Ok((path, body))
+        Ok((path, body, scheduler_binding))
     }
     fn context(&self, c: &DataRunnerCommand) -> Result<SideEffectContext, String> {
         Ok(SideEffectContext::new(
@@ -808,7 +817,7 @@ impl DurableCoreDataRunner {
                     | DataRunnerOperation::EvaluateRecipe { step } => step,
                     _ => return Err("data_runner_result_mismatch".into()),
                 };
-                let (path, body) = self.body(c)?;
+                let (path, body, _) = self.body(c)?;
                 let e = crate::control_plane::http_envelope("http", "POST", path, &body)?;
                 let ctx = SideEffectContext::new(
                     e.authority,
@@ -893,7 +902,7 @@ impl DurableCoreDataRunner {
     }
     pub fn dispatch(&self, c: &DataRunnerCommand) -> Result<DataRunnerReceipt, String> {
         c.validate(&self.expected_release)?;
-        let (path, body) = self.preflight(c)?;
+        let (path, body, _) = self.preflight(c)?;
         let command_hash = c.canonical_hash()?;
         let command_key = key(&c.workspace_id, &c.command_id)?;
         let binding_key = key(&c.workspace_id, c.idempotency_key.as_str())?;

@@ -31,7 +31,8 @@ fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,
  let remote_clock=service.runtime().clock.clone();
  let remote_command=|id:&str,remote:dispatch::RemoteRequest| crate::service::data_runner::DataRunnerCommand { schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA_V3.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:id.into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new(id).unwrap(),mode:crate::service::data_runner::DataRunnerMode::Paper,submitted_at_ms:remote_clock.now_ms(),operation:crate::service::data_runner::DataRunnerOperation::DispatchSession{dispatch:remote} };
  let remote_enqueue=remote_command("remote-enqueue",dispatch::RemoteRequest::Enqueue{job:request.clone()});
- if case=="session_eval" {let binding=remote_runner.mutation_binding(&remote_enqueue).unwrap();assert_eq!(binding.action,"scheduler.run");assert_eq!(binding.resource_kind.as_deref(),Some("scheduler"));let r=remote_runner.dispatch(&remote_enqueue).unwrap();assert_eq!(r.state,crate::service::data_runner::DataRunnerState::Completed,"{r:?}");write_screen_interface_evidence(case,"remote-enqueue.json",&serde_json::to_value(r).unwrap());}
+ if case=="session_eval" {
+ let binding=remote_runner.mutation_binding(&remote_enqueue).unwrap();assert_eq!(binding.action,"scheduler.run");assert_eq!(binding.resource_kind.as_deref(),Some("scheduler"));let r=remote_runner.dispatch(&remote_enqueue).unwrap();assert_eq!(r.state,crate::service::data_runner::DataRunnerState::Completed,"{r:?}");write_screen_interface_evidence(case,"remote-enqueue.json",&serde_json::to_value(r).unwrap());}
  let job=dispatch::enqueue(&service,request.clone()).unwrap();
  if case=="session_closed" {assert_eq!(job.status,dispatch::Status::Closed);let before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();assert_eq!(dispatch::advance(&service,&job.job_id).unwrap().status,dispatch::Status::Closed);assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);write_screen_interface_evidence(case,"dispatch-final.json",&serde_json::to_value(job).unwrap());return;}
  assert_eq!(job.status,dispatch::Status::Pending);
@@ -78,7 +79,21 @@ fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,
   if background {assert_eq!(response.body["body"]["worker"]["running"],true,"{}",response.body);std::thread::sleep(std::time::Duration::from_millis(200));}
  }
  let final_job=final_job.expect("bounded dispatch reaches a typed terminal result");let expected=match case{"session_empty"=>dispatch::Status::CompleteEmpty,"session_partial"=>dispatch::Status::Partial,_=>dispatch::Status::Complete};assert_eq!(final_job.status,expected,"{final_job:?}");
- if case=="session_eval" {exercise_scheduler_ack_recovery(&service,&remote_enqueue);let reopened=crate::service::data_runner::DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();let original=reopened.dispatch(&remote_enqueue).unwrap();assert_eq!(original.state,crate::service::data_runner::DataRunnerState::Completed);assert_eq!(original.result.as_ref().unwrap(),remote_runner.dispatch(&remote_enqueue).unwrap().result.as_ref().unwrap());write_screen_interface_evidence(case,"remote-original-after-progress.json",&serde_json::to_value(original).unwrap());}
+ if case=="session_eval" {
+ // Reuse is call-local: a subsequent call must re-read owner and package bytes.
+ let expected=remote_runner.mutation_binding(&remote_enqueue).unwrap();
+ let foreign=crate::service::data_runner::DurableCoreDataRunner::new(service.for_authenticated_invocation("fixture","foreign",None,None),"fixture.release".into()).unwrap();
+ assert!(foreign.mutation_binding(&remote_enqueue).is_err());
+ let instance=service.runtime().plugins.list_instances().unwrap().into_iter().find(|i|i["activePackageSha256"].as_str().is_some_and(|v|!v.is_empty())).unwrap();
+ let package=service.runtime().plugin_packages.get(instance["activePackageSha256"].as_str().unwrap()).unwrap().unwrap();
+ struct RestoreExecutable(std::path::PathBuf,Vec<u8>);
+ impl Drop for RestoreExecutable {fn drop(&mut self){fs::write(&self.0,&self.1).expect("restore owned fixture executable");}}
+ let restored=RestoreExecutable(package.executable_path.clone(),fs::read(&package.executable_path).unwrap());
+ let mut bytes=restored.1.clone();let last=bytes.len()-1;bytes[last]^=1;fs::write(&restored.0,bytes).unwrap();
+ assert!(remote_runner.mutation_binding(&remote_enqueue).is_err(),"same-size executable tampering must invalidate the next binding");
+ drop(restored);
+ assert_eq!(serde_json::to_value(remote_runner.mutation_binding(&remote_enqueue).unwrap()).unwrap(),serde_json::to_value(expected).unwrap());
+exercise_scheduler_ack_recovery(&service,&remote_enqueue);let reopened=crate::service::data_runner::DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();let original=reopened.dispatch(&remote_enqueue).unwrap();assert_eq!(original.state,crate::service::data_runner::DataRunnerState::Completed);assert_eq!(original.result.as_ref().unwrap(),remote_runner.dispatch(&remote_enqueue).unwrap().result.as_ref().unwrap());write_screen_interface_evidence(case,"remote-original-after-progress.json",&serde_json::to_value(original).unwrap());}
  let before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();assert_eq!(dispatch::advance(&service,&job.job_id).unwrap().status,expected);assert_eq!(dispatch::enqueue(&service,request).unwrap().job_id,job.job_id);assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);
  if matches!(case,"session_eval"|"session_background"|"session_resume"){let receipts=service.runtime().storage.list_json("data_evaluation_receipts_v1").unwrap();assert_eq!(receipts.len(),1);assert_eq!(receipts[0].1["signals"][1]["entry"],json!({"status":"ready","value":true}));write_screen_interface_evidence(case,"dispatch-evaluation.json",&receipts[0].1);}
  else{assert!(service.runtime().storage.list_json("compiled_data_plan_revisions_v1").unwrap().is_empty());}

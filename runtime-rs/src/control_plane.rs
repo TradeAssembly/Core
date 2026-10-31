@@ -407,6 +407,10 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/order-plans/prepare") => "strategy.order_plan.prepare".into(),
         ("POST", "/product/strategies/order-plans/reserve") => "strategy.order_plan.reserve".into(),
         ("POST", "/product/strategies/order-plans/release") => "strategy.order_plan.release".into(),
+        ("POST", "/product/strategies/order-plans/submit") => "strategy.order_plan.submit".into(),
+        ("POST", "/product/strategies/order-plans/reconcile") => {
+            "strategy.order_plan.reconcile".into()
+        }
         ("POST", "/product/strategies/selection-plans/prepare") => {
             "strategy.selection_plan.prepare".into()
         }
@@ -728,6 +732,10 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.strategy.order_plan.prepare" => return "strategy.order_plan.prepare".into(),
         "tradeassembly.strategy.order_plan.reserve" => return "strategy.order_plan.reserve".into(),
         "tradeassembly.strategy.order_plan.release" => return "strategy.order_plan.release".into(),
+        "tradeassembly.strategy.order_plan.submit" => return "strategy.order_plan.submit".into(),
+        "tradeassembly.strategy.order_plan.reconcile" => {
+            return "strategy.order_plan.reconcile".into()
+        }
         "tradeassembly.strategy.selection_plan.prepare" => {
             return "strategy.selection_plan.prepare".into()
         }
@@ -894,6 +902,12 @@ fn mcp_route_path(name: &str, command_name: &str) -> String {
         }
         "tradeassembly.strategy.order_plan.release" => {
             "/product/strategies/order-plans/release".into()
+        }
+        "tradeassembly.strategy.order_plan.submit" => {
+            "/product/strategies/order-plans/submit".into()
+        }
+        "tradeassembly.strategy.order_plan.reconcile" => {
+            "/product/strategies/order-plans/reconcile".into()
         }
         "tradeassembly.plugin.oauth.start" => "/plugins/oauth/start".to_string(),
         "tradeassembly.plugin.oauth.status" => "/plugins/oauth/status".to_string(),
@@ -1500,9 +1514,10 @@ fn command_group(command_name: &str) -> &str {
 fn target_object(path: &str, body: &Value) -> Option<String> {
     let scope = match path {
         "/product/strategies/order-plans/prepare" => Some("/orderPlan/scope/strategyId"),
-        "/product/strategies/order-plans/reserve" | "/product/strategies/order-plans/release" => {
-            Some("/scope/strategyId")
-        }
+        "/product/strategies/order-plans/reserve"
+        | "/product/strategies/order-plans/release"
+        | "/product/strategies/order-plans/submit"
+        | "/product/strategies/order-plans/reconcile" => Some("/scope/strategyId"),
         _ => None,
     };
     if let Some(pointer) = scope {

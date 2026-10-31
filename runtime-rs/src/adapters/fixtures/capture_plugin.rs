@@ -183,6 +183,19 @@ fn main() {
                 _=>(json!({"schemaVersion":"tradeassembly.execution_quote.v1","instrumentId":"SPY","currency":currency,"time":time,"origin":"provider","sourceProfile":"fixture-quote.v1","indicative":av(json!(false)),"bid":av(json!("99")),"ask":av(json!("100"))}),"schema://tradeassembly/execution-quote@1"),
             }
         }
+        "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" => {
+            use std::fs::{self,OpenOptions};
+            let config=&payload["config"];let root=std::path::Path::new(config["fixtureStore"].as_str().unwrap());assert_eq!(fs::read_to_string(root.join("SYNTHETIC_BROKER_ONLY")).unwrap(),"synthetic only\n");
+            assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
+            let submit=request["metadata"]["operationId"]=="broker.paper_order_submit_v2";
+            let mut counts=OpenOptions::new().create(true).append(true).open(root.join("calls.log")).unwrap();writeln!(counts,"{}",if submit{"submit"}else{"lookup"}).unwrap();
+            let mut clean=payload.clone();clean.as_object_mut().unwrap().remove("config");
+            let original=if submit{tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&clean).unwrap()).unwrap();let bytes=serde_json::to_vec(&clean).unwrap();let mut file=OpenOptions::new().create_new(true).write(true).open(root.join("accepted-request.json")).unwrap();file.write_all(&bytes).unwrap();file.sync_all().unwrap();clean}else{let original:Value=serde_json::from_slice(&fs::read(root.join("accepted-request.json")).unwrap()).unwrap();assert_eq!(clean["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(clean["canonicalAccountSha256"],original["canonicalAccountSha256"]);original};
+            if submit && config["scenario"]=="timeout_after_accept"{std::thread::sleep(Duration::from_secs(20));std::process::exit(0)}
+            let status=if config["scenario"]=="reject"{"rejected"}else if submit{"open"}else{"filled"};
+            let filled=if status=="filled"{original["order"]["quantity"].clone()}else{json!("0")};let cash=if status=="filled"{json!("40")}else{json!("0")};let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;
+            (json!({"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":if status=="rejected"{Value::Null}else{json!("fixture.broker.order.1")},"status":status,"filledQuantity":{"status":"available","value":filled},"cashSpent":{"status":"available","value":cash},"observedAtMs":now,"knownAtMs":now}),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
+        }
         "plan_calculate" => {
             assert!(request["ephemeralCredentialGrant"].is_null());
             // Explicit quantity is the strategy fixture parameter. The host

@@ -29,17 +29,26 @@ fn install_execution_package(s:&crate::service::TradeAssemblyService,root:&std::
 }
 
 #[test]
-fn native_paper_plan_and_reservation_are_idempotent_and_owner_scoped(){
+fn native_paper_plan_and_reservation_are_idempotent_and_owner_scoped(){native_execution_plan_fixture(None)}
+fn native_execution_plan_fixture(v2_case:Option<&str>){
  use crate::service::{order_plans as plans,data_collections as collections};
  use tradeassembly_plugin_sdk::execution_snapshot as obs;
  let forward=Arc::new(ForwardNative::default());let (dir,base,_,_)=data_plans::tests::fixture_service(Some(forward.clone()));
  let replay=install_fixture_variant(&base,dir.path(),false,60000,false,false,true);
  let facts=install_execution_package(&base,dir.path(),false);let sizing=install_execution_package(&base,dir.path(),true);
+ let broker=v2_case.map(|case|install_v2_broker_fixture(&base,dir.path(),case));
+ let warden=v2_case.map(|_|crate::finance_authority::tests::spawn_mock_warden(crate::finance_authority::tests::MockBehavior::Allow));
+
  base.runtime().plugins.put_instance(&replay.plugin_ref,json!({"instanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"providerRef":replay.plugin_ref,"enabled":true,"activePackageSha256":replay.package_sha256,"configuration":{}}),&ctx("execution-replay-instance")).unwrap();
  let db=std::path::Path::new(base.db()).canonicalize().unwrap();let owner=crate::local_owner_identity::LocalOwnerIdentity::for_database(&db).unwrap();let mut rt=(*base.runtime()).clone();rt.identity=Arc::new(crate::adapters::local::system::LocalOwnerIdentityPort::new(db.to_str().unwrap()).unwrap());
  let service=crate::service::TradeAssemblyService::from_runtime(base.db(),rt).for_authenticated_invocation(&owner.issuer,&owner.stable_identity_id,None,None);
  for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
- *forward.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(TracedFixtureSandbox)));
+ let runtime=service.runtime();
+ let mut native=crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(runtime.storage.clone(),runtime.plugins.clone(),runtime.credentials.clone(),runtime.plugin_packages.clone(),runtime.clock.clone(),Arc::new(TracedFixtureSandbox));
+ if let Some(warden)=&warden {native=native.with_broker_boundary(Arc::new(crate::broker_submission::LocalBrokerSubmissionBoundary::new(crate::broker_submission::BrokerSubmissionDependencies{storage:runtime.storage.clone(),plugins:runtime.plugins.clone(),plugin_packages:runtime.plugin_packages.clone(),credentials:runtime.credentials.clone(),capability_resolver:runtime.capability_resolver.clone(),clock:runtime.clock.clone(),leases:runtime.leases.clone(),owner:owner.clone()},Arc::new(crate::finance_authority::WardenSidecarAuthority::new(&warden.base_url,"test-warden-token-with-at-least-32-bytes",crate::finance_authority::REQUIRED_WARDEN_SERVICE_VERSION).unwrap()))));}
+ *forward.0.lock().unwrap()=Some(native);
+ for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
+
  let now=service.runtime().clock.now_ms();let snapshot=json!({"instrument":"SPY","start":now-60000,"interval":60000,"observedAtMs":now,"values":[100]});
  let subject=InstrumentContext{instrument_id:"SPY".into(),asset_class:"equity".into(),instrument_family:"equity".into()};
  let program=crate::data_strategy::DataStrategy{version:1,nodes:vec![PipelineNode{graph_node_id:"exec_signal".into(),parameters:json!({"snapshot":snapshot,"digest":canonical_sha256(&snapshot).unwrap()}),context:DataContext{instruments:vec![subject.clone()],interval_ms:Some(60000)},input_contexts:BTreeMap::new()}],bindings:vec![],trade_instruments:vec![subject],entry:crate::data_strategy::Rule::Compare{left:crate::data_strategy::Operand::Output{node:"exec_signal".into(),port:"value".into(),instrument:"SPY".into(),sample:crate::data_strategy::Sample::Current},op:crate::data_strategy::Comparison::Greater,right:crate::data_strategy::Operand::Number{value:0.0}},exit:crate::data_strategy::Rule::IsTrue{value:crate::data_strategy::Operand::Boolean{value:false}}};
@@ -53,6 +62,10 @@ fn native_paper_plan_and_reservation_are_idempotent_and_owner_scoped(){
   let mut r=spec["capability_requirements"]["required"][0].clone();r["requirement_id"]=json!(id);r["capability"]=json!(capability);r["stage_refs"]=json!([stage]);r["substep_refs"]=json!([]);r["dependency_refs"]=json!([]);r["constraints"]=json!({"schema_refs":schemas,"data_shapes":[],"fields":[],"input_paths":[],"operations":[],"deterministic":false,"replayable":false});spec["capability_requirements"]["required"].as_array_mut().unwrap().push(r);
   bindings[id]=json!({"pluginInstanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"operationId":op});if p.plugin_ref==facts.plugin_ref{bindings[id]["accountRef"]=json!("account://fixture.execution.facts/fixture.paper.provider");}
   service.runtime().storage.put_json("entitlement_grants",&capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("execution-grants")).unwrap();
+ }
+ if let Some(broker)=&broker {
+  let mut r=spec["capability_requirements"]["required"][0].clone();r["requirement_id"]=json!("exec_broker");r["capability"]=json!(crate::broker_submission::v2::SUBMIT_CAPABILITY);r["stage_refs"]=json!(["order_strategy"]);r["substep_refs"]=json!([]);r["dependency_refs"]=json!([]);r["constraints"]=json!({"schema_refs":[tradeassembly_plugin_sdk::broker_v2::SUBMIT_SCHEMA,tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA],"data_shapes":[],"fields":[],"input_paths":[],"operations":[],"deterministic":false,"replayable":false});spec["capability_requirements"]["required"].as_array_mut().unwrap().push(r);
+  bindings["exec_broker"]=json!({"pluginInstanceRef":broker.plugin_ref,"pluginRef":broker.plugin_ref,"operationId":crate::broker_submission::v2::SUBMIT_OPERATION,"accountRef":format!("account://{}/fixture.paper.provider",broker.plugin_ref)});
  }
  let validation=crate::spec::validate_strategy_spec_report(&spec);assert!(validation.valid,"{validation:?}");
  let created=service.handle_http("POST","/product/strategies/create",json!({"name":"Authored native execution fixture","spec":spec,"idempotencyKey":"execution-create"}));assert_eq!(created.status,201,"{}",created.body);
@@ -71,6 +84,7 @@ fn native_paper_plan_and_reservation_are_idempotent_and_owner_scoped(){
  let plan_id=proposal.body["planId"].as_str().unwrap();let reserved=service.handle_http("POST","/product/strategies/order-plans/reserve",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"execution-reserve"}));assert_eq!(reserved.status,200,"{}",reserved.body);assert_eq!(reserved.body["cashReserved"],"41");assert_eq!(reserved.body["brokerDispatchAllowed"],false);
  let again=service.handle_http("POST","/product/strategies/order-plans/reserve",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"execution-reserve-retry"}));assert_eq!(again.body["cashReserved"],"41","{}",again.body);
  let foreign=service.for_authenticated_invocation("fixture","foreign",None,None);for (tool,body) in [("tradeassembly.strategy.order_plan.prepare",json!({"orderPlan":command,"idempotencyKey":"foreign-prepare"})),("tradeassembly.strategy.order_plan.reserve",json!({"scope":scope,"planId":plan_id,"idempotencyKey":"foreign-reserve"})),("tradeassembly.strategy.order_plan.release",json!({"scope":scope,"planId":plan_id,"idempotencyKey":"foreign-release"}))]{assert_eq!(foreign.call_mcp_tool(tool,body)["isError"],true);}
+ if let Some(case)=v2_case {exercise_native_v2_broker(&service,&scope,revision,plan_id,&policy,dir.path(),case);return;}
  let released=service.handle_http("POST","/product/strategies/order-plans/release",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"release-proposal"}));assert_eq!(released.status,200,"{}",released.body);assert_eq!(released.body["releasedCash"],"41");assert_eq!(released.body["brokerDispatchAllowed"],false);
  let repeated_release=service.call_mcp_tool("tradeassembly.strategy.order_plan.release",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"release-proposal-replay"}));assert_ne!(repeated_release["isError"],true,"{repeated_release}");
  let cancelled=service.call_mcp_tool("tradeassembly.strategy.order_plan.reserve",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"cancelled-reserve"}));assert_eq!(cancelled["isError"],true,"{cancelled}");

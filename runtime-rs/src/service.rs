@@ -1354,6 +1354,21 @@ impl TradeAssemblyService {
             ("POST", "/product/strategies/order-plans/release") => {
                 order_plans::response(self, order_plans::RELEASE, body)
             }
+            ("POST", "/product/strategies/order-plans/submit") => {
+                order_plans::response(self, order_plans::SUBMIT, body)
+            }
+            ("POST", "/product/strategies/order-plans/reconcile") => {
+                order_plans::response(self, order_plans::RECONCILE, body)
+            }
+            ("GET", path) if path.starts_with("/product/strategies/order-plans/") => {
+                match order_plans::transport::status(
+                    self,
+                    path.trim_start_matches("/product/strategies/order-plans/"),
+                ) {
+                    Ok(v) => ServiceResponse::ok(v),
+                    Err(_) => ServiceResponse::object_unavailable(),
+                }
+            }
             ("POST", "/product/strategies/selection-plans/prepare") => {
                 selection_plans::prepare_response(self, body)
             }
@@ -3488,6 +3503,9 @@ impl TradeAssemblyService {
                         | "tradeassembly.strategy.order_plan.prepare"
                         | "tradeassembly.strategy.order_plan.reserve"
                         | "tradeassembly.strategy.order_plan.release"
+                        | "tradeassembly.strategy.order_plan.submit"
+                        | "tradeassembly.strategy.order_plan.reconcile"
+                        | "tradeassembly.strategy.order_plan.status"
                         | "tradeassembly.strategy.instrument_screen.create"
                         | "tradeassembly.strategy.data_recipe.prepare"
                         | "tradeassembly.strategy.data_recipe.step"
@@ -3873,6 +3891,23 @@ impl TradeAssemblyService {
             "tradeassembly.strategy.order_plan.release" => {
                 self.dispatch_http("POST", order_plans::RELEASE, arguments)
                     .body
+            }
+            "tradeassembly.strategy.order_plan.submit" => {
+                self.dispatch_http("POST", order_plans::SUBMIT, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.reconcile" => {
+                self.dispatch_http("POST", order_plans::RECONCILE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.status" => {
+                match order_plans::transport::status(
+                    self,
+                    arguments["planId"].as_str().unwrap_or_default(),
+                ) {
+                    Ok(v) => v,
+                    Err(e) => ServiceResponse::conflict(&e).body,
+                }
             }
             "tradeassembly.strategy.selection_plan.prepare" => {
                 self.dispatch_http("POST", selection_plans::PATH, arguments)
@@ -4497,7 +4532,10 @@ impl TradeAssemblyService {
                 | "tradeassembly.strategy.selection_plan.prepare"
                 | "tradeassembly.strategy.order_plan.prepare"
                 | "tradeassembly.strategy.order_plan.reserve"
-                        | "tradeassembly.strategy.order_plan.release"
+                | "tradeassembly.strategy.order_plan.release"
+                | "tradeassembly.strategy.order_plan.submit"
+                | "tradeassembly.strategy.order_plan.reconcile"
+                | "tradeassembly.strategy.order_plan.status"
                 | "tradeassembly.strategy.data_recipe.prepare"
                 | "tradeassembly.strategy.data_recipe.step"
         ) {
@@ -5439,6 +5477,8 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
         "tradeassembly.strategy.order_plan.prepare" => Some(order_plans::PREPARE),
         "tradeassembly.strategy.order_plan.reserve" => Some(order_plans::RESERVE),
         "tradeassembly.strategy.order_plan.release" => Some(order_plans::RELEASE),
+        "tradeassembly.strategy.order_plan.submit" => Some(order_plans::SUBMIT),
+        "tradeassembly.strategy.order_plan.reconcile" => Some(order_plans::RECONCILE),
         "tradeassembly.strategy.selection_plan.prepare" => Some(selection_plans::PATH),
         "tradeassembly.strategy.session_schedule.prepare" => {
             Some("/product/strategies/session-schedules/prepare")

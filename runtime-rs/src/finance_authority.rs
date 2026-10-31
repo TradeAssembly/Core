@@ -251,6 +251,13 @@ action!(
     Write
 );
 action!(
+    ORDER_PLAN_SUBMIT_REQUEST,
+    "strategy.order_plan.submit",
+    "strategy_order_plan",
+    "order_submission_request",
+    Write
+);
+action!(
     DATA_PLAN_PREPARE,
     "strategy.data_plan.prepare",
     "strategy_data_plan",
@@ -656,6 +663,7 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     SESSION_SCHEDULE_PREPARE,
     SELECTION_PLAN_PREPARE,
     ORDER_PLAN_MANAGE,
+    ORDER_PLAN_SUBMIT_REQUEST,
     DATA_PLAN_PREPARE,
     DATA_RECIPE_PREPARE,
     DATA_RECIPE_STEP,
@@ -753,9 +761,11 @@ pub fn authority_definition(
         "strategy.data_collection.create" => &DATA_COLLECTION_CREATE,
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
         "strategy.selection_plan.prepare" => &SELECTION_PLAN_PREPARE,
+        "strategy.order_plan.submit" => &ORDER_PLAN_SUBMIT_REQUEST,
         "strategy.order_plan.prepare"
         | "strategy.order_plan.reserve"
-        | "strategy.order_plan.release" => &ORDER_PLAN_MANAGE,
+        | "strategy.order_plan.release"
+        | "strategy.order_plan.reconcile" => &ORDER_PLAN_MANAGE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
         "strategy.data_recipe.prepare" => &DATA_RECIPE_PREPARE,
         "strategy.data_recipe.step" => &DATA_RECIPE_STEP,

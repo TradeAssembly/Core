@@ -61,6 +61,30 @@ pub(crate) fn current(
     now: i64,
     mode: &str,
 ) -> Result<AccountWitness, String> {
+    current_impl(plugins, packages, credentials, selected, now, mode, true)
+}
+pub(crate) fn observer(
+    plugins: &dyn PluginRegistryPort,
+    packages: &dyn PluginPackagePort,
+    credentials: &dyn CredentialPort,
+    selected: &Value,
+    now: i64,
+    mode: &str,
+) -> Result<AccountWitness, String> {
+    current_impl(plugins, packages, credentials, selected, now, mode, false)
+}
+fn current_impl(
+    plugins: &dyn PluginRegistryPort,
+    packages: &dyn PluginPackagePort,
+    credentials: &dyn CredentialPort,
+    selected: &Value,
+    now: i64,
+    mode: &str,
+    require_trading: bool,
+) -> Result<AccountWitness, String> {
+    if !matches!(mode, "paper" | "live") {
+        return Err("canonical_account_mode_invalid".into());
+    }
     let instance_ref = text(selected, "pluginInstanceRef")?;
     let plugin_ref = text(selected, "pluginRef")?;
     let record = plugins
@@ -86,7 +110,38 @@ pub(crate) fn current(
         record.clone(),
         &credentials.status(credential_ref),
     );
-    let identity = derive(&record, &package.manifest, selected, now, mode)?;
+    let identity = if require_trading {
+        derive(&record, &package.manifest, selected, now, mode)?
+    } else {
+        let checked = record["health"]["checkedAtMs"]
+            .as_i64()
+            .ok_or("canonical_account_observation_invalid")?;
+        if !crate::live_execution_checks::live_health_evidence_current(&record)
+            || !(0..=crate::live_execution_checks::LIVE_ACCOUNT_OBSERVATION_MAX_AGE_MS)
+                .contains(&(now - checked))
+            || record["accountMode"] != mode
+            || record["health"]["account"]["mode"] != mode
+            || record["instanceRef"] != selected["pluginInstanceRef"]
+            || record["pluginRef"] != selected["pluginRef"]
+            || record["accountRef"] != selected["accountRef"]
+        {
+            return Err("canonical_account_observation_invalid".into());
+        }
+        let id = text(&record["health"]["account"], "id")?;
+        if record["accountRef"] != format!("account://{instance_ref}/{id}") {
+            return Err("canonical_account_binding_invalid".into());
+        }
+        let ns = text(&package.manifest["metadata"]["provider"], "id")?;
+        CanonicalAccountIdentity {
+            schema_version: "tradeassembly.canonical_account.v1".into(),
+            broker_namespace: ns.into(),
+            environment: mode.into(),
+            provider_account_id: id.into(),
+            identity_sha256: hash(
+                &json!({"version":"tradeassembly.canonical_account.v1","brokerNamespace":ns,"environment":mode,"providerAccountId":id}),
+            )?,
+        }
+    };
     let binding_sha256 = hash(
         &json!({"identity":identity.identity_sha256,"pluginInstanceRef":instance_ref,"pluginRef":plugin_ref,"packageSha256":package.package_sha256,"manifestSha256":package.manifest_sha256,"healthBinding":crate::live_execution_checks::live_health_evidence_binding(&record)}),
     )?;
@@ -94,6 +149,23 @@ pub(crate) fn current(
         identity,
         binding_sha256,
         account_ref: text(&record, "accountRef")?.into(),
+    })
+}
+pub(crate) fn from_state(state: &super::BrokerCurrentState) -> Result<AccountWitness, String> {
+    let identity = derive(
+        &state.instance,
+        &state.package.manifest,
+        &state.selected,
+        state.now_ms,
+        &state.mode,
+    )?;
+    let binding_sha256 = hash(
+        &json!({"identity":identity.identity_sha256,"pluginInstanceRef":state.selected["pluginInstanceRef"],"pluginRef":state.selected["pluginRef"],"packageSha256":state.package.package_sha256,"manifestSha256":state.package.manifest_sha256,"healthBinding":crate::live_execution_checks::live_health_evidence_binding(&state.instance)}),
+    )?;
+    Ok(AccountWitness {
+        identity,
+        binding_sha256,
+        account_ref: text(&state.instance, "accountRef")?.into(),
     })
 }
 #[cfg(test)]

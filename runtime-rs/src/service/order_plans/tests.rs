@@ -355,3 +355,299 @@ fn release_commit_failure_rolls_back_cash_and_terminal_fence_together() {
     );
     assert!(!held(&s, &a).unwrap());
 }
+
+fn lifecycle_fixture(
+    id: &str,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    Facts,
+    OrderPlan,
+    submission::OrderPlanSource,
+) {
+    let (dir, s, f, p) = fixture();
+    let mut a = plan(&s, &f, &p, id);
+    a.canonical_account = Some(
+        crate::broker_submission::account_identity::CanonicalAccountIdentity {
+            schema_version: "tradeassembly.canonical_account.v1".into(),
+            broker_namespace: "fixture.broker".into(),
+            environment: "paper".into(),
+            provider_account_id: "fixture".into(),
+            identity_sha256: "a".repeat(64),
+        },
+    );
+    a.account_binding_sha256 = Some("b".repeat(64));
+    a.plan_id.clear();
+    a.plan_id = format!("orderplan_{}", hash(&a).unwrap());
+    let (old, ledger, _) = cash(&s, &f).unwrap();
+    persist_prepared(&s, &a, id, old, ledger, &context(id)).unwrap();
+    let source = submission::source(&s, &a.plan_id).unwrap();
+    (dir, s, f, a, source)
+}
+fn begin_lifecycle(p: &OrderPlan, source: &submission::OrderPlanSource, key: &str) {
+    source
+        .begin(
+            p,
+            json!({"planId":p.plan_id,"idempotencyKey":key}),
+            &context(key),
+        )
+        .unwrap();
+}
+fn observed(
+    p: &OrderPlan,
+    status: tradeassembly_plugin_sdk::broker_v2::OrderStatus,
+    filled: Observed<Decimal>,
+    spent: Observed<Decimal>,
+    now: i64,
+) -> tradeassembly_plugin_sdk::broker_v2::OrderObservation {
+    tradeassembly_plugin_sdk::broker_v2::OrderObservation {
+        schema_version: "tradeassembly.broker_order_observation.v2".into(),
+        canonical_account_sha256: p
+            .canonical_account
+            .as_ref()
+            .unwrap()
+            .identity_sha256
+            .clone(),
+        order: p.order.clone(),
+        provider_order_id: Some("fixture.provider.order".into()),
+        status,
+        filled_quantity: filled,
+        cash_spent: spent,
+        observed_at_ms: now,
+        known_at_ms: now,
+    }
+}
+#[test]
+fn unknown_acceptance_is_not_releasable_and_definitive_rejection_releases_once() {
+    use tradeassembly_plugin_sdk::broker_v2::OrderStatus;
+    let (_dir, s, f, p, source) = lifecycle_fixture("ambiguous");
+    let ctx = context("submit");
+    begin_lifecycle(&p, &source, "submit");
+    source.admitted(&ctx).unwrap();
+    source.before_send(&ctx).unwrap();
+    assert!(
+        source.abort_unsent(&ctx).is_err(),
+        "a recovery cannot cancel once sending won the CAS"
+    );
+    let unknown = Observed::Unavailable {
+        reason: "timeout_after_possible_acceptance".into(),
+    };
+    source
+        .observe(
+            observed(
+                &p,
+                OrderStatus::Unknown,
+                unknown.clone(),
+                unknown,
+                s.runtime().clock.now_ms(),
+            ),
+            &ctx,
+        )
+        .unwrap();
+    assert_eq!(
+        release(&s, &p.plan_id, &context("release")).unwrap_err(),
+        "order_plan_submission_not_releasable"
+    );
+    assert!(held(&s, &p).unwrap());
+    assert!(source
+        .begin(
+            &p,
+            json!({"planId":p.plan_id,"idempotencyKey":"new"}),
+            &context("new")
+        )
+        .is_err());
+    let result = source
+        .observe(
+            observed(
+                &p,
+                OrderStatus::Rejected,
+                av(Decimal::ZERO),
+                av(Decimal::ZERO),
+                s.runtime().clock.now_ms(),
+            ),
+            &ctx,
+        )
+        .unwrap();
+    assert_eq!(result.phase, submission::Phase::Rejected);
+    assert!(!held(&s, &p).unwrap());
+    assert_eq!(cash(&s, &f).unwrap().2, number("100"));
+    assert_eq!(
+        release(&s, &p.plan_id, &context("release-known")).unwrap()["releasedCash"],
+        "0"
+    );
+}
+#[test]
+fn partial_and_filled_consume_cash_without_premature_budget_reuse() {
+    use tradeassembly_plugin_sdk::broker_v2::OrderStatus;
+    let (_dir, s, f, p, source) = lifecycle_fixture("fills");
+    let ctx = context("fill-submit");
+    begin_lifecycle(&p, &source, "fill-submit");
+    source.admitted(&ctx).unwrap();
+    source.before_send(&ctx).unwrap();
+    source
+        .observe(
+            observed(
+                &p,
+                OrderStatus::PartiallyFilled,
+                av(number("0.2")),
+                av(number("20")),
+                s.runtime().clock.now_ms(),
+            ),
+            &ctx,
+        )
+        .unwrap();
+    let before = source.state().unwrap().unwrap();
+    let mut wrong = observed(
+        &p,
+        OrderStatus::Filled,
+        av(number("0.6")),
+        av(number("60")),
+        s.runtime().clock.now_ms(),
+    );
+    wrong.canonical_account_sha256 = "f".repeat(64);
+    assert!(source.observe(wrong, &ctx).is_err());
+    assert_eq!(source.state().unwrap().unwrap(), before);
+    let result = source
+        .observe(
+            observed(
+                &p,
+                OrderStatus::Filled,
+                av(number("0.6")),
+                av(number("60")),
+                s.runtime().clock.now_ms(),
+            ),
+            &ctx,
+        )
+        .unwrap();
+    assert_eq!(result.phase, submission::Phase::Consumed);
+    assert_eq!(result.retained_cash, number("61"));
+    assert_eq!(cash(&s, &f).unwrap().2, number("39"));
+    assert!(release(&s, &p.plan_id, &context("no-credit-for-spent-cash")).is_err());
+}
+#[test]
+fn admission_and_release_races_are_fenced_and_unsent_abort_prevents_send() {
+    let (_dir, s, _f, p, source) = lifecycle_fixture("cancel-wins");
+    release(&s, &p.plan_id, &context("release-first")).unwrap();
+    assert!(source
+        .begin(
+            &p,
+            json!({"planId":p.plan_id,"idempotencyKey":"late"}),
+            &context("late")
+        )
+        .is_err());
+    assert!(source.state().unwrap().is_none());
+    let (_dir, s, _f, p, source) = lifecycle_fixture("admit-wins");
+    begin_lifecycle(&p, &source, "active");
+    assert!(release(&s, &p.plan_id, &context("late-release")).is_err());
+    source.abort_unsent(&context("active")).unwrap();
+    assert!(source.admitted(&context("active")).is_err());
+    assert!(source.before_send(&context("active")).is_err());
+    assert_eq!(
+        release(&s, &p.plan_id, &context("safe-unsent-release")).unwrap()["releasedCash"],
+        "61"
+    );
+}
+#[test]
+fn intent_and_submission_state_commit_atomically_before_c5() {
+    let (_dir, s, _f, p, source) = lifecycle_fixture("intent-fault");
+    let db = rusqlite::Connection::open(s.db()).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_v2_intent BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='broker_order_intents' BEGIN SELECT RAISE(ABORT,'authored intent commit failure'); END;").unwrap();
+    assert!(source
+        .begin(
+            &p,
+            json!({"planId":p.plan_id,"idempotencyKey":"fault"}),
+            &context("fault")
+        )
+        .is_err());
+    assert!(source.state().unwrap().is_none());
+    assert!(held(&s, &p).unwrap());
+    db.execute_batch("DROP TRIGGER fail_v2_intent;").unwrap();
+    begin_lifecycle(&p, &source, "fault");
+    assert_eq!(
+        source.state().unwrap().unwrap().phase,
+        submission::Phase::Admitting
+    );
+}
+
+#[test]
+fn older_broker_observation_cannot_release_a_newer_live_hold() {
+    use tradeassembly_plugin_sdk::broker_v2::OrderStatus;
+    let (_d, s, _f, p, source) = lifecycle_fixture("stale-observation");
+    let ctx = context("submit");
+    begin_lifecycle(&p, &source, "submit");
+    source.admitted(&ctx).unwrap();
+    source.before_send(&ctx).unwrap();
+    let now = s.runtime().clock.now_ms();
+    source
+        .observe(
+            observed(
+                &p,
+                OrderStatus::Open,
+                av(Decimal::ZERO),
+                av(Decimal::ZERO),
+                now,
+            ),
+            &ctx,
+        )
+        .unwrap();
+    let before = source.state().unwrap().unwrap();
+    assert_eq!(
+        source
+            .observe(
+                observed(
+                    &p,
+                    OrderStatus::Rejected,
+                    av(Decimal::ZERO),
+                    av(Decimal::ZERO),
+                    now - 1
+                ),
+                &ctx
+            )
+            .unwrap_err(),
+        "broker_v2_observation_regressed"
+    );
+    assert_eq!(source.state().unwrap().unwrap(), before);
+    assert!(held(&s, &p).unwrap());
+}
+
+#[test]
+fn recreated_service_retains_unknown_send_and_recovers_original_hold() {
+    use tradeassembly_plugin_sdk::broker_v2::OrderStatus;
+    let (_dir, s, _f, p, source) = lifecycle_fixture("restart");
+    let ctx = context("submit");
+    begin_lifecycle(&p, &source, "submit");
+    source.admitted(&ctx).unwrap();
+    source.before_send(&ctx).unwrap();
+    let before = source.state().unwrap().unwrap();
+    let db = s.db().to_string();
+    drop(source);
+    drop(s);
+    let restored =
+        TradeAssemblyService::from_runtime(&db, crate::adapters::local::test_runtime(&db))
+            .for_authenticated_invocation("fixture", "cash-owner", None, None);
+    let source = submission::source(&restored, &p.plan_id).unwrap();
+    assert_eq!(source.state().unwrap().unwrap(), before);
+    assert!(held(&restored, &p).unwrap());
+    assert!(release(&restored, &p.plan_id, &context("restart-release")).is_err());
+    assert!(source
+        .begin(
+            &p,
+            json!({"planId":p.plan_id,"idempotencyKey":"retry"}),
+            &context("retry")
+        )
+        .is_err());
+    source
+        .observe(
+            observed(
+                &p,
+                OrderStatus::Rejected,
+                av(Decimal::ZERO),
+                av(Decimal::ZERO),
+                restored.runtime().clock.now_ms(),
+            ),
+            &ctx,
+        )
+        .unwrap();
+    assert!(!held(&restored, &p).unwrap());
+    assert_eq!(source.state().unwrap().unwrap().original_key, "submit");
+}

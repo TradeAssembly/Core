@@ -11,6 +11,8 @@ use std::{cmp::Ordering, collections::BTreeMap};
 use tradeassembly_plugin_sdk::{
     execution::*, execution_calculation as calc, execution_snapshot::*,
 };
+pub mod submission;
+pub mod transport;
 const CONFIG: &str = "tradeassembly.order_plan";
 const PLANS: &str = "execution_order_plans_v1";
 const COMMANDS: &str = "execution_order_plan_commands_v1";
@@ -20,6 +22,8 @@ const CASH: &str = "execution_cash_reservations_v1";
 const RELEASES: &str = "execution_cash_releases_v1";
 pub(super) const PREPARE: &str = "/product/strategies/order-plans/prepare";
 pub(super) const RESERVE: &str = "/product/strategies/order-plans/reserve";
+pub(super) const RECONCILE: &str = "/product/strategies/order-plans/reconcile";
+pub(super) const SUBMIT: &str = "/product/strategies/order-plans/submit";
 pub(super) const RELEASE: &str = "/product/strategies/order-plans/release";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -80,6 +84,8 @@ pub struct OrderPlan {
 struct Ledger {
     owner_sha256: String,
     reservations: BTreeMap<String, Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gross_limit: Option<Decimal>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -156,12 +162,14 @@ pub fn release(
         if let Some(r) = released(s, &original)? {
             return release_summary(&r);
         }
+        let submission_state = submission::release_guard(s, &original)?;
         let old = s.runtime().storage.get_json(CASH, &original.account_key)?;
         let mut ledger = match old.clone() {
             Some(raw) => ledger_owned(s, raw)?,
             None => Ledger {
                 owner_sha256: owner(s)?,
                 reservations: BTreeMap::new(),
+                gross_limit: None,
             },
         };
         let amount = ledger.reservations.remove(id).unwrap_or(Decimal::ZERO);
@@ -190,6 +198,7 @@ pub fn release(
                     StorageExpectation::new(CASH, &original.account_key, old),
                     StorageExpectation::new(RELEASES, id, None),
                     StorageExpectation::new(PLANS, id, Some(value(&original)?)),
+                    StorageExpectation::new(submission::STATE, id, submission_state),
                 ],
             )
             .map_err(|_| "order_plan_release_commit_failed")?;
@@ -700,6 +709,7 @@ fn cash(s: &TradeAssemblyService, f: &Facts) -> Result<(Option<Value>, Ledger, D
         None => Ledger {
             owner_sha256: owner(s)?,
             reservations: BTreeMap::new(),
+            gross_limit: None,
         },
     };
     if ledger.owner_sha256 != owner(s)? || ledger.reservations.len() > 256 {
@@ -716,6 +726,16 @@ fn cash(s: &TradeAssemblyService, f: &Facts) -> Result<(Option<Value>, Ledger, D
         return Err("order_plan_cash_unavailable".into());
     }
     Ok((old, ledger, f.available.checked_subtract(reserved)?))
+}
+fn ledger_policy(ledger: &mut Ledger, p: &Policy) -> Result<(), String> {
+    if ledger.reservations.is_empty() {
+        ledger.gross_limit = Some(p.max_premium_gross);
+        return Ok(());
+    }
+    if ledger.gross_limit != Some(p.max_premium_gross) {
+        return Err("order_plan_account_gross_policy_conflict".into());
+    }
+    Ok(())
 }
 fn risk(
     p: &Policy,
@@ -956,6 +976,7 @@ fn persist_prepared(
     mut ledger: Ledger,
     ctx: &SideEffectContext,
 ) -> Result<(), String> {
+    ledger_policy(&mut ledger, &result.policy)?;
     if result.owner_sha256 != owner(s)?
         || result.command.mode != "paper"
         || ctx.authority.account_mode != "paper"
@@ -984,6 +1005,7 @@ fn persist_prepared(
     let mut expectations = vec![
         StorageExpectation::new(PLANS, &result.plan_id, None),
         StorageExpectation::new(RELEASES, &result.plan_id, None),
+        StorageExpectation::new(submission::STATE, &result.plan_id, None),
         StorageExpectation::new(KEYS, key, None),
         StorageExpectation::new(ENTRIES, &result.entry_id, None),
         StorageExpectation::new(COMMANDS, &hash(&(owner(s)?, &result.command))?, None),
@@ -1076,6 +1098,9 @@ fn read_owned(s: &TradeAssemblyService, id: &str) -> Result<OrderPlan, String> {
     Ok(r)
 }
 pub fn current(s: &TradeAssemblyService, id: &str) -> Result<OrderPlan, String> {
+    checked_current(s, id).map(|(r, _)| r)
+}
+fn checked_current(s: &TradeAssemblyService, id: &str) -> Result<(OrderPlan, Facts), String> {
     let r = read_owned(s, id)?;
     if released(s, &r)?.is_some() {
         return Err("order_plan_reservation_released".into());
@@ -1095,7 +1120,7 @@ pub fn current(s: &TradeAssemblyService, id: &str) -> Result<OrderPlan, String> 
     {
         return Err("order_plan_binding_stale".into());
     }
-    Ok(r)
+    Ok((r, f))
 }
 pub fn reserve(
     s: &TradeAssemblyService,
@@ -1106,6 +1131,7 @@ pub fn reserve(
         return Err("order_plan_mode_unsupported".into());
     }
     let original = read_owned(s, id)?;
+    submission::reserve_guard(s, &original)?;
     if released(s, &original)?.is_some() {
         return Err("order_plan_reservation_released".into());
     }
@@ -1116,6 +1142,7 @@ pub fn reserve(
         let r = current(s, id)?;
         let f = facts(s, &r.command, &r.policy)?;
         let (old, mut ledger, available) = cash(s, &f)?;
+        ledger_policy(&mut ledger, &r.policy)?;
         if let Some(amount) = ledger.reservations.get(id) {
             if *amount != r.purchase_cash {
                 return Err("order_plan_reservation_conflict".into());
@@ -1154,6 +1181,7 @@ fn commit_reservation(
         &[
             StorageExpectation::new(CASH, &r.account_key, old),
             StorageExpectation::new(RELEASES, &r.plan_id, None),
+            StorageExpectation::new(submission::STATE, &r.plan_id, None),
             StorageExpectation::new(PLANS, &r.plan_id, Some(value(r)?)),
         ],
     )
@@ -1174,7 +1202,8 @@ pub(super) fn preflight(
     path: &str,
     body: &Value,
 ) -> Option<ServiceResponse> {
-    if path != PREPARE && path != RESERVE && path != RELEASE {
+    if path != PREPARE && path != RESERVE && path != RELEASE && path != SUBMIT && path != RECONCILE
+    {
         return None;
     }
     let result = (|| {
@@ -1197,7 +1226,13 @@ pub(super) fn preflight(
             // and immediately before its atomic plan/cash commit.
             policy(s, &c)?;
         } else {
-            let r = read_owned(s, body["planId"].as_str().ok_or("order_plan_id_required")?)?;
+            let plan_id = if path == SUBMIT {
+                body["submission"]["planId"].as_str()
+            } else {
+                body["planId"].as_str()
+            }
+            .ok_or("order_plan_id_required")?;
+            let r = read_owned(s, plan_id)?;
             if e.target_object.as_deref() != Some(r.command.scope.strategy_id.as_str())
                 || body["scope"] != value(&r.command.scope)?
             {
@@ -1227,6 +1262,20 @@ pub(super) fn response(s: &TradeAssemblyService, path: &str, body: Value) -> Ser
             let r = prepare(s, command(&body)?, &ctx)?;
             Ok(
                 json!({"planId":r.plan_id,"order":r.order,"purchaseCash":r.purchase_cash,"validUntilMs":r.valid_until_ms,"cashReservedAtPreparation":r.command.reserve_cash,"currentness":"not_checked","executionAuthorityGranted":false,"brokerDispatchAllowed":false}),
+            )
+        } else if path == RECONCILE {
+            transport::reconcile(
+                s,
+                body["planId"].as_str().ok_or("order_plan_id_required")?,
+                body["idempotencyKey"]
+                    .as_str()
+                    .ok_or("order_plan_idempotency_required")?,
+            )
+        } else if path == SUBMIT {
+            transport::submit(
+                s,
+                serde_json::from_value(body["submission"].clone())
+                    .map_err(|_| "broker_v2_command_invalid")?,
             )
         } else if path == RELEASE {
             release(

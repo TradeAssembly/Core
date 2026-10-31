@@ -36,6 +36,11 @@ pub(crate) struct PreparedPluginInvocation {
     timeout_ms: u64,
 }
 
+impl PreparedPluginInvocation {
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.operation["effect"] == "read"
+    }
+}
 impl ExternalPluginHost {
     pub fn new(
         registry: Arc<dyn PluginRegistryPort>,
@@ -169,6 +174,11 @@ impl ExternalPluginHost {
                 request.mode.as_str()
             ),
             ("broker.order_lookup", "broker.order_lookup.live", "live")
+                | (
+                    "broker.order_lookup.paper_v2",
+                    "broker.order_lookup.paper@2",
+                    "paper"
+                )
                 | (
                     "broker.order_lookup.paper",
                     "broker.order_lookup.paper",

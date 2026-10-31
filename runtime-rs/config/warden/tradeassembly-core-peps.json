@@ -76,7 +76,8 @@
       "strategy.data_collection.create",
       "strategy.instrument_screen.create",
       "strategy.session_schedule.prepare",
-      "strategy.order_plan.manage"
+      "strategy.order_plan.manage",
+      "strategy.order_plan.submit"
     ],
     "resources": [
       "activation",

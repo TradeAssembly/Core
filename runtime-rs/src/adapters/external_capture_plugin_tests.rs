@@ -22,6 +22,10 @@ impl VersionedPort for ForwardNative {
     }
 }
 impl PluginOperationPort for ForwardNative {
+    fn verify_broker_boundary(&self)->Result<(),String>{self.0.lock().unwrap().as_ref().ok_or("fixture_host_missing")?.verify_broker_boundary()}
+    fn invoke_order_v2(&self,r:&PluginOperationRequest,c:&SideEffectContext,s:&crate::broker_submission::v2::OrderPlanSource)->Result<PluginOperationResponse,String>{self.0.lock().unwrap().as_ref().ok_or("fixture_host_missing")?.invoke_order_v2(r,c,s)}
+    fn reconcile_order_v2(&self,s:&crate::broker_submission::v2::OrderPlanSource,c:&SideEffectContext)->Result<crate::broker_submission::v2::RecoveryResult,String>{self.0.lock().unwrap().as_ref().ok_or("fixture_host_missing")?.reconcile_order_v2(s,c)}
+
     fn invoke(
         &self,
         r: &PluginOperationRequest,
@@ -2035,3 +2039,5 @@ fn scheduler_v3_actual_core_relay_record_ack_loss_process_journey(){
  for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH","REACH_DATA_TEST_SRT","REACH_DATA_TEST_SOURCE_REVISION","REACH_DATA_TEST_CASE_ID","SCHEDULER_V3_JOINT_DRIVER"]{assert!(std::env::var_os(name).is_some(),"required joint input: {name}");}
  screen_process_fixture("session_remote");
 }
+
+include!("external_order_submission_tests.rs");

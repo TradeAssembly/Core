@@ -144,6 +144,22 @@ fn calendar(
     }
     Ok((document, r.receipt_sha256))
 }
+pub(crate) fn command_binding(
+    s: &TradeAssemblyService,
+    c: &ScheduleCommand,
+) -> Result<String, String> {
+    let t = policy(s, c)?;
+    let at = s.runtime().clock.now_ms();
+    let (_, a) = calendar(s, c, &c.calendar_collection_id, &t.calendar, at)?;
+    let (_, b) = calendar(
+        s,
+        c,
+        &c.execution_calendar_collection_id,
+        &t.execution_window.calendar,
+        at,
+    )?;
+    hash(&(c, t, a, b))
+}
 fn build(
     s: &TradeAssemblyService,
     c: &ScheduleCommand,

@@ -21,6 +21,11 @@ pub const TRADEASSEMBLY_PEP_MANIFEST: &str =
     include_str!("../config/warden/tradeassembly-core-peps.json");
 
 pub trait FinanceAuthorityPort: Send + Sync {
+    /// Non-secret identity of the exact configured control-plane policy.
+    /// Metadata only: possession of this digest is never an authorization.
+    fn command_policy_sha256(&self) -> Result<String, String> {
+        Err("command_policy_identity_unsupported".into())
+    }
     /// Availability only; callers must not treat this as an order permit.
     fn verify_broker_boundary(&self) -> Result<(), String> {
         Err("broker_submission_authority_unavailable".into())
@@ -978,6 +983,10 @@ impl WardenSidecarAuthority {
 }
 
 impl FinanceAuthorityPort for WardenSidecarAuthority {
+    fn command_policy_sha256(&self) -> Result<String, String> {
+        crate::data_pipeline::canonical_sha256(&self.policy_bundle)
+            .map_err(|_| "command_policy_identity_invalid".into())
+    }
     fn verify_broker_boundary(&self) -> Result<(), String> {
         self.preflight()
     }
@@ -1626,7 +1635,7 @@ struct PepPackEntry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::adapters::local::sqlite::LocalSqliteStorage;
     use crate::control_plane::{graphql_envelope, http_envelope, mcp_envelope};
@@ -1643,7 +1652,7 @@ mod tests {
     const TEST_TOKEN: &str = "test-warden-token-with-at-least-32-bytes";
 
     #[derive(Clone, Copy, Debug)]
-    enum MockBehavior {
+    pub(crate) enum MockBehavior {
         Allow,
         Deny,
         VersionMismatch,
@@ -1659,8 +1668,8 @@ mod tests {
         receipt: Mutex<Option<Value>>,
     }
 
-    struct MockServer {
-        base_url: String,
+    pub(crate) struct MockServer {
+        pub(crate) base_url: String,
         state: Arc<MockState>,
         shutdown: Option<oneshot::Sender<()>>,
         thread: Option<std::thread::JoinHandle<()>>,
@@ -1677,7 +1686,7 @@ mod tests {
         }
     }
 
-    fn spawn_mock_warden(behavior: MockBehavior) -> MockServer {
+    pub(crate) fn spawn_mock_warden(behavior: MockBehavior) -> MockServer {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock listener");
         listener
             .set_nonblocking(true)
@@ -1881,6 +1890,32 @@ mod tests {
         .unwrap();
         let original: Value = serde_json::from_str(TRADEASSEMBLY_POLICY_BUNDLE).unwrap();
         assert_eq!(authority.policy_bundle, original);
+        let original_digest = authority.command_policy_sha256().unwrap();
+        assert_eq!(
+            original_digest,
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json_canonicalizer::to_vec(&original).unwrap())
+            ),
+            "normal shipping policy identity remains unchanged"
+        );
+        for unsafe_integer in [9_007_199_254_740_992u64, 9_007_199_254_740_993] {
+            let mut bundle = original.clone();
+            bundle["identity_test_limit"] = json!(unsafe_integer);
+            assert_eq!(
+                authority
+                    .clone()
+                    .with_policy_bundle(bundle)
+                    .unwrap()
+                    .command_policy_sha256()
+                    .unwrap_err(),
+                "command_policy_identity_invalid"
+            );
+        }
+        assert_eq!(
+            original_digest,
+            authority.clone().command_policy_sha256().unwrap()
+        );
         for invalid in [
             Value::Null,
             json!({"schema_version":"other","rules":[]}),
@@ -1891,6 +1926,15 @@ mod tests {
         }
         let mut changed = original.clone();
         changed["version"] = json!("isolated-version");
+        assert_ne!(
+            original_digest,
+            authority
+                .clone()
+                .with_policy_bundle(changed.clone())
+                .unwrap()
+                .command_policy_sha256()
+                .unwrap()
+        );
         assert_eq!(
             authority
                 .clone()

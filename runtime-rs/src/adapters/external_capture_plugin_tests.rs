@@ -1879,9 +1879,36 @@ fn session_calendar_process_fixture(closed:bool){
  let receipt=schedules::current(&service,occurrence).unwrap();assert_eq!(receipt.occurrence.status,if closed{crate::session_schedule::SessionOccurrenceStatus::Closed}else{crate::session_schedule::SessionOccurrenceStatus::Scheduled});
  let retry=service.handle_http("POST","/product/strategies/session-schedules/prepare",body.clone());assert_eq!(retry.status,200,"{}",retry.body);assert_eq!(retry.body["schedule"],response.body["schedule"]);
  let mcp=service.call_mcp_tool("tradeassembly.strategy.session_schedule.get",json!({"occurrenceId":occurrence}));assert_ne!(mcp["isError"],true,"{mcp}");assert_eq!(mcp["structuredContent"]["schedule"],response.body["schedule"]);write_screen_interface_evidence(case,"get-mcp.json",&mcp);
+ use crate::service::data_runner::{DataRunnerCommand,DataRunnerMode,DataRunnerOperation,DataRunnerState,DurableCoreDataRunner};
+ let runner_command=DataRunnerCommand{schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:"fixture.command".into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new("fixture.command").unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:service.runtime().clock.now_ms(),operation:DataRunnerOperation::PrepareSession{schedule:command.clone()}};
+ let runner=DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();
+ // An in-flight identical command must remain pending without dispatching a
+ // competing domain mutation or committing a false failure.
+ let held=service.runtime().leases.acquire(&format!("data-runner:{}",runner_command.canonical_hash().unwrap()),"fixture.concurrent.owner",service.runtime().clock.now_ms(),120000).unwrap().unwrap();
+ let operations_before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+ let pending=runner.dispatch(&runner_command).unwrap();assert_eq!(pending.state,DataRunnerState::Accepted);
+ assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),operations_before);
+ assert!(service.runtime().storage.list_json("data_runner_dispatch_fences_v1").unwrap().is_empty());
+ service.runtime().leases.release(&held).unwrap();
+ if !closed {
+  let connection=rusqlite::Connection::open(dir.path().join("service.db")).unwrap();connection.execute_batch("CREATE TRIGGER fail_data_runner_complete BEFORE UPDATE ON tradeassembly_kv WHEN NEW.namespace='data_runner_receipts_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+  assert_eq!(runner.dispatch(&runner_command).unwrap_err(),"data_runner_complete_commit_failed");let accepted=runner.receipt("fixture.workspace","fixture.command").unwrap().unwrap();assert_eq!(accepted.state,DataRunnerState::Accepted);assert_eq!(service.runtime().storage.list_json("data_runner_receipt_revisions_v1").unwrap().len(),1);connection.execute_batch("DROP TRIGGER fail_data_runner_complete;").unwrap();
+ }
+ let runner_receipt=runner.dispatch(&runner_command).unwrap();assert_eq!(runner_receipt.state,DataRunnerState::Completed);assert!(!runner_receipt.execution_authority_granted);assert!(runner_receipt.previous_receipt_sha256.is_some());assert_eq!(runner.dispatch(&runner_command).unwrap(),runner_receipt);
+ assert_eq!(service.runtime().storage.list_json("data_runner_receipt_revisions_v1").unwrap().len(),2);
+ let mut changed=runner_command.clone();changed.authority_ref="changed.provenance".into();assert_eq!(runner.dispatch(&changed).unwrap_err(),"data_runner_idempotency_conflict");let mut changed=runner_command.clone();changed.command_id="different.command".into();assert_eq!(runner.dispatch(&changed).unwrap_err(),"data_runner_idempotency_conflict");
+ if !closed {
+  let connection=rusqlite::Connection::open(dir.path().join("service.db")).unwrap();connection.execute_batch("CREATE TRIGGER fail_upstream_complete BEFORE UPDATE ON tradeassembly_kv WHEN NEW.namespace='control_plane_commands' AND json_extract(NEW.value_json,'$.response_status') IS NOT NULL BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+  let mut uncertain=runner_command.clone();uncertain.command_id.push_str(".uncertain");uncertain.idempotency_key=IdempotencyKey::new("runner-uncertain").unwrap();
+  let result=runner.dispatch(&uncertain).unwrap();assert_eq!(result.state,DataRunnerState::Uncertain);assert!(result.result.is_none());assert_eq!(runner.receipt(&uncertain.workspace_id,&uncertain.command_id).unwrap().unwrap(),result);write_screen_interface_evidence(case,"data-runner-uncertain.json",&serde_json::to_value(&result).unwrap());
+  connection.execute_batch("DROP TRIGGER fail_upstream_complete;").unwrap();let recovered=runner.dispatch(&uncertain).unwrap();assert_eq!(recovered.state,DataRunnerState::Completed);assert_eq!(recovered.previous_receipt_sha256,Some(result.receipt_sha256));assert_eq!(runner.dispatch(&uncertain).unwrap(),recovered);write_screen_interface_evidence(case,"data-runner-uncertain-recovered.json",&serde_json::to_value(&recovered).unwrap());
+ }
+ maybe_run_data_runner_process(dir.path(),&runner_command,case);
+ write_screen_interface_evidence(case,"data-runner-command.json",&serde_json::to_value(&runner_command).unwrap());write_screen_interface_evidence(case,"data-runner-receipt.json",&serde_json::to_value(&runner_receipt).unwrap());
+ drop(runner);
  let db=dir.path().join("service.db").to_string_lossy().into_owned();drop(service);drop(operations);
  let mut runtime=crate::adapters::local::test_runtime(&db);runtime.plugin_packages=Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(dir.path().join("package-store")).unwrap());
- let service=crate::service::TradeAssemblyService::from_runtime(&db,runtime);assert_eq!(schedules::current(&service,occurrence).unwrap(),receipt);
+ let service=crate::service::TradeAssemblyService::from_runtime(&db,runtime);assert_eq!(schedules::current(&service,occurrence).unwrap(),receipt);let runner=DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();assert_eq!(runner.dispatch(&runner_command).unwrap(),runner_receipt);
 
  let mut runtime=(*service.runtime()).clone();runtime.clock=Arc::new(AdvancedClock{base:service.runtime().clock.clone(),advance:Arc::new(std::sync::atomic::AtomicI64::new(86400001))});let expired=crate::service::TradeAssemblyService::from_runtime(dir.path().join("service.db").to_str().unwrap(),runtime);
  let expired_http=expired.handle_http("POST","/product/strategies/session-schedules/prepare",body.clone());assert_eq!(expired_http.status,409);let expired_mcp=expired.call_mcp_tool("tradeassembly.strategy.session_schedule.get",json!({"occurrenceId":occurrence}));assert_eq!(expired_mcp["isError"],true);write_screen_interface_evidence(case,"expired-http.json",&json!({"status":expired_http.status,"body":expired_http.body}));write_screen_interface_evidence(case,"expired-mcp.json",&expired_mcp);
@@ -1890,4 +1917,28 @@ fn session_calendar_process_fixture(closed:bool){
  assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap().len(),1);
  let mut instance=service.runtime().plugins.get_instance(&source.plugin_ref).unwrap().unwrap();instance["enabled"]=json!(false);service.runtime().plugins.put_instance(&source.plugin_ref,instance,&ctx("calendar-revoke")).unwrap();assert_eq!(service.call_mcp_tool("tradeassembly.strategy.session_schedule.get",json!({"occurrenceId":occurrence}))["isError"],true);
 
+}
+
+// Opt-in finite cross-process acceptance. The normal production runner and its
+// real HTTP authority adapter are used, with only the authority service mocked.
+fn maybe_run_data_runner_process(root:&std::path::Path,command:&crate::service::data_runner::DataRunnerCommand,case:&str){
+ let Some(binary)=std::env::var_os("DATA_RUNNER_PROCESS_BINARY") else{return;};
+ let identity=std::process::Command::new(&binary).arg("--build-identity").output().unwrap();assert!(identity.status.success());let identity:Value=serde_json::from_slice(&identity.stdout).unwrap();let revision=identity["coreRevision"].as_str().unwrap();
+ if let Ok(expected)=std::env::var("DATA_RUNNER_EXPECT_REVISION"){assert_eq!(revision,expected,"use the exact clean candidate executable");}
+ fn copy_tree(source:&std::path::Path,target:&std::path::Path){std::fs::create_dir_all(target).unwrap();for e in std::fs::read_dir(source).unwrap(){let e=e.unwrap();let meta=e.file_type().unwrap();assert!(!meta.is_symlink());let dest=target.join(e.file_name());if meta.is_dir(){copy_tree(&e.path(),&dest);}else{std::fs::copy(e.path(),dest).unwrap();}}}
+ let artifacts=root.join("process-artifacts");copy_tree(&root.join("package-store"),&artifacts.join("plugins"));
+ let state=root.join(".tradeassembly");std::fs::create_dir_all(&state).unwrap();let token=state.join("warden.token");std::fs::write(&token,"fake-data-runner-authority-token-at-least-thirty-two-bytes").unwrap();
+ #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&state,std::fs::Permissions::from_mode(0o700)).unwrap();std::fs::set_permissions(&token,std::fs::Permissions::from_mode(0o600)).unwrap();}
+ use crate::finance_authority::tests::{spawn_mock_warden,MockBehavior};
+ for deny in [false,true]{
+  let authority=spawn_mock_warden(if deny{MockBehavior::Deny}else{MockBehavior::Allow});
+  let mut command=command.clone();command.command_id.push_str(if deny{".process.deny"}else{".process"});command.idempotency_key=IdempotencyKey::new(command.command_id.clone()).unwrap();
+  let requests=[json!({"operation":"data_binding","command":command}),json!({"operation":"dispatch_data","command":command}),json!({"operation":"dispatch_data","command":command}),json!({"operation":"data_receipt","workspace_id":command.workspace_id,"command_id":command.command_id}),json!({"operation":"data_binding","command":command})];
+  let mut child=std::process::Command::new(&binary).args(["--data-only","--db",root.join("service.db").to_str().unwrap(),"--core-release","fixture.release"]).current_dir(root).env_clear().env("TRADEASSEMBLY_ARTIFACT_ROOT",&artifacts).env("TRADEASSEMBLY_WARDEN_SIDECAR_URL",&authority.base_url).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+  let mut stdin=child.stdin.take().unwrap();for r in requests{writeln!(stdin,"{r}").unwrap();}drop(stdin);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(180);loop{if child.try_wait().unwrap().is_some(){break;}
+   if std::time::Instant::now()>=deadline{child.kill().unwrap();child.wait().unwrap();panic!("owned data-runner fixture exceeded180s; preserve original command for recovery");}std::thread::sleep(std::time::Duration::from_millis(10));}let output=child.wait_with_output().unwrap();assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+  let responses=String::from_utf8(output.stdout).unwrap().lines().map(|l|serde_json::from_str::<Value>(l).unwrap()).collect::<Vec<_>>();assert_eq!(responses.len(),5);assert_eq!(responses[0],responses[4]);assert_eq!(responses[0]["ok"],true,"{}",responses[0]);assert_eq!(responses[0]["binding"]["coreRevision"],revision);assert_eq!(responses[0]["binding"]["scope"],serde_json::to_value(match &command.operation{crate::service::data_runner::DataRunnerOperation::PrepareSession{schedule}=>&schedule.scope,_=>unreachable!()}).unwrap());assert_eq!(responses[0]["binding"]["action"],"strategy.session_schedule.prepare");assert_eq!(responses[0]["binding"]["executionAuthorityGranted"],false);assert!(responses[0]["binding"]["ownerBindingSha256"].is_null());
+  for r in &responses[1..4]{assert_eq!(r["ok"],true,"{r}");assert_eq!(r["receipt"]["executionAuthorityGranted"],false,"{r}");assert_eq!(r["receipt"]["coreRevision"],revision);assert_eq!(r["receipt"]["state"],if deny{"failed"}else{"completed"},"{r}");if deny{assert!(r["receipt"]["result"].is_null());}else{assert_eq!(r["receipt"]["result"]["kind"],"session");}}
+  assert_eq!(responses[1],responses[2]);assert_eq!(responses[1],responses[3]);write_screen_interface_evidence(case,if deny{"process-deny.json"}else{"process-allow.json"},&serde_json::to_value(responses).unwrap());
+ }
 }

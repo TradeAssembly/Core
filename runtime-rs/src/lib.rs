@@ -29,6 +29,8 @@ pub mod connection_profile;
 pub mod control_plane;
 #[path = "../../platform/control_plane_redaction.rs"]
 mod control_plane_redaction;
+pub mod data_pipeline;
+pub mod data_strategy;
 pub mod demos;
 pub mod derivatives_analysis;
 pub mod domain;
@@ -52,6 +54,7 @@ pub(crate) mod live_execution_checks;
 pub mod local_install;
 pub mod local_live_authorization;
 pub mod local_owner_identity;
+pub mod option_selection;
 #[doc(hidden)]
 #[path = "../../platform/workspace_bootstrap.rs"]
 pub mod workspace_bootstrap;
@@ -83,6 +86,7 @@ pub mod scheduler;
 pub mod seed;
 pub mod selector;
 pub mod service;
+pub mod session_schedule;
 pub mod simbroker;
 pub use tradeassembly_strategy::spec;
 pub mod storage;

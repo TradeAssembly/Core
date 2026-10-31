@@ -82,7 +82,9 @@ pub use paper_runner_bridge::{
     CORE_PAPER_RUNNER_SCHEMA, CORE_PAPER_RUNNER_VERSION,
 };
 pub use plugin_operation::{PluginOperationPort, PluginOperationRequest, PluginOperationResponse};
-pub use plugin_package::{InstalledPluginPackage, PluginPackageInstallRequest, PluginPackagePort};
+pub use plugin_package::{
+    InstalledPluginPackage, OperationDataSnapshot, PluginPackageInstallRequest, PluginPackagePort,
+};
 pub use plugin_sandbox::{PluginProcessSandboxPort, PluginSandboxRequest, SandboxedPluginProcess};
 pub use provider::{ProviderCapability, ProviderPort};
 pub use reach::{

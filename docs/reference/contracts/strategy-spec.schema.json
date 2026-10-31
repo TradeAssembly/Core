@@ -444,6 +444,16 @@
               "type": "null"
             }
           ]
+        },
+        "screen": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstrumentScreen"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -457,7 +467,8 @@
       "enum": [
         "normalized_instrument",
         "symbolic_alias",
-        "dynamic"
+        "dynamic",
+        "screened"
       ]
     },
     "Expression": {
@@ -1011,6 +1022,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Expression"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "option_selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptionSelection"
             },
             {
               "type": "null"
@@ -1678,6 +1699,12 @@
               "type": "null"
             }
           ]
+        },
+        "session_triggers": {
+          "items": {
+            "$ref": "#/$defs/SessionTrigger"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
@@ -1719,6 +1746,665 @@
         "follow_calendar",
         "exclude"
       ]
+    },
+    "ExpiryRange": {
+      "additionalProperties": false,
+      "properties": {
+        "earliest": {
+          "description": "Inclusive ISO-8601 UTC calendar dates. DTE is UTC date difference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MissingOptionData": {
+      "enum": [
+        "reject_candidate",
+        "fail_stage"
+      ],
+      "type": "string"
+    },
+    "NoEligibleOption": {
+      "enum": [
+        "no_eligible_contract",
+        "fail_stage"
+      ],
+      "type": "string"
+    },
+    "NumericRange": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OptionAnalytics": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider_supplied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "capability_requirement_ref": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "explicit_model",
+              "type": "string"
+            },
+            "semantics_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "capability_requirement_ref",
+            "semantics_version"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OptionFilters": {
+      "additionalProperties": false,
+      "properties": {
+        "delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumericRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Signed delta, not absolute delta; puts normally have negative delta."
+        },
+        "dte": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumericRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExpiryRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_relative_spread": {
+          "description": "(ask-bid)/((ask+bid)/2); zero mid is unavailable, never zero spread.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_open_interest": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_volume": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "right": {
+          "$ref": "#/$defs/OptionRight"
+        },
+        "strike": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumericRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "right"
+      ],
+      "type": "object"
+    },
+    "OptionRankField": {
+      "enum": [
+        "dte",
+        "strike",
+        "delta",
+        "volume",
+        "open_interest",
+        "relative_spread"
+      ],
+      "type": "string"
+    },
+    "OptionRanking": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/RankDirection"
+        },
+        "field": {
+          "$ref": "#/$defs/OptionRankField"
+        },
+        "target": {
+          "description": "When set, compare absolute distance from this target.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "field",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "OptionRight": {
+      "enum": [
+        "call",
+        "put"
+      ],
+      "type": "string"
+    },
+    "OptionSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "analytics": {
+          "$ref": "#/$defs/OptionAnalytics"
+        },
+        "chain_capability_requirement_ref": {
+          "type": "string"
+        },
+        "filters": {
+          "$ref": "#/$defs/OptionFilters"
+        },
+        "max_age_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_contracts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_pages": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing_data": {
+          "$ref": "#/$defs/MissingOptionData"
+        },
+        "no_match": {
+          "$ref": "#/$defs/NoEligibleOption"
+        },
+        "ranking": {
+          "items": {
+            "$ref": "#/$defs/OptionRanking"
+          },
+          "type": "array"
+        },
+        "signal_requirement_ref": {
+          "type": "string"
+        },
+        "tiebreak": {
+          "$ref": "#/$defs/OptionTiebreak"
+        },
+        "underlying_selector_ref": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/OptionSelectionVersion"
+        },
+        "trade_requirement_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "signal_requirement_ref",
+        "trade_requirement_ref",
+        "underlying_selector_ref",
+        "chain_capability_requirement_ref",
+        "filters",
+        "analytics",
+        "ranking",
+        "tiebreak",
+        "missing_data",
+        "no_match",
+        "max_age_ms",
+        "max_contracts",
+        "max_pages"
+      ],
+      "type": "object"
+    },
+    "OptionSelectionVersion": {
+      "enum": [
+        "tradeassembly.option_selection.v1"
+      ],
+      "type": "string"
+    },
+    "OptionTiebreak": {
+      "enum": [
+        "contract_id_ascending"
+      ],
+      "type": "string"
+    },
+    "RankDirection": {
+      "enum": [
+        "ascending",
+        "descending"
+      ],
+      "type": "string"
+    },
+    "CollectionCoverageRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "complete_pointer": {
+          "description": "RFC6901 pointer whose actual provider value must be boolean true.",
+          "type": "string"
+        },
+        "scope_pointer": {
+          "description": "Exact provider scope identity; the host does not infer a global market.",
+          "type": "string"
+        },
+        "scope_value": true
+      },
+      "required": [
+        "complete_pointer",
+        "scope_pointer",
+        "scope_value"
+      ],
+      "type": "object"
+    },
+    "InstrumentScreen": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_requirement_ref": {
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/$defs/ScreenCoveragePolicy"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ScreenCollectionInput"
+          },
+          "type": "object"
+        },
+        "max_candidates": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "parameters": true,
+        "semantics_version": {
+          "type": "string"
+        },
+        "top_n": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ttl_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "$ref": "#/$defs/InstrumentScreenVersion"
+        },
+        "candidate_id_pointer": {
+          "type": "string"
+        },
+        "candidate_input": {
+          "description": "Exact candidate table and ID projection in one admitted named input.",
+          "type": "string"
+        },
+        "candidate_records_pointer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "capability_requirement_ref",
+        "semantics_version",
+        "inputs",
+        "candidate_input",
+        "candidate_records_pointer",
+        "candidate_id_pointer",
+        "parameters",
+        "coverage",
+        "max_candidates",
+        "top_n",
+        "ttl_ms"
+      ],
+      "type": "object"
+    },
+    "InstrumentScreenVersion": {
+      "enum": [
+        "tradeassembly.instrument_screen.v1"
+      ],
+      "type": "string"
+    },
+    "QueryDateBasis": {
+      "enum": [
+        "selection_utc_date"
+      ],
+      "type": "string"
+    },
+    "QueryDateBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/QueryDateBasis"
+        },
+        "offset_calendar_days": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "basis",
+        "offset_calendar_days"
+      ],
+      "type": "object"
+    },
+    "ScreenCollectionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_requirement_ref": {
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/$defs/CollectionCoverageRequirement"
+        },
+        "max_age_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "query": {
+          "$ref": "#/$defs/ScreenQuery"
+        },
+        "response_schema_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability_requirement_ref",
+        "response_schema_ref",
+        "query",
+        "max_age_ms",
+        "coverage"
+      ],
+      "type": "object"
+    },
+    "ScreenCoveragePolicy": {
+      "oneOf": [
+        {
+          "const": "complete_configured_inputs",
+          "description": "Complete only relative to the explicit configured provider input scopes.",
+          "type": "string"
+        }
+      ]
+    },
+    "ScreenQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "date_bindings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/QueryDateBinding"
+          },
+          "type": "object"
+        },
+        "literal": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "literal",
+        "date_bindings"
+      ],
+      "type": "object"
+    },
+    "MissedSessionPolicy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "skip",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "max_lateness_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "policy": {
+              "const": "catch_up",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "max_lateness_ms"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionAnchor": {
+      "enum": [
+        "open",
+        "close"
+      ],
+      "type": "string"
+    },
+    "SessionCalendarBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "calendar_ref": {
+          "type": "string"
+        },
+        "capability_requirement_ref": {
+          "type": "string"
+        },
+        "max_age_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_scope": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability_requirement_ref",
+        "calendar_ref",
+        "timezone",
+        "session_scope",
+        "max_age_ms"
+      ],
+      "type": "object"
+    },
+    "SessionExecutionWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "calendar": {
+          "$ref": "#/$defs/SessionCalendarBinding"
+        },
+        "close_offset_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "open_offset_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "calendar",
+        "open_offset_ms",
+        "close_offset_ms"
+      ],
+      "type": "object"
+    },
+    "SessionRetryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "backoff_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_attempts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_attempts",
+        "backoff_ms"
+      ],
+      "type": "object"
+    },
+    "SessionSelectionTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "selector_ref": {
+          "type": "string"
+        },
+        "signal_requirement_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "signal_requirement_ref",
+        "selector_ref"
+      ],
+      "type": "object"
+    },
+    "SessionTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/SessionAnchor"
+        },
+        "calendar": {
+          "$ref": "#/$defs/SessionCalendarBinding"
+        },
+        "execution_window": {
+          "$ref": "#/$defs/SessionExecutionWindow"
+        },
+        "missed_run": {
+          "$ref": "#/$defs/MissedSessionPolicy"
+        },
+        "offset_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "retry": {
+          "$ref": "#/$defs/SessionRetryPolicy"
+        },
+        "selections": {
+          "items": {
+            "$ref": "#/$defs/SessionSelectionTarget"
+          },
+          "type": "array"
+        },
+        "trigger_id": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/SessionTriggerVersion"
+        }
+      },
+      "required": [
+        "version",
+        "trigger_id",
+        "calendar",
+        "anchor",
+        "offset_ms",
+        "missed_run",
+        "retry",
+        "execution_window",
+        "selections"
+      ],
+      "type": "object"
+    },
+    "SessionTriggerVersion": {
+      "enum": [
+        "tradeassembly.session_trigger.v1"
+      ],
+      "type": "string"
     }
   }
 }

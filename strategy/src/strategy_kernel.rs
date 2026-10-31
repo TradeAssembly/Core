@@ -169,6 +169,21 @@ impl CompiledStrategy {
     }
 
     pub fn compile(spec: &StrategySpec) -> Result<Self, KernelError> {
+        if !spec.stages.market_clock.policy.session_triggers.is_empty() {
+            return Err(KernelError::UnsupportedSemantics(
+                "session trigger requires occurrence-aware evaluator",
+            ));
+        }
+        if spec
+            .signal_market_requirements
+            .iter()
+            .flat_map(|m| &m.selectors)
+            .any(|s| s.screen.is_some() || s.selector_type == crate::spec::SelectorType::Screened)
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "screened selector requires instrument-selection evaluator",
+            ));
+        }
         if spec
             .stages
             .evaluate
@@ -178,6 +193,31 @@ impl CompiledStrategy {
         {
             return Err(KernelError::UnsupportedSemantics(
                 "portfolio strategy requires timestamped portfolio evaluator",
+            ));
+        }
+        if spec
+            .stages
+            .evaluate
+            .substeps
+            .iter()
+            .any(|step| step.config.contains_key("tradeassembly.data_strategy"))
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "typed data strategy requires stateful data evaluator",
+            ));
+        }
+        if crate::spec::StageName::VALIDATION_ORDER
+            .iter()
+            .any(|stage| {
+                spec.stages
+                    .view(stage)
+                    .substeps
+                    .iter()
+                    .any(|step| step.option_selection.is_some())
+            })
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "option selection requires provider-backed selection stage",
             ));
         }
         let stages = &spec.stages;

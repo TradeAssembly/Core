@@ -401,6 +401,43 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", "/product/sightline/events") => "sightline.events.list".to_string(),
         ("POST", "/product/strategies/publish") => "strategy.version.publish".to_string(),
         ("POST", "/capabilities/graph/resolve") => "capability.graph.resolve".to_string(),
+        ("POST", "/product/strategies/option-selections/create") => {
+            "strategy.option_selection.create".into()
+        }
+        ("POST", "/product/strategies/session-schedules/prepare") => {
+            "strategy.session_schedule.prepare".into()
+        }
+        ("POST", "/product/strategies/session-schedules/get") => {
+            "strategy.session_schedule.get".into()
+        }
+        ("POST", "/product/strategies/instrument-screens/create") => {
+            "strategy.instrument_screen.create".into()
+        }
+        ("POST", "/product/strategies/instrument-screens/get") => {
+            "strategy.instrument_screen.get".into()
+        }
+        ("POST", "/product/strategies/data-collections/create") => {
+            "strategy.data_collection.create".into()
+        }
+        ("POST", "/product/strategies/data-collections/get") => {
+            "strategy.data_collection.get".into()
+        }
+        ("POST", "/product/strategies/data-captures/create") => {
+            "strategy.data_capture.create".to_string()
+        }
+        ("POST", "/product/strategies/data-captures/get") => {
+            "strategy.data_capture.get".to_string()
+        }
+        ("POST", "/product/strategies/data-recipes/step") => {
+            "strategy.data_recipe.step".to_string()
+        }
+        ("POST", "/product/strategies/data-recipes/prepare") => {
+            "strategy.data_recipe.prepare".to_string()
+        }
+        ("POST", "/product/strategies/data-plans/prepare") => {
+            "strategy.data_plan.prepare".to_string()
+        }
+        ("POST", "/product/strategies/data-runs/step") => "strategy.data_run.step".to_string(),
         ("POST", "/capability-graph-revisions") => "capability.binding.revision.save".to_string(),
         ("POST", "/capability-graph-revisions/currentness") => {
             "capability.graph.currentness.check".to_string()
@@ -679,6 +716,43 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.plugin.capability_graph_resolve" => {
             return "capability.graph.resolve".to_string();
         }
+        "tradeassembly.strategy.option_selection.create" => {
+            return "strategy.option_selection.create".into()
+        }
+        "tradeassembly.strategy.session_schedule.prepare" => {
+            return "strategy.session_schedule.prepare".into()
+        }
+        "tradeassembly.strategy.session_schedule.get" => {
+            return "strategy.session_schedule.get".into()
+        }
+        "tradeassembly.strategy.instrument_screen.create" => {
+            return "strategy.instrument_screen.create".into()
+        }
+        "tradeassembly.strategy.instrument_screen.get" => {
+            return "strategy.instrument_screen.get".into()
+        }
+        "tradeassembly.strategy.data_collection.create" => {
+            return "strategy.data_collection.create".into()
+        }
+        "tradeassembly.strategy.data_collection.get" => {
+            return "strategy.data_collection.get".into()
+        }
+        "tradeassembly.strategy.data_capture.create" => {
+            return "strategy.data_capture.create".to_string()
+        }
+        "tradeassembly.strategy.data_capture.get" => {
+            return "strategy.data_capture.get".to_string()
+        }
+        "tradeassembly.strategy.data_recipe.step" => {
+            return "strategy.data_recipe.step".to_string()
+        }
+        "tradeassembly.strategy.data_recipe.prepare" => {
+            return "strategy.data_recipe.prepare".to_string()
+        }
+        "tradeassembly.strategy.data_plan.prepare" => {
+            return "strategy.data_plan.prepare".to_string()
+        }
+        "tradeassembly.strategy.data_run.step" => return "strategy.data_run.step".to_string(),
         "tradeassembly.plugin.capability_revision_save" => {
             return "capability.binding.revision.save".to_string();
         }
@@ -1225,6 +1299,21 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if is_read_http_route(method, path) {
         return "read".to_string();
     }
+    if path == "/product/strategies/session-schedules/get"
+        || path == "/product/strategies/instrument-screens/get"
+        || path == "/product/strategies/data-captures/get"
+        || path == "/product/strategies/data-collections/get"
+    {
+        return "read".into();
+    }
+    if path == "/product/strategies/session-schedules/prepare"
+        || path == "/product/strategies/instrument-screens/create"
+        || path == "/product/strategies/data-collections/create"
+        || path == "/product/strategies/data-captures/create"
+        || path == "/product/strategies/option-selections/create"
+    {
+        return "research".into();
+    }
     if path == "/product/sightline/context/get" {
         return "read".to_string();
     }
@@ -1256,6 +1345,18 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
         } else {
             "paper".to_string()
         };
+    }
+    if matches!(
+        path,
+        "/product/strategies/data-plans/prepare" | "/product/strategies/data-recipes/prepare"
+    ) {
+        return "mutation".to_string();
+    }
+    if matches!(
+        path,
+        "/product/strategies/data-runs/step" | "/product/strategies/data-recipes/step"
+    ) {
+        return "research".to_string();
     }
     if path.contains("strategy-execution-configs") {
         return "mutation".to_string();

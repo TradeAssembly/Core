@@ -272,6 +272,7 @@ fn validate_core_semantics(spec: &StrategySpec, diagnostics: &mut Vec<Diagnostic
                 selector.normalized_id.is_some(),
                 selector.alias.is_some(),
                 selector.expression.is_some(),
+                selector.screen.is_some(),
             ]
             .into_iter()
             .filter(|set| *set)
@@ -280,9 +281,12 @@ fn validate_core_semantics(spec: &StrategySpec, diagnostics: &mut Vec<Diagnostic
                 diagnostics.push(Diagnostic::error(
                     3,
                     "SPEC_SELECTOR_SHAPE_INVALID",
-                    selector_pointer,
-                    "selector must set exactly one identity or dynamic expression",
+                    &selector_pointer,
+                    "selector must set exactly one identity, expression, or screened producer",
                 ));
+            }
+            if selector.screen.is_some() || selector.selector_type == SelectorType::Screened {
+                validate_screen_selector(spec, selector, &selector_pointer, diagnostics);
             }
         }
     }
@@ -371,6 +375,67 @@ fn validate_core_semantics(spec: &StrategySpec, diagnostics: &mut Vec<Diagnostic
             "/portfolio_scope",
             "account scope requires portfolio.account.read@1",
         ));
+    }
+}
+
+fn validate_screen_selector(
+    spec: &StrategySpec,
+    selector: &InstrumentSelector,
+    pointer: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(policy) = &selector.screen else {
+        diagnostics.push(Diagnostic::error(
+            3,
+            "SPEC_SCREEN_BINDING_INVALID",
+            pointer,
+            "screened selector requires an explicit producer",
+        ));
+        return;
+    };
+    if let Err(code) = policy.validate() {
+        diagnostics.push(Diagnostic::error(
+            3,
+            "SPEC_SCREEN_POLICY_INVALID",
+            format!("{pointer}/screen"),
+            code,
+        ));
+    }
+    let required = &spec.capability_requirements.required;
+    let screen = required
+        .iter()
+        .find(|r| r.requirement_id == policy.capability_requirement_ref);
+    let valid_screen = screen.is_some_and(|r| {
+        r.fallback_policy == FallbackPolicy::None
+            && r.stage_refs.contains(&StageName::Universe)
+            && r.constraints
+                .data_shapes
+                .iter()
+                .any(|s| s == "instrument_set")
+            && [super::SCREEN_REQUEST_SCHEMA, super::SCREEN_RESULT_SCHEMA]
+                .iter()
+                .all(|schema| r.constraints.schema_refs.iter().any(|s| s == schema))
+    });
+    let valid_inputs = policy.inputs.values().all(|input| {
+        required.iter().any(|r| {
+            r.requirement_id == input.capability_requirement_ref
+                && r.requirement_id != policy.capability_requirement_ref
+                && r.fallback_policy == FallbackPolicy::None
+                && r.constraints
+                    .schema_refs
+                    .contains(&input.response_schema_ref)
+                && screen.is_some_and(|s| s.dependency_refs.contains(&r.requirement_id))
+        })
+    });
+    if selector.selector_type != SelectorType::Screened
+        || selector.normalized_id.is_some()
+        || selector.alias.is_some()
+        || selector.expression.is_some()
+        || !spec.stages.universe.enabled
+        || !valid_screen
+        || !valid_inputs
+    {
+        diagnostics.push(Diagnostic::error(3,"SPEC_SCREEN_BINDING_INVALID",format!("{pointer}/screen"),"screened selector requires an enabled universe stage, mandatory typed screen and acquisition capabilities, explicit dependencies and no fallback"));
     }
 }
 
@@ -542,6 +607,77 @@ fn validate_stage_semantics(
                     ));
                 }
             }
+            if let Some(selection) = &substep.option_selection {
+                let signal = spec
+                    .signal_market_requirements
+                    .iter()
+                    .find(|r| r.requirement_id == selection.signal_requirement_ref);
+                let valid_context = signal.is_some_and(|r| {
+                    r.selectors
+                        .iter()
+                        .any(|s| s.selector_id == selection.underlying_selector_ref)
+                });
+                if let Err(code) = selection.validate() {
+                    diagnostics.push(Diagnostic::error(
+                        3,
+                        "SPEC_OPTION_SELECTION_INVALID",
+                        format!("{substep_pointer}/option_selection"),
+                        code,
+                    ));
+                }
+                let valid_chain = spec
+                    .capability_requirements
+                    .required
+                    .iter()
+                    .chain(spec.capability_requirements.optional.iter())
+                    .any(|r| {
+                        r.requirement_id == selection.chain_capability_requirement_ref
+                            && r.constraints
+                                .data_shapes
+                                .iter()
+                                .any(|s| s == "option_chain")
+                    });
+                let valid_trade = spec.trade_market_requirements.iter().any(|r| {
+                    r.requirement_id == selection.trade_requirement_ref
+                        && r.instrument_families
+                            .contains(&InstrumentFamily::OptionContract)
+                        && r.signal_requirement_refs
+                            .contains(&selection.signal_requirement_ref)
+                });
+                if stage_name != StageName::Intent
+                    || substep.operation_ref != "option.contract.select@1"
+                    || !valid_chain
+                    || !valid_trade
+                    || !valid_context
+                    || !capability_ids.contains(&selection.chain_capability_requirement_ref)
+                    || !substep
+                        .capability_requirement_refs
+                        .contains(&selection.chain_capability_requirement_ref)
+                    || substep.optional
+                    || substep.kind != SubstepKind::Screen
+                    || substep.failure_policy != FailurePolicy::FailClosed
+                {
+                    diagnostics.push(Diagnostic::error(3, "SPEC_OPTION_SELECTION_BINDING_INVALID", format!("{substep_pointer}/option_selection"), "option selection requires an explicit signal selector, declared chain capability and mandatory fail-closed screen"));
+                }
+                if let super::OptionAnalytics::ExplicitModel {
+                    capability_requirement_ref,
+                    ..
+                } = &selection.analytics
+                {
+                    if !capability_ids.contains(capability_requirement_ref)
+                        || !substep
+                            .capability_requirement_refs
+                            .contains(capability_requirement_ref)
+                    {
+                        diagnostics.push(Diagnostic::error(
+                            3,
+                            "SPEC_OPTION_MODEL_BINDING_INVALID",
+                            format!("{substep_pointer}/option_selection/analytics"),
+                            "explicit model capability must be declared",
+                        ));
+                    }
+                }
+            }
             for key in substep.config.keys() {
                 if !key.contains('.') {
                     diagnostics.push(Diagnostic::error(
@@ -582,6 +718,7 @@ fn validate_stage_semantics(
     validate_order_policy(spec, diagnostics);
     validate_price_policy(spec, diagnostics);
     validate_clock_policy(spec, capability_ids, diagnostics);
+    super::session_schedule::validate_bindings(spec, diagnostics);
 }
 
 fn validate_exit_policy(

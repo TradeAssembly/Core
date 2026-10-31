@@ -257,5 +257,10 @@
   "POST /strategy/contracts/validate",
   "PUT /plugins/instances/{ref}/configuration",
   "PUT /providers/policy",
-  "PUT /risk/account"
+  "PUT /risk/account",
+  "POST /product/strategies/option-selections/create",
+  "POST /product/strategies/data-captures/create",
+  "POST /product/strategies/data-captures/get",
+  "POST /product/strategies/data-plans/prepare",
+  "POST /product/strategies/data-runs/step"
 ]

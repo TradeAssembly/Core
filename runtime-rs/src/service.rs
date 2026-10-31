@@ -24,18 +24,28 @@ pub mod connected_runner;
 mod contracts;
 pub mod core_runner;
 mod credentials;
+pub(crate) mod data_binding;
+pub mod data_captures;
+pub mod data_collections;
+pub mod data_evaluation;
+pub mod data_plans;
+pub mod data_recipes;
+pub mod data_runner;
+pub mod data_strategy;
 mod dataset_ingestion;
 mod derivatives;
 mod execution;
 mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
+pub mod instrument_screens;
 mod journal_view;
 mod lifecycle_calendar;
 mod live_authorization;
 mod marketdata;
 mod object_authorization;
 mod onboarding;
+pub mod option_selections;
 mod options;
 mod orders;
 mod original_cycle_recovery;
@@ -46,6 +56,9 @@ mod positions;
 mod providers;
 pub mod public_workspace;
 pub mod reach;
+pub mod reach_data;
+pub mod reach_data_consumer;
+pub mod reach_data_proofs;
 mod replay;
 mod research;
 mod research_notebook;
@@ -53,6 +66,7 @@ mod risk;
 mod robustness;
 pub mod robustness_lifecycle;
 mod scheduler;
+pub mod session_schedules;
 mod sightline;
 mod strategy;
 mod workers;
@@ -261,6 +275,8 @@ pub struct TradeAssemblyService {
     hosted_oauth_actor: Option<String>,
     invocation_actor_kind: &'static str,
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
+    // Private, one-public-request lifetime; never serialized or shared by roots.
+    data_step_request: Option<Arc<data_evaluation::DataStepRequest>>,
 }
 
 impl fmt::Debug for TradeAssemblyService {
@@ -347,6 +363,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         };
         execution::resume_local_scheduler_workers(&service);
         service
@@ -484,6 +501,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         };
         execution::resume_local_scheduler_workers(&service);
         service
@@ -493,6 +511,12 @@ impl TradeAssemblyService {
         let service = Self::from_config_without_local_scheduler_resume(config)?;
         service.resume_local_scheduler_workers();
         Ok(service)
+    }
+
+    /// Explicit bounded-computation host: opening it does not resume existing
+    /// scheduler workers. This factory does not authenticate or grant permission.
+    pub fn from_config_data_only(config: RuntimeConfig) -> Result<Self, String> {
+        Self::from_config_without_local_scheduler_resume(config)
     }
 
     pub(crate) fn from_config_without_local_scheduler_resume(
@@ -517,6 +541,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         })
     }
 
@@ -542,6 +567,7 @@ impl TradeAssemblyService {
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
         }
     }
 
@@ -1030,6 +1056,16 @@ impl TradeAssemblyService {
         if method.eq_ignore_ascii_case("POST")
             && matches!(
                 normalize_path(path).as_str(),
+                "/product/strategies/data-recipes/step" | "/product/strategies/data-runs/step"
+            )
+            && self.data_step_request.is_none()
+        {
+            let scoped = data_evaluation::request_service(self);
+            return scoped.handle_http_from_source(source_interface, method, path, body);
+        }
+        if method.eq_ignore_ascii_case("POST")
+            && matches!(
+                normalize_path(path).as_str(),
                 "/orders/broker-recovery" | "/execution/recover-original"
             )
             && !broker_recovery::valid_request(&body)
@@ -1058,6 +1094,27 @@ impl TradeAssemblyService {
         if let Some(response) =
             object_authorization::authorize_private_request(self, method, path, &body)
         {
+            return response;
+        }
+        if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = session_schedules::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = instrument_screens::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_collections::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_recipes::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_strategy::preflight(self, &normalized_path, &body) {
             return response;
         }
         if normalized_method == "POST"
@@ -1274,6 +1331,41 @@ impl TradeAssemblyService {
             return response;
         }
         match (normalized_method.as_str(), normalized_path.as_str()) {
+            ("POST", "/product/strategies/option-selections/create") => {
+                option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/session-schedules/prepare") => {
+                session_schedules::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/session-schedules/get") => {
+                session_schedules::get_response(self, body)
+            }
+            ("POST", "/product/strategies/instrument-screens/create") => {
+                instrument_screens::create_response(self, body)
+            }
+            ("POST", "/product/strategies/instrument-screens/get") => {
+                instrument_screens::read_response(self, body)
+            }
+            ("POST", "/product/strategies/data-collections/create") => {
+                data_collections::create_response(self, body)
+            }
+            ("POST", "/product/strategies/data-collections/get") => {
+                data_collections::read_response(self, body)
+            }
+            ("POST", "/product/strategies/data-captures/create") => {
+                data_captures::create(self, body)
+            }
+            ("POST", "/product/strategies/data-captures/get") => data_captures::read(self, body),
+            ("POST", "/product/strategies/data-recipes/step") => {
+                data_recipes::step_response(self, body)
+            }
+            ("POST", "/product/strategies/data-recipes/prepare") => {
+                data_recipes::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/data-plans/prepare") => {
+                data_strategy::prepare(self, body)
+            }
+            ("POST", "/product/strategies/data-runs/step") => data_strategy::evaluate(self, body),
             ("POST", "/product/live-mandates/issue") => live_authorization::issue(self, body),
             ("POST", "/product/live-mandates/revoke") => live_authorization::revoke(self, body),
             ("POST", "/product/live-mandates/status") => live_authorization::status(self, body),
@@ -3223,6 +3315,13 @@ impl TradeAssemblyService {
     pub fn call_mcp_tool(&self, name: &str, arguments: Value) -> Value {
         if matches!(
             name,
+            "tradeassembly.strategy.data_recipe.step" | "tradeassembly.strategy.data_run.step"
+        ) && self.data_step_request.is_none()
+        {
+            return data_evaluation::request_service(self).call_mcp_tool(name, arguments);
+        }
+        if matches!(
+            name,
             "tradeassembly.account.login"
                 | "tradeassembly.onboarding.start"
                 | "tradeassembly.onboarding.status"
@@ -3359,7 +3458,80 @@ impl TradeAssemblyService {
             if let Some(response) =
                 object_authorization::authorize_private_request(self, "POST", path, &arguments)
             {
+                if matches!(
+                    name,
+                    "tradeassembly.strategy.option_selection.create"
+                        | "tradeassembly.strategy.data_collection.create"
+                        | "tradeassembly.strategy.instrument_screen.create"
+                        | "tradeassembly.strategy.data_recipe.prepare"
+                        | "tradeassembly.strategy.data_recipe.step"
+                        | "tradeassembly.strategy.session_schedule.prepare"
+                        | "tradeassembly.strategy.data_capture.create"
+                        | "tradeassembly.strategy.data_plan.prepare"
+                        | "tradeassembly.strategy.data_run.step"
+                ) {
+                    let code = service_error_code(&response.body)
+                        .unwrap_or_else(|| "option_selection_not_available".into());
+                    return mcp::tool_error(
+                        name,
+                        &code,
+                        "Owned strategy data operation is not available.",
+                        None,
+                    );
+                }
                 return response.body;
+            }
+        }
+        if let Some(path) = mcp_object_authorization_route(name) {
+            if let Some(response) = option_selections::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "option_selection_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Option selection failed closed.", None);
+            }
+            if let Some(response) = session_schedules::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "session_schedule_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Session scheduling failed closed.", None);
+            }
+            if let Some(response) = instrument_screens::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "instrument_screen_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Instrument screening failed closed.", None);
+            }
+            if let Some(response) = data_collections::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_collection_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Collection admission failed closed.", None);
+            }
+            if let Some(response) = data_captures::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_capture_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Data capture failed closed.", None);
+            }
+            if let Some(response) = data_recipes::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_recipe_preflight_failed".into());
+                let details = response
+                    .body
+                    .get("diagnostics")
+                    .filter(|value| value.is_array())
+                    .map(|diagnostics| json!({"diagnostics":diagnostics}));
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Recipe data operation failed closed.",
+                    details,
+                );
+            }
+            if let Some(response) = data_strategy::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_strategy_preflight_failed".into());
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Strategy data evaluation failed closed.",
+                    None,
+                );
             }
         }
         // Export remains a protected action, but an implicit retry must observe
@@ -3580,7 +3752,7 @@ impl TradeAssemblyService {
             "tradeassembly.strategy.schema" => json!({
                 "ok": true,
                 "schema": spec::strategy_spec_schema(),
-                "evaluators": [crate::strategy_kernel::portfolio_program::discovery()],
+                "evaluators": [crate::strategy_kernel::portfolio_program::discovery(), crate::data_strategy::discovery()],
                 "guidance": "Encode only owner-supplied strategy rules. Blank drafts are incomplete. Validate before requesting owner publication; publication does not activate execution."
             }),
             "tradeassembly.strategy.create" => self.create_strategy(arguments),
@@ -3639,6 +3811,94 @@ impl TradeAssemblyService {
             }
             "tradeassembly.plugin.capability_resolve" => {
                 providers::resolve_capability(self, providers::requirement_from_body(&arguments))
+            }
+            "tradeassembly.strategy.option_selection.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/option-selections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.session_schedule.prepare" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/session-schedules/prepare",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.session_schedule.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/session-schedules/get",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.instrument_screen.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/instrument-screens/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.instrument_screen.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/instrument-screens/get",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_collection.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-collections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_collection.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-collections/get",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_capture.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-captures/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_capture.get" => {
+                self.dispatch_http("POST", "/product/strategies/data-captures/get", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_recipe.step" => {
+                self.dispatch_http("POST", "/product/strategies/data-recipes/step", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_recipe.prepare" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-recipes/prepare",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_plan.prepare" => {
+                self.dispatch_http("POST", "/product/strategies/data-plans/prepare", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_run.step" => {
+                self.dispatch_http("POST", "/product/strategies/data-runs/step", arguments)
+                    .body
             }
             "tradeassembly.plugin.capability_graph_resolve" => {
                 capability_graph::resolve(self, arguments)
@@ -4114,6 +4374,9 @@ impl TradeAssemblyService {
         ) || name.starts_with("tradeassembly.robustness.")
             || name.starts_with("tradeassembly.derivatives.")
             || name.starts_with("tradeassembly.comparison.")
+            || name.starts_with("tradeassembly.strategy.data_")
+            || name.starts_with("tradeassembly.strategy.instrument_screen.")
+            || name.starts_with("tradeassembly.strategy.session_schedule.")
         {
             if let Some(code) = service_error_code(&payload) {
                 let response = mcp::tool_error(
@@ -4158,6 +4421,18 @@ impl TradeAssemblyService {
                     Some(payload),
                 );
                 return self.complete_mcp_command_or_error(name, &command_envelope, 400, response);
+            }
+        }
+        if matches!(
+            name,
+            "tradeassembly.strategy.option_selection.create"
+                | "tradeassembly.strategy.data_recipe.prepare"
+                | "tradeassembly.strategy.data_recipe.step"
+        ) {
+            if let Some(code) = service_error_code(&payload) {
+                let response =
+                    mcp::tool_error(name, &code, "Strategy data operation failed closed.", None);
+                return self.complete_mcp_command_or_error(name, &command_envelope, 409, response);
             }
         }
         if name.starts_with("tradeassembly.dataset_ingestion.") {
@@ -5086,6 +5361,39 @@ fn mcp_control_route(name: &str) -> Option<&'static str> {
 
 fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
+        "tradeassembly.strategy.option_selection.create" => {
+            Some("/product/strategies/option-selections/create")
+        }
+        "tradeassembly.strategy.session_schedule.prepare" => {
+            Some("/product/strategies/session-schedules/prepare")
+        }
+        "tradeassembly.strategy.session_schedule.get" => {
+            Some("/product/strategies/session-schedules/get")
+        }
+        "tradeassembly.strategy.instrument_screen.create" => {
+            Some("/product/strategies/instrument-screens/create")
+        }
+        "tradeassembly.strategy.instrument_screen.get" => {
+            Some("/product/strategies/instrument-screens/get")
+        }
+        "tradeassembly.strategy.data_collection.create" => {
+            Some("/product/strategies/data-collections/create")
+        }
+        "tradeassembly.strategy.data_collection.get" => {
+            Some("/product/strategies/data-collections/get")
+        }
+        "tradeassembly.strategy.data_capture.create" => {
+            Some("/product/strategies/data-captures/create")
+        }
+        "tradeassembly.strategy.data_capture.get" => Some("/product/strategies/data-captures/get"),
+        "tradeassembly.strategy.data_recipe.step" => Some("/product/strategies/data-recipes/step"),
+        "tradeassembly.strategy.data_recipe.prepare" => {
+            Some("/product/strategies/data-recipes/prepare")
+        }
+        "tradeassembly.strategy.data_plan.prepare" => {
+            Some("/product/strategies/data-plans/prepare")
+        }
+        "tradeassembly.strategy.data_run.step" => Some("/product/strategies/data-runs/step"),
         "tradeassembly.strategy.get" => Some("/product/strategies/get"),
         "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
             Some("/product/strategies/save-draft")

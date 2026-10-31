@@ -148,5 +148,18 @@
   "studio.deployment.stop",
   "studio.execution.external_receipt.append",
   "studio.execution.external_receipt.inspect",
-  "studio.execution.external_receipt.reconcile"
+  "studio.execution.external_receipt.reconcile",
+  "tradeassembly.strategy.option_selection.create",
+  "tradeassembly.strategy.data_capture.create",
+  "tradeassembly.strategy.data_capture.get",
+  "tradeassembly.strategy.data_plan.prepare",
+  "tradeassembly.strategy.data_recipe.prepare",
+  "tradeassembly.strategy.data_recipe.step",
+  "tradeassembly.strategy.data_run.step",
+  "tradeassembly.strategy.data_collection.create",
+  "tradeassembly.strategy.data_collection.get",
+  "tradeassembly.strategy.session_schedule.prepare",
+  "tradeassembly.strategy.session_schedule.get",
+  "tradeassembly.strategy.instrument_screen.create",
+  "tradeassembly.strategy.instrument_screen.get"
 ]

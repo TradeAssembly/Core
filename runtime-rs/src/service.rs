@@ -51,6 +51,7 @@ mod options;
 pub mod order_plans;
 mod orders;
 mod original_cycle_recovery;
+mod package_validation;
 pub mod paper_runner;
 mod plugin_lifecycle;
 mod plugin_oauth;

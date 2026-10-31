@@ -17,6 +17,25 @@ const REQUESTS_NS: &str = "plugin_operation_requests";
 const PREPARED_BINDINGS_NS: &str = "plugin_operation_prepared_bindings";
 const BROKER_DISPATCH_NS: &str = "plugin_broker_dispatch_claims";
 const BROKER_DENIAL_NS: &str = "plugin_broker_submission_denials";
+
+// Private test-profile diagnostic only. Never log an arbitrary port error:
+// implementations may return sensitive context. Public errors and stored denial
+// records retain their established generic contract.
+#[cfg(test)]
+fn profiled_admission_denial(error: &str) {
+    if std::env::var_os("FINANCIAL_PROFILE").is_none() {
+        return;
+    }
+    let code = match error {
+        "managed_close_stale" => "managed_close_stale",
+        "managed_reversal_not_current" => "managed_reversal_not_current",
+        "managed_execution_window_closed" => "managed_execution_window_closed",
+        "broker_v2_authority_or_data_expired" => "broker_v2_authority_or_data_expired",
+        "broker_v2_state_changed" => "broker_v2_state_changed",
+        _ => "unclassified_admission_denial",
+    };
+    eprintln!("FIN_PROFILE broker.admission_denied code={code}");
+}
 const RECOVERY_REQUESTS_NS: &str = "plugin_broker_recovery_requests";
 const RECOVERY_OUTCOMES_NS: &str = "plugin_broker_recovery_outcomes";
 pub(crate) const RESET_NAMESPACES: &[&str] = &[
@@ -601,7 +620,9 @@ impl LocalPluginOperations {
             };
             match admission {
                 Ok(permit) => Some(permit),
-                Err(_) => {
+                Err(_error) => {
+                    #[cfg(test)]
+                    profiled_admission_denial(&_error);
                     if let Some(source) = source {
                         source.denied_before_send(context)?;
                     }

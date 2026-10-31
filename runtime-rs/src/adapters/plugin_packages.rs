@@ -2,7 +2,7 @@
 
 use crate::ports::{
     FailureMode, InstalledPluginPackage, OperationDataSnapshot, PluginPackageInstallRequest,
-    PluginPackagePort, PortDescriptor, PortKind, VersionedPort,
+    PluginPackagePort, PortDescriptor, PortKind, VerifiedPackageMetadataSnapshot, VersionedPort,
 };
 use flate2::read::GzDecoder;
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
@@ -84,6 +84,22 @@ impl LocalPluginPackageStore {
     }
 
     fn load_record(&self, package_root: &Path) -> Result<InstalledPluginPackage, String> {
+        self.load_record_with_metadata(package_root)
+            .map(|(package, _)| package)
+    }
+
+    // The complete existing byte/integrity path returns its already-verified
+    // metadata too; a snapshot must not repeat the artifact closure read.
+    fn load_record_with_metadata(
+        &self,
+        package_root: &Path,
+    ) -> Result<
+        (
+            InstalledPluginPackage,
+            std::sync::Arc<super::plugin_data_contracts::VerifiedMetadata>,
+        ),
+        String,
+    > {
         let bytes = fs::read(package_root.join(INSTALLED_RECORD))
             .map_err(|_| "plugin_package_record_missing".to_string())?;
         let mut record: InstalledPluginPackage = serde_json::from_slice(&bytes)
@@ -127,10 +143,10 @@ impl LocalPluginPackageStore {
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
-        self.verify_metadata(&envelope, package_root, &manifest)?;
+        let metadata = self.verified_metadata(&envelope, package_root, &manifest)?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
-        Ok(record)
+        Ok((record, metadata))
     }
 
     fn verify_metadata(
@@ -139,12 +155,24 @@ impl LocalPluginPackageStore {
         root: &Path,
         manifest: &Value,
     ) -> Result<(), String> {
+        self.verified_metadata(envelope, root, manifest).map(|_| ())
+    }
+
+    fn verified_metadata(
+        &self,
+        envelope: &VersionedPackageDescriptor,
+        root: &Path,
+        manifest: &Value,
+    ) -> Result<std::sync::Arc<super::plugin_data_contracts::VerifiedMetadata>, String> {
         match envelope {
             VersionedPackageDescriptor::Legacy(descriptor) => {
-                verify_response_schemas(descriptor, root)
+                verify_response_schemas(descriptor, root)?;
+                // Preserve legacy data_schema/data_recipe semantics: legacy
+                // response schemas are verified but are not V2 data schemas.
+                Ok(Default::default())
             }
             VersionedPackageDescriptor::Data(_) | VersionedPackageDescriptor::Recipes(_) => {
-                self.metadata.get(envelope, root, manifest).map(|_| ())
+                self.metadata.get(envelope, root, manifest)
             }
         }
     }
@@ -558,6 +586,24 @@ impl PluginPackagePort for LocalPluginPackageStore {
             return Ok(None);
         }
         self.load_record(&root).map(Some)
+    }
+
+    fn verified_metadata_snapshot(
+        &self,
+        package_sha256: &str,
+    ) -> Result<Option<VerifiedPackageMetadataSnapshot>, String> {
+        validate_digest(package_sha256)?;
+        let root = self.package_root(package_sha256);
+        if !root.is_dir() {
+            return Ok(None);
+        }
+        let (package, metadata) = self.load_record_with_metadata(&root)?;
+        Ok(Some(VerifiedPackageMetadataSnapshot {
+            package,
+            contracts: metadata.contracts.clone(),
+            schemas: metadata.schemas.clone(),
+            recipes: metadata.recipes.clone(),
+        }))
     }
 
     fn data_contract(

@@ -460,6 +460,14 @@ fn observations(
     entry: &OrderPlan,
     c: &PrepareCommand,
 ) -> Result<Current, String> {
+    crate::service::package_validation::with_round(s, |s| observations_in_round(s, p, entry, c))
+}
+fn observations_in_round(
+    s: &TradeAssemblyService,
+    p: &Position,
+    entry: &OrderPlan,
+    c: &PrepareCommand,
+) -> Result<Current, String> {
     let ar = collection(
         s,
         c,
@@ -1078,6 +1086,11 @@ fn execution_window(
     ))
 }
 pub(crate) fn snapshot(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPlan, String> {
+    // A fresh round for every approval/admission/revalidation. Nested pure
+    // validators can share this round; no service escapes to broker dispatch.
+    crate::service::package_validation::with_round(s, |s| snapshot_in_round(s, p))
+}
+fn snapshot_in_round(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPlan, String> {
     let b = p.management.as_ref().ok_or("managed_close_required")?;
     let (_, pos) = load(s, &b.position_id)?;
     let entry = read_owned(s, &b.original_entry_plan_id)?;
@@ -1121,7 +1134,7 @@ pub(crate) fn snapshot(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderP
         t.reversal_receipt_sha256.as_deref(),
         s.runtime().clock.trusted_now_ms()?,
     )?;
-    let f = observations(s, &pos, &entry, &p.command)?;
+    let f = observations_in_round(s, &pos, &entry, &p.command)?;
     if f.receipts != p.source_receipts
         || p.order.instrument != entry.order.instrument
         || p.order

@@ -368,6 +368,7 @@ impl TradeAssemblyService {
             data_step_request: None,
         };
         execution::resume_local_scheduler_workers(&service);
+        session_dispatch::resume_local_workers(&service);
         service
     }
 
@@ -554,6 +555,7 @@ impl TradeAssemblyService {
             .is_some_and(|manifest| manifest.profile == "local")
         {
             execution::resume_local_scheduler_workers(self);
+            session_dispatch::resume_local_workers(self);
         }
     }
 

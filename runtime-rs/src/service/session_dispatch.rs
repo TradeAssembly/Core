@@ -49,6 +49,9 @@ pub enum Request {
     Enqueue { job: DispatchRequest },
     Advance { job_id: String },
     Inspect { job_id: String },
+    StartWorker { job_id: String },
+    StopWorker { job_id: String },
+    ResumeWorkers {},
     Pause { job_id: String, paused: bool },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -804,6 +807,18 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
     result
 }
 pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
+    if input.get("kind") == Some(&json!("resume_workers")) {
+        let parsed = serde_json::from_value::<Request>(input.clone());
+        return match parsed {
+            Ok(Request::ResumeWorkers {}) => match worker::resume_owned(s) {
+                Ok(n) => {
+                    json!({"ok":true,"body":{"workersResumed":n,"executionAuthorityGranted":false}})
+                }
+                Err(e) => json!({"ok":false,"error":{"code":e}}),
+            },
+            _ => json!({"ok":false,"error":{"code":"session_dispatch_command_invalid"}}),
+        };
+    }
     let result = (|| {
         let r: Request =
             serde_json::from_value(input).map_err(|_| "session_dispatch_command_invalid")?;
@@ -811,18 +826,33 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
             Request::Enqueue { job } => enqueue(s, job),
             Request::Advance { job_id } => advance(s, &job_id),
             Request::Inspect { job_id } => Ok(read(s, &job_id)?.0),
+            Request::StartWorker { job_id } => {
+                worker::start(s, &job_id)?;
+                Ok(read(s, &job_id)?.0)
+            }
+            Request::StopWorker { job_id } => {
+                worker::stop(s, &job_id)?;
+                Ok(read(s, &job_id)?.0)
+            }
+            Request::ResumeWorkers {} => {
+                Err("session_dispatch_resume_requires_dedicated_result".into())
+            }
             Request::Pause { job_id, paused } => {
                 owner(s)?;
                 let (mut j, old) = read(s, &job_id)?;
                 j.paused = paused;
                 persist(s, old, &mut j)?;
+                worker::wake(s, &job_id);
+                if !paused && worker::enabled(s, &job_id)? && !j.status.terminal() {
+                    worker::start(s, &job_id)?;
+                }
                 Ok(j)
             }
         }
     })();
     match result {
         Ok(job) => {
-            json!({"ok":true,"body":{"job":job,"currentness":"not_checked","workerMode":"bounded_explicit_ticks","executionAuthorityGranted":false,"brokerOrders":false}})
+            json!({"ok":true,"body":{"worker":worker::status(s,&job.job_id),"job":job,"currentness":"not_checked","executionAuthorityGranted":false,"brokerOrders":false}})
         }
         Err(e) => json!({"ok":false,"error":{"code":e}}),
     }
@@ -830,3 +860,18 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+mod worker;
+pub(crate) fn resume_local_workers(s: &TradeAssemblyService) {
+    worker::resume_local(s);
+}
+
+#[cfg(test)]
+pub(crate) fn wake_for_test(s: &TradeAssemblyService, id: &str) {
+    worker::wake(s, id);
+}
+
+#[cfg(test)]
+pub(crate) fn halt_worker_for_test(s: &TradeAssemblyService, id: &str) {
+    worker::halt_for_test(s, id);
+}

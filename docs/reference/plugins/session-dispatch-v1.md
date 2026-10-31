@@ -3,7 +3,8 @@
 `tradeassembly.execution.scheduler.run` and `POST /scheduler/run` accept the
 additive `sessionDispatch` object. Existing activation ticks remain unchanged.
 The closed request has `kind:enqueue` with `job`, `kind:advance` or `inspect` with
-`jobId`, or `kind:pause` with `jobId` and explicit `paused`. Each bounded public
+`jobId`, `kind:pause` with `jobId` and explicit `paused`,
+`kind:start_worker`/`stop_worker` with `jobId`, or `kind:resume_workers`. Each bounded public
 poll needs its own transport idempotency key; it never changes the domain job ID.
 
 A job explicitly provides occurrenceId, exact owned scope/graph, paper mode,
@@ -36,10 +37,28 @@ results retain readiness. It grants no entry or execution authority. Inspection
 is original owner-local evidence, not fresh provider or trading eligibility.
 Candidate changes never delete managed positions, pending orders or their exits.
 
-Current worker support is explicit bounded ticks. Automatic wake/startup resume,
-remote Reach dispatch negotiation, selection-to-order admission, continuing exit
-management and historical research accounting are separate integration gates.
-The native regression exercises real authored plugin processes over loopback and
-durable local storage, including before-due waiting, original-result restart,
-empty/incomplete coverage and untouched managed positions/orders. It is not
-production authentication, market-data or brokerage acceptance.
+Explicit bounded ticks and explicitly enabled local background workers share this
+same durable state machine. Background intent records only the owned job/source
+binding and enabled state; it is not a principal or grant. Each phase rechecks
+current identity, source and C3. Up to sixteen workers may run; ephemeral stop
+status is bounded separately from durable evidence. Inspection exposes actual
+running state and last refusal. Stop disables future phases; a current bounded
+calculation may finish. Pause/revision contention retains the original child for
+reconciliation. A pause/unpause or stop/start race cannot lose a requested wake.
+
+Local startup may resume enabled intent only through the existing protected
+installation identity and current IdentityPort/policy, never by creating an
+identity or reading a principal from the job. Other verified sessions may call
+resume_workers explicitly. Expired identity, policy or source refusals stop and
+remain visible; no authentication or provider substitution is attempted.
+Persistent agent delegation has no defined contract yet and refuses background
+start. No new key, account, permission, OS service or cron registration is made.
+
+Native regressions exercise real authored plugin processes over loopback with
+durable local storage: before-due waiting, competing lease refusal, due wake,
+progress-write recovery, closed/missed calendars, empty/incomplete coverage,
+worker stop/service recreation/unchanged-intent resume, and untouched managed
+positions/orders. Whole compiled Core process restart remains a separate gate.
+Remote Reach dispatch negotiation, selection-to-order admission, continuing exit
+management and point-in-time research accounting remain separate integrations.
+This is not production authentication, market-data or brokerage acceptance.

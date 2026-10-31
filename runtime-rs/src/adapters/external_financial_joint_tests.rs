@@ -94,3 +94,5 @@ fn settlement_v5_actual_core_relay_http_provider_joint(){
  for key in ["FINANCIAL_V4_JOINT_DRIVER","FINANCIAL_V4_BROKER_ORIGIN","FINANCIAL_V4_JOINT_CONFIG","FINANCIAL_V4_JOINT_READY"]{assert!(std::env::var_os(key).is_some(),"missing joint input {key}");}
  assert_eq!(std::env::var("FINANCIAL_V4_JOINT_READY").unwrap(),"yes");let config:Value=serde_json::from_slice(&fs::read(std::env::var("FINANCIAL_V4_JOINT_CONFIG").unwrap()).unwrap()).unwrap();assert_eq!(config["jointContract"],"settlement-v5");crate::build_identity::install(config["coreRevision"].as_str().unwrap()).unwrap();native_execution_plan_fixture(Some("financial_settlement_joint"));
 }
+
+include!("external_management_v6_process_tests.rs");

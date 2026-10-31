@@ -3,7 +3,7 @@ fn install_v2_broker_fixture(s:&crate::service::TradeAssemblyService,root:&std::
  use crate::adapters::plugin_packages::data_package_tests::{archive_files,materials};
  use tradeassembly_plugin_sdk::broker_v2 as wire;
  use std::os::unix::fs::PermissionsExt;
- let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker";
+ let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("financial_screen_managed_plan")||scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker";
  let id="fixture.broker.v2";let state=root.join("synthetic-broker");fs::create_dir(&state).unwrap();fs::set_permissions(&state,fs::Permissions::from_mode(0o700)).unwrap();fs::write(state.join("SYNTHETIC_BROKER_ONLY"),b"synthetic only\n").unwrap();
  let template=crate::data_pipeline::tests::fixture().0.nodes.into_iter().find_map(|n|n.selected).unwrap();
  let lookup="schema://tradeassembly/broker-lookup@2";
@@ -42,6 +42,7 @@ fn exercise_native_v2_broker(s:&crate::service::TradeAssemblyService,scope:&data
  let first=submit("native-v2-submit");eprintln!("native V2 {scenario} response: {} {}",first.status,first.body);
  let calls=||fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap_or_default();
  assert_eq!(calls().lines().filter(|v|*v=="submit").count(),1,"{}",first.body);
+ if scenario.starts_with("financial_screen_managed_plan"){assert_eq!(first.status,200,"{}",first.body);exercise_native_managed_plan(s,scope,revision,plan_id,root,scenario.ends_with("_stale"),scenario=="financial_screen_managed_plan_math");return;}
  let record=source.state().unwrap().unwrap();
  if scenario.ends_with("reject"){assert_eq!(record.phase,crate::service::order_plans::submission::Phase::Rejected);assert_eq!(record.retained_cash.to_string(),"0");}
  else {

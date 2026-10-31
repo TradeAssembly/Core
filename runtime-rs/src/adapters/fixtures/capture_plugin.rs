@@ -18,7 +18,7 @@ fn synthetic_broker_http(request: &Value, payload: &Value) -> Value {
     let port = payload["config"]["dataApiUrl"].as_str().unwrap()
         .strip_prefix("http://127.0.0.1:").unwrap().parse::<u16>().unwrap();
     let operation=request["metadata"]["operationId"].as_str().unwrap();
-    let route=match operation{"broker.paper_order_submit_v2"=>"submit","broker.order_lookup.paper_v2"=>"lookup","account.health"=>"health","broker.cash_settlement.paper_v1"=>"settlement",_=>panic!("closed synthetic HTTP operation required")};
+    let route=match operation{"broker.paper_order_submit_v2"=>"submit","broker.order_lookup.paper_v2"=>"lookup","account.health"=>"health","broker.cash_settlement.paper_v1"=>"settlement","broker.close_settlement.paper_v1"=>"close-settlement","execution_account"=>"account","execution_metadata"=>"metadata","execution_quote"=>"quote","management_v6_calendar"=>"calendar",_=>panic!("closed synthetic HTTP operation required")};
     let submit=route=="submit";
     let mut body = payload.clone(); body.as_object_mut().unwrap().remove("config");
     if submit { tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&body).unwrap()).unwrap(); }
@@ -32,7 +32,7 @@ fn synthetic_broker_http(request: &Value, payload: &Value) -> Value {
     let value:Value=serde_json::from_str(body).unwrap();
     // Core owns independent SDK/schema/identity validation of this response.
     if route=="health"{assert_eq!(value["account"]["mode"],"paper");}
-    else{assert_eq!(value["schemaVersion"],if route=="settlement"{"tradeassembly.cash_settlement_observation.v1"}else{"tradeassembly.broker_order_observation.v2"});}value
+    else{assert_eq!(value["schemaVersion"],match route{"settlement"=>"tradeassembly.cash_settlement_observation.v1","close-settlement"=>"tradeassembly.close_settlement_observation.v1","account"=>"tradeassembly.execution_account_snapshot.v1","metadata"=>"tradeassembly.execution_instrument_metadata.v1","quote"=>"tradeassembly.execution_quote.v1","calendar"=>"tradeassembly.session_calendar.v1",_=>"tradeassembly.broker_order_observation.v2"});}value
 }
 
 fn main() {
@@ -42,6 +42,10 @@ fn main() {
     eprintln!("fixture operation {}: input parsed",request["metadata"]["operationId"]);
     let payload = &request["payload"]["payload"];
     let (result, schema) = match request["metadata"]["operationId"].as_str().unwrap() {
+        "management_v6_calendar" => {
+            assert_eq!(request["context"]["mode"],"paper");
+            (synthetic_broker_http(&request,payload),tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA)
+        }
         "acquire" => {
             assert!(!request["ephemeralCredentialGrant"].is_null());
             let url = payload["config"]["dataApiUrl"].as_str().unwrap();
@@ -111,11 +115,27 @@ fn main() {
         }
         "replay" => {
             assert!(request["ephemeralCredentialGrant"].is_null());
-            let snapshot = &payload["parameters"]["snapshot"];
+            let declared_snapshot = &payload["parameters"]["snapshot"];
+            let mut snapshot = declared_snapshot.clone();
             assert_eq!(
-                digest(snapshot),
+                digest(declared_snapshot),
                 payload["parameters"]["digest"].as_str().unwrap()
             );
+            // Explicit authored generic fixture source. No indicator formula in Core.
+            if snapshot["fixtureDynamicParity"] == true {
+                let end=payload["window"]["eventEndMs"].as_i64().unwrap();
+                snapshot["start"]=json!(end-1);snapshot["interval"]=json!(1);
+                snapshot["observedAtMs"]=json!(end);
+                snapshot["values"]=json!([if end%2==0{100}else{99}]);
+            }
+            if snapshot["fixtureFallingDaily"] == true {
+                let end=payload["window"]["eventEndMs"].as_i64().unwrap();
+                let interval=86400000;
+                let offset=(end-declared_snapshot["observedAtMs"].as_i64().unwrap()).div_euclid(interval);
+                snapshot["start"]=json!(end-interval);snapshot["interval"]=json!(interval);
+                snapshot["observedAtMs"]=json!(end);snapshot["values"]=json!([100-offset]);
+            }
+            let schema_ref=if snapshot["fixtureFallingDaily"]==true{"schema://tradeassembly/number-series@1"}else{"schema://test/series@1"};
             let mut points = vec![];
             for (index, value) in snapshot["values"].as_array().unwrap().iter().enumerate() {
                 let start = snapshot["start"].as_i64().unwrap()
@@ -157,7 +177,7 @@ fn main() {
             assert!(points.len() as u64 <= payload["maxPoints"].as_u64().unwrap());
             let schema = json!({"type":"array","items":{"type":"number"}});
             (
-                json!({"schemaVersion":"tradeassembly.data_evaluation.v1","state":{},"outputs":{"value":{"schema":{"schemaRef":"schema://test/series@1","sha256":digest(&schema)},"shape":"series","points":points}}}),
+                json!({"schemaVersion":"tradeassembly.data_evaluation.v1","state":{},"outputs":{"value":{"schema":{"schemaRef":schema_ref,"sha256":digest(&schema)},"shape":"series","points":points}}}),
                 "schema://tradeassembly/data-evaluation-response@1",
             )
         }
@@ -195,6 +215,11 @@ fn main() {
             (json!({"schemaVersion":"tradeassembly.instrument_screen_result.v1","status":status,"members":members,"rejections":rejections,"issues":[]}),"schema://tradeassembly/instrument-screen-result@1")
         }
         "execution_account" | "execution_metadata" | "execution_quote" => {
+            if payload["config"]["dataApiUrl"].is_string(){
+                assert_eq!(request["context"]["mode"],"paper");
+                let schema=match request["metadata"]["operationId"].as_str().unwrap(){"execution_account"=>tradeassembly_plugin_sdk::execution_snapshot::ACCOUNT_SCHEMA,"execution_metadata"=>tradeassembly_plugin_sdk::execution_snapshot::METADATA_SCHEMA,_=>tradeassembly_plugin_sdk::execution_snapshot::QUOTE_SCHEMA};
+                (synthetic_broker_http(&request,payload),schema)
+            }else{
             // Entirely authored paper fixture, not a provider observation.
             let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
             let av=|v:Value|json!({"status":"available","value":v});
@@ -204,6 +229,7 @@ fn main() {
                 "execution_account"=>(json!({"schemaVersion":"tradeassembly.execution_account_snapshot.v1","accountRef":"account://fixture.execution.facts/fixture.paper.provider","providerAccountId":"fixture.paper.provider","mode":"paper","currency":currency,"time":time,"coverage":{"accountComplete":true,"positionsComplete":true,"openOrdersComplete":true},"cashBalance":av(json!(if managed{"60"}else{"100"})),"nonMarginableBuyingPower":av(json!(if managed{"60"}else{"100"})),"borrowingDebt":av(json!("0")),"grossExposure":av(json!(if managed{"40"}else{"0"})),"instrumentPermissions":[{"assetClass":"equity","instrumentFamily":"equity","actions":av(json!(["buy_to_open","sell_to_close"]))}],"positions":av(if managed{json!([{"instrumentId":"SPY","side":"long","quantity":"0.4","grossValue":av(json!("40"))}])}else{json!([])}),"openOrders":av(json!([]))}),"schema://tradeassembly/execution-account-snapshot@1"),
                 "execution_metadata"=>(json!({"schemaVersion":"tradeassembly.execution_instrument_metadata.v1","instrumentId":"SPY","providerSymbol":"SPY","assetClass":"equity","instrumentFamily":"equity","time":time,"quantityUnit":av(json!("shares")),"multiplier":av(json!("1")),"quoteCurrency":av(currency),"minimumQuantity":av(json!("0.001")),"quantityIncrement":av(json!("0.001")),"priceIncrement":av(json!("0.01")),"tradable":av(json!(true)),"expiresAtMs":av(Value::Null),"standardDeliverable":av(json!(true))}),"schema://tradeassembly/execution-instrument-metadata@1"),
                 _=>(json!({"schemaVersion":"tradeassembly.execution_quote.v1","instrumentId":"SPY","currency":currency,"time":time,"origin":"provider","sourceProfile":"fixture-quote.v1","indicative":av(json!(false)),"bid":av(json!(price)),"ask":av(json!(if managed{price}else{"100"}))}),"schema://tradeassembly/execution-quote@1"),
+            }
             }
         }
         "account.health" | "broker.cash_settlement.paper_v1" => {
@@ -220,9 +246,14 @@ fn main() {
             }
         }
         "broker.close_settlement.paper_v1" => {
+            if payload["config"]["dataApiUrl"].is_string(){
+                assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
+                (synthetic_broker_http(&request,payload),tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA)
+            }else{
             use std::fs::{self,OpenOptions};let root=std::path::Path::new(payload["config"]["fixtureStore"].as_str().unwrap());assert_eq!(fs::read_to_string(root.join("SYNTHETIC_BROKER_ONLY")).unwrap(),"synthetic only\n");let original:Value=serde_json::from_slice(&fs::read(root.join("close-accepted-request.json")).unwrap()).unwrap();assert_eq!(payload["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(payload["canonicalAccountSha256"],original["canonicalAccountSha256"]);let mut log=OpenOptions::new().create(true).append(true).open(root.join("close-settlement.log")).unwrap();writeln!(log,"read").unwrap();log.sync_all().unwrap();
             let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;let av=|value:Value|json!({"status":"available","value":value});
             (json!({"schemaVersion":"tradeassembly.close_settlement_observation.v1","canonicalAccountSha256":original["canonicalAccountSha256"],"order":{"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":"fixture.close.order.1","status":"filled","filledQuantity":av(original["order"]["quantity"].clone()),"cashSpent":av(json!("0")),"observedAtMs":now,"knownAtMs":now},"postingId":"synthetic.final.close.posting.1","postingSequence":3,"grossProceeds":"36","feeCash":"0","feesFinal":true,"checkpoint":{"ledgerEpoch":"synthetic.epoch.1","sequence":3,"account":{"schemaVersion":"tradeassembly.execution_account_snapshot.v1","accountRef":"account://fixture.broker.v2/fixture.paper.provider","providerAccountId":"fixture.paper.provider","mode":"paper","currency":{"code":"USD","decimals":2},"time":{"observedAtMs":now,"knownAtMs":now,"basis":"provider_observed"},"coverage":{"accountComplete":true,"positionsComplete":true,"openOrdersComplete":true},"cashBalance":av(json!("96")),"nonMarginableBuyingPower":av(json!("96")),"borrowingDebt":av(json!("0")),"grossExposure":av(json!("0")),"instrumentPermissions":[{"assetClass":"equity","instrumentFamily":"equity","actions":av(json!(["buy_to_open","sell_to_close"]))}],"positions":av(json!([])),"openOrders":av(json!([]))}}}),tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA)
+            }
         }
         "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" => {
             if payload["config"]["dataApiUrl"].is_string() {

@@ -118,6 +118,13 @@ fn install_fixture_variant(
     service:&crate::service::TradeAssemblyService,root:&std::path::Path,
     calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,versioned_signal:bool,
 )->InstalledPluginPackage {
+    install_fixture_variant_number_series(service,root,calculator,interval_ms,recipe,versioned_acquisition,versioned_signal,false)
+}
+#[allow(clippy::too_many_arguments)]
+fn install_fixture_variant_number_series(
+    service:&crate::service::TradeAssemblyService,root:&std::path::Path,
+    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,versioned_signal:bool,number_series:bool,
+)->InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
     let mut contract: Value = serde_json::from_slice(&bytes).unwrap();
@@ -173,6 +180,12 @@ fn install_fixture_variant(
         operation["traits"]["dataShapes"]=json!(["session_calendar"]);
         operation["traits"]["outputSchemaRefs"]=json!([tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA]);
         operations.push(operation);
+    }
+    if number_series {
+        assert!(!calculator&&!recipe);
+        contract["outputs"]["value"]["schema"]["schemaRef"]=json!("schema://tradeassembly/number-series@1");
+        descriptor["dataSchemas"][0]["schemaRef"]=json!("schema://tradeassembly/number-series@1");
+        operations[0]["traits"]["outputSchemaRefs"]=json!(["schema://tradeassembly/number-series@1",EVALUATION_RESPONSE_SCHEMA]);
     }
     let manifest = json!({"metadata":{"id":id,"version":"1","provider":{"id":id,"name":"Local capture fixture"}},"operations":operations,
         "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":if versioned_signal{"test.capture.replay@1"}else{"test.capture.replay"}},{"id":"test.capture.derive"},{"id":"test.option.chain@1"},{"id":"test.session.calendar@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},

@@ -1,3 +1,4 @@
+include!("external_managed_close_outcome_tests.rs");
 // Generic reversal plumbing qualification only; not actual MA/TSI math.
 fn configure_managed_plan_native_spec(
     s: &crate::service::TradeAssemblyService,
@@ -271,6 +272,11 @@ fn exercise_native_managed_plan(
         submits,
         "preparation must not submit"
     );
+    let provider=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap();
+    if let Some(scenario)=provider["configuration"]["scenario"].as_str().filter(|v|v.starts_with("managed_plan_close_")){
+        exercise_native_owned_close_outcome(s,scope,id,entry,decision,root,scenario);
+        return;
+    }
     let submitted = post(
         "/product/strategies/order-plans/submit",
         json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-plan-close-submit"}),

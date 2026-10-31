@@ -252,7 +252,11 @@ fn main() {
             }else{
             use std::fs::{self,OpenOptions};let root=std::path::Path::new(payload["config"]["fixtureStore"].as_str().unwrap());assert_eq!(fs::read_to_string(root.join("SYNTHETIC_BROKER_ONLY")).unwrap(),"synthetic only\n");let original:Value=serde_json::from_slice(&fs::read(root.join("close-accepted-request.json")).unwrap()).unwrap();assert_eq!(payload["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(payload["canonicalAccountSha256"],original["canonicalAccountSha256"]);let mut log=OpenOptions::new().create(true).append(true).open(root.join("close-settlement.log")).unwrap();writeln!(log,"read").unwrap();log.sync_all().unwrap();
             let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;let av=|value:Value|json!({"status":"available","value":value});
-            (json!({"schemaVersion":"tradeassembly.close_settlement_observation.v1","canonicalAccountSha256":original["canonicalAccountSha256"],"order":{"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":"fixture.close.order.1","status":"filled","filledQuantity":av(original["order"]["quantity"].clone()),"cashSpent":av(json!("0")),"observedAtMs":now,"knownAtMs":now},"postingId":"synthetic.final.close.posting.1","postingSequence":3,"grossProceeds":"36","feeCash":"0","feesFinal":true,"checkpoint":{"ledgerEpoch":"synthetic.epoch.1","sequence":3,"account":{"schemaVersion":"tradeassembly.execution_account_snapshot.v1","accountRef":"account://fixture.broker.v2/fixture.paper.provider","providerAccountId":"fixture.paper.provider","mode":"paper","currency":{"code":"USD","decimals":2},"time":{"observedAtMs":now,"knownAtMs":now,"basis":"provider_observed"},"coverage":{"accountComplete":true,"positionsComplete":true,"openOrdersComplete":true},"cashBalance":av(json!("96")),"nonMarginableBuyingPower":av(json!("96")),"borrowingDebt":av(json!("0")),"grossExposure":av(json!("0")),"instrumentPermissions":[{"assetClass":"equity","instrumentFamily":"equity","actions":av(json!(["buy_to_open","sell_to_close"]))}],"positions":av(json!([])),"openOrders":av(json!([]))}}}),tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA)
+            let mut document=json!({"schemaVersion":"tradeassembly.close_settlement_observation.v1","canonicalAccountSha256":original["canonicalAccountSha256"],"order":{"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":"fixture.close.order.1","status":"filled","filledQuantity":av(original["order"]["quantity"].clone()),"cashSpent":av(json!("0")),"observedAtMs":now,"knownAtMs":now},"postingId":"synthetic.final.close.posting.1","postingSequence":3,"grossProceeds":"36","feeCash":"0","feesFinal":true,"checkpoint":{"ledgerEpoch":"synthetic.epoch.1","sequence":3,"account":{"schemaVersion":"tradeassembly.execution_account_snapshot.v1","accountRef":"account://fixture.broker.v2/fixture.paper.provider","providerAccountId":"fixture.paper.provider","mode":"paper","currency":{"code":"USD","decimals":2},"time":{"observedAtMs":now,"knownAtMs":now,"basis":"provider_observed"},"coverage":{"accountComplete":true,"positionsComplete":true,"openOrdersComplete":true},"cashBalance":av(json!("96")),"nonMarginableBuyingPower":av(json!("96")),"borrowingDebt":av(json!("0")),"grossExposure":av(json!("0")),"instrumentPermissions":[{"assetClass":"equity","instrumentFamily":"equity","actions":av(json!(["buy_to_open","sell_to_close"]))}],"positions":av(json!([])),"openOrders":av(json!([]))}}});
+            if let Some(scenario)=payload["config"]["scenario"].as_str().filter(|v|v.starts_with("managed_plan_close_")){
+                native_close_outcome_settlement(&mut document,root,scenario);
+            }
+            (document,tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA)
             }
         }
         "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" => {
@@ -268,10 +272,14 @@ fn main() {
             let mut clean=payload.clone();clean.as_object_mut().unwrap().remove("config");
             let closing=clean["order"]["positionAction"]=="sell_to_close"||clean["clientOrderId"].as_str().is_some_and(|s|s.starts_with("ta-close-"));let accepted=root.join(if closing{"close-accepted-request.json"}else{"accepted-request.json"});
             let original=if submit{tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&clean).unwrap()).unwrap();let bytes=serde_json::to_vec(&clean).unwrap();let mut file=OpenOptions::new().create_new(true).write(true).open(&accepted).unwrap();file.write_all(&bytes).unwrap();file.sync_all().unwrap();clean}else{let original:Value=serde_json::from_slice(&fs::read(&accepted).unwrap()).unwrap();assert_eq!(clean["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(clean["canonicalAccountSha256"],original["canonicalAccountSha256"]);original};
+            if closing&&config["scenario"].as_str().is_some_and(|v|v.starts_with("managed_plan_close_")){
+                (native_close_outcome_observation(root,config["scenario"].as_str().unwrap(),&original,submit),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
+            }else{
             if submit && config["scenario"]=="timeout_after_accept"{std::thread::sleep(Duration::from_secs(20));std::process::exit(0)}
             let status=if config["scenario"]=="reject"{"rejected"}else if submit{"open"}else{"filled"};
             let filled=if status=="filled"{original["order"]["quantity"].clone()}else{json!("0")};let cash=if status=="filled"&&!closing{json!("40")}else{json!("0")};let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;
             (json!({"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":if status=="rejected"{Value::Null}else{json!(if closing{"fixture.close.order.1"}else{"fixture.broker.order.1"})},"status":status,"filledQuantity":{"status":"available","value":filled},"cashSpent":{"status":"available","value":cash},"observedAtMs":now,"knownAtMs":now}),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
+            }
             }
         }
         "plan_calculate" => {
@@ -296,4 +304,51 @@ fn main() {
         json!({"schemaVersion":"1","requestId":request["requestId"],"status":"succeeded","responseSchema":schema,"payload":result,"providerOutcome":{"code":"fixture_observed"},"reconciliation":"not_required"})
     );
     eprintln!("fixture: exit");
+}
+
+// Explicit synthetic provider scenarios. These author observations and actual
+// final postings only; Core still owns order authority, lots and reservations.
+fn native_close_outcome_observation(root:&std::path::Path,scenario:&str,original:&Value,submit:bool)->Value{
+    let lookup=if submit{0}else{
+        let path=root.join("close-outcome-lookups");let next=std::fs::read_to_string(&path).ok().map(|v|v.parse::<u64>().unwrap()).unwrap_or(0)+1;
+        let mut file=std::fs::OpenOptions::new().create(true).truncate(true).write(true).open(path).unwrap();write!(file,"{next}").unwrap();file.sync_all().unwrap();next
+    };
+    if submit&&scenario=="managed_plan_close_timeout_filled"{
+        // Acceptance was durably written by the caller before this timeout.
+        std::thread::sleep(Duration::from_secs(20));std::process::exit(0);
+    }
+    let (status,filled,fee)=match scenario{
+        "managed_plan_close_partial_cancel" if submit=>("partially_filled","0.1","0"),
+        "managed_plan_close_partial_cancel" if lookup==1=>("partially_filled","0.2","0"),
+        "managed_plan_close_partial_cancel"=>("cancelled","0.2","0.25"),
+        "managed_plan_close_rejected"=>("rejected","0","0"),
+        "managed_plan_close_timeout_filled"=>("filled","0.4","0.5"),
+        _=>panic!("unsupported authored close outcome"),
+    };
+    let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()as i64;
+    json!({"schemaVersion":"tradeassembly.broker_order_observation.v2","canonicalAccountSha256":original["canonicalAccountSha256"],"order":original["order"],"providerOrderId":"fixture.close.order.1","status":status,"filledQuantity":{"status":"available","value":filled},"cashSpent":{"status":"available","value":fee},"observedAtMs":now,"knownAtMs":now})
+}
+fn native_close_outcome_settlement(document:&mut Value,root:&std::path::Path,scenario:&str){
+    let (status,filled,gross,fee,cash,remaining,exposure)=match scenario{
+        "managed_plan_close_partial_cancel"=>("cancelled","0.2","18","0.25","77.75","0.2","20"),
+        "managed_plan_close_rejected"=>("rejected","0","0","0.1","59.9","0.4","40"),
+        "managed_plan_close_timeout_filled"=>("filled","0.4","36","0.5","95.5","0","0"),
+        _=>panic!("unsupported authored close posting"),
+    };
+    document["order"]["status"]=json!(status);
+    document["order"]["filledQuantity"]["value"]=json!(filled);
+    document["order"]["cashSpent"]["value"]=json!(fee);
+    document["grossProceeds"]=json!(gross);document["feeCash"]=json!(fee);
+    let account=&mut document["checkpoint"]["account"];
+    account["cashBalance"]["value"]=json!(cash);account["nonMarginableBuyingPower"]["value"]=json!(cash);
+    account["grossExposure"]["value"]=json!(exposure);
+    account["positions"]["value"]=if remaining=="0"{json!([])}else{json!([{"instrumentId":"SPY","side":"long","quantity":remaining,"grossValue":{"status":"available","value":exposure}}])};
+    if scenario=="managed_plan_close_partial_cancel"{
+        let lookups=std::fs::read_to_string(root.join("close-outcome-lookups")).ok().map(|v|v.parse::<u64>().unwrap()).unwrap_or(0);
+        if lookups<2{
+            // Explicit nonfinal provider evidence must fail the terminal-only
+            // settlement schema; it cannot release cash or owned quantity.
+            document["order"]["status"]=json!("partially_filled");document["feesFinal"]=json!(false);
+        }
+    }
 }

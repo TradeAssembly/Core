@@ -734,7 +734,9 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.strategy.order_plan.prepare" => return "strategy.order_plan.prepare".into(),
         "tradeassembly.strategy.order_plan.reserve" => return "strategy.order_plan.reserve".into(),
         "tradeassembly.strategy.order_plan.release" => return "strategy.order_plan.release".into(),
-        "tradeassembly.strategy.order_plan.submit" => return "strategy.order_plan.submit".into(),
+        "tradeassembly.strategy.order_plan.submit"
+        | "tradeassembly.strategy.order_plan.decide"
+        | "tradeassembly.strategy.order_plan.select" => return "strategy.order_plan.submit".into(),
         "tradeassembly.strategy.order_plan.reconcile" => {
             return "strategy.order_plan.reconcile".into()
         }
@@ -907,6 +909,12 @@ fn mcp_route_path(name: &str, command_name: &str) -> String {
         }
         "tradeassembly.strategy.order_plan.submit" => {
             "/product/strategies/order-plans/submit".into()
+        }
+        "tradeassembly.strategy.order_plan.decide" => {
+            "/product/strategies/order-plans/decide".into()
+        }
+        "tradeassembly.strategy.order_plan.select" => {
+            "/product/strategies/order-plans/select".into()
         }
         "tradeassembly.strategy.order_plan.reconcile" => {
             "/product/strategies/order-plans/reconcile".into()
@@ -2267,6 +2275,14 @@ fn execution_plan_c3_target_comes_from_actual_scope_not_top_level_hint() {
             "/product/strategies/order-plans/release",
             "tradeassembly.strategy.order_plan.release",
         ),
+        (
+            "/product/strategies/order-plans/decide",
+            "tradeassembly.strategy.order_plan.decide",
+        ),
+        (
+            "/product/strategies/order-plans/select",
+            "tradeassembly.strategy.order_plan.select",
+        ),
     ] {
         assert_eq!(
             http_envelope("http", "POST", path, &body)
@@ -2279,5 +2295,13 @@ fn execution_plan_c3_target_comes_from_actual_scope_not_top_level_hint() {
             mcp_envelope(tool, &body).unwrap().target_object.as_deref(),
             Some("actual-owned")
         );
+        if tool.ends_with(".decide") || tool.ends_with(".select") {
+            let envelope = mcp_envelope(tool, &body).unwrap();
+            assert_eq!(envelope.command_name, "strategy.order_plan.submit");
+            let action = crate::finance_authority::authority_definition(&envelope).unwrap();
+            assert_eq!(action.action, "strategy.order_plan.submit");
+            assert_eq!(action.resource_kind, "strategy_order_plan");
+            assert_eq!(action.purpose, "order_submission_request");
+        }
     }
 }

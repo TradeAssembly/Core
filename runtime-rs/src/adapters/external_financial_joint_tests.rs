@@ -60,6 +60,8 @@ fn financial_v4_actual_core_relay_http_broker_joint() {
         assert!(std::env::var_os(key).is_some(), "missing joint input {key}");
     }
     assert_eq!(std::env::var("FINANCIAL_V4_JOINT_READY").unwrap(), "yes");
-    crate::build_identity::install("23f6418908e4059b9ae0f8dd29955bfeecb02046").unwrap();
+    let config: Value = serde_json::from_slice(&fs::read(std::env::var("FINANCIAL_V4_JOINT_CONFIG").unwrap()).unwrap()).unwrap();
+    // Bootstrap authored state for the exact independently verified frozen CLI.
+    crate::build_identity::install(config["coreRevision"].as_str().unwrap()).unwrap();
     native_execution_plan_fixture(Some("financial_joint"));
 }

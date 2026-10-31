@@ -3,7 +3,7 @@ fn install_v2_broker_fixture(s:&crate::service::TradeAssemblyService,root:&std::
  use crate::adapters::plugin_packages::data_package_tests::{archive_files,materials};
  use tradeassembly_plugin_sdk::broker_v2 as wire;
  use std::os::unix::fs::PermissionsExt;
- let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("financial_screen_managed_plan")||scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker";
+ let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("financial_screen_managed_plan")||scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"||scenario=="financial_screen_auto_health";
  let id="fixture.broker.v2";let state=root.join("synthetic-broker");fs::create_dir(&state).unwrap();fs::set_permissions(&state,fs::Permissions::from_mode(0o700)).unwrap();fs::write(state.join("SYNTHETIC_BROKER_ONLY"),b"synthetic only\n").unwrap();
  let template=crate::data_pipeline::tests::fixture().0.nodes.into_iter().find_map(|n|n.selected).unwrap();
  let lookup="schema://tradeassembly/broker-lookup@2";
@@ -78,6 +78,7 @@ fn assert_rollover_config_refuses_unknown_trigger_before_entry(
 
 fn activate_native_typed_execution(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,scenario:&str){
  let mut typed=json!({"scope":scope,"capabilityGraphRevision":revision,"brokerRequirementRef":"exec_broker"});if scenario.starts_with("financial_screen_auto"){typed["automaticExecution"]=json!({"sourceInputs":{"account_data":{},"instrument_metadata":{},"pricing_quote":{}},"maxSubjectsPerOccurrence":1});}
+ if scenario=="financial_screen_auto_health"{typed["automaticExecution"]["accountHealthRefresh"]=json!({"schemaVersion":"tradeassembly.automatic_account_health_refresh.v1","refreshIntervalMs":60000});}
  if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{typed["automaticExecution"]["management"]=json!({"cadenceMs":1000,"maxPositionsPerRound":1,"sourceInputs":{"account_data":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"instrument_metadata":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"pricing_quote":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}}}});}
  if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{assert_rollover_config_refuses_unknown_trigger_before_entry(s,scope,&typed);}
  let saved=s.handle_http("POST","/product/strategy-execution-configs/save",json!({"strategyId":scope.strategy_id,"typedExecution":typed,"mode":"paper","accountMode":"paper","idempotencyKey":"normal-typed-save"}));assert_eq!(saved.status,200,"{}",saved.body);let config=saved.body["body"]["configId"].as_str().unwrap_or_else(||panic!("normal config missing: {}",saved.body));

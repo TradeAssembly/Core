@@ -629,6 +629,8 @@ pub enum EarlyCloseBehavior {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClockPolicy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_triggers: Vec<super::SessionTrigger>,
     pub timezone: String,
     pub calendar_refs: Vec<String>,
     pub windows: Vec<ClockWindow>,

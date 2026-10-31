@@ -30,6 +30,16 @@ impl PluginOperationPort for ForwardNative {
         self.0.lock().unwrap().as_ref().unwrap().invoke(r, c)
     }
 }
+// Diagnostic boundary for this authored fake-data fixture only. Production
+// plugins keep stderr suppressed by the normal host sandbox.
+struct TracedFixtureSandbox;
+impl VersionedPort for TracedFixtureSandbox {fn descriptors(&self)->Vec<PortDescriptor>{vec![]}}
+impl PluginProcessSandboxPort for TracedFixtureSandbox {
+ fn spawn(&self,r:&PluginSandboxRequest)->Result<SandboxedPluginProcess,String>{
+  let child=std::process::Command::new(&r.executable).current_dir(&r.install_root).env_clear().stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).spawn().map_err(|_|"fixture_spawn_failed")?;
+  eprintln!("authored fixture child pid={}",child.id());Ok(SandboxedPluginProcess::new(child,None))
+ }
+}
 fn ctx(key: &str) -> SideEffectContext {
     SideEffectContext::new(
         AuthorityContext::local_cli(),
@@ -150,10 +160,15 @@ fn install_fixture_variant(
         operation["traits"]["dataShapes"] = json!(["option_chain"]);
         operation["traits"]["outputSchemaRefs"] =
             json!(["schema://capture-fixture/option-chain@1"]);
+        operations.push(operation.clone());
+        operation["id"]=json!("calendar");
+        operation["capability"]=json!("test.session.calendar@1");
+        operation["traits"]["dataShapes"]=json!(["session_calendar"]);
+        operation["traits"]["outputSchemaRefs"]=json!([tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA]);
         operations.push(operation);
     }
     let manifest = json!({"metadata":{"id":id,"version":"1","provider":{"id":id,"name":"Local capture fixture"}},"operations":operations,
-        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
+        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"},{"id":"test.session.calendar@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
         "configuration":{"fields":[{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
@@ -163,6 +178,8 @@ fn install_fixture_variant(
     descriptor["package"]["manifest"]["sha256"] = json!(sha256(&manifest_bytes));
     descriptor["package"]["targets"][0]["binary"]["sha256"] = json!(sha256(script));
     descriptor["package"]["responseSchemas"] = json!([{ "schemaRef":"schema://capture-fixture/option-chain@1","document":{"path":"response.json","sha256":sha256(&response)}},{"schemaRef":EVALUATION_RESPONSE_SCHEMA,"document":{"path":"response.json","sha256":sha256(&response)}},{"schemaRef":"schema://capture-fixture/response@1","document":{"path":"response.json","sha256":sha256(&response)}}]);
+    let calendar_schema=serde_json::to_vec(&tradeassembly_plugin_sdk::session_calendar::schema()).unwrap();
+    descriptor["package"]["responseSchemas"].as_array_mut().unwrap().push(json!({"schemaRef":tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA,"document":{"path":"calendar.json","sha256":sha256(&calendar_schema)}}));
     descriptor["dataContracts"][0]["operationId"] = json!(opid);
     descriptor["dataContracts"][0]["document"]["sha256"] = json!(sha256(&contract_bytes));
     descriptor["dataContracts"][0]["canonicalSha256"] = json!(canonical_sha256(&contract).unwrap());
@@ -183,6 +200,7 @@ fn install_fixture_variant(
         ("contract.json", contract_bytes),
         ("schema.json", schema_bytes),
         ("response.json", response),
+        ("calendar.json",calendar_schema),
         ("bin/plugin", script.to_vec()),
     ];
     if let Some(bytes)=recipe_bytes {files.push(("recipe.json",bytes));}
@@ -429,7 +447,7 @@ fn screen_process_fixture(case:&str) {
         service.runtime().plugins.put_instance(&package.plugin_ref,instance,&ctx("screen-instance")).unwrap();
     }
     service.runtime().credentials.store("screen-fixture-source",&BTreeMap::from([("api_key".into(),"fake-screen-source-key".into()),("api_secret".into(),"fake-screen-source-secret".into())])).unwrap();
-    *operations.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(NativeTestSandbox)));
+    *operations.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(TracedFixtureSandbox)));
     let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();spec["strategy_id"]=json!(original_scope.strategy_id);
     let mut screen_policy=json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"fixture.screen.v1","inputs":{"contracts":{"capability_requirement_ref":"screen_source","response_schema_ref":"schema://capture-fixture/response@1","query":{"literal":{},"date_bindings":{}},"max_age_ms":300000,"coverage":{"complete_pointer":"/snapshot/coverage/complete","scope_pointer":"/snapshot/coverage/scope","scope_value":"fixture_candidates"}}},"candidate_input":"contracts","candidate_records_pointer":"/snapshot/rows","candidate_id_pointer":"/id","parameters":{"minDte":45,"maxDte":60,"maxOiAgeDays":1},"coverage":"complete_configured_inputs","max_candidates":7,"top_n":1,"ttl_ms":120000});
     if case=="integral" {screen_policy["top_n"]=json!(1.0);}
@@ -1807,4 +1825,69 @@ fn recipe_real_process_public_preparation_evaluation_recreation_and_tamper() {
     let foreign=bob.call_mcp_tool("tradeassembly.strategy.data_recipe.step",step_body);
     assert_eq!(foreign["isError"],true,"{foreign}");
     r.server.join().unwrap();
+}
+
+#[test]
+fn session_calendar_real_process_public_plan_restart_expiry_and_closed_day(){
+ for closed in [false,true]{session_calendar_process_fixture(closed);}
+}
+fn session_calendar_process_fixture(closed:bool){
+ eprintln!("calendar fixture case closed={closed}: start");
+ use crate::service::{data_collections as collections,session_schedules as schedules};
+ use tradeassembly_plugin_sdk::session_calendar as wire;
+ let operations=Arc::new(ForwardNative::default());
+ let (dir,service,original_scope,_)=data_plans::tests::fixture_service(Some(operations.clone()));
+ let now=service.runtime().clock.now_ms();
+ let date=chrono::DateTime::from_timestamp_millis(now).unwrap().date_naive().to_string();
+ let session=if closed{json!({"status":"closed","reason":"explicit_fixture_holiday"})}else{json!({"status":"open","openAtMs":now+600000,"closeAtMs":now+3600000,"earlyClose":true})};
+ let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":now,"days":[{"sessionDate":date,"session":session}]});
+ let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+ let server=std::thread::spawn(move||{let (mut stream,_)=listener.accept().unwrap();eprintln!("calendar fixture closed={closed}: accepted");let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();assert!(String::from_utf8_lossy(&buffer[..n]).starts_with("GET /options "));let bytes=serde_json::to_vec(&document).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();stream.shutdown(std::net::Shutdown::Both).unwrap();eprintln!("calendar fixture closed={closed}: response sent");});
+ let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
+ service.runtime().plugins.put_instance(&source.plugin_ref,json!({"instanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"providerRef":source.plugin_ref,"enabled":true,"activePackageSha256":source.package_sha256,"credentialRef":"calendar-fixture","configuration":{"dataApiUrl":format!("http://{address}")}}),&ctx("calendar-instance")).unwrap();
+ service.runtime().credentials.store("calendar-fixture",&BTreeMap::from([("api_key".into(),"fake-calendar-key".into()),("api_secret".into(),"fake-calendar-secret".into())])).unwrap();
+ *operations.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(TracedFixtureSandbox)));
+ let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();spec["strategy_id"]=json!(original_scope.strategy_id);
+ let selector=spec["signal_market_requirements"][0]["selectors"][0]["selector_id"].clone();
+ let binding=json!({"capability_requirement_ref":"calendar","calendar_ref":"fixture.exchange","timezone":"Etc/UTC","session_scope":"fixture_primary","max_age_ms":86400000});
+ spec["stages"]["market_clock"]["policy"]["session_triggers"]=json!([{"version":"tradeassembly.session_trigger.v1","trigger_id":"preopen","calendar":binding,"anchor":"open","offset_ms":-300000,"missed_run":{"policy":"catch_up","max_lateness_ms":60000},"retry":{"max_attempts":3,"backoff_ms":1000},"execution_window":{"calendar":binding,"open_offset_ms":0,"close_offset_ms":0},"selections":[{"signal_requirement_ref":"signal_primary","selector_ref":selector}]}]);
+ let mut requirement=spec["capability_requirements"]["required"][0].clone();
+ requirement["requirement_id"]=json!("calendar");requirement["capability"]=json!("test.session.calendar@1");requirement["stage_refs"]=json!(["market_clock"]);requirement["substep_refs"]=json!([]);requirement["dependency_refs"]=json!([]);
+ for (key,value) in [("schema_refs",json!([wire::SESSION_CALENDAR_SCHEMA])),("data_shapes",json!([])),("fields",json!([])),("input_paths",json!([])),("operations",json!([])),("deterministic",json!(false)),("replayable",json!(false))]{requirement["constraints"][key]=value;}
+ requirement["constraints"].as_object_mut().unwrap().remove("timeframe");requirement["constraints"].as_object_mut().unwrap().remove("max_freshness");
+ spec["capability_requirements"]["required"].as_array_mut().unwrap().push(requirement);
+ service.runtime().storage.put_json("entitlement_grants","test.session.calendar@1",json!({"grantId":"test.session.calendar@1","profile":"local_full","source":"test","capability":"test.session.calendar@1","effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("calendar-grant")).unwrap();
+ let report=crate::spec::validate_strategy_spec_report(&spec);assert!(report.valid,"{:?}",report.diagnostics);
+ let saved=service.handle_http("POST","/product/strategies/save-draft",json!({"strategyId":original_scope.strategy_id,"spec":spec}));assert_eq!(saved.body["body"]["draftSaved"],true,"{}",saved.body);
+ let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":original_scope.strategy_id,"expectedDraftHash":saved.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));assert_eq!(published.body["body"]["published"],true,"{}",published.body);
+ let version=&published.body["body"]["version"];let scope=data_plans::PlanScope{strategy_id:original_scope.strategy_id,strategy_version_id:version["id"].as_str().unwrap().into(),strategy_spec_hash:version["specHash"].as_str().unwrap().into()};
+ let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"calendar-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"calendar":{"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"calendar"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper"}));assert_eq!(graph.body["revision"]["graph"]["ok"],true,"{}",graph.body);
+ let revision=graph.body["revision"]["revisionId"].as_str().unwrap().to_string();
+ eprintln!("calendar fixture closed={closed}: acquiring");
+ let collection=collections::acquire(&service,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.clone(),acquisition_node:"calendar".into(),mode:"paper".into(),response_schema_ref:wire::SESSION_CALENDAR_SCHEMA.into(),input:json!({})},&ctx("calendar-source")).unwrap();server.join().unwrap();eprintln!("calendar fixture closed={closed}: acquisition complete");
+ let command=schedules::ScheduleCommand{scope,capability_graph_revision:revision,mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:collection.collection_id.clone(),execution_calendar_collection_id:collection.collection_id,knowledge_cutoff_ms:service.runtime().clock.now_ms()};
+ let body=json!({"schedule":command,"idempotencyKey":"calendar-plan"});
+ let case=if closed{"calendar_closed"}else{"calendar_open"};write_screen_interface_evidence(case,"request.json",&body);
+ let mut wrong=body.clone();wrong["accountMode"]=json!("live");assert_eq!(service.handle_http("POST","/product/strategies/session-schedules/prepare",wrong).status,409);
+ if !closed {
+  let connection=rusqlite::Connection::open(dir.path().join("service.db")).unwrap();connection.execute_batch("CREATE TRIGGER fail_session_plan BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='session_occurrence_plans_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+  let mut fault=body.clone();fault["idempotencyKey"]=json!("calendar-fault");let response=service.handle_http("POST","/product/strategies/session-schedules/prepare",fault.clone());assert_eq!(response.status,409,"{}",response.body);assert_eq!(response.body["error"]["code"],"session_schedule_commit_failed");assert_eq!(service.call_mcp_tool("tradeassembly.strategy.session_schedule.prepare",fault)["isError"],true);assert!(service.runtime().storage.list_json("session_occurrence_plans_v1").unwrap().is_empty());connection.execute_batch("DROP TRIGGER fail_session_plan;").unwrap();
+ }
+ let response=service.handle_http("POST","/product/strategies/session-schedules/prepare",body.clone());assert_eq!(response.status,200,"{}",response.body);assert_eq!(response.body["queued"],false);assert_eq!(response.body["executionAuthorityGranted"],false);
+ write_screen_interface_evidence(case,"response.json",&response.body);write_screen_interface_evidence(case,"calendar-schema.json",&wire::schema());
+ let occurrence=response.body["schedule"]["occurrence"]["occurrenceId"].as_str().unwrap();
+ let receipt=schedules::current(&service,occurrence).unwrap();assert_eq!(receipt.occurrence.status,if closed{crate::session_schedule::SessionOccurrenceStatus::Closed}else{crate::session_schedule::SessionOccurrenceStatus::Scheduled});
+ let retry=service.handle_http("POST","/product/strategies/session-schedules/prepare",body.clone());assert_eq!(retry.status,200,"{}",retry.body);assert_eq!(retry.body["schedule"],response.body["schedule"]);
+ let mcp=service.call_mcp_tool("tradeassembly.strategy.session_schedule.get",json!({"occurrenceId":occurrence}));assert_ne!(mcp["isError"],true,"{mcp}");assert_eq!(mcp["structuredContent"]["schedule"],response.body["schedule"]);write_screen_interface_evidence(case,"get-mcp.json",&mcp);
+ let db=dir.path().join("service.db").to_string_lossy().into_owned();drop(service);drop(operations);
+ let mut runtime=crate::adapters::local::test_runtime(&db);runtime.plugin_packages=Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(dir.path().join("package-store")).unwrap());
+ let service=crate::service::TradeAssemblyService::from_runtime(&db,runtime);assert_eq!(schedules::current(&service,occurrence).unwrap(),receipt);
+
+ let mut runtime=(*service.runtime()).clone();runtime.clock=Arc::new(AdvancedClock{base:service.runtime().clock.clone(),advance:Arc::new(std::sync::atomic::AtomicI64::new(86400001))});let expired=crate::service::TradeAssemblyService::from_runtime(dir.path().join("service.db").to_str().unwrap(),runtime);
+ let expired_http=expired.handle_http("POST","/product/strategies/session-schedules/prepare",body.clone());assert_eq!(expired_http.status,409);let expired_mcp=expired.call_mcp_tool("tradeassembly.strategy.session_schedule.get",json!({"occurrenceId":occurrence}));assert_eq!(expired_mcp["isError"],true);write_screen_interface_evidence(case,"expired-http.json",&json!({"status":expired_http.status,"body":expired_http.body}));write_screen_interface_evidence(case,"expired-mcp.json",&expired_mcp);
+
+ assert_eq!(service.runtime().storage.list_json("session_occurrence_plans_v1").unwrap().len(),1);
+ assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap().len(),1);
+ let mut instance=service.runtime().plugins.get_instance(&source.plugin_ref).unwrap().unwrap();instance["enabled"]=json!(false);service.runtime().plugins.put_instance(&source.plugin_ref,instance,&ctx("calendar-revoke")).unwrap();assert_eq!(service.call_mcp_tool("tradeassembly.strategy.session_schedule.get",json!({"occurrenceId":occurrence}))["isError"],true);
+
 }

@@ -86,6 +86,7 @@ pub mod scheduler;
 pub mod seed;
 pub mod selector;
 pub mod service;
+pub mod session_schedule;
 pub mod simbroker;
 pub use tradeassembly_strategy::spec;
 pub mod storage;

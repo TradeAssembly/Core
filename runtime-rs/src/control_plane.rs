@@ -404,6 +404,12 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/option-selections/create") => {
             "strategy.option_selection.create".into()
         }
+        ("POST", "/product/strategies/session-schedules/prepare") => {
+            "strategy.session_schedule.prepare".into()
+        }
+        ("POST", "/product/strategies/session-schedules/get") => {
+            "strategy.session_schedule.get".into()
+        }
         ("POST", "/product/strategies/instrument-screens/create") => {
             "strategy.instrument_screen.create".into()
         }
@@ -712,6 +718,12 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.strategy.option_selection.create" => {
             return "strategy.option_selection.create".into()
+        }
+        "tradeassembly.strategy.session_schedule.prepare" => {
+            return "strategy.session_schedule.prepare".into()
+        }
+        "tradeassembly.strategy.session_schedule.get" => {
+            return "strategy.session_schedule.get".into()
         }
         "tradeassembly.strategy.instrument_screen.create" => {
             return "strategy.instrument_screen.create".into()
@@ -1287,13 +1299,15 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if is_read_http_route(method, path) {
         return "read".to_string();
     }
-    if path == "/product/strategies/instrument-screens/get"
+    if path == "/product/strategies/session-schedules/get"
+        || path == "/product/strategies/instrument-screens/get"
         || path == "/product/strategies/data-captures/get"
         || path == "/product/strategies/data-collections/get"
     {
         return "read".into();
     }
-    if path == "/product/strategies/instrument-screens/create"
+    if path == "/product/strategies/session-schedules/prepare"
+        || path == "/product/strategies/instrument-screens/create"
         || path == "/product/strategies/data-collections/create"
         || path == "/product/strategies/data-captures/create"
         || path == "/product/strategies/option-selections/create"

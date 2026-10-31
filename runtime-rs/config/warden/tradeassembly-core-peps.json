@@ -73,7 +73,8 @@
       "tradeassembly.install.claim",
       "tradeassembly.telemetry.manage",
       "strategy.data_collection.create",
-      "strategy.instrument_screen.create"
+      "strategy.instrument_screen.create",
+      "strategy.session_schedule.prepare"
     ],
     "resources": [
       "activation",
@@ -112,7 +113,8 @@
       "strategy_share",
       "telemetry_preference",
       "strategy_data_collection",
-      "strategy_instrument_screen"
+      "strategy_instrument_screen",
+      "strategy_session_schedule"
     ],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000

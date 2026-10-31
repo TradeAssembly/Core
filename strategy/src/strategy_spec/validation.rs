@@ -718,6 +718,7 @@ fn validate_stage_semantics(
     validate_order_policy(spec, diagnostics);
     validate_price_policy(spec, diagnostics);
     validate_clock_policy(spec, capability_ids, diagnostics);
+    super::session_schedule::validate_bindings(spec, diagnostics);
 }
 
 fn validate_exit_policy(

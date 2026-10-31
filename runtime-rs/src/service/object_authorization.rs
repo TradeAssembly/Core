@@ -23,6 +23,7 @@ pub(super) fn authorize_private_request(
         .or_else(|| body.pointer("/capture/policy/scope"))
         .or_else(|| body.pointer("/collection/scope"))
         .or_else(|| body.pointer("/screen/scope"))
+        .or_else(|| body.pointer("/schedule/scope"))
         .or_else(|| body.pointer("/selection/scope"))
         .and_then(|scope| string_field(scope, &["strategyId", "strategy_id"]));
     let strategy_id = if method == "GET" && path.starts_with("/strategies/") {
@@ -469,7 +470,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn foreign_owner_collection_and_screen_creates_are_mcp_errors_without_effects() {
+    fn foreign_owner_data_mutations_are_mcp_errors_without_effects() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("service.db").to_string_lossy().into_owned();
         let service =
@@ -486,22 +487,58 @@ mod tests {
             "instrument_screen_receipts_v1",
             "instrument_screen_keys_v1",
             "control_plane_commands",
+            "session_occurrence_plans_v1",
+            "option_selection_receipts_v1",
+            "option_selection_keys_v1",
+            "data_acquisition_receipts_v1",
+            "data_acquisition_keys_v1",
+            "compiled_data_plan_revisions_v1",
+            "compiled_data_plan_idempotency_v1",
+            "data_evaluation_checkpoints_v1",
+            "data_evaluation_receipts_v1",
+            "data_evaluation_sources_v1",
+            "data_evaluation_fences_v1",
         ];
         let before: Vec<_> = namespaces
             .iter()
             .map(|n| service.runtime().storage.list_json(n).unwrap())
             .collect();
-        for (tool, field) in [
+        for (tool, scope_pointer) in [
             (
                 "tradeassembly.strategy.data_collection.create",
-                "collection",
+                "/collection/scope",
             ),
-            ("tradeassembly.strategy.instrument_screen.create", "screen"),
+            (
+                "tradeassembly.strategy.instrument_screen.create",
+                "/screen/scope",
+            ),
+            (
+                "tradeassembly.strategy.option_selection.create",
+                "/selection/scope",
+            ),
+            (
+                "tradeassembly.strategy.session_schedule.prepare",
+                "/schedule/scope",
+            ),
+            (
+                "tradeassembly.strategy.data_capture.create",
+                "/capture/policy/scope",
+            ),
+            ("tradeassembly.strategy.data_plan.prepare", "/scope"),
+            ("tradeassembly.strategy.data_run.step", "/scope"),
+            ("tradeassembly.strategy.data_recipe.prepare", "/scope"),
+            ("tradeassembly.strategy.data_recipe.step", "/scope"),
         ] {
             // Deliberately no provider/graph is installed: ownership must refuse
-            // before parsing/acquiring or admitting an outer command.
-            let mut body = json!({"idempotencyKey":"foreign-create"});
-            body[field] = json!({"scope":{"strategyId":"private-strategy"}});
+            // before parsing/acquiring or admitting an outer command. These
+            // incomplete bodies probe the early claimed-scope guard, not later
+            // plan-derived scope validation.
+            let mut scope = json!({"strategyId":"private-strategy"});
+            for field in scope_pointer.trim_start_matches('/').split('/').rev() {
+                scope = json!({field: scope});
+            }
+            let mut body = scope;
+            body["idempotencyKey"] = json!("foreign-create");
             let response = bob.call_mcp_tool(tool, body);
             assert_eq!(response["isError"], true, "{tool}: {response}");
             assert_eq!(

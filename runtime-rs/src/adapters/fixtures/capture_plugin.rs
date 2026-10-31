@@ -17,6 +17,7 @@ fn main() {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).unwrap();
     let request: Value = serde_json::from_str(&line).unwrap();
+    eprintln!("fixture operation {}: input parsed",request["metadata"]["operationId"]);
     let payload = &request["payload"]["payload"];
     let (result, schema) = match request["metadata"]["operationId"].as_str().unwrap() {
         "acquire" => {
@@ -38,6 +39,7 @@ fn main() {
             .unwrap();
             let mut raw = Vec::new();
             stream.take(65537).read_to_end(&mut raw).unwrap();
+            eprintln!("fixture acquire: HTTP read complete");
             assert!(raw.len() <= 65536);
             let response = String::from_utf8(raw).unwrap();
             let (_, body) = response.split_once("\r\n\r\n").unwrap();
@@ -52,12 +54,13 @@ fn main() {
             snapshot["observedAtMs"] =
                 json!(now + if payload["future"] == true { 60000 } else { 0 });
             let mut result = json!({"digest":digest(&snapshot),"snapshot":snapshot});
+            eprintln!("fixture acquire: digest complete");
             if payload["headers"] == true {
                 result["headers"] = json!({"NonSecretFixture":"must-not-persist"});
             }
             (result, "schema://capture-fixture/response@1")
         }
-        "chain" => {
+        "chain" | "calendar" => {
             assert!(!request["ephemeralCredentialGrant"].is_null());
             let address = payload["config"]["dataApiUrl"]
                 .as_str()
@@ -76,11 +79,12 @@ fn main() {
             .unwrap();
             let mut response = String::new();
             stream.take(65537).read_to_string(&mut response).unwrap();
+            eprintln!("fixture calendar/chain: HTTP read complete");
             assert!(response.len() <= 65536);
             let (_, body) = response.split_once("\r\n\r\n").unwrap();
             (
                 serde_json::from_str(body).unwrap(),
-                "schema://capture-fixture/option-chain@1",
+                if request["metadata"]["operationId"]=="calendar" {"schema://tradeassembly/session-calendar@1"}else{"schema://capture-fixture/option-chain@1"},
             )
         }
         "replay" => {
@@ -177,8 +181,10 @@ fn main() {
         }
         _ => panic!("unsupported fixture operation"),
     };
+    eprintln!("fixture: response ready");
     println!(
         "{}",
         json!({"schemaVersion":"1","requestId":request["requestId"],"status":"succeeded","responseSchema":schema,"payload":result,"providerOutcome":{"code":"fixture_observed"},"reconciliation":"not_required"})
     );
+    eprintln!("fixture: exit");
 }

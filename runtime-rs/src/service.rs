@@ -62,6 +62,7 @@ mod risk;
 mod robustness;
 pub mod robustness_lifecycle;
 mod scheduler;
+pub mod session_schedules;
 mod sightline;
 mod strategy;
 mod workers;
@@ -1072,6 +1073,9 @@ impl TradeAssemblyService {
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = session_schedules::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = instrument_screens::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1303,6 +1307,12 @@ impl TradeAssemblyService {
         match (normalized_method.as_str(), normalized_path.as_str()) {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/session-schedules/prepare") => {
+                session_schedules::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/session-schedules/get") => {
+                session_schedules::get_response(self, body)
             }
             ("POST", "/product/strategies/instrument-screens/create") => {
                 instrument_screens::create_response(self, body)
@@ -3439,6 +3449,11 @@ impl TradeAssemblyService {
                     .unwrap_or_else(|| "option_selection_preflight_failed".into());
                 return mcp::tool_error(name, &code, "Option selection failed closed.", None);
             }
+            if let Some(response) = session_schedules::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "session_schedule_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Session scheduling failed closed.", None);
+            }
             if let Some(response) = instrument_screens::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "instrument_screen_preflight_failed".into());
@@ -3762,6 +3777,22 @@ impl TradeAssemblyService {
                 self.dispatch_http(
                     "POST",
                     "/product/strategies/option-selections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.session_schedule.prepare" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/session-schedules/prepare",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.session_schedule.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/session-schedules/get",
                     arguments,
                 )
                 .body
@@ -4306,6 +4337,7 @@ impl TradeAssemblyService {
             || name.starts_with("tradeassembly.comparison.")
             || name.starts_with("tradeassembly.strategy.data_")
             || name.starts_with("tradeassembly.strategy.instrument_screen.")
+            || name.starts_with("tradeassembly.strategy.session_schedule.")
         {
             if let Some(code) = service_error_code(&payload) {
                 let response = mcp::tool_error(
@@ -5292,6 +5324,12 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
         "tradeassembly.strategy.option_selection.create" => {
             Some("/product/strategies/option-selections/create")
+        }
+        "tradeassembly.strategy.session_schedule.prepare" => {
+            Some("/product/strategies/session-schedules/prepare")
+        }
+        "tradeassembly.strategy.session_schedule.get" => {
+            Some("/product/strategies/session-schedules/get")
         }
         "tradeassembly.strategy.instrument_screen.create" => {
             Some("/product/strategies/instrument-screens/create")

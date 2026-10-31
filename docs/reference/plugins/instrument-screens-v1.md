@@ -2,9 +2,9 @@
 
 The additive `screened` InstrumentSelector form binds a candidate producer to a
 published strategy. Existing normalized, symbolic-alias and dynamic-expression
-forms keep their wire shape. This schema/validation slice does not automatically
-execute a screen, invoke a scheduler, warm instruments or create an order. Runtime
-and runner adoption remain separate requirements.
+forms keep their wire shape. Explicit screen creation executes a verified pure
+plugin over admitted collections. Scheduler, selection-aware indicator warmup
+and order-runner adoption remain separate requirements.
 
 A screened selector contains `selector_id`, `type:"screened"` and `screen`.
 It cannot also contain normalized_id, alias or expression. The closed screen is
@@ -80,4 +80,51 @@ credential/account/network privilege. Old fixed-interval evaluators cannot
 silently execute screened strategies as static symbols; they fail unsupported
 until the selection-aware lifecycle is integrated. The host constructs source
 provenance, membership/ranking identities and expiry; these are not self-authored
-plugin authority. Actual runtime/process qualification remains separate.
+plugin authority.
+
+## Explicit host entrypoints
+
+POST `/product/strategies/instrument-screens/create` and MCP
+`tradeassembly.strategy.instrument_screen.create` accept `screen` and an
+`idempotencyKey` through existing owner/command authorization. The closed screen
+command contains `scope` (strategyId, strategyVersionId, strategySpecHash),
+`capabilityGraphRevision`, `mode`, `signalRequirementRef`, `selectorRef`,
+`collections` (named input port to collection ID), and `knowledgeCutoffMs`.
+Account mode follows the existing command envelope; the body grants no authority.
+
+POST `/product/strategies/instrument-screens/get` and MCP
+`tradeassembly.strategy.instrument_screen.get` accept `selectionId`. Both return
+`selection` with schemaVersion `tradeassembly.instrument_screen_summary.v1`,
+immutable receipt identity, owner/version/graph and operation/package/policy
+bindings; `instrumentSet` with SDK instrument_set.v1 causal times, coverage,
+members, contexts and bounded rejection summary; and
+`executionAuthorityGranted:false`. Original provider pages, queries, cursors,
+operation response and credentials are not projected. The InstrumentSet source
+receipt digest identifies nested operation evidence; the summary receipt digest
+identifies the whole host receipt. They are distinct identities.
+
+The host checks current policy, graph, source receipt, package, schema, mode,
+ownership and expiry before returning cached results. A retry cannot renew the
+original TTL, reacquire silently, or bypass revocation. Receipt and idempotency
+binding commit atomically. Reusing a cached pure-operation response after a failed
+receipt transaction retains its original host observation/known time. This
+primitive recovery does not promise replay of an outer failed command envelope.
+Syntax/ID/unavailable read errors use HTTP 400; domain/currentness/commit errors
+use HTTP 409. MCP errors preserve `isError:true` for preflight and execution
+failures. Transport command metadata may differ on retries; immutable selection
+and InstrumentSet fields retain their identities.
+
+The native-process fixture exercises deterministic ties, zero versus missing
+metrics, complete-empty, incomplete coverage, foreign/unaccounted candidates,
+undeclared contexts, expiry, owner/mode/revocation, transaction failure, service
+recreation and integral JSON numeric forms. This is synthetic contract evidence
+under the native test sandbox, not authenticated provider coverage, production
+sandbox qualification or customer demo footage. The fixture screener is not a
+shipped production operator.
+
+Discovery explicitly reports no calendar scheduling or execution integration.
+No new selected-set runner protocol, research accounting, journal projection or
+synthetic-exit lifecycle is established here. Existing static selection remains
+valid; the legacy compiler rejects screened selection rather than inventing a
+default symbol. Larger universes require an explicit bounded transport contract;
+the current adapter does not truncate data or imply global top-N coverage.

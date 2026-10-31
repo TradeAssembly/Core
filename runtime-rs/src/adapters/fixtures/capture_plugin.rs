@@ -135,6 +135,39 @@ fn main() {
                 "schema://tradeassembly/data-evaluation-response@1",
             )
         }
+        "screen" => {
+            // Toy selection operator lives in the executable fixture, never in
+            // Core. This proves plumbing, not a released financial screener.
+            assert!(request["ephemeralCredentialGrant"].is_null());
+            assert_eq!(payload["schemaVersion"], "tradeassembly.instrument_screen_evaluation.v1");
+            let input=payload["candidateInput"].as_str().unwrap();
+            let rows=payload["inputs"][input]["payload"].pointer(payload["candidateRecordsPointer"].as_str().unwrap()).unwrap().as_array().unwrap();
+            let parameters=&payload["parameters"];
+            let mut eligible=vec![];let mut rejections=vec![];
+            for row in rows {
+                let id=row["id"].as_str().unwrap();
+                let reason=if row["dte"].as_i64().unwrap()<parameters["minDte"].as_i64().unwrap() || row["dte"].as_i64().unwrap()>parameters["maxDte"].as_i64().unwrap() {
+                    Some("expiry_out_of_range")
+                } else if row["oi"].is_null() {Some("missing_open_interest")}
+                else if row["oiAgeDays"].is_null() {Some("missing_open_interest_date")}
+                else if row["oiAgeDays"].as_i64().unwrap()>parameters["maxOiAgeDays"].as_i64().unwrap() {Some("stale_open_interest")}
+                else {None};
+                if let Some(reason)=reason {rejections.push(json!({"instrumentId":id,"reasonCodes":[reason]}));}
+                else {eligible.push(row);}
+            }
+            eligible.sort_by(|a,b|b["oi"].as_i64().unwrap().cmp(&a["oi"].as_i64().unwrap()).then_with(||a["id"].as_str().unwrap().cmp(b["id"].as_str().unwrap())));
+            let limit=payload["topN"].as_u64().unwrap() as usize;
+            let mut members=vec![];
+            for (i,row) in eligible.iter().enumerate() {
+                if i<limit {members.push(json!({"instrumentId":row["id"],"assetClass":"equity","instrumentFamily":"equity","rank":i+1,"contextInstruments":["SPY"]}));}
+                else {rejections.push(json!({"instrumentId":row["id"],"reasonCodes":["below_rank_cutoff"]}));}
+            }
+            if parameters["fault"]=="omit_rejections" {rejections.clear();}
+            if parameters["fault"]=="undeclared_context" {members[0]["contextInstruments"]=json!(["UNDECLARED"]);}
+            if parameters["fault"]=="foreign_member" {members[0]["instrumentId"]=json!("FOREIGN");}
+            let status=if members.is_empty() {"complete_empty"} else {"complete_nonempty"};
+            (json!({"schemaVersion":"tradeassembly.instrument_screen_result.v1","status":status,"members":members,"rejections":rejections,"issues":[]}),"schema://tradeassembly/instrument-screen-result@1")
+        }
         "derive" => {
             assert!(request["ephemeralCredentialGrant"].is_null());
             (

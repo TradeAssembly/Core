@@ -27,6 +27,10 @@ fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,
  let positions=service.runtime().storage.list_json("positions").unwrap();let orders=service.runtime().storage.list_json("orders").unwrap();
  let request=dispatch::DispatchRequest{occurrence_id:occurrence,scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),subjects:dispatch::SubjectPolicy::AllSelected{max_members:1},event_start_ms:10*86400000,event_end_ms:12*86400000,interval_ms:86400000,max_frames_per_step:2,source_captures_by_subject:BTreeMap::new()};
  if case=="session_process" {exercise_compiled_session_process(&service,&request,case);return;}
+ if case=="session_remote" {
+  let c=crate::service::data_runner::DataRunnerCommand{schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA_V3.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:"fixture.scheduler.prototype".into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new("fixture.scheduler.prototype").unwrap(),mode:crate::service::data_runner::DataRunnerMode::Paper,submitted_at_ms:service.runtime().clock.now_ms(),operation:crate::service::data_runner::DataRunnerOperation::DispatchSession{dispatch:dispatch::RemoteRequest::Enqueue{job:request.clone()}}};
+  maybe_run_joint_reach_data_process(std::path::Path::new(service.db()).parent().unwrap(),&service,&c,case);return;
+ }
  let remote_runner=crate::service::data_runner::DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();
  let remote_clock=service.runtime().clock.clone();
  let remote_command=|id:&str,remote:dispatch::RemoteRequest| crate::service::data_runner::DataRunnerCommand { schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA_V3.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:id.into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new(id).unwrap(),mode:crate::service::data_runner::DataRunnerMode::Paper,submitted_at_ms:remote_clock.now_ms(),operation:crate::service::data_runner::DataRunnerOperation::DispatchSession{dispatch:remote} };

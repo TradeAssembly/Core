@@ -38,7 +38,8 @@ fn maybe_run_joint_reach_data_process(
             &schedule.scope
         }
         crate::service::data_runner::DataRunnerOperation::PrepareSelectionPlan { selection_plan } => &selection_plan.scope,
-        _ => panic!("use authored calendar or selected-plan command"),
+        crate::service::data_runner::DataRunnerOperation::DispatchSession { dispatch:crate::service::session_dispatch::RemoteRequest::Enqueue{job} }=>&job.scope,
+        _ => panic!("use authored calendar, selected-plan or session command"),
     };
     scoped
         .bind_owned_object("strategy", &scope.strategy_id)
@@ -141,6 +142,22 @@ fn maybe_run_joint_reach_data_process(
         child.wait_with_output().unwrap()
     };
     write_screen_interface_evidence(case,"joint-fixture-root.json",&json!({"root":root,"database":db,"syntheticOnly":true}));
+    if case=="session_remote" {
+        fs::write(root.join("SYNTHETIC_SCHEDULER_REMOTE_FIXTURE"),"synthetic only\n").unwrap();
+        let config=json!({"root":root,"binary":std::path::PathBuf::from(&binary),"revision":expected,"wardenOrigin":warden.base_url,"relayOrigin":origin,"humanAuth":auth,"srt":std::env::var("REACH_DATA_TEST_SRT").unwrap(),"command":command});
+        let mut child=std::process::Command::new("python3").arg(std::env::var_os("SCHEDULER_V3_JOINT_DRIVER").unwrap()).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        writeln!(child.stdin.take().unwrap(),"{config}").unwrap();
+        let output=child.wait_with_output().unwrap();
+        fs::write(root.join("scheduler-v3-driver.stdout.log"),&output.stdout).unwrap();fs::write(root.join("scheduler-v3-driver.stderr.log"),&output.stderr).unwrap();
+        assert!(output.status.success(),"actual scheduler joint driver: {}",String::from_utf8_lossy(&output.stderr));
+        let result:Value=serde_json::from_slice(&output.stdout).unwrap();assert_eq!(result["status"],"PASS");write_screen_interface_evidence(case,"joint-process-result.json",&result);
+        let operations=scoped.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+        let mut instance=scoped.runtime().plugins.get_instance("capture.source").unwrap().unwrap();instance["enabled"]=json!(false);scoped.runtime().plugins.put_instance("capture.source",instance,&ctx("joint-source-revoked")).unwrap();
+        let revoked=run(Some("--prepare-command"),Some(json!({"kind":"prepare","sourceRevision":1,"command":command,"ttlMs":300000})));
+        assert!(!revoked.status.success(),"revoked source must refuse native preparation");assert_eq!(scoped.runtime().storage.list_json("plugin_operation_receipts").unwrap(),operations);
+        write_screen_interface_evidence(case,"joint-native-revoked-source-refusal.json",&json!({"stderr":String::from_utf8_lossy(&revoked.stderr),"noProviderInvocation":true}));
+        return;
+    }
     let source_revision=std::env::var("REACH_DATA_TEST_SOURCE_REVISION").unwrap_or_else(|_|"0".into()).parse::<u64>().unwrap();
     let case_id=std::env::var("REACH_DATA_TEST_CASE_ID").unwrap_or_else(|_|"initial".into());
     assert!(case_id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-'));

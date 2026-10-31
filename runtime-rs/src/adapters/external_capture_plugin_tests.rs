@@ -275,6 +275,15 @@ fn rig_with_options(options: bool) -> Rig { rig_configuration(options,false) }
 fn rig_configuration(options:bool,recipes:bool)->Rig {
     let operations = Arc::new(ForwardNative::default());
     let (dir, service, scope, _) = data_plans::tests::fixture_service(Some(operations.clone()));
+    // Share the exact window with the provider fixture. Setup and acquisition
+    // may cross a minute boundary; that must not manufacture a coverage gap.
+    let interval_ms = if options { 60000 } else { 86400000 };
+    let event_end_ms = if options {
+        service.runtime().clock.now_ms() / interval_ms * interval_ms
+    } else {
+        13 * interval_ms
+    };
+    let event_start_ms = event_end_ms - 3 * interval_ms;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
@@ -288,15 +297,9 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
                 "/options"
             };
             assert!(String::from_utf8_lossy(&buf[..n]).starts_with(&format!("GET {path} ")));
-            let day = 86400000_i64;
             let now = chrono::Utc::now();
-            let start = if options {
-                now.timestamp_millis() / 60000 * 60000 - 3 * 60000
-            } else {
-                10 * day
-            };
             let body = if index == 0 {
-                json!({"values":[10,20,30],"start":start,"interval":if options {60000}else{day},"instrument":"TEST"})
+                json!({"values":[10,20,30],"start":event_start_ms,"interval":interval_ms,"instrument":"TEST"})
             } else {
                 let expiry = (now.date_naive() + chrono::Days::new(21))
                     .format("%Y-%m-%d")
@@ -386,18 +389,10 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
                     asset_class: "equity".into(),
                     instrument_family: "equity".into(),
                 }],
-                interval_ms: Some(if options { 60000 } else { 86400000 }),
+                interval_ms: Some(interval_ms.try_into().unwrap()),
             },
-            event_start_ms: if options {
-                service.runtime().clock.now_ms() / 60000 * 60000 - 3 * 60000
-            } else {
-                10 * 86400000
-            },
-            event_end_ms: if options {
-                service.runtime().clock.now_ms() / 60000 * 60000
-            } else {
-                13 * 86400000
-            },
+            event_start_ms,
+            event_end_ms,
             gap_policy: captures::GapPolicy::StrictFixedInterval,
         },
         input: json!({}),

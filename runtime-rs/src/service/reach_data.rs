@@ -69,6 +69,25 @@ impl ReachDataCommand {
             }
         };
         if self.schema != REACH_DATA_SCHEMA
+            || [
+                &self.command.core_release,
+                &self.command.workspace_id,
+                &self.command.command_id,
+                &self.command.authority_ref,
+                &self.resource.capability_graph_revision,
+                &self.resource.scope.strategy_id,
+                &self.resource.scope.strategy_version_id,
+                &self.resource.scope.strategy_spec_hash,
+            ]
+            .iter()
+            .any(|s| s.is_empty() || s.len() > 200 || !s.bytes().all(|b| b.is_ascii_graphic()))
+            || self.command.idempotency_key.as_str().len() > 200
+            || !self
+                .command
+                .idempotency_key
+                .as_str()
+                .bytes()
+                .all(|b| b.is_ascii_graphic())
             || encoded.len() > MAX_REACH_DATA_BYTES
             || self.request_id != self.command.command_id
             || self.idempotency_key != self.command.idempotency_key.as_str()
@@ -217,6 +236,9 @@ mod tests {
         let mut value = serde_json::to_value(&c).unwrap();
         value["unknown"] = json!(true);
         assert!(serde_json::from_value::<ReachDataCommand>(value).is_err());
+        let mut oversized_label = c.clone();
+        oversized_label.command.authority_ref = "a".repeat(201);
+        assert!(oversized_label.validate().is_err());
         assert!(serde_json::from_value::<crate::ports::ReachCommand>(
             serde_json::to_value(&c).unwrap()
         )

@@ -219,6 +219,36 @@ pub fn source_binding(
         "launchDirectory":std::env::current_dir().map_err(|_|"reach_data_launch_context_unavailable")?}))
         .map_err(|_|"reach_data_source_identity_invalid".into())
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DataSourceDescription {
+    pub schema_version: String,
+    pub node: ReachNodeScope,
+    pub core_revision: String,
+    pub source_binding_sha256: String,
+    pub owner_binding_sha256: String,
+}
+pub fn describe_source(
+    service: &TradeAssemblyService,
+    node: &ReachNodeScope,
+) -> Result<DataSourceDescription, String> {
+    let source = source_binding(service, node)?;
+    let owner = service
+        .invocation_owner()
+        .ok_or("reach_data_human_session_required")?;
+    Ok(DataSourceDescription {
+        schema_version: "tradeassembly.reach-data-source.v1".into(),
+        node: node.clone(),
+        core_revision: crate::build_identity::current()
+            .ok_or("reach_data_build_identity_required")?
+            .revision()
+            .into(),
+        source_binding_sha256: source,
+        owner_binding_sha256: canonical_sha256(&owner)
+            .map_err(|_| "reach_data_source_identity_invalid")?,
+    })
+}
+
 pub struct ReachDataConsumer {
     service: TradeAssemblyService,
     runner: DurableCoreDataRunner,

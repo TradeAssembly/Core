@@ -1909,6 +1909,7 @@ fn session_calendar_process_fixture(closed:bool){
   connection.execute_batch("DROP TRIGGER fail_upstream_complete;").unwrap();let recovered=runner.dispatch(&uncertain).unwrap();assert_eq!(recovered.state,DataRunnerState::Completed);assert_eq!(recovered.previous_receipt_sha256,Some(result.receipt_sha256));assert_eq!(runner.dispatch(&uncertain).unwrap(),recovered);write_screen_interface_evidence(case,"data-runner-uncertain-recovered.json",&serde_json::to_value(&recovered).unwrap());
  }
  maybe_run_data_runner_process(dir.path(),&runner_command,case);
+ if !closed {maybe_run_joint_reach_data_process(dir.path(),&service,&runner_command,case);}
  write_screen_interface_evidence(case,"data-runner-command.json",&serde_json::to_value(&runner_command).unwrap());write_screen_interface_evidence(case,"data-runner-receipt.json",&serde_json::to_value(&runner_receipt).unwrap());
  drop(runner);
  let db=dir.path().join("service.db").to_string_lossy().into_owned();drop(service);drop(operations);
@@ -1946,4 +1947,13 @@ fn maybe_run_data_runner_process(root:&std::path::Path,command:&crate::service::
   for r in &responses[1..4]{assert_eq!(r["ok"],true,"{r}");assert_eq!(r["receipt"]["executionAuthorityGranted"],false,"{r}");assert_eq!(r["receipt"]["coreRevision"],revision);assert_eq!(r["receipt"]["state"],if deny{"failed"}else{"completed"},"{r}");if deny{assert!(r["receipt"]["result"].is_null());}else{assert_eq!(r["receipt"]["result"]["kind"],"session");}}
   assert_eq!(responses[1],responses[2]);assert_eq!(responses[1],responses[3]);write_screen_interface_evidence(case,if deny{"process-deny.json"}else{"process-allow.json"},&serde_json::to_value(responses).unwrap());
  }
+}
+
+include!("external_reach_data_process_tests.rs");
+
+#[test]
+#[ignore="explicit actual Core and local Relay fixture process gate"]
+fn reach_data_actual_core_relay_process_journey(){
+ for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
+ session_calendar_process_fixture(false);
 }

@@ -47,6 +47,7 @@ mod object_authorization;
 mod onboarding;
 pub mod option_selections;
 mod options;
+pub mod order_plans;
 mod orders;
 mod original_cycle_recovery;
 pub mod paper_runner;
@@ -1103,6 +1104,9 @@ impl TradeAssemblyService {
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = order_plans::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = selection_plans::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1340,6 +1344,15 @@ impl TradeAssemblyService {
         match (normalized_method.as_str(), normalized_path.as_str()) {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/order-plans/prepare") => {
+                order_plans::response(self, order_plans::PREPARE, body)
+            }
+            ("POST", "/product/strategies/order-plans/reserve") => {
+                order_plans::response(self, order_plans::RESERVE, body)
+            }
+            ("POST", "/product/strategies/order-plans/release") => {
+                order_plans::response(self, order_plans::RELEASE, body)
             }
             ("POST", "/product/strategies/selection-plans/prepare") => {
                 selection_plans::prepare_response(self, body)
@@ -3472,6 +3485,9 @@ impl TradeAssemblyService {
                     name,
                     "tradeassembly.strategy.option_selection.create"
                         | "tradeassembly.strategy.data_collection.create"
+                        | "tradeassembly.strategy.order_plan.prepare"
+                        | "tradeassembly.strategy.order_plan.reserve"
+                        | "tradeassembly.strategy.order_plan.release"
                         | "tradeassembly.strategy.instrument_screen.create"
                         | "tradeassembly.strategy.data_recipe.prepare"
                         | "tradeassembly.strategy.data_recipe.step"
@@ -3498,6 +3514,11 @@ impl TradeAssemblyService {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "option_selection_preflight_failed".into());
                 return mcp::tool_error(name, &code, "Option selection failed closed.", None);
+            }
+            if let Some(response) = order_plans::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "order_plan_preflight_failed".into());
+                return mcp::tool_error(name, &code, &code, None);
             }
             if let Some(response) = selection_plans::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
@@ -3840,6 +3861,18 @@ impl TradeAssemblyService {
                     arguments,
                 )
                 .body
+            }
+            "tradeassembly.strategy.order_plan.prepare" => {
+                self.dispatch_http("POST", order_plans::PREPARE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.reserve" => {
+                self.dispatch_http("POST", order_plans::RESERVE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.release" => {
+                self.dispatch_http("POST", order_plans::RELEASE, arguments)
+                    .body
             }
             "tradeassembly.strategy.selection_plan.prepare" => {
                 self.dispatch_http("POST", selection_plans::PATH, arguments)
@@ -4462,6 +4495,9 @@ impl TradeAssemblyService {
             name,
             "tradeassembly.strategy.option_selection.create"
                 | "tradeassembly.strategy.selection_plan.prepare"
+                | "tradeassembly.strategy.order_plan.prepare"
+                | "tradeassembly.strategy.order_plan.reserve"
+                        | "tradeassembly.strategy.order_plan.release"
                 | "tradeassembly.strategy.data_recipe.prepare"
                 | "tradeassembly.strategy.data_recipe.step"
         ) {
@@ -5400,6 +5436,9 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
         "tradeassembly.strategy.option_selection.create" => {
             Some("/product/strategies/option-selections/create")
         }
+        "tradeassembly.strategy.order_plan.prepare" => Some(order_plans::PREPARE),
+        "tradeassembly.strategy.order_plan.reserve" => Some(order_plans::RESERVE),
+        "tradeassembly.strategy.order_plan.release" => Some(order_plans::RELEASE),
         "tradeassembly.strategy.selection_plan.prepare" => Some(selection_plans::PATH),
         "tradeassembly.strategy.session_schedule.prepare" => {
             Some("/product/strategies/session-schedules/prepare")

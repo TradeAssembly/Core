@@ -611,6 +611,15 @@
       "min_pep_coverage": "c3",
       "required_decision": "allow",
       "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-order-plan-manage",
+      "action": "strategy.order_plan.manage",
+      "resource_kind": "strategy_order_plan",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
     }
   ],
   "extension_schemas": [],

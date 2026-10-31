@@ -43,3 +43,26 @@ pub fn input_schema() -> Value {
 pub fn output_schema() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["schemaVersion","quantity","limitPrice","reasonCodes"],"properties":{"schemaVersion":{"const":"tradeassembly.execution_calculation_output.v1"},"quantity":crate::execution_snapshot::decimal_schema(),"limitPrice":crate::execution_snapshot::decimal_schema(),"reasonCodes":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":128}}}})
 }
+
+/// Decode the existing operation wire payload, whose host-owned configuration
+/// field sits beside logical inputs. V1 calculations deliberately allow only
+/// empty configuration: all semantic parameters must be in the published plan.
+pub fn decode_host_payload(value: &Value) -> Result<CalculationInput, String> {
+    let mut logical = value
+        .as_object()
+        .cloned()
+        .ok_or("execution_calculation_input_invalid")?;
+    if logical.remove("config") != Some(json!({})) {
+        return Err("execution_calculation_configuration_unsupported".into());
+    }
+    serde_json::from_value(Value::Object(logical))
+        .map_err(|_| "execution_calculation_input_invalid".into())
+}
+
+/// Decode the operation JSON at the byte boundary without exposing a JSON
+/// library's feature-specific concrete type to a separately built plugin.
+pub fn decode_host_json(bytes: &[u8]) -> Result<CalculationInput, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|_| "execution_calculation_input_invalid")?;
+    decode_host_payload(&value)
+}

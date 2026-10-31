@@ -404,6 +404,9 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/option-selections/create") => {
             "strategy.option_selection.create".into()
         }
+        ("POST", "/product/strategies/order-plans/prepare") => "strategy.order_plan.prepare".into(),
+        ("POST", "/product/strategies/order-plans/reserve") => "strategy.order_plan.reserve".into(),
+        ("POST", "/product/strategies/order-plans/release") => "strategy.order_plan.release".into(),
         ("POST", "/product/strategies/selection-plans/prepare") => {
             "strategy.selection_plan.prepare".into()
         }
@@ -722,6 +725,9 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.strategy.option_selection.create" => {
             return "strategy.option_selection.create".into()
         }
+        "tradeassembly.strategy.order_plan.prepare" => return "strategy.order_plan.prepare".into(),
+        "tradeassembly.strategy.order_plan.reserve" => return "strategy.order_plan.reserve".into(),
+        "tradeassembly.strategy.order_plan.release" => return "strategy.order_plan.release".into(),
         "tradeassembly.strategy.selection_plan.prepare" => {
             return "strategy.selection_plan.prepare".into()
         }
@@ -880,6 +886,15 @@ fn mcp_uses_route_classification(name: &str, command_name: &str) -> bool {
 
 fn mcp_route_path(name: &str, command_name: &str) -> String {
     match name {
+        "tradeassembly.strategy.order_plan.prepare" => {
+            "/product/strategies/order-plans/prepare".into()
+        }
+        "tradeassembly.strategy.order_plan.reserve" => {
+            "/product/strategies/order-plans/reserve".into()
+        }
+        "tradeassembly.strategy.order_plan.release" => {
+            "/product/strategies/order-plans/release".into()
+        }
         "tradeassembly.plugin.oauth.start" => "/plugins/oauth/start".to_string(),
         "tradeassembly.plugin.oauth.status" => "/plugins/oauth/status".to_string(),
         "tradeassembly.plugin.oauth.disconnect" => "/plugins/oauth/disconnect".to_string(),
@@ -1483,6 +1498,21 @@ fn command_group(command_name: &str) -> &str {
 }
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
+    let scope = match path {
+        "/product/strategies/order-plans/prepare" => Some("/orderPlan/scope/strategyId"),
+        "/product/strategies/order-plans/reserve" | "/product/strategies/order-plans/release" => {
+            Some("/scope/strategyId")
+        }
+        _ => None,
+    };
+    if let Some(pointer) = scope {
+        return body
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
+    }
+
     if path.starts_with("/plugins/oauth/") {
         if let Some(instance) = nested_value(body, "instanceRef")
             .or_else(|| nested_value(body, "instance_ref"))
@@ -2197,6 +2227,38 @@ mod tests {
         assert_eq!(
             first_read.idempotency_key.as_str(),
             second_read.idempotency_key.as_str()
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn execution_plan_c3_target_comes_from_actual_scope_not_top_level_hint() {
+    let body = json!({"strategyId":"forged-other","orderPlan":{"scope":{"strategyId":"actual-owned"}},"scope":{"strategyId":"actual-owned"},"idempotencyKey":"fixture-target","accountMode":"paper"});
+    for (path, tool) in [
+        (
+            "/product/strategies/order-plans/prepare",
+            "tradeassembly.strategy.order_plan.prepare",
+        ),
+        (
+            "/product/strategies/order-plans/reserve",
+            "tradeassembly.strategy.order_plan.reserve",
+        ),
+        (
+            "/product/strategies/order-plans/release",
+            "tradeassembly.strategy.order_plan.release",
+        ),
+    ] {
+        assert_eq!(
+            http_envelope("http", "POST", path, &body)
+                .unwrap()
+                .target_object
+                .as_deref(),
+            Some("actual-owned")
+        );
+        assert_eq!(
+            mcp_envelope(tool, &body).unwrap().target_object.as_deref(),
+            Some("actual-owned")
         );
     }
 }

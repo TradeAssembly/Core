@@ -172,6 +172,24 @@ fn main() {
             let status=if members.is_empty() {"complete_empty"} else {"complete_nonempty"};
             (json!({"schemaVersion":"tradeassembly.instrument_screen_result.v1","status":status,"members":members,"rejections":rejections,"issues":[]}),"schema://tradeassembly/instrument-screen-result@1")
         }
+        "execution_account" | "execution_metadata" | "execution_quote" => {
+            // Entirely authored paper fixture, not a provider observation.
+            let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+            let av=|v:Value|json!({"status":"available","value":v});
+            let time=json!({"observedAtMs":now,"knownAtMs":now,"basis":"provider_observed"});let currency=json!({"code":"USD","decimals":2});
+            match request["metadata"]["operationId"].as_str().unwrap() {
+                "execution_account"=>(json!({"schemaVersion":"tradeassembly.execution_account_snapshot.v1","accountRef":"fixture.paper","providerAccountId":"fixture.paper.provider","mode":"paper","currency":currency,"time":time,"coverage":{"accountComplete":true,"positionsComplete":true,"openOrdersComplete":true},"cashBalance":av(json!("100")),"nonMarginableBuyingPower":av(json!("100")),"borrowingDebt":av(json!("0")),"grossExposure":av(json!("0")),"instrumentPermissions":[{"assetClass":"equity","instrumentFamily":"equity","actions":av(json!(["buy_to_open"]))}],"positions":av(json!([])),"openOrders":av(json!([]))}),"schema://tradeassembly/execution-account-snapshot@1"),
+                "execution_metadata"=>(json!({"schemaVersion":"tradeassembly.execution_instrument_metadata.v1","instrumentId":"SPY","providerSymbol":"SPY","assetClass":"equity","instrumentFamily":"equity","time":time,"quantityUnit":av(json!("shares")),"multiplier":av(json!("1")),"quoteCurrency":av(currency),"minimumQuantity":av(json!("0.001")),"quantityIncrement":av(json!("0.001")),"priceIncrement":av(json!("0.01")),"tradable":av(json!(true)),"expiresAtMs":av(Value::Null),"standardDeliverable":av(json!(true))}),"schema://tradeassembly/execution-instrument-metadata@1"),
+                _=>(json!({"schemaVersion":"tradeassembly.execution_quote.v1","instrumentId":"SPY","currency":currency,"time":time,"origin":"provider","sourceProfile":"fixture-quote.v1","indicative":av(json!(false)),"bid":av(json!("99")),"ask":av(json!("100"))}),"schema://tradeassembly/execution-quote@1"),
+            }
+        }
+        "plan_calculate" => {
+            assert!(request["ephemeralCredentialGrant"].is_null());
+            // Explicit quantity is the strategy fixture parameter. The host
+            // still checks actual cash, units, increments and hard limits.
+            let typed=tradeassembly_plugin_sdk::execution_calculation::decode_host_json(&serde_json::to_vec(payload).unwrap()).unwrap();
+            (json!({"schemaVersion":"tradeassembly.execution_calculation_output.v1","quantity":typed.parameters["quantity"].as_str().unwrap(),"limitPrice":typed.quote.ask.required().unwrap().to_string(),"reasonCodes":["fixture_explicit_quantity"]}),"schema://tradeassembly/execution-calculation-output@1")
+        }
         "derive" => {
             assert!(request["ephemeralCredentialGrant"].is_null());
             (

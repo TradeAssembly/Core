@@ -75,7 +75,8 @@
       "tradeassembly.telemetry.manage",
       "strategy.data_collection.create",
       "strategy.instrument_screen.create",
-      "strategy.session_schedule.prepare"
+      "strategy.session_schedule.prepare",
+      "strategy.order_plan.manage"
     ],
     "resources": [
       "activation",
@@ -116,7 +117,8 @@
       "telemetry_preference",
       "strategy_data_collection",
       "strategy_instrument_screen",
-      "strategy_session_schedule"
+      "strategy_session_schedule",
+      "strategy_order_plan"
     ],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000

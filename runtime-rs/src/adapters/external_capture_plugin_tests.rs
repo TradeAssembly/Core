@@ -69,7 +69,7 @@ fn fixture_executable() -> &'static [u8] {
             .arg(format!("dependency={}", deps.display()))
             .arg("-o")
             .arg(&output);
-        for name in ["serde_json", "sha2", "serde_json_canonicalizer"] {
+        for name in ["serde_json", "sha2", "serde_json_canonicalizer", "tradeassembly_plugin_sdk"] {
             let mut libraries = std::fs::read_dir(&deps)
                 .unwrap()
                 .filter_map(Result::ok)
@@ -105,11 +105,11 @@ fn install_fixture_with_recipe(
     interval_ms: u64,
     recipe: bool,
 ) -> InstalledPluginPackage {
-    install_fixture_variant(service,root,calculator,interval_ms,recipe,false)
+    install_fixture_variant(service,root,calculator,interval_ms,recipe,false,false)
 }
 fn install_fixture_variant(
     service:&crate::service::TradeAssemblyService,root:&std::path::Path,
-    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,
+    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,versioned_signal:bool,
 )->InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
@@ -140,7 +140,7 @@ fn install_fixture_variant(
         .unwrap();
     let mut operation = serde_json::to_value(&template.operation).unwrap();
     operation["id"] = json!(opid);
-    operation["capability"] = json!(format!("test.capture.{opid}"));
+    operation["capability"] = json!(format!("test.capture.{opid}{}",if versioned_signal {"@1"}else{""}));
     operation["protocol"] = json!("stdio");
     operation["traits"] = json!({"modes":["paper"],"instrumentFamilies":["equity"],"inputSchemaRefs":if calculator {vec!["schema://test/series@1"]} else {vec![]},"outputSchemaRefs":["schema://test/series@1",EVALUATION_RESPONSE_SCHEMA],"deterministic":true,"replayable":true});
     if calculator {
@@ -168,7 +168,7 @@ fn install_fixture_variant(
         operations.push(operation);
     }
     let manifest = json!({"metadata":{"id":id,"version":"1","provider":{"id":id,"name":"Local capture fixture"}},"operations":operations,
-        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"},{"id":"test.session.calendar@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
+        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":if versioned_signal{"test.capture.replay@1"}else{"test.capture.replay"}},{"id":"test.capture.derive"},{"id":"test.option.chain@1"},{"id":"test.session.calendar@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
         "configuration":{"fields":[{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
@@ -460,7 +460,7 @@ fn screen_process_fixture(case:&str) {
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
         }
     });
-    let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
+    let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true,false);
     let calculator=install_screen_package(&service,dir.path());
     let evaluation_calculator=if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_remote"|"session_closed"|"session_missed"){Some(install_fixture_with_recipe(&service,dir.path(),true,86400000,false))}else{None};
     if let Some(p)=&evaluation_calculator{service.runtime().plugins.put_instance(&p.plugin_ref,json!({"instanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"providerRef":p.plugin_ref,"enabled":true,"activePackageSha256":p.package_sha256,"configuration":{}}),&ctx("selected-evaluation-instance")).unwrap();}
@@ -1884,7 +1884,7 @@ fn session_calendar_process_fixture(closed:bool){
  let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":now,"days":[{"sessionDate":date,"session":session}]});
  let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
  let server=std::thread::spawn(move||{let (mut stream,_)=listener.accept().unwrap();eprintln!("calendar fixture closed={closed}: accepted");let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();assert!(String::from_utf8_lossy(&buffer[..n]).starts_with("GET /options "));let bytes=serde_json::to_vec(&document).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();stream.shutdown(std::net::Shutdown::Both).unwrap();eprintln!("calendar fixture closed={closed}: response sent");});
- let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
+ let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true,false);
  service.runtime().plugins.put_instance(&source.plugin_ref,json!({"instanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"providerRef":source.plugin_ref,"enabled":true,"activePackageSha256":source.package_sha256,"credentialRef":"calendar-fixture","configuration":{"dataApiUrl":format!("http://{address}")}}),&ctx("calendar-instance")).unwrap();
  service.runtime().credentials.store("calendar-fixture",&BTreeMap::from([("api_key".into(),"fake-calendar-key".into()),("api_secret".into(),"fake-calendar-secret".into())])).unwrap();
  *operations.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(TracedFixtureSandbox)));
@@ -2026,6 +2026,8 @@ fn session_actual_compiled_core_process_restart_and_lost_mcp_response(){
  for name in ["SESSION_PROCESS_TEST_BINARY","SESSION_PROCESS_TEST_SCRIPT","SESSION_PROCESS_TEST_SRT","SCREEN_INTERFACE_EVIDENCE_DIR"]{assert!(std::env::var_os(name).is_some(),"missing process gate input {name}");}
  screen_process_fixture("session_process");
 }
+
+include!("external_order_plan_tests.rs");
 
 #[test]
 #[ignore="explicit frozen Core V3 consumer and Relay V3 loopback SQL fixture"]

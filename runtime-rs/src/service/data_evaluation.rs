@@ -395,6 +395,7 @@ fn validate_batch_with(
             || p.known_at_ms < p.event_end_ms
             || p.known_at_ms > window.as_of_ms
             || p.arrived_at_ms < p.known_at_ms
+            || p.arrived_at_ms > window.as_of_ms
             || port.time.interval_ms.is_some_and(|n| {
                 p.event_end_ms
                     .checked_sub(p.event_start_ms)
@@ -590,6 +591,32 @@ pub fn step(
         return Err("data_strategy_history_missing_requires_replay".into());
     }
     validate_state_availability(&checkpoint)?;
+    // A caller's declared cutoff bounds both clocks, including prior state.
+    // Check before acquisition or any reset can discard unavailable history.
+    if checkpoint
+        .state_availability
+        .values()
+        .chain(
+            checkpoint
+                .partition_availability
+                .values()
+                .flat_map(|slots| slots.values()),
+        )
+        .any(|a| {
+            a.known_at_ms > request.window.as_of_ms || a.arrived_at_ms > request.window.as_of_ms
+        })
+        || checkpoint
+            .last_frame
+            .values()
+            .flat_map(|response| response.outputs.values())
+            .flat_map(|batch| &batch.points)
+            .any(|point| {
+                point.provenance.known_at_ms > request.window.as_of_ms
+                    || point.provenance.arrived_at_ms > request.window.as_of_ms
+            })
+    {
+        return Err("data_evaluation_state_not_available_at_cutoff".into());
+    }
     let prior_hash = prior.as_ref().map(|_| checkpoint.checkpoint_sha256.clone());
     if prior_hash != request.expected_checkpoint_sha256 {
         return Err("data_evaluation_checkpoint_conflict".into());
@@ -1474,7 +1501,9 @@ impl StepEnvironment<'_> {
                 .state_availability
                 .get(&node.graph_node_id)
                 .ok_or("data_evaluation_state_availability_missing_requires_replay")?;
-            if availability.known_at_ms > self.request.window.as_of_ms {
+            if availability.known_at_ms > self.request.window.as_of_ms
+                || availability.arrived_at_ms > self.request.window.as_of_ms
+            {
                 return Err("data_evaluation_state_not_available_at_cutoff".into());
             }
             known = known.max(availability.known_at_ms);
@@ -1500,7 +1529,9 @@ impl StepEnvironment<'_> {
         let window = EvaluationWindow {
             event_start_ms: start,
             event_end_ms: frame,
-            as_of_ms: known,
+            // The requested knowledge cutoff is independent of provenance.
+            // Do not truncate legitimate arrival time to the known-time floor.
+            as_of_ms: self.request.window.as_of_ms,
         };
         if ready {
             for (port, input) in &contract.inputs {

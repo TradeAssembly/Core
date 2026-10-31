@@ -169,7 +169,7 @@ impl DataStrategy {
         };
         let entry = eval_rule(&self.entry, plan, current, previous, time, &mut evidence)?;
         let exit = eval_rule(&self.exit, plan, current, previous, time, &mut evidence)?;
-        if evidence.known > as_of {
+        if evidence.known > as_of || evidence.arrived > as_of {
             return Err("data_strategy_not_yet_known".into());
         }
         Ok(SignalFrame {
@@ -585,6 +585,33 @@ mod tests {
         assert_eq!(
             program.validate(&plan).unwrap_err(),
             "data_strategy_rule_limit"
+        );
+    }
+    #[test]
+    fn data_strategy_previous_arrival_after_cutoff_is_not_yet_known() {
+        let (program, plan) = setup();
+        let day = 86_400_000;
+        let mut prior = frame(PointValue::Ready(json!(5)), day, 50 * day);
+        prior
+            .get_mut("result")
+            .unwrap()
+            .outputs
+            .get_mut("value")
+            .unwrap()
+            .points[0]
+            .provenance
+            .arrived_at_ms = 60 * day;
+        let current = frame(PointValue::Ready(json!(6)), 2 * day, 2 * day);
+        let admitted = program
+            .evaluate(&plan, &current, &prior, 2 * day, 100 * day)
+            .unwrap();
+        assert_eq!(admitted.known_at_ms, 50 * day);
+        assert_eq!(admitted.arrived_at_ms, 60 * day);
+        assert_eq!(
+            program
+                .evaluate(&plan, &current, &prior, 2 * day, 55 * day)
+                .unwrap_err(),
+            "data_strategy_not_yet_known"
         );
     }
 }

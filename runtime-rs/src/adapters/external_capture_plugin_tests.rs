@@ -95,6 +95,12 @@ fn install_fixture_with_recipe(
     interval_ms: u64,
     recipe: bool,
 ) -> InstalledPluginPackage {
+    install_fixture_variant(service,root,calculator,interval_ms,recipe,false)
+}
+fn install_fixture_variant(
+    service:&crate::service::TradeAssemblyService,root:&std::path::Path,
+    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,
+)->InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
     let mut contract: Value = serde_json::from_slice(&bytes).unwrap();
@@ -133,7 +139,7 @@ fn install_fixture_with_recipe(
     let mut operations = vec![operation.clone()];
     if !calculator {
         operation["id"] = json!("acquire");
-        operation["capability"] = json!("test.capture.acquire");
+        operation["capability"] = json!(if versioned_acquisition {"test.screen.source@1"} else {"test.capture.acquire"});
         operation["credentialGrantRequired"] = json!(true);
         operation["traits"]["outputSchemaRefs"] = json!(["schema://capture-fixture/response@1"]);
         operation["traits"]["deterministic"] = json!(false);
@@ -147,7 +153,7 @@ fn install_fixture_with_recipe(
         operations.push(operation);
     }
     let manifest = json!({"metadata":{"id":id,"version":"1","provider":{"id":id,"name":"Local capture fixture"}},"operations":operations,
-        "capabilities":[{"id":"test.capture.acquire"},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
+        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
         "configuration":{"fields":[{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
@@ -201,6 +207,31 @@ fn install_fixture_with_recipe(
 struct AdvancedClock {
     base: Arc<dyn ClockPort>,
     advance: Arc<std::sync::atomic::AtomicI64>,
+}
+
+fn install_screen_package(service:&crate::service::TradeAssemblyService,root:&std::path::Path)->InstalledPluginPackage {
+    use crate::adapters::plugin_packages::data_package_tests::{archive_files,materials};
+    use tradeassembly_plugin_sdk::instrument_screen as wire;
+    let (mut descriptor,_,_,_)=materials();
+    let template=crate::data_pipeline::tests::fixture().0.nodes.into_iter().find_map(|n|n.selected).unwrap();
+    let mut op=serde_json::to_value(template.operation).unwrap();
+    op["id"]=json!("screen");op["capability"]=json!("test.instrument.screen@1");op["protocol"]=json!("stdio");op["dependencies"]=json!([]);op["credentialGrantRequired"]=json!(false);op["accountBindingRequired"]=json!(false);
+    op["traits"]=json!({"modes":["paper"],"instrumentFamilies":["equity"],"dataShapes":["instrument_set"],"operations":["read"],"fields":[],"inputSchemaRefs":[wire::SCREEN_REQUEST_SCHEMA,wire::SCREEN_INPUT_SCHEMA],"outputSchemaRefs":[wire::SCREEN_RESULT_SCHEMA],"timeframes":[],"deterministic":true,"replayable":true});
+    let manifest=json!({"metadata":{"id":"test.instrument-screen","version":"1","provider":{"id":"test.instrument-screen","name":"Local screening fixture"}},"operations":[op],"capabilities":[{"id":"test.instrument.screen@1"}],"permissions":[],"configuration":{"fields":[]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
+    let schema_doc=|id:tradeassembly_plugin_sdk::data_contract::SchemaIdentity|json!({"schema":id,"shape":"table","time":{"intervalMs":null,"completedOnly":true}});
+    let contract=json!({"schemaVersion":"tradeassembly.operation_data.v2","operationId":"screen","semanticsVersion":"fixture.screen.v1","inputs":{"contracts":{"data":schema_doc(wire::input_identity()),"required":true,"dependencyId":"contracts"}},"outputs":{"instruments":schema_doc(wire::result_identity())},"parameterSchema":{"type":"object","properties":{"minDte":{"type":"integer","minimum":0},"maxDte":{"type":"integer","minimum":0},"maxOiAgeDays":{"type":"integer","minimum":0},"fault":{"enum":["omit_rejections","foreign_member","undeclared_context"]}},"required":["minDte","maxDte","maxOiAgeDays"],"additionalProperties":false},"applicability":{"assetClasses":["equity"],"instrumentFamilies":["equity"],"modes":["paper"]},"readiness":"all_required_inputs","warmup":{"minimumObservations":1,"observationsParameter":null,"additionalObservations":0},"state":null});
+    let manifest_bytes=serde_json::to_vec(&manifest).unwrap();let contract_bytes=serde_json::to_vec(&contract).unwrap();let binary=fixture_executable();
+    descriptor["package"]["plugin"]["id"]=json!("test.instrument-screen");descriptor["package"]["manifest"]["sha256"]=json!(sha256(&manifest_bytes));descriptor["package"]["targets"][0]["binary"]["sha256"]=json!(sha256(binary));
+    let docs=[("request.json",wire::request_identity(),wire::request_schema()),("input.json",wire::input_identity(),wire::input_schema()),("result.json",wire::result_identity(),wire::result_schema())];
+    descriptor["dataSchemas"]=json!(docs.iter().map(|(path,id,v)|json!({"schemaRef":id.schema_ref,"document":{"path":path,"sha256":sha256(&serde_json::to_vec(v).unwrap())},"canonicalSha256":id.sha256})).collect::<Vec<_>>());
+    descriptor["package"]["responseSchemas"]=json!([{"schemaRef":wire::SCREEN_RESULT_SCHEMA,"document":{"path":"result.json","sha256":sha256(&serde_json::to_vec(&wire::result_schema()).unwrap())}}]);
+    descriptor["dataContracts"]=json!([{"operationId":"screen","document":{"path":"data.json","sha256":sha256(&contract_bytes)},"canonicalSha256":canonical_sha256(&contract).unwrap()}]);
+    let mut files=vec![("manifest.json",manifest_bytes),("data.json",contract_bytes),("bin/plugin",binary.to_vec())];
+    for (path,_,value) in &docs {files.push((path,serde_json::to_vec(value).unwrap()));}
+    files.push(("tradeassembly-plugin.json",serde_json::to_vec(&descriptor).unwrap()));
+    let archive=archive_files(files);let path=root.join("screen-package.tgz");fs::write(&path,&archive).unwrap();
+    let package=service.runtime().plugin_packages.install(&PluginPackageInstallRequest{source_type:"file".into(),locator:path.to_string_lossy().into(),package_sha256:sha256(&archive),manifest_sha256:canonical_sha256(&manifest).unwrap(),offline:true}).unwrap();
+    service.runtime().plugins.install_manifest(&package.plugin_ref,json!({"pluginRef":package.plugin_ref,"manifest":manifest,"manifestDigest":package.manifest_sha256,"package":{"packageSha256":package.package_sha256},"trust":{"level":"test"}}),&ctx("screen-install")).unwrap();package
 }
 impl VersionedPort for AdvancedClock {
     fn descriptors(&self) -> Vec<PortDescriptor> {
@@ -356,6 +387,162 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
         server,
     }
 }
+#[test]
+fn instrument_screen_real_process_strategy_bound_selection_restart_and_expiry() { screen_process_fixture("selected");screen_process_fixture("integral"); }
+#[test]
+fn instrument_screen_process_no_match_incomplete_foreign_and_unaccounted_cases() {
+    for case in ["no_match","incomplete","foreign","unaccounted","undeclared_context"] {screen_process_fixture(case);}
+}
+#[test]
+fn instrument_screen_atomic_commit_failure_reuses_response_without_new_invocation() {screen_process_fixture("atomic");}
+fn write_screen_interface_evidence(case:&str,name:&str,value:&Value) {
+    let Some(root)=std::env::var_os("SCREEN_INTERFACE_EVIDENCE_DIR") else {return;};
+    let directory=std::path::PathBuf::from(root).join(case);fs::create_dir_all(&directory).unwrap();
+    let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(directory.join(name)).unwrap();
+    file.write_all(&serde_json::to_vec_pretty(value).unwrap()).unwrap();file.write_all(b"\n").unwrap();
+}
+fn screen_process_fixture(case:&str) {
+    use crate::service::{data_collections as collections,instrument_screens as screens};
+    use tradeassembly_plugin_sdk::instrument_screen as wire;
+    let operations=Arc::new(ForwardNative::default());
+    let (dir,service,original_scope,_)=data_plans::tests::fixture_service(Some(operations.clone()));
+    let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+    let complete=case!="incomplete";
+    let server=std::thread::spawn(move|| {
+        let (mut stream,_)=listener.accept().unwrap();let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();assert!(String::from_utf8_lossy(&buffer[..n]).starts_with("GET /observations "));
+        let rows=json!([
+            {"id":"B","dte":45,"oi":10,"oiAgeDays":1},
+            {"id":"A","dte":60,"oi":10,"oiAgeDays":0},
+            {"id":"ZERO","dte":50,"oi":0,"oiAgeDays":1},
+            {"id":"MISSING","dte":50,"oi":null,"oiAgeDays":null},
+            {"id":"EARLY","dte":44,"oi":100,"oiAgeDays":0},
+            {"id":"LATE","dte":61,"oi":100,"oiAgeDays":0},
+            {"id":"STALE","dte":50,"oi":100,"oiAgeDays":2}]);
+        let bytes=serde_json::to_vec(&json!({"rows":rows,"coverage":{"complete":complete,"scope":"fixture_candidates"}})).unwrap();
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
+    });
+    let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
+    let calculator=install_screen_package(&service,dir.path());
+    for package in [&source,&calculator] {
+        let mut instance=json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"configuration":if package.plugin_ref==source.plugin_ref {json!({"dataApiUrl":format!("http://{address}")})}else{json!({})}});
+        if package.plugin_ref==source.plugin_ref {instance["credentialRef"]=json!("screen-fixture-source");}
+        service.runtime().plugins.put_instance(&package.plugin_ref,instance,&ctx("screen-instance")).unwrap();
+    }
+    service.runtime().credentials.store("screen-fixture-source",&BTreeMap::from([("api_key".into(),"fake-screen-source-key".into()),("api_secret".into(),"fake-screen-source-secret".into())])).unwrap();
+    *operations.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(NativeTestSandbox)));
+    let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();spec["strategy_id"]=json!(original_scope.strategy_id);
+    let mut screen_policy=json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"fixture.screen.v1","inputs":{"contracts":{"capability_requirement_ref":"screen_source","response_schema_ref":"schema://capture-fixture/response@1","query":{"literal":{},"date_bindings":{}},"max_age_ms":300000,"coverage":{"complete_pointer":"/snapshot/coverage/complete","scope_pointer":"/snapshot/coverage/scope","scope_value":"fixture_candidates"}}},"candidate_input":"contracts","candidate_records_pointer":"/snapshot/rows","candidate_id_pointer":"/id","parameters":{"minDte":45,"maxDte":60,"maxOiAgeDays":1},"coverage":"complete_configured_inputs","max_candidates":7,"top_n":1,"ttl_ms":120000});
+    if case=="integral" {screen_policy["top_n"]=json!(1.0);}
+    if case=="no_match" {screen_policy["parameters"]["minDte"]=json!(100);screen_policy["parameters"]["maxDte"]=json!(200);}
+    if case=="foreign" {screen_policy["parameters"]["fault"]=json!("foreign_member");}
+    if case=="unaccounted" {screen_policy["parameters"]["fault"]=json!("omit_rejections");}
+    if case=="undeclared_context" {screen_policy["parameters"]["fault"]=json!("undeclared_context");}
+    spec["signal_market_requirements"][0]["selectors"].as_array_mut().unwrap().push(json!({"selector_id":"screened","type":"screened","screen":screen_policy}));
+    for (id,capability,schemas,shapes,deps,deterministic) in [
+        ("screen_source","test.screen.source@1",vec!["schema://capture-fixture/response@1"],vec![],vec![],false),
+        ("screen","test.instrument.screen@1",vec![wire::SCREEN_REQUEST_SCHEMA,wire::SCREEN_RESULT_SCHEMA],vec!["instrument_set"],vec!["screen_source"],true),
+    ] {
+        let mut requirement=spec["capability_requirements"]["required"][0].clone();
+        requirement["requirement_id"]=json!(id);requirement["capability"]=json!(capability);requirement["stage_refs"]=json!(["universe"]);requirement["substep_refs"]=json!([]);requirement["dependency_refs"]=json!(deps);
+        requirement["constraints"]["schema_refs"]=json!(schemas);requirement["constraints"]["data_shapes"]=json!(shapes);requirement["constraints"]["fields"]=json!([]);requirement["constraints"]["input_paths"]=json!([]);requirement["constraints"]["operations"]=json!([]);requirement["constraints"]["deterministic"]=json!(deterministic);requirement["constraints"]["replayable"]=json!(deterministic);requirement["constraints"].as_object_mut().unwrap().remove("timeframe");requirement["constraints"].as_object_mut().unwrap().remove("max_freshness");
+        spec["capability_requirements"]["required"].as_array_mut().unwrap().push(requirement);
+        service.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("screen-grant")).unwrap();
+    }
+    let report=crate::spec::validate_strategy_spec_report(&spec);assert!(report.valid,"{:?}",report.diagnostics);
+    assert!(crate::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
+    let saved=service.handle_http("POST","/product/strategies/save-draft",json!({"strategyId":original_scope.strategy_id,"spec":spec}));assert_eq!(saved.body["body"]["draftSaved"],true,"{}",saved.body);
+    let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":original_scope.strategy_id,"expectedDraftHash":saved.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));assert_eq!(published.body["body"]["published"],true,"{}",published.body);
+    let version=&published.body["body"]["version"];let scope=data_plans::PlanScope{strategy_id:original_scope.strategy_id,strategy_version_id:version["id"].as_str().unwrap().into(),strategy_spec_hash:version["specHash"].as_str().unwrap().into()};
+    let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"screen-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"screen_source":{"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"acquire"},"screen":{"pluginInstanceRef":calculator.plugin_ref,"pluginRef":calculator.plugin_ref,"operationId":"screen"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper"}));assert_eq!(graph.body["revision"]["graph"]["ok"],true,"{}",graph.body);
+    let revision=graph.body["revision"]["revisionId"].as_str().unwrap().to_string();
+    let collection=collections::acquire(&service,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.clone(),acquisition_node:"screen_source".into(),mode:"paper".into(),response_schema_ref:"schema://capture-fixture/response@1".into(),input:json!({})},&ctx("screen-source-acquire")).unwrap();server.join().unwrap();
+    let command=screens::ScreenCommand{scope,capability_graph_revision:revision,mode:"paper".into(),signal_requirement_ref:"signal_primary".into(),selector_ref:"screened".into(),collections:BTreeMap::from([("contracts".into(),collection.collection_id)]),knowledge_cutoff_ms:service.runtime().clock.now_ms()};
+    let body=json!({"screen":command,"idempotencyKey":"screen-select"});
+    write_screen_interface_evidence(case,"request.json",&body);
+
+    let mut wrong_mode=body.clone();wrong_mode["accountMode"]=json!("live");
+    assert_eq!(service.handle_http("POST","/product/strategies/instrument-screens/create",wrong_mode).status,409);
+    if case=="atomic" {
+        rusqlite::Connection::open(dir.path().join("service.db")).unwrap().execute_batch("CREATE TRIGGER fail_screen BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='instrument_screen_receipts_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    }
+    if matches!(case,"incomplete"|"foreign"|"unaccounted"|"undeclared_context"|"atomic") {
+        let before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap().len();
+        let response=service.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
+        write_screen_interface_evidence(case,"failure-http.json",&json!({"status":response.status,"body":response.body}));
+        assert_eq!(response.status,409,"{}",response.body);
+        if case!="atomic" {assert_eq!(response.body["error"]["code"],if case=="incomplete" {"instrument_screen_input_incomplete"}else if case=="undeclared_context" {"instrument_screen_context_undeclared"}else{"instrument_screen_candidate_accounting_invalid"});}
+        assert_eq!(service.call_mcp_tool("tradeassembly.strategy.instrument_screen.create",body.clone())["isError"],true);
+        if case=="incomplete" {assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap().len(),before);}
+        for namespace in ["instrument_screen_receipts_v1","instrument_screen_keys_v1"] {assert!(service.runtime().storage.list_json(namespace).unwrap().is_empty());}
+        if case=="atomic" {
+            rusqlite::Connection::open(dir.path().join("service.db")).unwrap().execute_batch("DROP TRIGGER fail_screen;").unwrap();
+            let operations_before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+            let authority=crate::control_plane::http_envelope("http","POST","/product/strategies/instrument-screens/create",&body).unwrap().authority;
+            let recovered=screens::acquire(&service,command,&SideEffectContext::new(authority,IdempotencyKey::new("screen-select").unwrap())).unwrap();
+            assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),operations_before);
+            assert_eq!(recovered.instrument_set.known_at_ms,recovered.operation.response.observed_at_ms);
+            assert_eq!(recovered.instrument_set.expires_at_ms,recovered.operation.response.observed_at_ms+120000);
+        }
+        return;
+    }
+    let response=service.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
+    assert_eq!(response.status,200,"{}",response.body);assert_eq!(response.body["executionAuthorityGranted"],false);
+    write_screen_interface_evidence(case,"response.json",&response.body);
+    write_screen_interface_evidence(case,"discovery.json",&crate::data_strategy::discovery());
+    write_screen_interface_evidence(case,"strategy-schema.json",&crate::spec::strategy_spec_schema());
+    write_screen_interface_evidence(case,"screen-request-schema.json",&wire::request_schema());
+    write_screen_interface_evidence(case,"screen-input-schema.json",&wire::input_schema());
+    write_screen_interface_evidence(case,"screen-result-schema.json",&wire::result_schema());
+
+    assert!(response.body["selection"].get("response").is_none());
+    let selection=screens::current(&service,response.body["selection"]["selectionId"].as_str().unwrap()).unwrap();
+    assert_eq!(response.body["instrumentSet"],serde_json::to_value(&selection.instrument_set).unwrap());
+    if case!="no_match" {
+    assert_eq!(selection.instrument_set.members[0].instrument_id,"A");assert_eq!(selection.instrument_set.candidate_count,7);assert_eq!(selection.instrument_set.members[0].context_instruments,["SPY"]);
+    assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="below_rank_cutoff" && r.count==2));
+    assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="missing_open_interest"));
+    assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="expiry_out_of_range" && r.count==2));
+    assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="stale_open_interest"));
+    } else {
+        assert_eq!(selection.instrument_set.status,tradeassembly_plugin_sdk::instrument_set::SelectionStatus::CompleteEmpty);
+        assert!(selection.instrument_set.members.is_empty());
+        assert_eq!(selection.instrument_set.candidate_count,7);
+        assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="expiry_out_of_range" && r.count==7));
+    }
+    let duplicate=service.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
+    assert_eq!(duplicate.body["selection"],response.body["selection"]);assert_eq!(duplicate.body["instrumentSet"],response.body["instrumentSet"]);
+    let mcp=service.call_mcp_tool("tradeassembly.strategy.instrument_screen.get",json!({"selectionId":selection.selection_id}));assert_eq!(mcp["structuredContent"]["instrumentSet"],response.body["instrumentSet"]);
+    write_screen_interface_evidence(case,"get-mcp.json",&mcp);
+
+    assert_eq!(service.call_mcp_tool("tradeassembly.strategy.instrument_screen.get",json!({"selectionId":"missing"}))["isError"],true);
+    assert!(!serde_json::to_string(&selection).unwrap().contains("fake-screen-source"));
+    let db=dir.path().join("service.db").to_string_lossy().into_owned();drop(service);drop(operations);
+    let mut runtime=crate::adapters::local::test_runtime(&db);runtime.plugin_packages=Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(dir.path().join("package-store")).unwrap());
+    let shift=Arc::new(std::sync::atomic::AtomicI64::new(0));runtime.clock=Arc::new(AdvancedClock{base:runtime.clock.clone(),advance:shift.clone()});
+    let reopened=crate::service::TradeAssemblyService::from_runtime(&db,runtime);
+    assert_eq!(screens::current(&reopened,&selection.selection_id).unwrap(),selection);
+    let duplicate=reopened.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
+    assert_eq!(duplicate.body["selection"],response.body["selection"]);assert_eq!(duplicate.body["instrumentSet"],response.body["instrumentSet"]);
+    let original=reopened.runtime().storage.get_json("instrument_screen_receipts_v1",&selection.selection_id).unwrap().unwrap();
+    let operation_count=reopened.runtime().storage.list_json("plugin_operation_receipts").unwrap().len();
+    shift.store(120001,std::sync::atomic::Ordering::SeqCst);assert_eq!(screens::current(&reopened,&selection.selection_id).unwrap_err(),"instrument_screen_stale");
+    let expired_http=reopened.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
+    assert_eq!(expired_http.body["error"]["code"],"instrument_screen_stale");
+    let expired_mcp=reopened.call_mcp_tool("tradeassembly.strategy.instrument_screen.create",body.clone());assert_eq!(expired_mcp["isError"],true);
+    write_screen_interface_evidence(case,"expired-http.json",&json!({"status":expired_http.status,"body":expired_http.body}));
+    write_screen_interface_evidence(case,"expired-mcp.json",&expired_mcp);
+    assert_eq!(reopened.runtime().storage.list_json("plugin_operation_receipts").unwrap().len(),operation_count);
+    assert_eq!(reopened.runtime().storage.get_json("instrument_screen_receipts_v1",&selection.selection_id).unwrap().unwrap(),original);
+    shift.store(0,std::sync::atomic::Ordering::SeqCst);
+    let alice=reopened.for_authenticated_invocation("test","alice",None,None);alice.bind_owned_object("strategy",&selection.command.scope.strategy_id).unwrap();
+    for instance in reopened.runtime().plugins.list_instances().unwrap() {alice.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
+    let bob=reopened.for_authenticated_invocation("test","bob",None,None);
+    assert_eq!(bob.call_mcp_tool("tradeassembly.strategy.instrument_screen.get",json!({"selectionId":selection.selection_id}))["isError"],true);
+    let mut instance=reopened.runtime().plugins.get_instance(&calculator.plugin_ref).unwrap().unwrap();instance["enabled"]=json!(false);reopened.runtime().plugins.put_instance(&calculator.plugin_ref,instance,&ctx("screen-revoke")).unwrap();
+    assert_ne!(reopened.handle_http("POST","/product/strategies/instrument-screens/create",body).status,200);
+
+}
+
 #[test]
 fn collection_real_process_admission_idempotency_recreation_and_revocation() {
     use crate::service::data_collections as collections;

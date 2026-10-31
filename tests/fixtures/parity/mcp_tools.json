@@ -157,5 +157,7 @@
   "tradeassembly.strategy.data_recipe.step",
   "tradeassembly.strategy.data_run.step",
   "tradeassembly.strategy.data_collection.create",
-  "tradeassembly.strategy.data_collection.get"
+  "tradeassembly.strategy.data_collection.get",
+  "tradeassembly.strategy.instrument_screen.create",
+  "tradeassembly.strategy.instrument_screen.get"
 ]

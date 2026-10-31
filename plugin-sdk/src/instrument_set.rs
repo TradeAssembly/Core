@@ -86,17 +86,41 @@ pub struct InstrumentSet {
     pub rejection_summary: Vec<RejectionSummary>,
     pub issues: Vec<String>,
 }
-fn digest(value: &str) -> bool {
+pub(crate) fn digest(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
-fn label(value: &str) -> bool {
+pub(crate) fn label(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value.trim() == value
         && !value.chars().any(char::is_control)
+}
+pub(crate) fn validate_members(
+    members: &[SelectedInstrument],
+) -> Result<BTreeSet<&str>, &'static str> {
+    let mut ids = BTreeSet::new();
+    for (i, member) in members.iter().enumerate() {
+        if member.rank as usize != i + 1
+            || !label(&member.instrument_id)
+            || !label(&member.asset_class)
+            || !label(&member.instrument_family)
+            || !ids.insert(member.instrument_id.as_str())
+            || member.context_instruments.len() > 32
+            || member.context_instruments.iter().any(|id| !label(id))
+            || member
+                .context_instruments
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != member.context_instruments.len()
+        {
+            return Err("instrument_set_members_invalid");
+        }
+    }
+    Ok(ids)
 }
 impl InstrumentSet {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -156,25 +180,7 @@ impl InstrumentSet {
         {
             return Err("instrument_set_time_invalid");
         }
-        let mut ids = BTreeSet::new();
-        for (i, member) in self.members.iter().enumerate() {
-            if member.rank as usize != i + 1
-                || !label(&member.instrument_id)
-                || !label(&member.asset_class)
-                || !label(&member.instrument_family)
-                || !ids.insert(&member.instrument_id)
-                || member.context_instruments.len() > 32
-                || member.context_instruments.iter().any(|id| !label(id))
-                || member
-                    .context_instruments
-                    .iter()
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != member.context_instruments.len()
-            {
-                return Err("instrument_set_members_invalid");
-            }
-        }
+        validate_members(&self.members)?;
         if self.members.len() as u64 > self.candidate_count
             || self.issues.iter().any(|issue| !label(issue))
             || self.issues.iter().collect::<BTreeSet<_>>().len() != self.issues.len()

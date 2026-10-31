@@ -190,6 +190,13 @@ action!(
     Write
 );
 action!(
+    INSTRUMENT_SCREEN_CREATE,
+    "strategy.instrument_screen.create",
+    "strategy_instrument_screen",
+    "data_calculation",
+    Write
+);
+action!(
     DATA_COLLECTION_CREATE,
     "strategy.data_collection.create",
     "strategy_data_collection",
@@ -619,6 +626,7 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     OPTION_SELECTION_CREATE,
     DATA_CAPTURE_CREATE,
     DATA_COLLECTION_CREATE,
+    INSTRUMENT_SCREEN_CREATE,
     DATA_PLAN_PREPARE,
     DATA_RECIPE_PREPARE,
     DATA_RECIPE_STEP,
@@ -711,6 +719,7 @@ pub fn authority_definition(
         "strategy.duplicate" | "strategy.archive" | "strategy.restore" => &STRATEGY_LIFECYCLE,
         "capability.binding.revision.save" => &CAPABILITY_BINDING_CONFIGURE,
         "strategy.option_selection.create" => &OPTION_SELECTION_CREATE,
+        "strategy.instrument_screen.create" => &INSTRUMENT_SCREEN_CREATE,
         "strategy.data_collection.create" => &DATA_COLLECTION_CREATE,
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,

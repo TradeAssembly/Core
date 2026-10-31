@@ -272,6 +272,7 @@ fn validate_core_semantics(spec: &StrategySpec, diagnostics: &mut Vec<Diagnostic
                 selector.normalized_id.is_some(),
                 selector.alias.is_some(),
                 selector.expression.is_some(),
+                selector.screen.is_some(),
             ]
             .into_iter()
             .filter(|set| *set)
@@ -280,9 +281,12 @@ fn validate_core_semantics(spec: &StrategySpec, diagnostics: &mut Vec<Diagnostic
                 diagnostics.push(Diagnostic::error(
                     3,
                     "SPEC_SELECTOR_SHAPE_INVALID",
-                    selector_pointer,
-                    "selector must set exactly one identity or dynamic expression",
+                    &selector_pointer,
+                    "selector must set exactly one identity, expression, or screened producer",
                 ));
+            }
+            if selector.screen.is_some() || selector.selector_type == SelectorType::Screened {
+                validate_screen_selector(spec, selector, &selector_pointer, diagnostics);
             }
         }
     }
@@ -371,6 +375,67 @@ fn validate_core_semantics(spec: &StrategySpec, diagnostics: &mut Vec<Diagnostic
             "/portfolio_scope",
             "account scope requires portfolio.account.read@1",
         ));
+    }
+}
+
+fn validate_screen_selector(
+    spec: &StrategySpec,
+    selector: &InstrumentSelector,
+    pointer: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(policy) = &selector.screen else {
+        diagnostics.push(Diagnostic::error(
+            3,
+            "SPEC_SCREEN_BINDING_INVALID",
+            pointer,
+            "screened selector requires an explicit producer",
+        ));
+        return;
+    };
+    if let Err(code) = policy.validate() {
+        diagnostics.push(Diagnostic::error(
+            3,
+            "SPEC_SCREEN_POLICY_INVALID",
+            format!("{pointer}/screen"),
+            code,
+        ));
+    }
+    let required = &spec.capability_requirements.required;
+    let screen = required
+        .iter()
+        .find(|r| r.requirement_id == policy.capability_requirement_ref);
+    let valid_screen = screen.is_some_and(|r| {
+        r.fallback_policy == FallbackPolicy::None
+            && r.stage_refs.contains(&StageName::Universe)
+            && r.constraints
+                .data_shapes
+                .iter()
+                .any(|s| s == "instrument_set")
+            && [super::SCREEN_REQUEST_SCHEMA, super::SCREEN_RESULT_SCHEMA]
+                .iter()
+                .all(|schema| r.constraints.schema_refs.iter().any(|s| s == schema))
+    });
+    let valid_inputs = policy.inputs.values().all(|input| {
+        required.iter().any(|r| {
+            r.requirement_id == input.capability_requirement_ref
+                && r.requirement_id != policy.capability_requirement_ref
+                && r.fallback_policy == FallbackPolicy::None
+                && r.constraints
+                    .schema_refs
+                    .contains(&input.response_schema_ref)
+                && screen.is_some_and(|s| s.dependency_refs.contains(&r.requirement_id))
+        })
+    });
+    if selector.selector_type != SelectorType::Screened
+        || selector.normalized_id.is_some()
+        || selector.alias.is_some()
+        || selector.expression.is_some()
+        || !spec.stages.universe.enabled
+        || !valid_screen
+        || !valid_inputs
+    {
+        diagnostics.push(Diagnostic::error(3,"SPEC_SCREEN_BINDING_INVALID",format!("{pointer}/screen"),"screened selector requires an enabled universe stage, mandatory typed screen and acquisition capabilities, explicit dependencies and no fallback"));
     }
 }
 

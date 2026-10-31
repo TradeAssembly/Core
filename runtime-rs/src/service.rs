@@ -37,6 +37,7 @@ mod execution;
 mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
+pub mod instrument_screens;
 mod journal_view;
 mod lifecycle_calendar;
 mod live_authorization;
@@ -1071,6 +1072,9 @@ impl TradeAssemblyService {
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = instrument_screens::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = data_collections::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1299,6 +1303,12 @@ impl TradeAssemblyService {
         match (normalized_method.as_str(), normalized_path.as_str()) {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/instrument-screens/create") => {
+                instrument_screens::create_response(self, body)
+            }
+            ("POST", "/product/strategies/instrument-screens/get") => {
+                instrument_screens::read_response(self, body)
             }
             ("POST", "/product/strategies/data-collections/create") => {
                 data_collections::create_response(self, body)
@@ -3408,6 +3418,8 @@ impl TradeAssemblyService {
                 if matches!(
                     name,
                     "tradeassembly.strategy.option_selection.create"
+                        | "tradeassembly.strategy.data_collection.create"
+                        | "tradeassembly.strategy.instrument_screen.create"
                         | "tradeassembly.strategy.data_recipe.prepare"
                         | "tradeassembly.strategy.data_recipe.step"
                 ) {
@@ -3428,6 +3440,11 @@ impl TradeAssemblyService {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "option_selection_preflight_failed".into());
                 return mcp::tool_error(name, &code, "Option selection failed closed.", None);
+            }
+            if let Some(response) = instrument_screens::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "instrument_screen_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Instrument screening failed closed.", None);
             }
             if let Some(response) = data_collections::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
@@ -3747,6 +3764,22 @@ impl TradeAssemblyService {
                 self.dispatch_http(
                     "POST",
                     "/product/strategies/option-selections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.instrument_screen.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/instrument-screens/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.instrument_screen.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/instrument-screens/get",
                     arguments,
                 )
                 .body
@@ -4274,6 +4307,7 @@ impl TradeAssemblyService {
             || name.starts_with("tradeassembly.derivatives.")
             || name.starts_with("tradeassembly.comparison.")
             || name.starts_with("tradeassembly.strategy.data_")
+            || name.starts_with("tradeassembly.strategy.instrument_screen.")
         {
             if let Some(code) = service_error_code(&payload) {
                 let response = mcp::tool_error(
@@ -5260,6 +5294,12 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
         "tradeassembly.strategy.option_selection.create" => {
             Some("/product/strategies/option-selections/create")
+        }
+        "tradeassembly.strategy.instrument_screen.create" => {
+            Some("/product/strategies/instrument-screens/create")
+        }
+        "tradeassembly.strategy.instrument_screen.get" => {
+            Some("/product/strategies/instrument-screens/get")
         }
         "tradeassembly.strategy.data_collection.create" => {
             Some("/product/strategies/data-collections/create")

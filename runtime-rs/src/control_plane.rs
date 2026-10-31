@@ -404,6 +404,12 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/option-selections/create") => {
             "strategy.option_selection.create".into()
         }
+        ("POST", "/product/strategies/instrument-screens/create") => {
+            "strategy.instrument_screen.create".into()
+        }
+        ("POST", "/product/strategies/instrument-screens/get") => {
+            "strategy.instrument_screen.get".into()
+        }
         ("POST", "/product/strategies/data-collections/create") => {
             "strategy.data_collection.create".into()
         }
@@ -706,6 +712,12 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.strategy.option_selection.create" => {
             return "strategy.option_selection.create".into()
+        }
+        "tradeassembly.strategy.instrument_screen.create" => {
+            return "strategy.instrument_screen.create".into()
+        }
+        "tradeassembly.strategy.instrument_screen.get" => {
+            return "strategy.instrument_screen.get".into()
         }
         "tradeassembly.strategy.data_collection.create" => {
             return "strategy.data_collection.create".into()
@@ -1275,12 +1287,14 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if is_read_http_route(method, path) {
         return "read".to_string();
     }
-    if path == "/product/strategies/data-captures/get"
+    if path == "/product/strategies/instrument-screens/get"
+        || path == "/product/strategies/data-captures/get"
         || path == "/product/strategies/data-collections/get"
     {
         return "read".into();
     }
-    if path == "/product/strategies/data-collections/create"
+    if path == "/product/strategies/instrument-screens/create"
+        || path == "/product/strategies/data-collections/create"
         || path == "/product/strategies/data-captures/create"
         || path == "/product/strategies/option-selections/create"
     {

@@ -170,6 +170,16 @@ impl CompiledStrategy {
 
     pub fn compile(spec: &StrategySpec) -> Result<Self, KernelError> {
         if spec
+            .signal_market_requirements
+            .iter()
+            .flat_map(|m| &m.selectors)
+            .any(|s| s.screen.is_some() || s.selector_type == crate::spec::SelectorType::Screened)
+        {
+            return Err(KernelError::UnsupportedSemantics(
+                "screened selector requires instrument-selection evaluator",
+            ));
+        }
+        if spec
             .stages
             .evaluate
             .substeps

@@ -584,6 +584,15 @@
       "min_pep_coverage": "c3",
       "required_decision": "allow",
       "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-instrument-screen-create",
+      "action": "strategy.instrument_screen.create",
+      "resource_kind": "strategy_instrument_screen",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
     }
   ],
   "extension_schemas": [],

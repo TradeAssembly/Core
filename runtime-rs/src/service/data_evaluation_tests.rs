@@ -1445,6 +1445,7 @@ fn selected_subject_product_plan_warms_signals_and_resumes_without_changing_posi
             direct.body["plan"], response.body["plan"],
             "domain retry must retain original host selection time"
         );
+        exercise_selected_runner_original_receipt(&service, &command);
         let mut rejected = command.clone();
         rejected.subject_instrument_id = "NOT-SELECTED".into();
         let before = service
@@ -1551,4 +1552,126 @@ fn selected_subject_product_plan_warms_signals_and_resumes_without_changing_posi
             orders
         );
     }
+}
+
+fn exercise_selected_runner_original_receipt(
+    service: &TradeAssemblyService,
+    selection_plan: &crate::service::selection_plans::SelectionPlanCommand,
+) {
+    use crate::service::data_runner::*;
+    // Same synthetic process identity used by the existing legal-receipt unit
+    // harness. Actual CLI process proof installs its compiled revision instead.
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    let command = DataRunnerCommand {
+        schema_version: DATA_RUNNER_SCHEMA_V2.into(),
+        core_release: "fixture.release".into(),
+        workspace_id: "fixture.selected.workspace".into(),
+        command_id: "fixture.selected.command".into(),
+        authority_ref: "provenance.only".into(),
+        idempotency_key: IdempotencyKey::new("fixture.selected.key").unwrap(),
+        mode: DataRunnerMode::Paper,
+        submitted_at_ms: service.runtime().clock.now_ms(),
+        operation: DataRunnerOperation::PrepareSelectionPlan {
+            selection_plan: selection_plan.clone(),
+        },
+    };
+    // The small signal fixture deliberately has no policy-identity adapter.
+    // Use the actual configured Warden adapter against the existing loopback
+    // mock; unsupported adapters retain their production fail-closed default.
+    let warden = crate::finance_authority::tests::spawn_mock_warden(
+        crate::finance_authority::tests::MockBehavior::Allow,
+    );
+    let mut runtime = (*service.runtime()).clone();
+    runtime.finance_authority = Arc::new(
+        crate::finance_authority::WardenSidecarAuthority::new(
+            warden.base_url.clone(),
+            "fake-reach-authority-token-at-least-thirty-two-bytes",
+            crate::finance_authority::REQUIRED_WARDEN_SERVICE_VERSION,
+        )
+        .unwrap(),
+    );
+    let bound = TradeAssemblyService::from_runtime(service.db(), runtime);
+    let runner = DurableCoreDataRunner::new(bound, "fixture.release".into()).unwrap();
+    let binding = runner.mutation_binding(&command).unwrap();
+    assert_eq!(
+        binding.schema_version,
+        "tradeassembly.core-data-mutation-binding.v2"
+    );
+    assert_eq!(binding.action, "strategy.selection_plan.prepare");
+    assert_eq!(
+        binding.resource_kind.as_deref(),
+        Some("strategy_selection_plan")
+    );
+    assert!(!binding.execution_authority_granted);
+    assert_eq!(
+        runner.mutation_binding(&command).unwrap(),
+        binding,
+        "binding must not contain newly generated host preparation time"
+    );
+    let db = rusqlite::Connection::open(service.db()).unwrap();
+    db.execute_batch("CREATE TRIGGER selected_runner_completion_failure BEFORE UPDATE ON tradeassembly_kv WHEN NEW.namespace='data_runner_receipts_v1' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    let error = runner.dispatch(&command).unwrap_err();
+    assert_eq!(error, "data_runner_complete_commit_failed");
+    let accepted = runner
+        .receipt(&command.workspace_id, &command.command_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        accepted.schema_version,
+        "tradeassembly.core-data-runner.receipt.v2"
+    );
+    assert_eq!(accepted.state, DataRunnerState::Accepted);
+    let before = service
+        .runtime()
+        .storage
+        .list_json("compiled_data_plan_revisions_v1")
+        .unwrap();
+    db.execute_batch("DROP TRIGGER selected_runner_completion_failure;")
+        .unwrap();
+    let receipt = runner.dispatch(&command).unwrap();
+    assert_eq!(
+        receipt.schema_version,
+        "tradeassembly.core-data-runner.receipt.v2"
+    );
+    assert_eq!(receipt.state, DataRunnerState::Completed);
+    assert!(
+        matches!(&receipt.result,Some(DataRunnerResult::SelectedPlan{subject,..}) if subject.instrument_id==selection_plan.subject_instrument_id)
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("compiled_data_plan_revisions_v1")
+            .unwrap(),
+        before,
+        "recover the original domain plan, not a plan with a new host time"
+    );
+    assert_eq!(runner.dispatch(&command).unwrap(), receipt);
+    assert_eq!(
+        runner
+            .receipt(&command.workspace_id, &command.command_id)
+            .unwrap()
+            .unwrap(),
+        receipt
+    );
+    let mut changed = command.clone();
+    if let DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } = &mut changed.operation
+    {
+        p.subject_instrument_id = "NOT-SELECTED".into();
+    }
+    assert!(runner.dispatch(&changed).is_err());
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("compiled_data_plan_revisions_v1")
+            .unwrap(),
+        before
+    );
+    let mut old = command;
+    old.schema_version = DATA_RUNNER_SCHEMA.into();
+    assert_eq!(
+        old.validate("fixture.release").unwrap_err(),
+        "data_runner_version_unsupported"
+    );
 }

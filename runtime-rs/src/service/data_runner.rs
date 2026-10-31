@@ -1,8 +1,8 @@
 //! Explicit data-computation runner protocol. No activation or broker operation.
 //! Remote installation authentication is owned by its transport, not authorityRef.
 use super::{
-    data_evaluation, data_plans, data_recipes, instrument_screens, session_schedules,
-    TradeAssemblyService,
+    data_evaluation, data_plans, data_recipes, instrument_screens, selection_plans,
+    session_schedules, TradeAssemblyService,
 };
 use crate::{data_pipeline::canonical_sha256, ports::*, session_schedule::SessionOccurrence};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use tradeassembly_plugin_sdk::instrument_set::InstrumentSet;
 pub const DATA_RUNNER_SCHEMA: &str = "tradeassembly.core-data-runner.v1";
+pub const DATA_RUNNER_SCHEMA_V2: &str = "tradeassembly.core-data-runner.v2";
 pub const MAX_DATA_COMMAND_BYTES: usize = 262144;
 pub const MAX_DATA_RECEIPT_BYTES: usize = 307200;
 const COMMANDS: &str = "data_runner_commands_v1";
@@ -60,6 +61,9 @@ impl DataRunnerMode {
     deny_unknown_fields
 )]
 pub enum DataRunnerOperation {
+    PrepareSelectionPlan {
+        selection_plan: selection_plans::SelectionPlanCommand,
+    },
     PrepareStrategy {
         scope: data_plans::PlanScope,
         capability_graph_revision: String,
@@ -179,8 +183,19 @@ impl DataRunnerCommand {
             return Err("data_runner_command_bounds_invalid".into());
         }
         budget(&v, 0, &mut 0)?;
-        if self.schema_version != DATA_RUNNER_SCHEMA {
+        if self.schema_version
+            != if self.selected_creation() {
+                DATA_RUNNER_SCHEMA_V2
+            } else {
+                DATA_RUNNER_SCHEMA
+            }
+        {
             return Err("data_runner_version_unsupported".into());
+        }
+        if let DataRunnerOperation::PrepareSelectionPlan { selection_plan } = &self.operation {
+            if selection_plan.mode != self.mode.name() {
+                return Err("data_runner_mode_mismatch".into());
+            }
         }
         if !label(expected_release) || self.core_release != expected_release {
             return Err("data_runner_release_mismatch".into());
@@ -198,6 +213,26 @@ impl DataRunnerCommand {
         hash(self)?;
         Ok(())
     }
+    pub fn selected_creation(&self) -> bool {
+        matches!(
+            &self.operation,
+            DataRunnerOperation::PrepareSelectionPlan { .. }
+        )
+    }
+    pub fn receipt_schema(&self) -> &'static str {
+        if self.selected_creation() {
+            "tradeassembly.core-data-runner.receipt.v2"
+        } else {
+            "tradeassembly.core-data-runner.receipt.v1"
+        }
+    }
+    pub fn binding_schema(&self) -> &'static str {
+        if self.selected_creation() {
+            "tradeassembly.core-data-mutation-binding.v2"
+        } else {
+            "tradeassembly.core-data-mutation-binding.v1"
+        }
+    }
     pub fn canonical_hash(&self) -> Result<String, String> {
         hash(self)
     }
@@ -210,6 +245,18 @@ impl DataRunnerCommand {
     deny_unknown_fields
 )]
 pub enum DataRunnerResult {
+    SelectedPlan {
+        scope: data_plans::PlanScope,
+        revision_id: String,
+        revision_sha256: String,
+        plan_sha256: String,
+        capability_graph_revision: String,
+        mode: String,
+        subject: crate::data_pipeline::InstrumentContext,
+        selection_sha256: BTreeMap<String, String>,
+        prepared_at_ms: i64,
+        known_at_ms: i64,
+    },
     Plan {
         scope: data_plans::PlanScope,
         revision_id: String,
@@ -307,6 +354,8 @@ pub struct DataMutationBinding {
     pub scope: data_plans::PlanScope,
     pub capability_graph_revision: String,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_kind: Option<String>,
     pub mode: DataRunnerMode,
     pub domain_binding_sha256: String,
     pub policy_sha256: String,
@@ -326,6 +375,11 @@ impl DurableCoreDataRunner {
         c.validate(&self.expected_release)?;
         let (path, body) = self.preflight(c)?;
         let (scope, graph, domain) = match &c.operation {
+            DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } => (
+                p.scope.clone(),
+                p.capability_graph_revision.clone(),
+                selection_plans::command_binding(&self.service, p)?,
+            ),
             DataRunnerOperation::PrepareStrategy { .. } => {
                 let (scope, request, program) =
                     super::data_strategy::preparation_request(&self.service, &body)?;
@@ -366,7 +420,7 @@ impl DurableCoreDataRunner {
             ),
         };
         Ok(DataMutationBinding {
-            schema_version: "tradeassembly.core-data-mutation-binding.v1".into(),
+            schema_version: c.binding_schema().into(),
             core_revision: crate::build_identity::current()
                 .ok_or("data_runner_build_identity_unavailable")?
                 .revision()
@@ -381,6 +435,22 @@ impl DurableCoreDataRunner {
             capability_graph_revision: graph,
             action: crate::control_plane::http_envelope("core-data-runner", "POST", path, &body)?
                 .command_name,
+            resource_kind: if c.selected_creation() {
+                Some(
+                    crate::finance_authority::authority_definition(
+                        &crate::control_plane::http_envelope(
+                            "core-data-runner",
+                            "POST",
+                            path,
+                            &body,
+                        )?,
+                    )?
+                    .resource_kind
+                    .into(),
+                )
+            } else {
+                None
+            },
             mode: c.mode.clone(),
             domain_binding_sha256: domain,
             policy_sha256: self
@@ -398,6 +468,12 @@ impl DurableCoreDataRunner {
         }
         let mode = c.mode.name();
         let (path, mut body) = match &c.operation {
+            DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } => {
+                if p.mode != mode {
+                    return Err("data_runner_mode_mismatch".into());
+                }
+                (selection_plans::PATH, json!({"selectionPlan":p}))
+            }
             DataRunnerOperation::PrepareStrategy {
                 scope,
                 capability_graph_revision,
@@ -472,7 +548,8 @@ impl DurableCoreDataRunner {
         let rejection = super::data_strategy::preflight(&self.service, path, &body)
             .or_else(|| data_recipes::preflight(&self.service, path, &body))
             .or_else(|| instrument_screens::preflight(&self.service, path, &body))
-            .or_else(|| session_schedules::preflight(&self.service, path, &body));
+            .or_else(|| session_schedules::preflight(&self.service, path, &body))
+            .or_else(|| selection_plans::preflight(&self.service, path, &body));
         if let Some(response) = rejection {
             return Err(super::service_error_code(&response.body)
                 .unwrap_or_else(|| "data_runner_preflight_failed".into()));
@@ -486,7 +563,7 @@ impl DurableCoreDataRunner {
         ))
     }
     fn validate_receipt(&self, c: &DataRunnerCommand, r: &DataRunnerReceipt) -> Result<(), String> {
-        if r.schema_version != "tradeassembly.core-data-runner.receipt.v1"
+        if r.schema_version != c.receipt_schema()
             || r.workspace_id != c.workspace_id
             || r.command_id != c.command_id
             || r.command_sha256 != c.canonical_hash()?
@@ -519,6 +596,43 @@ impl DurableCoreDataRunner {
     }
     fn project(&self, c: &DataRunnerCommand, body: Value) -> Result<DataRunnerResult, String> {
         match &c.operation {
+            DataRunnerOperation::PrepareSelectionPlan {
+                selection_plan: command,
+            } => {
+                let p: data_plans::StoredDataPlan = serde_json::from_value(body["plan"].clone())
+                    .map_err(|_| "data_runner_plan_projection_invalid")?;
+                if data_plans::current(&self.service, &p.revision_id)? != p {
+                    return Err("data_runner_plan_projection_invalid".into());
+                }
+                let source = p
+                    .content
+                    .selection_source
+                    .as_ref()
+                    .ok_or("data_runner_selection_plan_projection_invalid")?;
+                if source.command != *command
+                    || p.content.recipe_source.is_some()
+                    || source.resolved_program.trade_instruments.len() != 1
+                {
+                    return Err("data_runner_selection_plan_projection_invalid".into());
+                }
+                Ok(DataRunnerResult::SelectedPlan {
+                    scope: p.content.scope.clone(),
+                    revision_id: p.revision_id.clone(),
+                    revision_sha256: p.revision_sha256.clone(),
+                    plan_sha256: p.content.plan.plan_sha256.clone(),
+                    capability_graph_revision: p
+                        .content
+                        .plan
+                        .request
+                        .capability_graph_revision
+                        .clone(),
+                    mode: p.content.plan.request.mode.clone(),
+                    subject: source.resolved_program.trade_instruments[0].clone(),
+                    selection_sha256: source.selection_sha256.clone(),
+                    prepared_at_ms: source.prepared_at_ms,
+                    known_at_ms: source.known_at_ms,
+                })
+            }
             DataRunnerOperation::PrepareStrategy { .. }
             | DataRunnerOperation::PrepareRecipe { .. } => {
                 let p: data_plans::StoredDataPlan = serde_json::from_value(body["plan"].clone())
@@ -631,7 +745,8 @@ impl DurableCoreDataRunner {
         result: &DataRunnerResult,
     ) -> Result<(), String> {
         let body = match result {
-            DataRunnerResult::Plan { revision_id, .. } => {
+            DataRunnerResult::Plan { revision_id, .. }
+            | DataRunnerResult::SelectedPlan { revision_id, .. } => {
                 json!({"plan":data_plans::current(&self.service,revision_id)?})
             }
             DataRunnerResult::Evaluation { .. } => {
@@ -733,7 +848,7 @@ impl DurableCoreDataRunner {
         let storage = self.service.runtime().storage.clone();
         if storage.get_json(COMMANDS, &command_key)?.is_none() {
             let mut accepted = DataRunnerReceipt {
-                schema_version: "tradeassembly.core-data-runner.receipt.v1".into(),
+                schema_version: c.receipt_schema().into(),
                 workspace_id: c.workspace_id.clone(),
                 command_id: c.command_id.clone(),
                 command_sha256: command_hash.clone(),
@@ -858,7 +973,7 @@ impl DurableCoreDataRunner {
             return Ok(accepted);
         }
         let mut r = DataRunnerReceipt {
-            schema_version: "tradeassembly.core-data-runner.receipt.v1".into(),
+            schema_version: c.receipt_schema().into(),
             workspace_id: c.workspace_id.clone(),
             command_id: c.command_id.clone(),
             command_sha256: command_hash,

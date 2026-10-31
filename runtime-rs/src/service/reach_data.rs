@@ -5,6 +5,7 @@ use crate::{data_pipeline::canonical_sha256, ports::ReachNodeScope};
 use serde::{Deserialize, Serialize};
 
 pub const REACH_DATA_SCHEMA: &str = "tradeassembly.relay.reach-data-command/v1";
+pub const REACH_DATA_SCHEMA_V2: &str = "tradeassembly.relay.reach-data-command/v2";
 pub const MAX_REACH_DATA_BYTES: usize = 294912;
 pub const MAX_REACH_DATA_LIFETIME_MS: i64 = 300000;
 
@@ -49,6 +50,9 @@ impl ReachDataCommand {
         let encoded = serde_json::to_vec(self).map_err(|_| "reach_data_encoding_invalid")?;
         canonical_sha256(self).map_err(|_| "reach_data_number_invalid")?;
         let action = match &self.command.operation {
+            super::data_runner::DataRunnerOperation::PrepareSelectionPlan { .. } => {
+                "strategy.selection_plan.prepare"
+            }
             super::data_runner::DataRunnerOperation::PrepareStrategy { .. } => {
                 "strategy.data_plan.prepare"
             }
@@ -68,7 +72,22 @@ impl ReachDataCommand {
                 "strategy.session_schedule.prepare"
             }
         };
-        if self.schema != REACH_DATA_SCHEMA
+        if let super::data_runner::DataRunnerOperation::PrepareSelectionPlan { selection_plan } =
+            &self.command.operation
+        {
+            if self.resource.scope != selection_plan.scope
+                || self.resource.capability_graph_revision
+                    != selection_plan.capability_graph_revision
+            {
+                return Err("reach_data_command_invalid".into());
+            }
+        }
+        if self.schema
+            != if self.command.selected_creation() {
+                REACH_DATA_SCHEMA_V2
+            } else {
+                REACH_DATA_SCHEMA
+            }
             || [
                 &self.command.core_release,
                 &self.command.workspace_id,
@@ -100,12 +119,18 @@ impl ReachDataCommand {
                 .checked_sub(self.issued_at_ms)
                 .is_none_or(|n| n > MAX_REACH_DATA_LIFETIME_MS)
             || !digest(&self.source_binding_sha256, 64)
-            || self.resource.schema_version != "tradeassembly.core-data-mutation-binding.v1"
+            || self.resource.schema_version != self.command.binding_schema()
             || !digest(&self.resource.core_revision, 40)
             || !digest(&self.resource.command_sha256, 64)
             || self.resource.command_sha256 != self.command.canonical_hash()?
             || self.resource.mode != self.command.mode
             || self.resource.action != action
+            || self.resource.resource_kind.as_deref()
+                != if self.command.selected_creation() {
+                    Some("strategy_selection_plan")
+                } else {
+                    None
+                }
             || !digest(&self.resource.domain_binding_sha256, 64)
             || !digest(&self.resource.policy_sha256, 64)
             || self
@@ -185,6 +210,7 @@ mod tests {
             },
             capability_graph_revision: "graph".into(),
             action: "strategy.session_schedule.prepare".into(),
+            resource_kind: None,
             mode: command.mode.clone(),
             domain_binding_sha256: "c".repeat(64),
             policy_sha256: "d".repeat(64),
@@ -264,5 +290,95 @@ mod tests {
             ReachDataCommand::parse(&vec![b' '; MAX_REACH_DATA_BYTES + 1]).unwrap_err(),
             "reach_data_command_too_large"
         );
+    }
+    #[test]
+    fn selected_creation_versions_action_kind_and_preparation_are_coupled() {
+        use super::super::{
+            data_runner::{DataRunnerOperation, DATA_RUNNER_SCHEMA_V2},
+            reach_data_proofs::Preparation,
+            selection_plans::SelectionPlanCommand,
+        };
+        let mut c = fixture();
+        c.command.operation = DataRunnerOperation::PrepareSelectionPlan {
+            selection_plan: SelectionPlanCommand {
+                scope: c.resource.scope.clone(),
+                capability_graph_revision: c.resource.capability_graph_revision.clone(),
+                mode: "paper".into(),
+                subject_instrument_id: "A".into(),
+                selection_receipts: std::collections::BTreeMap::new(),
+                source_captures: std::collections::BTreeMap::new(),
+            },
+        };
+        c.command.schema_version = DATA_RUNNER_SCHEMA_V2.into();
+        c.resource.schema_version = c.command.binding_schema().into();
+        c.resource.command_sha256 = c.command.canonical_hash().unwrap();
+        c.resource.action = "strategy.selection_plan.prepare".into();
+        c.resource.resource_kind = Some("strategy_selection_plan".into());
+        c.schema = REACH_DATA_SCHEMA_V2.into();
+        c.validate().unwrap();
+        let prep = Preparation {
+            schema: "tradeassembly.relay.reach-data-preparation/v2".into(),
+            command: c.clone(),
+            source_revision: 1,
+            nonce: "fixture.nonce".into(),
+            issued_at_ms: 1000,
+            signature: String::new(),
+        };
+        assert!(prep.signing_payload().is_ok());
+        if let Some(root) = std::env::var_os("SELECTED_WIRE_EVIDENCE_DIR") {
+            let root = std::path::PathBuf::from(root);
+            std::fs::create_dir_all(&root).unwrap();
+            for (name, value) in [
+                ("reach-command-v2.json", serde_json::to_value(&c).unwrap()),
+                (
+                    "core-command-v2.json",
+                    serde_json::to_value(&c.command).unwrap(),
+                ),
+                ("preparation-v2.json", serde_json::to_value(&prep).unwrap()),
+            ] {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(root.join(name))
+                    .unwrap();
+                file.write_all(&serde_json::to_vec_pretty(&value).unwrap())
+                    .unwrap();
+            }
+        }
+        let mut old = prep;
+        old.schema = "tradeassembly.relay.reach-data-preparation/v1".into();
+        assert!(old.signing_payload().is_err());
+        for i in 0..7 {
+            let mut bad = c.clone();
+            match i {
+                0 => bad.schema = REACH_DATA_SCHEMA.into(),
+                1 => {
+                    bad.command.schema_version =
+                        super::super::data_runner::DATA_RUNNER_SCHEMA.into()
+                }
+                2 => {
+                    bad.resource.schema_version =
+                        "tradeassembly.core-data-mutation-binding.v1".into()
+                }
+                3 => bad.resource.resource_kind = None,
+                4 => bad.resource.action = "strategy.data_plan.prepare".into(),
+                5 => bad.resource.scope.strategy_id = "foreign".into(),
+                _ => {
+                    if let DataRunnerOperation::PrepareSelectionPlan { selection_plan } =
+                        &mut bad.command.operation
+                    {
+                        selection_plan.mode = "live".into();
+                    }
+                }
+            }
+            assert!(bad.validate().is_err(), "mismatch {i}");
+        }
+        let mut old = fixture();
+        old.command.schema_version = DATA_RUNNER_SCHEMA_V2.into();
+        assert!(old.validate().is_err());
+        let mut v = serde_json::to_value(c).unwrap();
+        v["command"]["operation"]["tool"] = json!("arbitrary");
+        assert!(ReachDataCommand::parse(&serde_json::to_vec(&v).unwrap()).is_err());
     }
 }

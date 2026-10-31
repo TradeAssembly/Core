@@ -117,7 +117,8 @@ impl DataDelivery {
             return Err("reach_data_delivery_invalid".into());
         }
         if let Some(r) = &self.receipt {
-            if r.command_id != self.command.command.command_id
+            if r.schema_version != self.command.command.receipt_schema()
+                || r.command_id != self.command.command.command_id
                 || r.workspace_id != self.command.node.workspace_id
                 || r.command_sha256 != self.command.resource.command_sha256
                 || r.core_revision.as_deref() != Some(self.command.resource.core_revision.as_str())

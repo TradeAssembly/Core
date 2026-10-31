@@ -185,6 +185,22 @@ fn resolve(
         resolved_program,
     })
 }
+/// Read-only immutable domain binding; host preparation/knowledge time is an
+/// effect result and is deliberately not regenerated into a signed command hash.
+pub(super) fn command_binding(
+    service: &TradeAssemblyService,
+    c: &SelectionPlanCommand,
+) -> Result<String, String> {
+    let content = build(
+        service,
+        resolve(service, c, service.runtime().clock.now_ms())?,
+    )?;
+    let source = content
+        .selection_source
+        .as_ref()
+        .ok_or("selection_plan_source_invalid")?;
+    canonical_sha256(&json!({"command":c,"selections":source.selection_sha256,"resolvedProgram":source.resolved_program,"compiledPlan":content.plan,"packages":content.package_sha256,"bindings":content.binding_sha256,"sourceAuthentication":content.source_authentication})).map_err(|_|"selection_plan_encoding_invalid".into())
+}
 pub(super) fn rebuild(
     service: &TradeAssemblyService,
     source: &SelectionPlanSource,

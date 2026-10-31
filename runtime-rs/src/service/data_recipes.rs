@@ -92,6 +92,49 @@ struct InstanceWork {
     active: BTreeSet<String>,
     emitted: BTreeMap<String, String>,
 }
+/// Immutable package metadata shared only within one recipe preparation. Every
+/// current-plan validation creates a new set; this is never dispatch authority.
+#[derive(Default)]
+struct PackageSnapshots(BTreeMap<String, OperationDataSnapshot>);
+impl PackageSnapshots {
+    fn get(
+        &mut self,
+        packages: &dyn PluginPackagePort,
+        digest: &str,
+    ) -> Result<Option<&OperationDataSnapshot>, String> {
+        if !self.0.contains_key(digest) {
+            // At most 32 recipe instances and 32 emitted nodes can introduce a
+            // package. Each descriptor bounds its declared contract count too.
+            if self.0.len() >= 64 {
+                return Err("data_recipe_expansion_bounds_invalid".into());
+            }
+            let Some(package) = packages.get(digest)? else {
+                return Ok(None);
+            };
+            let descriptor = VersionedPackageDescriptor::decode(
+                &serde_json::to_vec(&package.descriptor)
+                    .map_err(|_| "data_recipe_package_invalid")?,
+            )?;
+            let operations = descriptor
+                .data()
+                .map(|data| {
+                    data.data_contracts
+                        .iter()
+                        .map(|entry| entry.operation_id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let Some(snapshot) = packages.operation_data_snapshot(digest, &operations)? else {
+                return Ok(None);
+            };
+            if snapshot.package != package {
+                return Err("data_recipe_package_binding_mismatch".into());
+            }
+            self.0.insert(digest.into(), snapshot);
+        }
+        Ok(self.0.get(digest))
+    }
+}
 struct Expansion<'a> {
     service: &'a TradeAssemblyService,
     graph: CapabilityGraphResolution,
@@ -99,6 +142,7 @@ struct Expansion<'a> {
     base_nodes: BTreeSet<String>,
     invocations: BTreeMap<String, RecipeInvocation>,
     loaded: BTreeMap<String, LoadedRecipe>,
+    packages: PackageSnapshots,
     active: BTreeSet<String>,
     done: BTreeSet<String>,
     outputs: BTreeMap<(String, String), PipelineOutput>,
@@ -110,6 +154,7 @@ fn code<T: Serialize>(value: &T) -> Result<String, String> {
 fn load(
     service: &TradeAssemblyService,
     invocation: &mut RecipeInvocation,
+    packages: &mut PackageSnapshots,
 ) -> Result<LoadedRecipe, String> {
     service
         .require_object("plugin_instance", &invocation.plugin_instance_ref)
@@ -126,10 +171,11 @@ fn load(
     {
         return Err("data_recipe_instance_unavailable".into());
     }
-    let package = runtime
-        .plugin_packages
-        .get(&invocation.package_sha256)?
-        .ok_or("data_recipe_package_missing")?;
+    let package = packages
+        .get(runtime.plugin_packages.as_ref(), &invocation.package_sha256)?
+        .ok_or("data_recipe_package_missing")?
+        .package
+        .clone();
     if package.package_sha256 != invocation.package_sha256
         || instance["pluginRef"] != package.plugin_ref
     {
@@ -335,12 +381,18 @@ impl Expansion<'_> {
         {
             return Err("data_recipe_operation_binding_mismatch".into());
         }
-        let pin = super::data_binding::pin(self.service, selected)?;
-        let contract = self
-            .service
-            .runtime()
-            .plugin_packages
-            .operation_data(&pin.package_sha256, &selected.operation_id)?
+        let runtime = self.service.runtime();
+        // Re-read ownership, enabled state, active package, manifest,
+        // configuration and credential generation for every emitted node.
+        let pin = super::data_binding::pin_with_package_loader(self.service, selected, |digest| {
+            self.packages
+                .get(runtime.plugin_packages.as_ref(), digest)?
+                .map(|snapshot| snapshot.package.clone())
+                .ok_or("data_plan_package_missing".into())
+        })?;
+        let contract = self.packages.0[&pin.package_sha256]
+            .contracts
+            .get(&selected.operation_id)
             .ok_or("data_recipe_contract_missing")?;
         if contract.semantics_version != definition.operation.semantics_version {
             return Err("data_recipe_semantics_mismatch".into());
@@ -420,6 +472,7 @@ pub(crate) fn prepare(
         .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     let mut invocations = BTreeMap::new();
     let mut loaded = BTreeMap::new();
+    let mut packages = PackageSnapshots::default();
     for invocation in &mut program.instances {
         if invocation.instance_id.is_empty()
             || invocation.instance_id.len() > 128
@@ -427,7 +480,7 @@ pub(crate) fn prepare(
         {
             return Err("data_recipe_instance_identity_invalid".into());
         }
-        let recipe = load(service, invocation)?;
+        let recipe = load(service, invocation, &mut packages)?;
         loaded.insert(invocation.instance_id.clone(), recipe);
         invocations.insert(invocation.instance_id.clone(), invocation.clone());
     }
@@ -449,6 +502,7 @@ pub(crate) fn prepare(
         base_nodes,
         invocations,
         loaded,
+        packages,
         active: BTreeSet::new(),
         done: BTreeSet::new(),
         outputs: BTreeMap::new(),
@@ -642,5 +696,146 @@ pub fn step_response(service: &TradeAssemblyService, body: Value) -> super::Serv
             super::ServiceResponse::ok(json!({"receipt":receipt,"executionAuthorityGranted":false}))
         }
         Err(code) => error_response(&code),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct CountingPackages {
+        inner: Arc<dyn PluginPackagePort>,
+        reads: AtomicUsize,
+        snapshots: AtomicUsize,
+    }
+    impl VersionedPort for CountingPackages {
+        fn descriptors(&self) -> Vec<PortDescriptor> {
+            self.inner.descriptors()
+        }
+    }
+    impl PluginPackagePort for CountingPackages {
+        fn install(
+            &self,
+            request: &PluginPackageInstallRequest,
+        ) -> Result<InstalledPluginPackage, String> {
+            self.inner.install(request)
+        }
+        fn get(&self, digest: &str) -> Result<Option<InstalledPluginPackage>, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.get(digest)
+        }
+        fn operation_data_snapshot(
+            &self,
+            digest: &str,
+            operations: &[String],
+        ) -> Result<Option<OperationDataSnapshot>, String> {
+            self.snapshots.fetch_add(1, Ordering::SeqCst);
+            self.inner.operation_data_snapshot(digest, operations)
+        }
+        fn remove(&self, digest: &str) -> Result<bool, String> {
+            self.inner.remove(digest)
+        }
+    }
+    fn counted(service: &TradeAssemblyService) -> CountingPackages {
+        CountingPackages {
+            inner: service.runtime().plugin_packages.clone(),
+            reads: AtomicUsize::new(0),
+            snapshots: AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn preparation_snapshots_share_reads_but_fresh_validations_detect_unrelated_tampering() {
+        let (_dir, service, _, _) = data_plans::tests::fixture_service(None);
+        let packages = counted(&service);
+        let instance = service
+            .runtime()
+            .plugins
+            .get_instance("instance.provide")
+            .unwrap()
+            .unwrap();
+        let digest = instance["activePackageSha256"].as_str().unwrap();
+        let mut snapshots = PackageSnapshots::default();
+        let package = snapshots
+            .get(&packages, digest)
+            .unwrap()
+            .unwrap()
+            .package
+            .clone();
+        for _ in 0..25 {
+            assert!(snapshots
+                .get(&packages, digest)
+                .unwrap()
+                .unwrap()
+                .contracts
+                .contains_key("provide"));
+        }
+        assert_eq!(packages.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(packages.snapshots.load(Ordering::SeqCst), 1);
+
+        // This schema is declared by the package but is not used by its source
+        // operation. A new validation must still verify the complete closure.
+        std::fs::write(package.install_root.join("state.json"), b"{}").unwrap();
+        let mut fresh = PackageSnapshots::default();
+        assert_eq!(
+            fresh.get(&packages, digest).err().unwrap(),
+            "plugin_data_artifact_digest_mismatch"
+        );
+        assert!(fresh.0.is_empty());
+    }
+
+    #[test]
+    fn shared_preparation_package_never_reuses_mutable_node_bindings() {
+        let (_dir, service, _, request) = data_plans::tests::fixture_service(None);
+        let revision = capability_graph::get_revision(&service, &request.capability_graph_revision);
+        let graph: CapabilityGraphResolution =
+            serde_json::from_value(revision["revision"]["graph"].clone()).unwrap();
+        let selected = graph
+            .nodes
+            .iter()
+            .filter_map(|node| node.selected.as_ref())
+            .find(|selected| selected.operation_id == "derive")
+            .unwrap();
+        let packages = counted(&service);
+        let mut snapshots = PackageSnapshots::default();
+        let mut pin = || {
+            super::super::data_binding::pin_with_package_loader(&service, selected, |digest| {
+                Ok(snapshots
+                    .get(&packages, digest)?
+                    .ok_or("data_plan_package_missing")?
+                    .package
+                    .clone())
+            })
+        };
+        let original = pin().unwrap();
+        let runtime = service.runtime();
+        let mut instance = runtime
+            .plugins
+            .get_instance(&selected.plugin_instance_ref)
+            .unwrap()
+            .unwrap();
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("recipe-binding-change").unwrap(),
+        );
+        instance["configuration"] = json!({"changed":true});
+        instance["credentialStatus"]["revisionRef"] = json!("changed-generation");
+        runtime
+            .plugins
+            .put_instance(&selected.plugin_instance_ref, instance.clone(), &context)
+            .unwrap();
+        assert_ne!(pin().unwrap().context_sha256, original.context_sha256);
+        instance["enabled"] = json!(false);
+        runtime
+            .plugins
+            .put_instance(&selected.plugin_instance_ref, instance, &context)
+            .unwrap();
+        assert_eq!(pin().unwrap_err(), "data_plan_instance_stale");
+        assert_eq!(packages.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(packages.snapshots.load(Ordering::SeqCst), 1);
     }
 }

@@ -274,10 +274,18 @@ pub(crate) fn binding(
                     _ => {}
                 }
             }
+            let mut immutable_proof = json!({"planSha256":hash(&p)?,"entryId":p.entry_id,"signalReceiptSha256":p.command.signal_receipt_sha256});
+            if op.settlement() {
+                let (_, original) = submission::record(s, &p)?.ok_or("broker_v2_state_missing")?;
+                immutable_proof["originalIntentSha256"] = json!(original.intent_sha256);
+                immutable_proof["originalBrokerBindingSha256"] =
+                    json!(hash(&original.intent["preparedBinding"])?);
+                immutable_proof["originalCommandKeySha256"] = json!(hash(&original.original_key)?);
+            }
             (
                 p.command.capability_graph_revision.clone(),
                 p.canonical_account.clone(),
-                json!({"planSha256":hash(&p)?,"entryId":p.entry_id,"signalReceiptSha256":p.command.signal_receipt_sha256}),
+                immutable_proof,
             )
         }
     };

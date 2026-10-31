@@ -221,21 +221,7 @@ pub(crate) fn settle(
         return Err("cash_settlement_state_unsupported".into());
     }
     let binding = current_source(s, &p, &record)?;
-    let manifest = s
-        .runtime()
-        .plugins
-        .get_manifest(&binding.plugin_ref)?
-        .ok_or("cash_settlement_operation_unavailable")?;
-    let operation = manifest["manifest"]["operations"]
-        .as_array()
-        .and_then(|ops| ops.iter().find(|op| op["id"] == wire::OPERATION))
-        .ok_or("cash_settlement_operation_unavailable")?;
-    if operation["capability"] != wire::CAPABILITY
-        || operation["effect"] != "read"
-        || operation["purpose"] != "settlement"
-    {
-        return Err("cash_settlement_operation_invalid".into());
-    }
+    require_read_capability(s, &p, &binding, &record.intent["accountRef"])?;
     let input = wire::Request {
         schema_version: "tradeassembly.cash_settlement_request.v1".into(),
         plan_id: p.plan_id.clone(),
@@ -280,23 +266,7 @@ pub(crate) fn settle(
     if current_source(s, &p, &record)? != binding {
         return Err("cash_settlement_source_changed".into());
     }
-    // Recheck the exact read capability after invocation: a revoked grant cannot
-    // be converted into newly reusable capital merely because data arrived.
-    let resolution = super::super::providers::resolve_capability(
-        s,
-        super::super::providers::requirement_from_body(
-            &json!({"capability":wire::CAPABILITY,"pluginRef":binding.plugin_ref,"pluginInstanceRef":binding.plugin_instance_ref,"operation":wire::OPERATION,"mode":"paper","purpose":"settlement","accountRef":record.intent["accountRef"],"assetClass":p.order.instrument.asset_class,"instrumentFamily":p.order.instrument.instrument_family}),
-        ),
-    );
-    if !resolution["candidates"].as_array().is_some_and(|xs| {
-        xs.iter().any(|x| {
-            x["pluginInstanceRef"] == binding.plugin_instance_ref
-                && x["operation"]["id"] == wire::OPERATION
-                && x["blockers"].as_array().is_some_and(Vec::is_empty)
-        })
-    }) {
-        return Err("cash_settlement_permission_changed".into());
-    }
+    require_read_capability(s, &p, &binding, &record.intent["accountRef"])?;
     commit(s, &p, binding, hash(&response)?, observation, &key, ctx)
 }
 pub(super) fn commit(
@@ -585,6 +555,46 @@ pub(super) fn preflight(s: &TradeAssemblyService, p: &OrderPlan) -> Result<(), S
     if p.account_currency.is_none() {
         return Err("cash_settlement_currency_pin_required".into());
     }
-    current_source(s, p, &record)?;
+    let binding = current_source(s, p, &record)?;
+    require_read_capability(s, p, &binding, &record.intent["accountRef"])?;
+    Ok(())
+}
+
+fn require_read_capability(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    binding: &BrokerPreparedBinding,
+    account_ref: &Value,
+) -> Result<(), String> {
+    let manifest = s
+        .runtime()
+        .plugins
+        .get_manifest(&binding.plugin_ref)?
+        .ok_or("cash_settlement_operation_unavailable")?;
+    let operation = manifest["manifest"]["operations"]
+        .as_array()
+        .and_then(|ops| ops.iter().find(|op| op["id"] == wire::OPERATION))
+        .ok_or("cash_settlement_operation_unavailable")?;
+    if operation["capability"] != wire::CAPABILITY
+        || operation["effect"] != "read"
+        || operation["purpose"] != "settlement"
+    {
+        return Err("cash_settlement_operation_invalid".into());
+    }
+    let resolution = super::super::providers::resolve_capability(
+        s,
+        super::super::providers::requirement_from_body(
+            &json!({"capability":wire::CAPABILITY,"pluginRef":binding.plugin_ref,"pluginInstanceRef":binding.plugin_instance_ref,"operation":wire::OPERATION,"mode":"paper","purpose":"settlement","accountRef":account_ref,"assetClass":p.order.instrument.asset_class,"instrumentFamily":p.order.instrument.instrument_family}),
+        ),
+    );
+    if !resolution["candidates"].as_array().is_some_and(|xs| {
+        xs.iter().any(|x| {
+            x["pluginInstanceRef"] == binding.plugin_instance_ref
+                && x["operation"]["id"] == wire::OPERATION
+                && x["blockers"].as_array().is_some_and(Vec::is_empty)
+        })
+    }) {
+        return Err("cash_settlement_permission_changed".into());
+    }
     Ok(())
 }

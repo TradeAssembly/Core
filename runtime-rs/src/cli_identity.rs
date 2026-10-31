@@ -286,6 +286,35 @@ pub async fn verify_cli_session(config: &RuntimeConfig) -> Result<VerifiedCliSes
     Ok(VerifiedCliSession { identity })
 }
 
+/// Command consumers must not bootstrap a new local identity during a read or
+/// remote dispatch. Hosted profiles reuse the existing verified session path.
+pub async fn verify_existing_cli_session(
+    config: &RuntimeConfig,
+) -> Result<VerifiedCliSession, String> {
+    if config.oidc_profile != "local_owner" {
+        return verify_cli_session(config).await;
+    }
+    config.validate()?;
+    let owner = crate::local_owner_identity::LocalOwnerIdentity::existing_for_database(
+        config
+            .database_path
+            .as_deref()
+            .ok_or("local_owner_database_required")?,
+    )?;
+    Ok(VerifiedCliSession {
+        identity: CliIdentity {
+            stable_identity_id: owner.stable_identity_id,
+            issuer: owner.issuer,
+            subject: owner.subject,
+            audience: owner.audience,
+            display_name: Some("Local owner".into()),
+            email: None,
+            assurance: Some("local-process".into()),
+            expires_at_ms: i64::MAX,
+        },
+    })
+}
+
 pub fn authenticated_service_from_config(
     config: RuntimeConfig,
     verified_session: VerifiedCliSession,
@@ -294,6 +323,15 @@ pub fn authenticated_service_from_config(
     let service = bind_authenticated_service(&service, verified_session.identity)?;
     service.resume_local_scheduler_workers();
     Ok(service)
+}
+
+/// Existing verified identity with scheduler-free data-host startup.
+pub fn authenticated_data_service_from_config(
+    config: RuntimeConfig,
+    verified_session: VerifiedCliSession,
+) -> Result<TradeAssemblyService, String> {
+    let service = TradeAssemblyService::from_config_data_only(config)?;
+    bind_authenticated_service(&service, verified_session.identity)
 }
 
 fn bind_authenticated_service(

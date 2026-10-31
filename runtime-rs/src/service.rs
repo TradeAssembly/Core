@@ -282,6 +282,8 @@ pub struct TradeAssemblyService {
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
     // Private, one-public-request lifetime; never serialized or shared by roots.
     data_step_request: Option<Arc<data_evaluation::DataStepRequest>>,
+    // Restrictive, in-memory worker provenance; never caller supplied or stored.
+    background_worker_job: Option<String>,
 }
 
 impl fmt::Debug for TradeAssemblyService {
@@ -369,6 +371,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
         session_dispatch::resume_local_workers(&service);
@@ -508,6 +511,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
         service
@@ -548,6 +552,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            background_worker_job: None,
         })
     }
 
@@ -575,6 +580,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            background_worker_job: None,
         }
     }
 
@@ -1053,6 +1059,15 @@ impl TradeAssemblyService {
         response
     }
 
+    /// Restricts a worker clone after every potentially long nested phase.
+    /// Manual invocations have no worker context and retain normal authority.
+    pub(super) fn require_background_worker_current(&self) -> Result<(), String> {
+        if let Some(job) = &self.background_worker_job {
+            session_dispatch::health_worker_intent_current(self, job)?;
+        }
+        Ok(())
+    }
+
     pub fn handle_http_from_source(
         &self,
         source_interface: &str,
@@ -1060,6 +1075,9 @@ impl TradeAssemblyService {
         path: &str,
         body: Value,
     ) -> ServiceResponse {
+        if let Err(code) = self.require_background_worker_current() {
+            return ServiceResponse::conflict(&code);
+        }
         if method.eq_ignore_ascii_case("POST")
             && matches!(
                 normalize_path(path).as_str(),

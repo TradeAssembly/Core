@@ -24,8 +24,7 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
     if let Some(a) = &c.automatic_execution {
         a.validate()?;
     }
-    let owner = s
-        .invocation_owner()
+    s.invocation_owner()
         .ok_or("typed_execution_owner_required")?;
     s.require_object("strategy", &c.scope.strategy_id)
         .map_err(|_| "typed_execution_not_available")?;
@@ -165,15 +164,22 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
     {
         return Err("typed_execution_lookup_required".into());
     }
-    let id = format!(
-        "cfg_typed_{}",
-        typed_hash(
-            &json!({"command":c,"owner":owner,"account":witness.identity,"brokerBinding":witness.binding_sha256,"policy":policy})
-        )?
-    );
+    let health_pins = super::automatic_health::bootstrap(s, c, &rev)?;
+    let id = config_id(
+        s,
+        c,
+        &serde_json::to_value(&witness.identity).map_err(|_| "typed_execution_hash_invalid")?,
+        &witness.binding_sha256,
+        &policy,
+        health_pins.as_ref(),
+    )?;
     let mut result = json!({"kind":"ExecutionConfig","configId":id,"executionContractVersion":VERSION,"typedExecution":c,"orchestrator":"typed_pipeline","strategyId":c.scope.strategy_id,"strategyVersionId":c.scope.strategy_version_id,"strategySpecHash":c.scope.strategy_spec_hash,"capabilityGraphRevisionId":c.capability_graph_revision,"capabilityGraphFingerprint":rev["graphFingerprint"],"mode":"paper","accountRef":witness.account_ref,"providerRef":binding["pluginRef"],"canonicalAccount":witness.identity,"brokerAccountBindingSha256":witness.binding_sha256,"orderPlanPolicySha256":typed_hash(&policy)?,"orderPlanBrokerNode":c.broker_requirement_ref,"selectionPolicy":if selected{"selected_receipt_head"}else{"published_static"},"symbol":Value::Null,"timeframe":Value::Null,"calendarRef":Value::Null,"dataFreshnessPolicy":{"maxAgeMs":policy.max_snapshot_age_ms},"riskLimits":{"typedPolicySha256":typed_hash(&policy)?},"schedulerIntervalSeconds":60,"warmup":{"source":"typed_data_plan_readiness"},"status":"configured"});
     if let Some(p) = managed_exit_policy {
         result["managedExitPolicySha256"] = json!(typed_hash(&p)?);
+    }
+    if let Some(pins) = health_pins {
+        result["accountHealthProviderPins"] =
+            serde_json::to_value(pins).map_err(|_| "typed_execution_hash_invalid")?;
     }
     Ok(result)
 }
@@ -241,6 +247,12 @@ pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
                 });
                 result["syntheticExitAdmissionSupported"] = json!(management);
                 result["automaticReversalSupported"] = json!(false);
+                if !config["typedExecution"]["automaticExecution"]["accountHealthRefresh"].is_null()
+                {
+                    result["automaticAccountHealthRefreshSupported"] = json!(true);
+                    result["accountHealthRefreshRequiredAction"] =
+                        json!(super::automatic_health::REQUIRED_ACTION);
+                }
                 result["nextSessionRolloverSupported"] = json!(false);
                 result["localSessionWorkerStartRequired"] = json!(management);
             }
@@ -252,6 +264,24 @@ pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
     }
 }
 
+pub(super) fn config_id(
+    s: &TradeAssemblyService,
+    command: &ConfigCommand,
+    account: &Value,
+    broker_binding: &str,
+    policy: &order_plans::Policy,
+    health_pins: Option<&super::automatic_health::Pins>,
+) -> Result<String, String> {
+    let owner = s
+        .invocation_owner()
+        .ok_or("typed_execution_owner_required")?;
+    let mut binding = json!({"command":command,"owner":owner,"account":account,"brokerBinding":broker_binding,"policy":policy});
+    if let Some(pins) = health_pins {
+        binding["accountHealthProviderPins"] =
+            serde_json::to_value(pins).map_err(|_| "typed_execution_hash_invalid")?;
+    }
+    Ok(format!("cfg_typed_{}", typed_hash(&binding)?))
+}
 fn typed_hash<T: Serialize>(v: &T) -> Result<String, String> {
     crate::data_pipeline::canonical_sha256(v).map_err(|_| "typed_execution_hash_invalid".into())
 }

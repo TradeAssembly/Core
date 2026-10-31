@@ -21,12 +21,17 @@ pub enum InputValue {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutomaticConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_health_refresh: Option<super::automatic_health::Config>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management: Option<crate::service::order_plans::management::automation::Config>,
     pub source_inputs: BTreeMap<String, BTreeMap<String, InputValue>>,
     pub max_subjects_per_occurrence: usize,
 }
 impl AutomaticConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(health) = &self.account_health_refresh {
+            health.validate()?;
+        }
         if let Some(management) = &self.management {
             management.validate()?;
         }
@@ -192,6 +197,17 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
             return Ok(summary(&id, &old, None));
         }
     }
+    let health = super::automatic_health::advance_activation(s, &c.activation_id, &c.scope)?;
+    if !health.ready {
+        // No financial phase has advanced. The scheduler retains this same child
+        // until this future deadline rather than recording a synthetic result.
+        return Ok(json!({"cycleId":id,"status":"running","phase":0,
+            "nextAttemptAtMs":health.next_attempt_at_ms.max(s.runtime().clock.now_ms().saturating_add(1)),
+            "accountHealthRefresh":health.projection,"executionAuthorityGranted":false}));
+    }
+    // Health IO may have outlived a background stop/pause. This private
+    // context restricts only the worker; finite manual phases remain valid.
+    s.require_background_worker_current()?;
     let (_run, config) = order_plans::decision::run(s, &c.activation_id)?;
     let automatic = automatic(&config)?;
     let (plan, receipt) = data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)?;

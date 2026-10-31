@@ -1,3 +1,4 @@
+pub(crate) mod automatic_health;
 pub(crate) mod typed;
 pub(crate) mod typed_cycle;
 use super::{

@@ -1,5 +1,6 @@
 //! Explicit owned local worker intent, not a serialized principal or grant.
 use super::*;
+use crate::service::execution::automatic_health;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 const INTENTS: &str = "session_dispatch_worker_intents_v1";
@@ -131,10 +132,18 @@ pub(super) fn status(s: &TradeAssemblyService, id: &str) -> Value {
         return json!({"running":false,"lastError":"session_dispatch_database_identity_unavailable"});
     };
     let slots = registry().lock().unwrap_or_else(|p| p.into_inner());
-    match slots.get(&key) {
+    let mut result = match slots.get(&key) {
         Some(v) => json!({"running":v.running,"iterations":v.iterations,"lastError":v.last_error}),
         None => json!({"running":false,"iterations":0,"lastError":null}),
+    };
+    drop(slots);
+    if let Ok((job, _)) = read(s, id) {
+        let health = automatic_health::status_job(s, &job);
+        if health["enabled"] == true || health["status"] == "blocked" {
+            result["accountHealthRefresh"] = health;
+        }
     }
+    result
 }
 pub(super) fn wake(s: &TradeAssemblyService, id: &str) {
     if let Ok(k) = key(s, id) {
@@ -149,8 +158,8 @@ pub(super) fn enabled(s: &TradeAssemblyService, id: &str) -> Result<bool, String
 fn management_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
     crate::service::order_plans::management::automation::has_work(s, j)
 }
-fn has_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
-    Ok(!j.status.terminal() || management_work(s, j)?)
+pub(super) fn has_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
+    Ok(!j.status.terminal() || automatic_health::needs_job_turn(s, j)? || management_work(s, j)?)
 }
 fn start_admission(
     terminal: bool,
@@ -177,11 +186,15 @@ pub(super) fn start(s: &TradeAssemblyService, id: &str) -> Result<(), String> {
     if j.paused {
         return Err("session_dispatch_job_paused".into());
     }
-    start_admission(
-        j.status.terminal(),
-        || management_work(s, &j),
-        || validate_request(s, &j.request).map(|_| ()),
-    )?;
+    if !automatic_health::needs_job_turn(s, &j)? {
+        start_admission(
+            j.status.terminal(),
+            || management_work(s, &j),
+            || validate_request(s, &j.request).map(|_| ()),
+        )?;
+    }
+    // An opted-in stale/degraded run may start only the health-read work first.
+    // The normal calendar/config/financial checks still run before any trading.
     let _ = key(s, id)?;
     set(s, id, true)?;
     spawn(s.clone(), id.into())
@@ -285,6 +298,27 @@ fn wake_deadline(
     let entry = entry_due()?;
     Ok(management_due.map_or(entry, |due| entry.min(due)))
 }
+// Set only here, never from a request body, durable intent or remote principal.
+fn background_service(s: &TradeAssemblyService, id: &str) -> TradeAssemblyService {
+    let mut scoped = s.clone();
+    scoped.background_worker_job = Some(id.into());
+    scoped
+}
+fn after_health(s: &TradeAssemblyService, id: &str) -> Result<Option<Job>, String> {
+    // A completed health read is evidence, not permission for the next turn.
+    owner(s)?;
+    if !enabled(s, id)? {
+        return Ok(None);
+    }
+    let (job, _) = read(s, id)?;
+    if job.paused {
+        return Ok(None);
+    }
+    if job.core_revision != revision()? {
+        return Err("session_dispatch_source_changed".into());
+    }
+    Ok(Some(job))
+}
 fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<(), String> {
     let mut nonce = [0u8; 16];
     use rand::RngCore;
@@ -304,7 +338,25 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
             return Ok(());
         }
         let (j, _) = read(s, id)?;
-        if j.paused || !has_work(s, &j)? {
+        if j.paused {
+            return Ok(());
+        }
+        let health = automatic_health::advance_worker_job(s, &j)?;
+        if !health.ready {
+            let now = s.runtime().clock.trusted_now_ms()?;
+            wake.wait(
+                observed,
+                health
+                    .next_attempt_at_ms
+                    .saturating_sub(now)
+                    .clamp(1, 60_000) as u64,
+            );
+            continue;
+        }
+        let Some(j) = after_health(s, id)? else {
+            return Ok(());
+        };
+        if !has_work(s, &j)? {
             return Ok(());
         }
         iteration = iteration
@@ -316,7 +368,8 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         // Existing positions get bounded turns while selection/warmup is pending too.
         let manage = j.status.terminal() || (management_ready && iteration.is_multiple_of(2));
         // Fresh transport command; the durable domain child ID/body never changes.
-        let response=s.handle_http("POST","/scheduler/run",json!({"accountMode":"paper","sessionDispatch":{"kind":if manage{"manage"}else{"advance"},"jobId":id},"idempotencyKey":format!("session-worker:{transport_run}:{iteration}")}));
+        let background = background_service(s, id);
+        let response=background.handle_http("POST","/scheduler/run",json!({"accountMode":"paper","sessionDispatch":{"kind":if manage{"manage"}else{"advance"},"jobId":id},"idempotencyKey":format!("session-worker:{transport_run}:{iteration}")}));
         if let Some(v) = registry()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -329,7 +382,15 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
                 .unwrap_or_else(|| "session_dispatch_worker_command_failed".into()));
         }
         let (j, _) = read(s, id)?;
-        if j.paused || !has_work(s, &j)? {
+        if j.paused {
+            return Ok(());
+        }
+        // A long computation may cross the health TTL. Return to the read gate
+        // before asking management's normal currentness checks about more work.
+        if automatic_health::needs_job_turn(s, &j)? {
+            continue;
+        }
+        if !has_work(s, &j)? {
             return Ok(());
         }
         let now = s.runtime().clock.now_ms();
@@ -354,6 +415,13 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
                 target = target.max(next)
             }
         }
+        let health = automatic_health::status_job(s, &j);
+        if let Some(due) = health["nextAttemptAtMs"]
+            .as_i64()
+            .filter(|_| health["enabled"] == true)
+        {
+            target = target.min(due);
+        }
         let delay = if target > now {
             (target - now) as u64
         } else if j.pending.is_some() && !management_remaining {
@@ -364,7 +432,34 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         wake.wait(observed, delay);
     }
 }
+fn record_resume_failure(s: &TradeAssemblyService, id: &str, error: String) -> Result<(), String> {
+    let k = key(s, id)?;
+    let mut slots = registry().lock().unwrap_or_else(|p| p.into_inner());
+    prune(&mut slots);
+    if let Some(slot) = slots.get_mut(&k) {
+        // Do not replace an independently running worker's wake/identity.
+        slot.last_error = Some(error);
+    } else {
+        slots.insert(
+            k,
+            Slot {
+                wake: Arc::new(Wake::new()),
+                running: false,
+                iterations: 0,
+                last_error: Some(error),
+            },
+        );
+    }
+    Ok(())
+}
 pub(super) fn resume_owned(s: &TradeAssemblyService) -> Result<usize, String> {
+    resume_owned_with(s, start)
+}
+fn resume_owned_with(
+    s: &TradeAssemblyService,
+    mut start_job: impl FnMut(&TradeAssemblyService, &str) -> Result<(), String>,
+) -> Result<usize, String> {
+    // Owner resolution and global inventory bounds still fail the whole sweep.
     owner(s)?;
     let rows = s.runtime().storage.list_json_page(INTENTS, None, 129)?;
     if rows.len() > 128 {
@@ -372,33 +467,25 @@ pub(super) fn resume_owned(s: &TradeAssemblyService) -> Result<usize, String> {
     }
     let mut count = 0;
     for (id, _) in rows {
-        // A different owner's intent is not authority and cannot be read or resumed.
+        // Never diagnose or start a foreign/unverifiable job using its intent.
         if read(s, &id).is_err() {
             continue;
         }
-        if !enabled(s, &id)? {
-            continue;
-        }
-        let (j, _) = read(s, &id)?;
-        if j.paused || !has_work(s, &j)? {
-            continue;
-        }
-        match start(s, &id) {
-            Ok(()) => count += 1,
-            Err(error) => {
-                let k = key(s, &id)?;
-                let mut slots = registry().lock().unwrap_or_else(|p| p.into_inner());
-                prune(&mut slots);
-                slots.insert(
-                    k,
-                    Slot {
-                        wake: Arc::new(Wake::new()),
-                        running: false,
-                        iterations: 0,
-                        last_error: Some(error),
-                    },
-                );
+        let result = (|| {
+            if !enabled(s, &id)? {
+                return Ok(false);
             }
+            let (job, _) = read(s, &id)?;
+            if job.paused || !has_work(s, &job)? {
+                return Ok(false);
+            }
+            start_job(s, &id)?;
+            Ok(true)
+        })();
+        match result {
+            Ok(true) => count += 1,
+            Ok(false) => {}
+            Err(error) => record_resume_failure(s, &id, error)?,
         }
     }
     Ok(count)
@@ -519,4 +606,9 @@ mod management_start_tests {
             "managed_controls_blocked"
         );
     }
+}
+
+#[cfg(test)]
+mod health_worker_recovery_tests {
+    include!("worker_health_recovery_tests.rs");
 }

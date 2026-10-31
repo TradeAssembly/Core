@@ -1013,6 +1013,7 @@ mod tests {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            background_worker_job: None,
         })
     }
 

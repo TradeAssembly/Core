@@ -522,6 +522,61 @@ fn rotate(ids: &[String], after: Option<&str>, max: usize) -> Vec<String> {
         .cloned()
         .collect()
 }
+/// Read-only wake eligibility for the separately verified health-read binding.
+/// Financial management still calls binding()/typed::current normally.
+pub(crate) fn has_owned_work_for_health(
+    s: &TradeAssemblyService,
+    job: &session_dispatch::Job,
+    config: &Value,
+) -> Result<bool, String> {
+    let Some(activation) = job.request.execution_activation_id.as_deref() else {
+        return Ok(false);
+    };
+    let Some(raw) = config["typedExecution"]["automaticExecution"]
+        .get("management")
+        .filter(|v| !v.is_null())
+    else {
+        return Ok(false);
+    };
+    let management: Config =
+        serde_json::from_value(raw.clone()).map_err(|_| "management_automation_config_invalid")?;
+    management.validate()?;
+    let who = current_owner(s)?;
+    let revision = crate::build_identity::current()
+        .ok_or("management_automation_build_identity_required")?
+        .revision()
+        .to_owned();
+    if who != job.owner_sha256
+        || revision != job.core_revision
+        || job.request.mode != "paper"
+        || config["strategyId"] != job.request.scope.strategy_id
+        || config["strategyVersionId"] != job.request.scope.strategy_version_id
+        || config["strategySpecHash"] != job.request.scope.strategy_spec_hash
+        || config["capabilityGraphRevisionId"] != job.request.capability_graph_revision
+    {
+        return Err("management_automation_scope_mismatch".into());
+    }
+    let b = Binding {
+        activation: activation.into(),
+        config: management,
+        config_hash: hash(config)?,
+        owner: who,
+        revision,
+    };
+    has_bound_work(s, &b, job)
+}
+fn has_bound_work(
+    s: &TradeAssemblyService,
+    b: &Binding,
+    job: &session_dispatch::Job,
+) -> Result<bool, String> {
+    if load_state(s, b)?
+        .is_some_and(|(_, state)| state.pending.is_some() || state.cursor < state.work.len())
+    {
+        return Ok(true);
+    }
+    Ok(!entry_work(s, b, job)?.is_empty() || !position_ids(s, b, job)?.is_empty())
+}
 pub(crate) fn has_work(
     s: &TradeAssemblyService,
     job: &session_dispatch::Job,
@@ -529,12 +584,7 @@ pub(crate) fn has_work(
     let Some(b) = binding(s, job)? else {
         return Ok(false);
     };
-    if load_state(s, &b)?
-        .is_some_and(|(_, state)| state.pending.is_some() || state.cursor < state.work.len())
-    {
-        return Ok(true);
-    }
-    Ok(!entry_work(s, &b, job)?.is_empty() || !position_ids(s, &b, job)?.is_empty())
+    has_bound_work(s, &b, job)
 }
 pub(crate) fn next_due(
     s: &TradeAssemblyService,

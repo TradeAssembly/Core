@@ -1535,7 +1535,9 @@ fn command_group(command_name: &str) -> &str {
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
     let scope = match path {
-        "/product/strategies/management-windows/prepare" => Some("/managementWindow/scope/strategyId"),
+        "/product/strategies/management-windows/prepare" => {
+            Some("/managementWindow/scope/strategyId")
+        }
         "/product/strategies/managed-position-plans/prepare" => {
             Some("/managedPositionPlan/scope/strategyId")
         }

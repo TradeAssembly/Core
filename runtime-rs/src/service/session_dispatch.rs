@@ -154,7 +154,7 @@ pub enum Status {
     Closed,
 }
 impl Status {
-    fn terminal(&self) -> bool {
+    pub(super) fn terminal(&self) -> bool {
         !matches!(self, Self::Pending | Self::Running)
     }
 }
@@ -802,6 +802,11 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
     if j.status.terminal() || j.paused {
         return Ok(j);
     }
+    let health = super::execution::automatic_health::advance_job(s, &j)?;
+    if !health.ready {
+        return Ok(j);
+    }
+    s.require_background_worker_current()?;
     let schedule = validate_request(s, &j.request)?;
     if schedule.receipt_sha256 != j.schedule_sha256 {
         return Err("session_dispatch_schedule_changed".into());
@@ -987,6 +992,11 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
             if job.paused {
                 return Err("session_dispatch_job_paused".into());
             }
+            let health = super::execution::automatic_health::advance_job(s, &job)?;
+            if !health.ready {
+                return Ok(health.projection);
+            }
+            s.require_background_worker_current()?;
             crate::service::order_plans::management::automation::advance(s, &job)
         })();
         return match result {
@@ -1033,11 +1043,7 @@ pub fn run(s: &TradeAssemblyService, input: Value) -> Value {
                 j.paused = paused;
                 persist(s, old, &mut j)?;
                 worker::wake(s, &job_id);
-                if !paused
-                    && worker::enabled(s, &job_id)?
-                    && (!j.status.terminal()
-                        || crate::service::order_plans::management::automation::has_work(s, &j)?)
-                {
+                if !paused && worker::enabled(s, &job_id)? && worker::has_work(s, &j)? {
                     worker::start(s, &job_id)?;
                 }
                 Ok(j)
@@ -1073,4 +1079,24 @@ pub(crate) fn halt_worker_for_test(s: &TradeAssemblyService, id: &str) {
 #[cfg(test)]
 pub(crate) fn worker_status_for_test(s: &TradeAssemblyService, id: &str) -> Value {
     worker::status(s, id)
+}
+
+/// Health-read-only preflight; never a trading or calendar permit.
+pub(crate) fn health_job_current(s: &TradeAssemblyService, id: &str) -> Result<(), String> {
+    owner(s)?;
+    let (job, _) = read(s, id)?;
+    if job.paused || job.core_revision != revision()? {
+        return Err("automatic_health_job_intent_stale".into());
+    }
+    Ok(())
+}
+pub(crate) fn health_worker_intent_current(
+    s: &TradeAssemblyService,
+    id: &str,
+) -> Result<(), String> {
+    health_job_current(s, id)?;
+    if !worker::enabled(s, id)? {
+        return Err("automatic_health_worker_intent_disabled".into());
+    }
+    Ok(())
 }

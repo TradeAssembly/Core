@@ -1472,6 +1472,25 @@ fn selected_subject_product_plan_warms_signals_and_resumes_without_changing_posi
         );
         let mut request = request(&plan, "selected-evaluation", 10, 16, None);
         request.window.as_of_ms = service.runtime().clock.now_ms();
+        let mut premature = request.clone();
+        premature.run_id = "selected-before-knowledge".into();
+        premature.window.as_of_ms = plan.content.selection_source.as_ref().unwrap().known_at_ms - 1;
+        let calls_before = operations.requests.lock().unwrap().len();
+        let refused = service.handle_http(
+            "POST",
+            "/product/strategies/data-runs/step",
+            json!({"step":premature,"idempotencyKey":"selected-before-knowledge"}),
+        );
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(
+            refused.body["error"]["code"],
+            "selection_plan_not_yet_known"
+        );
+        assert_eq!(
+            operations.requests.lock().unwrap().len(),
+            calls_before,
+            "selection cannot be backdated to create earlier signals"
+        );
         let evaluated = service.handle_http(
             "POST",
             "/product/strategies/data-runs/step",

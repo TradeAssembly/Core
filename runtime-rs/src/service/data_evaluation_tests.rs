@@ -1217,7 +1217,11 @@ fn data_evaluation_step_schema_reuse_cannot_commit_changed_artifacts_or_authorit
             corrupt_value: case == "invalid-state-value",
         });
         let changed = TradeAssemblyService::from_runtime(service.db(), modified);
-        let error = step(&changed, request(&plan, case, 10, 17, None), &context(case)).unwrap_err();
+        let changed = request_service(&changed);
+        let request = request(&plan, case, 10, 17, None);
+        let verified = request_plan(&changed, &request).unwrap();
+        remember_request_plan(&changed, &request, &verified).unwrap();
+        let error = step(&changed, request, &context(case)).unwrap_err();
         let expected = match case {
             "schema" | "executable" => "data_plan_graph_stale",
             "configuration" => "data_plan_stale",
@@ -1242,5 +1246,76 @@ fn data_evaluation_step_schema_reuse_cannot_commit_changed_artifacts_or_authorit
                 "{case} {namespace}"
             );
         }
+    }
+}
+
+#[test]
+fn request_plan_handoff_is_local_and_rechecks_before_dispatch() {
+    let (_dir, service, plan, operations) = rig();
+    let request = request(&plan, "request-handoff", 10, 11, None);
+    let scoped = request_service(&service);
+    let verified = request_plan(&scoped, &request).unwrap();
+    remember_request_plan(&scoped, &request, &verified).unwrap();
+    assert!(service.data_step_request.is_none());
+    assert!(request_service(&service)
+        .data_step_request
+        .unwrap()
+        .verified
+        .lock()
+        .unwrap()
+        .is_none());
+    assert_eq!(request_plan(&scoped, &request).unwrap(), verified);
+    let mut instance = service
+        .runtime()
+        .plugins
+        .get_instance("instance.derive")
+        .unwrap()
+        .unwrap();
+    instance["enabled"] = json!(false);
+    service
+        .runtime()
+        .plugins
+        .put_instance(
+            "instance.derive",
+            instance,
+            &context("revoke-after-preflight"),
+        )
+        .unwrap();
+    // The immutable handoff is reusable, but is never dispatch authorization.
+    let error = step(&scoped, request, &context("request-handoff")).unwrap_err();
+    assert_eq!(error, "data_plan_graph_stale");
+    assert!(operations.requests.lock().unwrap().is_empty());
+    for namespace in [RUNS, SOURCES, RECEIPTS] {
+        assert!(service
+            .runtime()
+            .storage
+            .list_json(namespace)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn public_request_budget_is_not_restarted_by_evaluation() {
+    let (_dir, service, plan, operations) = rig();
+    let mut scoped = request_service(&service);
+    Arc::get_mut(scoped.data_step_request.as_mut().unwrap())
+        .unwrap()
+        .started = std::time::Instant::now() - MAX_STEP_DURATION;
+    let error = step(
+        &scoped,
+        request(&plan, "expired-public-budget", 10, 11, None),
+        &context("expired-public-budget"),
+    )
+    .unwrap_err();
+    assert_eq!(error, "data_evaluation_deadline_exceeded");
+    assert!(operations.requests.lock().unwrap().is_empty());
+    for namespace in [RUNS, SOURCES, RECEIPTS, FENCES] {
+        assert!(service
+            .runtime()
+            .storage
+            .list_json(namespace)
+            .unwrap()
+            .is_empty());
     }
 }

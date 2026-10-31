@@ -145,7 +145,8 @@ pub(crate) fn preflight(
             let plan = data_plans::current(service, &step.plan_revision_id)?;
             program(service, &plan.content.scope)?
                 .ok_or("data_strategy_program_missing")?
-                .validate(&plan.content.plan)
+                .validate(&plan.content.plan)?;
+            data_evaluation::remember_request_plan(service, &step, &plan)
         })(),
         _ => return None,
     };

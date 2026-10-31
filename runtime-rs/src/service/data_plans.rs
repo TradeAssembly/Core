@@ -157,7 +157,7 @@ pub fn save(
     persist(service.runtime().storage.as_ref(), content, context)
 }
 
-pub fn current(
+pub(super) fn read_owned(
     service: &TradeAssemblyService,
     revision_id: &str,
 ) -> Result<StoredDataPlan, String> {
@@ -174,6 +174,14 @@ pub fn current(
     if record(stored.content.clone())? != stored || stored.revision_id != revision_id {
         return Err("data_plan_record_invalid".into());
     }
+    Ok(stored)
+}
+
+pub fn current(
+    service: &TradeAssemblyService,
+    revision_id: &str,
+) -> Result<StoredDataPlan, String> {
+    let stored = read_owned(service, revision_id)?;
     let fresh = match &stored.content.recipe_source {
         Some(source) => super::data_recipes::prepare(
             service,

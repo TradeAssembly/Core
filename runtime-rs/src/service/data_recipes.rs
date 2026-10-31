@@ -610,10 +610,11 @@ fn step_request(
 ) -> Result<super::data_evaluation::EvaluationStep, String> {
     let request: super::data_evaluation::EvaluationStep =
         serde_json::from_value(body["step"].clone()).map_err(|_| "data_recipe_step_invalid")?;
-    let plan = data_plans::current(service, &request.plan_revision_id)?;
+    let plan = super::data_evaluation::request_plan(service, &request)?;
     if plan.content.recipe_source.is_none() {
         return Err("data_recipe_plan_required".into());
     }
+    super::data_evaluation::remember_request_plan(service, &request, &plan)?;
     Ok(request)
 }
 pub fn step_response(service: &TradeAssemblyService, body: Value) -> super::ServiceResponse {

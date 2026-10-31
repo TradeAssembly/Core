@@ -1,6 +1,7 @@
 //! Owned long positions and immutable synthetic exit proposals. Never a broker permit.
 use super::*;
 pub(crate) mod automation;
+pub mod remote;
 #[path = "../position_management/rules.rs"]
 mod rules;
 use rules::ExitRules;
@@ -72,7 +73,7 @@ pub struct RegisterCommand {
     pub entry_plan_id: String,
     pub activation_id: String,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdvanceCommand {
     pub execution_occurrence_id: String,
@@ -264,8 +265,21 @@ pub fn register(
         return Err("managed_paper_required".into());
     }
     let entry = read_owned(s, &c.entry_plan_id)?;
+    let (_, original) = submission::record(s, &entry)?.ok_or("managed_entry_submission_missing")?;
+    if original.intent["originalRequest"]["activationId"] != c.activation_id {
+        return Err("managed_activation_scope_mismatch".into());
+    }
     let (_, config) = management_run(s, &c.activation_id)?;
     if config["strategyId"] != entry.command.scope.strategy_id
+        || config["strategyVersionId"] != entry.command.scope.strategy_version_id
+        || config["capabilityGraphRevisionId"] != entry.command.capability_graph_revision
+        || config["canonicalAccount"]
+            != value(
+                entry
+                    .canonical_account
+                    .as_ref()
+                    .ok_or("managed_account_required")?,
+            )?
         || config["strategySpecHash"] != entry.command.scope.strategy_spec_hash
     {
         return Err("managed_activation_scope_mismatch".into());

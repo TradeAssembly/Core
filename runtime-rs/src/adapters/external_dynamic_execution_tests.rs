@@ -1,3 +1,4 @@
+include!("external_management_v6_tests.rs");
 // Synthetic screen -> selected subject -> normal activation/decision -> C5.
 fn setup_dynamic_execution_fixture(s:&crate::service::TradeAssemblyService,root:&std::path::Path,refresh:bool,automatic:bool)->(InstalledPluginPackage,std::thread::JoinHandle<()>){
  let package=install_screen_package(s,root);s.runtime().plugins.put_instance(&package.plugin_ref,json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"configuration":{}}),&ctx("dynamic-screen-instance")).unwrap();
@@ -62,16 +63,53 @@ fn exercise_native_managed_close(s:&crate::service::TradeAssemblyService,scope:&
  use crate::service::{order_plans as plans,data_collections as collections};
  let entries=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();assert_eq!(entries.len(),1);let entry=&entries[0].0;
  let original_key=entries[0].1["originalKey"].as_str().unwrap();let original_acceptance=s.runtime().storage.get_json("plugin_operation_receipts",original_key).unwrap().unwrap();
- let lookup=s.handle_http("POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-original-lookup"}));assert_eq!(lookup.status,200,"{}",lookup.body);
+ let lookup=management_v6_http(s,"POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-original-lookup"}));assert_eq!(lookup.status,200,"{}",lookup.body);
  assert_eq!(s.runtime().storage.get_json("plugin_operation_receipts",original_key).unwrap().unwrap(),original_acceptance);
- let settled=s.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-entry-final-posting"}));assert_eq!(settled.status,200,"{}",settled.body);assert_eq!(settled.body["releasedHold"],"41");
- let registered=s.handle_http("POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-register"}));assert_eq!(registered.status,200,"{}",registered.body);let id=registered.body["position"]["positionId"].as_str().unwrap();
+ let settled=management_v6_http(s,"POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-entry-final-posting"}));assert_eq!(settled.status,200,"{}",settled.body);assert_eq!(settled.body["releasedHold"],"41");
+ // A second OWNED active run with the identical current config is still not
+ // the activation that admitted this entry's original normal C5 intent.
+ let other_activation="fixture-v2-same-config-other-activation";
+ let other_run=format!("run_{other_activation}");
+ for (namespace,original_key,replacement_key) in [
+  ("execution_activations","fixture-v2-activation",other_activation),
+  ("execution_runs","run_fixture-v2-activation",other_run.as_str()),
+  ("execution_controls","fixture-v2-activation",other_activation),
+  ("execution_reconciliation","fixture-v2-activation",other_activation),
+ ] {
+  let mut clone=s.runtime().storage.get_json(namespace,original_key).unwrap().unwrap();
+  clone["activationId"]=json!(other_activation);
+  if clone.get("activation_id").is_some(){clone["activation_id"]=json!(other_activation);}
+  if namespace=="execution_runs"{for field in ["id","executionRunId","run_id"]{clone[field]=json!(other_run);}}
+  s.runtime().storage.put_json(namespace,replacement_key,clone,&ctx(&format!("managed-other-owned-activation:{namespace}"))).unwrap();
+ }
+ s.bind_owned_object("execution_activation",other_activation).unwrap();
+ let (_,original_config)=plans::management::management_run(s,"fixture-v2-activation").unwrap();
+ let (_,other_config)=plans::management::management_run(s,other_activation).unwrap();
+ assert_eq!(original_config,other_config,"the alternate activation must pass current management checks with the SAME config");
+ assert_eq!(entries[0].1["intent"]["originalRequest"]["activationId"],"fixture-v2-activation");
+ let guarded_namespaces=["execution_managed_positions_v1","execution_managed_position_journal_v1","plugin_operation_receipts","execution_cash_reservations_v1","execution_order_plan_submissions_v2"];
+ let before_wrong_activation=guarded_namespaces.iter().map(|namespace|s.runtime().storage.list_json(namespace).unwrap()).collect::<Vec<_>>();
+ assert!(before_wrong_activation[0].is_empty(),"test must precede the first legitimate managed-position registration");
+ // Exercise the normal LOCAL route: V6's independent binding already refuses
+ // this case and must not conceal a missing local registration guard.
+ let broker_calls_before_wrong_activation=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
+ let wrong_activation=s.handle_http("POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":other_activation},"accountMode":"paper","idempotencyKey":"managed-register-wrong-owned-activation"}));
+ assert_eq!(wrong_activation.status,409,"{}",wrong_activation.body);
+ assert_eq!(wrong_activation.body["error"]["code"],"managed_activation_scope_mismatch");
+ assert_eq!(fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap(),broker_calls_before_wrong_activation);
+ assert_eq!(guarded_namespaces.iter().map(|namespace|s.runtime().storage.list_json(namespace).unwrap()).collect::<Vec<_>>(),before_wrong_activation,"wrong-activation registration must not write a position/journal, invoke a provider, or alter cash/submission records");
+ write_screen_interface_evidence("managed_exit","same-config-owned-activation-registration-refused.json",&json!({"entryPlanId":entry,"originalActivationId":"fixture-v2-activation","otherOwnedActivationId":other_activation,"sameCurrentConfig":true,"response":wrong_activation.body,"positionProviderCashSubmissionWrites":0,"qualification":"normal local Core registration refusal for a second owned active activation sharing the exact current config; original C5 intent activation remains authoritative"}));
+ let registered=management_v6_http(s,"POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-register"}));assert_eq!(registered.status,200,"{}",registered.body);let id=registered.body["position"]["positionId"].as_str().unwrap();
+ if management_v6_enabled(){
+   let refreshed=s.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-entry-fresh-final-observation"}));assert_eq!(refreshed.status,200,"{}",refreshed.body);assert_eq!(refreshed.body["releasedHold"],"0");
+   let again=management_v6_http(s,"POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-register-after-refresh"}));assert_eq!(again.status,200,"{}",again.body);assert_eq!(again.body["position"]["positionId"],id);assert_eq!(s.runtime().storage.list_json("execution_managed_positions_v1").unwrap().len(),1);
+ }
  let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();let foreign=s.for_authenticated_invocation("fixture","foreign",None,None).handle_http("POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-foreign"}));assert!(foreign.status>=400,"{}",foreign.body);assert_eq!(before,s.runtime().storage.list_json("plugin_operation_receipts").unwrap());
  let mut close_decision=None;
  for (index,phase) in ["managed_high","managed_trigger"].iter().enumerate(){
   let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);
   if index==1{
-   let paused=restored.handle_http("POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"managed-pause-new-entries"}));assert_eq!(paused.status,200,"{}",paused.body);
+   let paused=management_v6_http(&restored,"POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"managed-pause-new-entries"}));assert_eq!(paused.status,200,"{}",paused.body);
    let mut run=restored.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();run["selectionHead"]=json!({"members":[],"qualification":"authored removed membership for management isolation proof"});restored.runtime().storage.put_json("execution_runs","run_fixture-v2-activation",run,&ctx("managed-removed-selection")).unwrap();
   }
   let mut ids=BTreeMap::new();for (name,node,schema) in [("account","exec_account",tradeassembly_plugin_sdk::execution_snapshot::ACCOUNT_SCHEMA),("metadata","exec_metadata",tradeassembly_plugin_sdk::execution_snapshot::METADATA_SCHEMA),("quote","exec_quote",tradeassembly_plugin_sdk::execution_snapshot::QUOTE_SCHEMA)]{
@@ -80,17 +118,25 @@ fn exercise_native_managed_close(s:&crate::service::TradeAssemblyService,scope:&
   let occurrence=s.runtime().storage.list_json("session_occurrence_plans_v1").unwrap()[0].1["occurrence"]["occurrenceId"].as_str().unwrap().to_owned();
   let command=json!({"executionOccurrenceId":occurrence,"positionId":id,"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"],"reversalSignalReceiptSha256":Value::Null});
   let body=json!({"scope":scope,"advance":command,"accountMode":"paper","idempotencyKey":if index==1{"managed-fixture-fail-after-prepare".to_string()}else{format!("managed-{phase}")}});
-  let mut advanced=restored.handle_http("POST",plans::management::ADVANCE,body.clone());
-  if index==1{assert_eq!(advanced.status,409,"{}",advanced.body);assert_eq!(advanced.body["error"]["code"],"managed_fixture_prepared_before_decision");let again=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);let mut retry=body;retry["idempotencyKey"]=json!("managed-resume-prepared-close");advanced=again.handle_http("POST",plans::management::ADVANCE,retry);assert_eq!(advanced.body["resumedReservedClose"],true,"{}",advanced.body);}
+  let mut advanced=management_v6_http(&restored,"POST",plans::management::ADVANCE,body.clone());
+  if index==1&&!management_v6_enabled(){assert_eq!(advanced.status,409,"{}",advanced.body);assert_eq!(advanced.body["error"]["code"],"managed_fixture_prepared_before_decision");let again=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);let mut retry=body;retry["idempotencyKey"]=json!("managed-resume-prepared-close");advanced=management_v6_http(&again,"POST",plans::management::ADVANCE,retry);assert_eq!(advanced.body["resumedReservedClose"],true,"{}",advanced.body);}
   assert_eq!(advanced.status,200,"{}",advanced.body);
   if index==0{assert!(advanced.body["decision"].is_null());assert_eq!(advanced.body["position"]["highWater"],"120");}else{close_decision=Some(advanced.body["decision"].clone());}
  }
- let decision=close_decision.unwrap();let close=decision["planId"].as_str().unwrap();let submitted=s.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-close-submit"}));assert_eq!(submitted.status,200,"{}",submitted.body);
- let repeated=s.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-close-repeat"}));assert_eq!(repeated.status,200,"{}",repeated.body);
- let looked=s.handle_http("POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-lookup"}));assert_eq!(looked.status,200,"{}",looked.body);
- let final_posting=s.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-final-posting"}));assert_eq!(final_posting.status,200,"{}",final_posting.body);assert_eq!(final_posting.body["grossProceeds"],"36");
- let repeat_final=s.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-final-posting"}));let mut same=repeat_final.body.clone();assert_eq!(same["duplicate"],true);assert!(same["commandId"].as_str().is_some());same.as_object_mut().unwrap().remove("duplicate");same.as_object_mut().unwrap().remove("commandId");assert_eq!(same,final_posting.body);
- let inspected=s.handle_http("GET",&format!("/product/strategies/positions/{id}"),json!({}));assert_eq!(inspected.status,200,"{}",inspected.body);assert_eq!(inspected.body["position"]["closedQuantity"],"0.4");assert_eq!(inspected.body["position"]["reservations"],json!({}));assert_eq!(inspected.body["journal"].as_array().unwrap().len(),4);
+ let decision=close_decision.unwrap();let close=decision["planId"].as_str().unwrap();let submitted=management_v6_http(s,"POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-close-submit"}));
+ if management_v6_seal_failure_enabled(){exercise_management_v6_seal_failure_recovery(s,scope,root,id,&decision,&submitted);return;}
+ assert_eq!(submitted.status,200,"{}",submitted.body);
+ let repeated=management_v6_http(s,"POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-close-repeat"}));if management_v6_enabled(){assert!(repeated.status>=400,"{}",repeated.body);}else{assert_eq!(repeated.status,200,"{}",repeated.body);}
+ let looked=management_v6_http(s,"POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-lookup"}));assert_eq!(looked.status,200,"{}",looked.body);
+ let final_posting=management_v6_http(s,"POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-final-posting"}));assert_eq!(final_posting.status,200,"{}",final_posting.body);assert_eq!(final_posting.body["grossProceeds"],"36");
+ let repeat_final=management_v6_http(s,"POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-final-posting"}));let mut same=repeat_final.body.clone();if !management_v6_enabled(){assert_eq!(same["duplicate"],true);assert!(same["commandId"].as_str().is_some());same.as_object_mut().unwrap().remove("duplicate");same.as_object_mut().unwrap().remove("commandId");}assert_eq!(same,final_posting.body);
+ let inspected=management_v6_http(s,"GET",&format!("/product/strategies/positions/{id}"),json!({}));assert_eq!(inspected.status,200,"{}",inspected.body);assert_eq!(inspected.body["position"]["closedQuantity"],"0.4");assert_eq!(inspected.body["position"]["reservations"],json!({}));assert_eq!(inspected.body["journal"].as_array().unwrap().len(),4);
+ if management_v6_enabled(){
+  let stopped=s.handle_http("POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"stop","accountMode":"paper","idempotencyKey":"management-v6-stop-before-historical-read"}));assert_eq!(stopped.status,200,"{}",stopped.body);
+  let mut broker=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap();broker["enabled"]=json!(false);s.runtime().plugins.put_instance("fixture.broker.v2",broker,&ctx("management-v6-fixture-revoked-source")).unwrap();
+  let quiet=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+  let history=management_v6_http(s,"GET",&format!("/product/strategies/positions/{id}"),json!({"idempotencyKey":"management-v6-historical-after-stop-revocation"}));assert_eq!(history.status,200,"{}",history.body);assert_eq!(history.body["position"]["closedQuantity"],"0.4");assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),quiet);
+ }
  let calls=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();assert_eq!(calls.lines().filter(|v|*v=="submit").count(),2);assert_eq!(calls.lines().filter(|v|*v=="lookup").count(),2);assert_eq!(fs::read_to_string(root.join("synthetic-broker/close-settlement.log")).unwrap().lines().count(),1);
  write_screen_interface_evidence("managed_exit","entry-close-final-posting-journal.json",&json!({"registered":registered.body,"decision":decision,"submitted":submitted.body,"settlement":final_posting.body,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"closeFinalPostings":1,"serviceRecreatedBetweenObservations":true,"actualProcessRestartQualified":false,"realBrokerCalls":0,"qualification":"actual Core local HTTP/C5 with authored native provider, mock Warden/traced sandbox; explicit stop/trailing; no SRT/remote-close/reversal-path qualification inferred"}));
 }

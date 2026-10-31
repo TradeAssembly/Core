@@ -59,6 +59,27 @@ fn read_receipt(s: &TradeAssemblyService, id: &str) -> Result<Receipt, String> {
     }
     Ok(v)
 }
+pub(super) fn verify_historical_entry(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    id: &str,
+) -> Result<(), String> {
+    let r = read_receipt(s, id)?;
+    if p.management.is_some()
+        || p.order.position_action != PositionAction::BuyToOpen
+        || r.plan_id != p.plan_id
+        || r.account_key != p.account_key
+        || r.observation.order.order != p.order
+        || Some(r.observation.canonical_account_sha256.as_str())
+            != p.canonical_account
+                .as_ref()
+                .map(|a| a.identity_sha256.as_str())
+        || !r.observation.order.filled_quantity.required()?.positive()
+    {
+        return Err("managed_historical_entry_receipt_invalid".into());
+    }
+    Ok(())
+}
 pub(super) fn entry_basis(
     s: &TradeAssemblyService,
     p: &OrderPlan,

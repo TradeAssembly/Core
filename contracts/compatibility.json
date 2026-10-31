@@ -70,6 +70,17 @@
         "data_receipt",
         "data-computation-only"
       ]
+    },
+    {
+      "id": "core.runner.management",
+      "version": "6.0.0",
+      "capabilities": [
+        "dispatch_owned_management",
+        "sealed_management_snapshot",
+        "protected_uncertain_outcome",
+        "paper_only",
+        "historical_owner_inspection"
+      ]
     }
   ],
   "requires": [],

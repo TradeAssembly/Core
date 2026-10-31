@@ -1348,6 +1348,9 @@ impl TradeAssemblyService {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
             }
+            ("POST", "/product/strategies/positions/inspect") => {
+                order_plans::management::remote::inspect_response(self, &body)
+            }
             (
                 "POST",
                 "/product/strategies/positions/register" | "/product/strategies/positions/advance",

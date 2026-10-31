@@ -358,7 +358,7 @@ impl ReachDataConsumer {
             matches!(
                 r.state,
                 DataRunnerState::Completed | DataRunnerState::Failed
-            ) || c.command.financial() && r.state == DataRunnerState::Uncertain
+            ) || c.command.protected() && r.state == DataRunnerState::Uncertain
         });
         let current = if final_prior {
             self.runner.reconciliation_binding(&c.command)?
@@ -396,7 +396,7 @@ impl ReachDataConsumer {
         }
         let receipt = if final_prior {
             prior.unwrap()
-        } else if c.command.financial() {
+        } else if c.command.protected() {
             // Never carry mutable validation across the accept network call.
             // Validate now, compare the real resource, and consume the opaque
             // evidence immediately. Dispatch/C5 retain their fresh checks.

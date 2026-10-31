@@ -1,0 +1,666 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tradeassembly.example/indicator-context/response.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "tradeassembly.indicator_context_support.v1"
+    },
+    "requestSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "reportSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "strategyVersionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "strategySpecHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "strategyId",
+        "strategyVersionId",
+        "strategySpecHash"
+      ]
+    },
+    "ownerSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "coreRevision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "capabilityGraphRevisionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "capabilityGraphFingerprint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "policySnapshotSha256": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instrumentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "assetClass": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "instrumentFamily": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "mode": {
+          "enum": [
+            "paper",
+            "backtest",
+            "live"
+          ]
+        },
+        "intervalMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "instrumentId",
+        "assetClass",
+        "instrumentFamily",
+        "mode",
+        "intervalMs"
+      ]
+    },
+    "inspectedAtMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "validUntilMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "resolved": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "packageSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "manifestSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "bindingCanonicalSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "catalog": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "schemaVersion": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                },
+                "byteSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "canonicalSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "canonicalization": {
+                  "const": "tradeassembly.canonical-json.v1"
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "byteSha256",
+                "canonicalSha256",
+                "canonicalization"
+              ]
+            },
+            "conceptId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_.:-]+$"
+            },
+            "profileId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_.:-]+$"
+            },
+            "profileVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "recipe": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "recipeId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9_.:-]+$"
+                    },
+                    "semanticsVersion": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                    },
+                    "canonicalSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "documentSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "recipeId",
+                    "semanticsVersion",
+                    "canonicalSha256",
+                    "documentSha256"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "packageSha256",
+            "manifestSha256",
+            "bindingCanonicalSha256",
+            "catalog",
+            "conceptId",
+            "profileId",
+            "profileVersion",
+            "recipe"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mapping": {
+          "enum": [
+            "publisher_bound",
+            "not_admitted",
+            "not_checked"
+          ]
+        },
+        "sdkAdmission": {
+          "enum": [
+            "verified_current",
+            "not_checked"
+          ]
+        },
+        "hostExecution": {
+          "enum": [
+            "owned_committed_evaluation",
+            "not_checked"
+          ]
+        },
+        "sourceAuthority": {
+          "enum": [
+            "host_acquisition",
+            "not_checked"
+          ]
+        },
+        "sourceOrigins": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "observed",
+              "estimated",
+              "simulation",
+              "synthetic"
+            ]
+          }
+        },
+        "publisherProcessClaims": {
+          "const": "not_used_as_host_evidence"
+        },
+        "vendorEquivalence": {
+          "const": "not_checked"
+        }
+      },
+      "required": [
+        "mapping",
+        "sdkAdmission",
+        "hostExecution",
+        "sourceAuthority",
+        "sourceOrigins",
+        "publisherProcessClaims",
+        "vendorEquivalence"
+      ]
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "availability": {
+            "enum": [
+              "available",
+              "missing_upstream_capability",
+              "unsupported_instrument",
+              "missing_entitlement",
+              "missing_history",
+              "missing_anchor",
+              "estimate_opt_in_required",
+              "planned_only",
+              "not_checked"
+            ]
+          },
+          "origin": {
+            "enum": [
+              "derived",
+              "estimated",
+              "conditional",
+              "not_checked"
+            ]
+          },
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modelVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "units": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usesEstimatedInputs": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "schemaRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                  },
+                  "canonicalSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "schemaRef",
+                  "canonicalSha256"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "temporal": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "eventStartMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "eventEndMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "asOfMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "latestKnownAtMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "latestArrivedAtMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "completed": {
+                    "type": "boolean"
+                  },
+                  "sourceRevisionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "pointContentSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "eventStartMs",
+                  "eventEndMs",
+                  "asOfMs",
+                  "latestKnownAtMs",
+                  "latestArrivedAtMs",
+                  "completed",
+                  "sourceRevisionSha256",
+                  "pointContentSha256"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checks": {
+            "type": "array",
+            "maxItems": 96,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "check": {
+                  "enum": [
+                    "owner",
+                    "installation",
+                    "profile_binding",
+                    "recipe_binding",
+                    "graph",
+                    "instrument",
+                    "schema",
+                    "source_authority",
+                    "input_origin",
+                    "history",
+                    "anchor",
+                    "evaluation",
+                    "estimate",
+                    "entitlement",
+                    "clock"
+                  ]
+                },
+                "state": {
+                  "enum": [
+                    "satisfied",
+                    "blocked",
+                    "not_checked",
+                    "not_required"
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                  }
+                },
+                "nodeId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9_.:-]+$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "check",
+                "state",
+                "code",
+                "evidenceRefs",
+                "nodeId"
+              ]
+            }
+          },
+          "blockers": {
+            "type": "array",
+            "maxItems": 96,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "availability": {
+                  "enum": [
+                    "missing_upstream_capability",
+                    "unsupported_instrument",
+                    "missing_entitlement",
+                    "missing_history",
+                    "missing_anchor",
+                    "estimate_opt_in_required",
+                    "planned_only",
+                    "not_checked"
+                  ]
+                },
+                "check": {
+                  "enum": [
+                    "owner",
+                    "installation",
+                    "profile_binding",
+                    "recipe_binding",
+                    "graph",
+                    "instrument",
+                    "schema",
+                    "source_authority",
+                    "input_origin",
+                    "history",
+                    "anchor",
+                    "evaluation",
+                    "estimate",
+                    "entitlement",
+                    "clock"
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                  }
+                }
+              },
+              "required": [
+                "availability",
+                "check",
+                "code",
+                "evidenceRefs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "name",
+          "availability",
+          "origin",
+          "modelId",
+          "modelVersion",
+          "units",
+          "usesEstimatedInputs",
+          "schema",
+          "temporal",
+          "checks",
+          "blockers"
+        ]
+      }
+    },
+    "executionAuthorityGranted": {
+      "const": false
+    },
+    "providerCalls": {
+      "const": 0
+    },
+    "persistentWrites": {
+      "const": 0
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "requestSha256",
+    "reportSha256",
+    "scope",
+    "ownerSha256",
+    "coreRevision",
+    "capabilityGraphRevisionId",
+    "capabilityGraphFingerprint",
+    "policySnapshotSha256",
+    "subject",
+    "inspectedAtMs",
+    "validUntilMs",
+    "resolved",
+    "axes",
+    "outputs",
+    "executionAuthorityGranted",
+    "providerCalls",
+    "persistentWrites"
+  ]
+}

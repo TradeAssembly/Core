@@ -38,6 +38,7 @@ mod execution;
 mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
+pub(crate) mod indicator_context;
 pub mod instrument_screens;
 mod journal_view;
 mod lifecycle_calendar;
@@ -1077,6 +1078,11 @@ impl TradeAssemblyService {
     ) -> ServiceResponse {
         if let Err(code) = self.require_background_worker_current() {
             return ServiceResponse::conflict(&code);
+        }
+        if method.eq_ignore_ascii_case("POST") && normalize_path(path) == indicator_context::PATH {
+            // Closed owned read: preserve exact request bytes, perform no C3
+            // mutation/audit write, and let the reader enforce current ownership.
+            return indicator_context::inspect(self, &body);
         }
         if method.eq_ignore_ascii_case("POST")
             && matches!(
@@ -3408,6 +3414,11 @@ impl TradeAssemblyService {
     }
 
     pub fn call_mcp_tool(&self, name: &str, arguments: Value) -> Value {
+        // Authenticated-variable enrichment is for invocation authority, not this
+        // closed data selector. Keep the exact request but still run the normal
+        // agent allowlist/current-lease binding below before dispatching it.
+        let indicator_request =
+            (name == indicator_context::TOOL).then(|| arguments["request"].clone());
         if matches!(
             name,
             "tradeassembly.strategy.data_recipe.step" | "tradeassembly.strategy.data_run.step"
@@ -3533,6 +3544,29 @@ impl TradeAssemblyService {
         } else {
             arguments
         };
+        if let Some(request) = indicator_request {
+            if let Err(code) = self.require_background_worker_current() {
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Background worker is no longer current.",
+                    None,
+                );
+            }
+            let response = indicator_context::inspect(self, &request);
+            return if response.status == 200 {
+                mcp::call_tool_with_payload(name, response.body)
+            } else {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "indicator_context_inspection_failed".into());
+                mcp::tool_error(
+                    name,
+                    &code,
+                    "Owned contextual evidence is not available.",
+                    None,
+                )
+            };
+        }
         if let Some(mode) = capability_query_mode {
             arguments["mode"] = json!(mode);
         }

@@ -446,6 +446,9 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/data-captures/get") => {
             "strategy.data_capture.get".to_string()
         }
+        ("POST", "/product/strategies/indicator-context/inspect") => {
+            "strategy.indicator_context.inspect".to_string()
+        }
         ("POST", "/product/strategies/data-recipes/step") => {
             "strategy.data_recipe.step".to_string()
         }
@@ -773,6 +776,9 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.strategy.data_capture.get" => {
             return "strategy.data_capture.get".to_string()
+        }
+        "tradeassembly.strategy.indicator_context.inspect" => {
+            return "strategy.indicator_context.inspect".to_string()
         }
         "tradeassembly.strategy.data_recipe.step" => {
             return "strategy.data_recipe.step".to_string()
@@ -1480,7 +1486,8 @@ fn is_read_http_route(method: &str, path: &str) -> bool {
     }
     matches!(
         path,
-        "/capabilities/resolve"
+        "/product/strategies/indicator-context/inspect"
+            | "/capabilities/resolve"
             | "/product/live-mandates/status"
             | "/capabilities/graph/resolve"
             | "/capability-graph-revisions/currentness"

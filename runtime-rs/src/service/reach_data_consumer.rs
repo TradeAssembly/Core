@@ -320,6 +320,9 @@ impl ReachDataConsumer {
         Ok(r)
     }
     pub fn poll_once(&self) -> Result<ReachDataPoll, String> {
+        if let Some(recovered) = self.reconcile_pending_ack()? {
+            return Ok(recovered);
+        }
         let claim = self.signed(
             DataNodeOperation::Claim,
             self.entropy
@@ -408,31 +411,13 @@ impl ReachDataConsumer {
                 code: "reach_data_post_dispatch_binding_changed".into(),
             });
         }
-        let request = self.signed(
-            DataNodeOperation::Record,
-            c.request_id.clone(),
-            Some(record.command_sha256.clone()),
-            Some(receipt.receipt_sha256.clone()),
-            Some(accepted.revision),
-        )?;
-        let ack = self.transport.record(&DataNodeRecord {
-            request,
-            receipt: receipt.clone(),
-        })?;
-        ack.validate()?;
-        if ack.command_sha256 != record.command_sha256
-            || ack.revision < accepted.revision
-            || ack.receipt.as_ref() != Some(&receipt)
-        {
-            return Err("reach_data_record_ack_invalid".into());
-        }
-        Ok(ReachDataPoll::Recorded {
-            request_id: c.request_id.clone(),
-            state: ack.state,
-            receipt_sha256: receipt.receipt_sha256,
-        })
+        self.stage_ack(&accepted, &receipt)?;
+        self.reconcile_pending_ack()?
+            .ok_or_else(|| "reach_data_record_pending_missing".into())
     }
 }
+
+mod record_outbox;
 
 #[cfg(test)]
 mod tests {

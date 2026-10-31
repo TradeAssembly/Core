@@ -50,6 +50,7 @@ impl ReachDataCommand {
         let encoded = serde_json::to_vec(self).map_err(|_| "reach_data_encoding_invalid")?;
         canonical_sha256(self).map_err(|_| "reach_data_number_invalid")?;
         let action = match &self.command.operation {
+            super::data_runner::DataRunnerOperation::DispatchSession { .. } => "scheduler.run",
             super::data_runner::DataRunnerOperation::PrepareSelectionPlan { .. } => {
                 "strategy.selection_plan.prepare"
             }
@@ -82,12 +83,7 @@ impl ReachDataCommand {
                 return Err("reach_data_command_invalid".into());
             }
         }
-        if self.schema
-            != if self.command.selected_creation() {
-                REACH_DATA_SCHEMA_V2
-            } else {
-                REACH_DATA_SCHEMA
-            }
+        if self.schema != self.command.reach_schema()
             || [
                 &self.command.core_release,
                 &self.command.workspace_id,
@@ -126,7 +122,9 @@ impl ReachDataCommand {
             || self.resource.mode != self.command.mode
             || self.resource.action != action
             || self.resource.resource_kind.as_deref()
-                != if self.command.selected_creation() {
+                != if self.command.scheduler_dispatch() {
+                    Some("scheduler")
+                } else if self.command.selected_creation() {
                     Some("strategy_selection_plan")
                 } else {
                     None
@@ -380,5 +378,55 @@ mod tests {
         let mut v = serde_json::to_value(c).unwrap();
         v["command"]["operation"]["tool"] = json!("arbitrary");
         assert!(ReachDataCommand::parse(&serde_json::to_vec(&v).unwrap()).is_err());
+    }
+    #[test]
+    fn scheduler_dispatch_couples_all_versions_and_actual_scheduler_resource() {
+        use super::super::{
+            data_runner::{DataRunnerOperation, DATA_RUNNER_SCHEMA_V3},
+            reach_data_proofs::Preparation,
+            session_dispatch::RemoteRequest,
+        };
+        let mut c = fixture();
+        c.command.operation = DataRunnerOperation::DispatchSession {
+            dispatch: RemoteRequest::Inspect {
+                job_id: "sessionjob_fixture".into(),
+            },
+        };
+        c.command.schema_version = DATA_RUNNER_SCHEMA_V3.into();
+        c.resource.schema_version = c.command.binding_schema().into();
+        c.resource.command_sha256 = c.command.canonical_hash().unwrap();
+        c.resource.action = "scheduler.run".into();
+        c.resource.resource_kind = Some("scheduler".into());
+        c.schema = c.command.reach_schema().into();
+        c.validate().unwrap();
+        let prep = Preparation {
+            schema: c.command.preparation_schema().into(),
+            command: c.clone(),
+            source_revision: 1,
+            nonce: "fixture.nonce".into(),
+            issued_at_ms: 1000,
+            signature: String::new(),
+        };
+        prep.signing_payload().unwrap();
+        for n in 0..5 {
+            let mut bad = c.clone();
+            match n {
+                0 => bad.schema = REACH_DATA_SCHEMA_V2.into(),
+                1 => {
+                    bad.resource.schema_version =
+                        "tradeassembly.core-data-mutation-binding.v2".into()
+                }
+                2 => bad.resource.resource_kind = Some("strategy_selection_plan".into()),
+                3 => bad.resource.action = "strategy.selection_plan.prepare".into(),
+                _ => {
+                    bad.command.schema_version =
+                        super::super::data_runner::DATA_RUNNER_SCHEMA.into()
+                }
+            };
+            assert!(bad.validate().is_err());
+        }
+        let mut old = prep;
+        old.schema = "tradeassembly.relay.reach-data-preparation/v2".into();
+        assert!(old.signing_payload().is_err());
     }
 }

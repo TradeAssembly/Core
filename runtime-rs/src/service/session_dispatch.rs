@@ -54,6 +54,86 @@ pub enum Request {
     ResumeWorkers {},
     Pause { job_id: String, paused: bool },
 }
+/// Finite remote computation commands. Background authority is never delegated.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RemoteRequest {
+    Enqueue { job: DispatchRequest },
+    Advance { job_id: String },
+    Inspect { job_id: String },
+    Pause { job_id: String, paused: bool },
+}
+impl RemoteRequest {
+    pub fn local(&self) -> Result<Value, String> {
+        value(self)
+    }
+}
+pub(crate) fn remote_binding(
+    s: &TradeAssemblyService,
+    r: &RemoteRequest,
+) -> Result<(data_plans::PlanScope, String, String), String> {
+    let who = owner(s)?;
+    let request = match r {
+        RemoteRequest::Enqueue { job } => job.clone(),
+        RemoteRequest::Advance { job_id }
+        | RemoteRequest::Inspect { job_id }
+        | RemoteRequest::Pause { job_id, .. } => {
+            let (job, _) = read(s, job_id)?;
+            if job.core_revision != revision()? {
+                return Err("session_dispatch_source_changed".into());
+            }
+            // Unpause must not implicitly start a locally authorized worker.
+            if matches!(r, RemoteRequest::Pause { paused: false, .. })
+                && worker::enabled(s, job_id)?
+            {
+                return Err("session_dispatch_remote_background_authority_unsupported".into());
+            }
+            job.request
+        }
+    };
+    let schedule = validate_request(s, &request)?;
+    let domain = hash(&(
+        "tradeassembly.session_dispatch.remote.v1",
+        &who,
+        revision()?,
+        &request,
+        &schedule.receipt_sha256,
+    ))?;
+    Ok((request.scope, request.capability_graph_revision, domain))
+}
+pub(crate) fn validate_remote_snapshot(
+    s: &TradeAssemblyService,
+    r: &RemoteRequest,
+    snapshot: &Value,
+) -> Result<(), String> {
+    let old: Job =
+        serde_json::from_value(snapshot.clone()).map_err(|_| "session_dispatch_record_invalid")?;
+    let (current, _) = read(s, &old.job_id)?;
+    if old.record_sha256 != record_hash(&old)?
+        || old.request != current.request
+        || old.owner_sha256 != current.owner_sha256
+        || old.core_revision != current.core_revision
+        || old.schedule_sha256 != current.schedule_sha256
+    {
+        return Err("session_dispatch_record_invalid".into());
+    }
+    let id = match r {
+        RemoteRequest::Enqueue { job } => job_id(job, &owner(s)?)?,
+        RemoteRequest::Advance { job_id }
+        | RemoteRequest::Inspect { job_id }
+        | RemoteRequest::Pause { job_id, .. } => job_id.clone(),
+    };
+    if old.job_id != id {
+        return Err("session_dispatch_record_invalid".into());
+    }
+    remote_binding(s, r)?;
+    Ok(())
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {

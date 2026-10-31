@@ -20,12 +20,18 @@ fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,
  let shift=Arc::new(std::sync::atomic::AtomicI64::new(0));
  let mut runtime=(*base.runtime()).clone();runtime.identity=Arc::new(crate::adapters::local::system::LocalOwnerIdentityPort::new(canonical_db.to_str().unwrap()).unwrap());runtime.clock=Arc::new(AdvancedClock{base:runtime.clock.clone(),advance:shift.clone()});
  runtime.plugin_operations=Arc::new(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(runtime.storage.clone(),runtime.plugins.clone(),runtime.credentials.clone(),runtime.plugin_packages.clone(),runtime.clock.clone(),Arc::new(TracedFixtureSandbox)));
+ runtime.finance_authority=Arc::new(FixtureSchedulerAuthority);
  let mut service=crate::service::TradeAssemblyService::from_runtime(base.db(),runtime).for_authenticated_invocation(&owner.issuer,&owner.stable_identity_id,None,None);
  service.bind_owned_object("strategy",&scope.strategy_id).unwrap();for p in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",p["instanceRef"].as_str().unwrap()).unwrap();}
  service.runtime().storage.put_json("positions","previous-member",json!({"symbol":"OLD","quantity":2,"state":"open"}),&ctx("existing-managed-position")).unwrap();service.runtime().storage.put_json("orders","unrelated-pending",json!({"symbol":"OLD","state":"pending"}),&ctx("existing-pending-order")).unwrap();
  let positions=service.runtime().storage.list_json("positions").unwrap();let orders=service.runtime().storage.list_json("orders").unwrap();
  let request=dispatch::DispatchRequest{occurrence_id:occurrence,scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),subjects:dispatch::SubjectPolicy::AllSelected{max_members:1},event_start_ms:10*86400000,event_end_ms:12*86400000,interval_ms:86400000,max_frames_per_step:2,source_captures_by_subject:BTreeMap::new()};
  if case=="session_process" {exercise_compiled_session_process(&service,&request,case);return;}
+ let remote_runner=crate::service::data_runner::DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();
+ let remote_clock=service.runtime().clock.clone();
+ let remote_command=|id:&str,remote:dispatch::RemoteRequest| crate::service::data_runner::DataRunnerCommand { schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA_V3.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:id.into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new(id).unwrap(),mode:crate::service::data_runner::DataRunnerMode::Paper,submitted_at_ms:remote_clock.now_ms(),operation:crate::service::data_runner::DataRunnerOperation::DispatchSession{dispatch:remote} };
+ let remote_enqueue=remote_command("remote-enqueue",dispatch::RemoteRequest::Enqueue{job:request.clone()});
+ if case=="session_eval" {let binding=remote_runner.mutation_binding(&remote_enqueue).unwrap();assert_eq!(binding.action,"scheduler.run");assert_eq!(binding.resource_kind.as_deref(),Some("scheduler"));let r=remote_runner.dispatch(&remote_enqueue).unwrap();assert_eq!(r.state,crate::service::data_runner::DataRunnerState::Completed,"{r:?}");write_screen_interface_evidence(case,"remote-enqueue.json",&serde_json::to_value(r).unwrap());}
  let job=dispatch::enqueue(&service,request.clone()).unwrap();
  if case=="session_closed" {assert_eq!(job.status,dispatch::Status::Closed);let before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();assert_eq!(dispatch::advance(&service,&job.job_id).unwrap().status,dispatch::Status::Closed);assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);write_screen_interface_evidence(case,"dispatch-final.json",&serde_json::to_value(job).unwrap());return;}
  assert_eq!(job.status,dispatch::Status::Pending);
@@ -65,17 +71,53 @@ fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,
  let mut final_job=None;
  let deadline=std::time::Instant::now()+std::time::Duration::from_secs(180);
  for n in 0..if background {10000}else{8} {
-  let response=if background {crate::service::ServiceResponse::ok(dispatch::run(&service,json!({"kind":"inspect","jobId":job.job_id})))}else{service.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":job.job_id},"idempotencyKey":format!("dispatch-public-{n}")}))};assert_eq!(response.status,200,"{}",response.body);assert_eq!(response.body["ok"],true,"{}",response.body);
+  let response=if case=="session_eval" {let c=remote_command(&format!("remote-advance-{n}"),dispatch::RemoteRequest::Advance{job_id:job.job_id.clone()});let receipt=remote_runner.dispatch(&c).unwrap();assert_eq!(receipt.state,crate::service::data_runner::DataRunnerState::Completed,"{receipt:?}");let crate::service::data_runner::DataRunnerResult::Dispatch{job:result}=receipt.result.unwrap() else{panic!("wrong result")};crate::service::ServiceResponse::ok(json!({"ok":true,"body":{"job":result}}))}else if background {crate::service::ServiceResponse::ok(dispatch::run(&service,json!({"kind":"inspect","jobId":job.job_id})))}else{service.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":job.job_id},"idempotencyKey":format!("dispatch-public-{n}")}))};assert_eq!(response.status,200,"{}",response.body);assert_eq!(response.body["ok"],true,"{}",response.body);
   if background {assert!(std::time::Instant::now()<deadline,"background deadline");}
   let current:dispatch::Job=serde_json::from_value(response.body["body"]["job"].clone()).unwrap();
   if matches!(current.status,dispatch::Status::Complete|dispatch::Status::CompleteEmpty|dispatch::Status::Partial|dispatch::Status::Failed){final_job=Some(current);break;}
   if background {assert_eq!(response.body["body"]["worker"]["running"],true,"{}",response.body);std::thread::sleep(std::time::Duration::from_millis(200));}
  }
  let final_job=final_job.expect("bounded dispatch reaches a typed terminal result");let expected=match case{"session_empty"=>dispatch::Status::CompleteEmpty,"session_partial"=>dispatch::Status::Partial,_=>dispatch::Status::Complete};assert_eq!(final_job.status,expected,"{final_job:?}");
+ if case=="session_eval" {exercise_scheduler_ack_recovery(&service,&remote_enqueue);let reopened=crate::service::data_runner::DurableCoreDataRunner::new(service.clone(),"fixture.release".into()).unwrap();let original=reopened.dispatch(&remote_enqueue).unwrap();assert_eq!(original.state,crate::service::data_runner::DataRunnerState::Completed);assert_eq!(original.result.as_ref().unwrap(),remote_runner.dispatch(&remote_enqueue).unwrap().result.as_ref().unwrap());write_screen_interface_evidence(case,"remote-original-after-progress.json",&serde_json::to_value(original).unwrap());}
  let before=service.runtime().storage.list_json("plugin_operation_receipts").unwrap();assert_eq!(dispatch::advance(&service,&job.job_id).unwrap().status,expected);assert_eq!(dispatch::enqueue(&service,request).unwrap().job_id,job.job_id);assert_eq!(service.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);
  if matches!(case,"session_eval"|"session_background"|"session_resume"){let receipts=service.runtime().storage.list_json("data_evaluation_receipts_v1").unwrap();assert_eq!(receipts.len(),1);assert_eq!(receipts[0].1["signals"][1]["entry"],json!({"status":"ready","value":true}));write_screen_interface_evidence(case,"dispatch-evaluation.json",&receipts[0].1);}
  else{assert!(service.runtime().storage.list_json("compiled_data_plan_revisions_v1").unwrap().is_empty());}
  assert_eq!(service.runtime().storage.list_json("positions").unwrap(),positions);assert_eq!(service.runtime().storage.list_json("orders").unwrap(),orders);
  if background {let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);loop{let view=dispatch::run(&service,json!({"kind":"inspect","jobId":job.job_id}));if view["body"]["worker"]["running"]==false{assert!(view["body"]["worker"]["lastError"].is_null(),"{view}");write_screen_interface_evidence(case,"dispatch-worker-stopped.json",&view);break}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(200));}}
  write_screen_interface_evidence(case,"dispatch-final.json",&serde_json::to_value(final_job).unwrap());
+}
+
+// Mock transport commits before losing its acknowledgment. Core must reconcile
+// from durable local storage before asking for another delivery. This is not
+// actual Relay SQL/HTTP qualification (owned by the separate joint gate).
+fn exercise_scheduler_ack_recovery(service:&crate::service::TradeAssemblyService,command:&crate::service::data_runner::DataRunnerCommand){
+ use crate::service::{reach_data::ReachDataCommand,reach_data_consumer::*};
+ use crate::ports::InstallationSignerPort;
+ struct Transport {record:std::sync::Mutex<DataDelivery>,claims:std::sync::atomic::AtomicUsize,records:std::sync::Mutex<Vec<String>>}
+ impl ReachDataTransport for Transport {
+  fn claim(&self,_:&DataNodeCall)->Result<Option<DataDelivery>,String>{self.claims.fetch_add(1,std::sync::atomic::Ordering::SeqCst);Ok(Some(self.record.lock().unwrap().clone()))}
+  fn accept(&self,_:&DataNodeCall)->Result<DataDelivery,String>{let mut r=self.record.lock().unwrap();r.state=DataDeliveryState::Accepted;r.revision=2;Ok(r.clone())}
+  fn record(&self,r:&DataNodeRecord)->Result<DataDelivery,String>{let mut nonces=self.records.lock().unwrap();assert!(!nonces.contains(&r.request.nonce));nonces.push(r.request.nonce.clone());let mut stored=self.record.lock().unwrap();if let Some(prior)=&stored.receipt{assert_eq!(prior,&r.receipt);}stored.receipt=Some(r.receipt.clone());stored.state=DataDeliveryState::Completed;stored.revision=3;if nonces.len()==1{Err("fixture_committed_ack_lost".into())}else{Ok(stored.clone())}}
+ }
+ let s=service.clone().with_hosted_connection(crate::runtime_config::RuntimeConfig::local(service.db()),"fixture.actor".into(),None);
+ let node=crate::ports::ReachNodeScope{tenant_id:"fixture.tenant".into(),workspace_id:command.workspace_id.clone(),node_id:"fixture.node".into(),actor_ref:"fixture.actor".into()};
+ let source=source_binding(&s,&node).unwrap();let runner=crate::service::data_runner::DurableCoreDataRunner::new(s.clone(),command.core_release.clone()).unwrap();let now=s.runtime().clock.now_ms();
+ let c=ReachDataCommand{schema:command.reach_schema().into(),node:node.clone(),request_id:command.command_id.clone(),idempotency_key:command.idempotency_key.as_str().into(),issued_at_ms:now,expires_at_ms:now+100000,source_binding_sha256:source,resource:runner.mutation_binding(command).unwrap(),command:command.clone()};c.validate().unwrap();
+ let transport=Arc::new(Transport{record:std::sync::Mutex::new(DataDelivery{command_sha256:c.command_sha256().unwrap(),command:c,state:DataDeliveryState::Delivered,revision:1,receipt:None}),claims:std::sync::atomic::AtomicUsize::new(0),records:std::sync::Mutex::new(vec![])});
+ let signer:Arc<dyn InstallationSignerPort>=Arc::new(crate::adapters::connected_runner::Ed25519InstallationSigner::from_seed(node.node_id.clone(),[7;32]).unwrap());
+ let make=|| ReachDataConsumer::new(s.clone(),command.core_release.clone(),node.clone(),signer.clone(),transport.clone(),Arc::new(crate::adapters::connected_runner::OsRunnerEntropy)).unwrap();
+ let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+ assert_eq!(make().poll_once().unwrap_err(),"fixture_committed_ack_lost");
+ let recovered=make().poll_once().unwrap();assert!(matches!(recovered,ReachDataPoll::Recorded{..}));
+ assert_eq!(transport.claims.load(std::sync::atomic::Ordering::SeqCst),1,"pending ack is reconciled before claim");assert_eq!(transport.records.lock().unwrap().len(),2);
+ assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before,"ack recovery must not recalculate");
+ write_screen_interface_evidence("session_eval","remote-ack-recovery.json",&serde_json::to_value(recovered).unwrap());
+}
+
+struct FixtureSchedulerAuthority;
+impl crate::finance_authority::FinanceAuthorityPort for FixtureSchedulerAuthority {
+ fn command_policy_sha256(&self)->Result<String,String>{crate::data_pipeline::canonical_sha256(&json!({"fixturePolicy":"local-scheduler-only-v1"})).map_err(|e|e.to_string())}
+ fn prepare_command(&self,s:&dyn StoragePort,e:&crate::control_plane::ControlPlaneCommandEnvelope)->Result<(),String>{crate::finance_authority::TestFinanceAuthority.prepare_command(s,e)}
+ fn complete_command(&self,s:&dyn StoragePort,e:&crate::control_plane::ControlPlaneCommandEnvelope,status:u16)->Result<(),String>{crate::finance_authority::TestFinanceAuthority.complete_command(s,e,status)}
+ fn audit(&self,s:&dyn StoragePort)->Value{crate::finance_authority::TestFinanceAuthority.audit(s)}
 }

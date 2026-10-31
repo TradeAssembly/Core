@@ -2,7 +2,7 @@
 //! Remote installation authentication is owned by its transport, not authorityRef.
 use super::{
     data_evaluation, data_plans, data_recipes, instrument_screens, selection_plans,
-    session_schedules, TradeAssemblyService,
+    session_dispatch, session_schedules, TradeAssemblyService,
 };
 use crate::{data_pipeline::canonical_sha256, ports::*, session_schedule::SessionOccurrence};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use tradeassembly_plugin_sdk::instrument_set::InstrumentSet;
 pub const DATA_RUNNER_SCHEMA: &str = "tradeassembly.core-data-runner.v1";
 pub const DATA_RUNNER_SCHEMA_V2: &str = "tradeassembly.core-data-runner.v2";
+pub const DATA_RUNNER_SCHEMA_V3: &str = "tradeassembly.core-data-runner.v3";
 pub const MAX_DATA_COMMAND_BYTES: usize = 262144;
 pub const MAX_DATA_RECEIPT_BYTES: usize = 307200;
 const COMMANDS: &str = "data_runner_commands_v1";
@@ -61,6 +62,9 @@ impl DataRunnerMode {
     deny_unknown_fields
 )]
 pub enum DataRunnerOperation {
+    DispatchSession {
+        dispatch: session_dispatch::RemoteRequest,
+    },
     PrepareSelectionPlan {
         selection_plan: selection_plans::SelectionPlanCommand,
     },
@@ -184,13 +188,18 @@ impl DataRunnerCommand {
         }
         budget(&v, 0, &mut 0)?;
         if self.schema_version
-            != if self.selected_creation() {
+            != if self.scheduler_dispatch() {
+                DATA_RUNNER_SCHEMA_V3
+            } else if self.selected_creation() {
                 DATA_RUNNER_SCHEMA_V2
             } else {
                 DATA_RUNNER_SCHEMA
             }
         {
             return Err("data_runner_version_unsupported".into());
+        }
+        if self.scheduler_dispatch() && self.mode != DataRunnerMode::Paper {
+            return Err("data_runner_mode_mismatch".into());
         }
         if let DataRunnerOperation::PrepareSelectionPlan { selection_plan } = &self.operation {
             if selection_plan.mode != self.mode.name() {
@@ -213,6 +222,27 @@ impl DataRunnerCommand {
         hash(self)?;
         Ok(())
     }
+    pub fn scheduler_dispatch(&self) -> bool {
+        matches!(&self.operation, DataRunnerOperation::DispatchSession { .. })
+    }
+    pub fn reach_schema(&self) -> &'static str {
+        if self.scheduler_dispatch() {
+            "tradeassembly.relay.reach-data-command/v3"
+        } else if self.selected_creation() {
+            "tradeassembly.relay.reach-data-command/v2"
+        } else {
+            "tradeassembly.relay.reach-data-command/v1"
+        }
+    }
+    pub fn preparation_schema(&self) -> &'static str {
+        if self.scheduler_dispatch() {
+            "tradeassembly.relay.reach-data-preparation/v3"
+        } else if self.selected_creation() {
+            "tradeassembly.relay.reach-data-preparation/v2"
+        } else {
+            "tradeassembly.relay.reach-data-preparation/v1"
+        }
+    }
     pub fn selected_creation(&self) -> bool {
         matches!(
             &self.operation,
@@ -220,14 +250,18 @@ impl DataRunnerCommand {
         )
     }
     pub fn receipt_schema(&self) -> &'static str {
-        if self.selected_creation() {
+        if self.scheduler_dispatch() {
+            "tradeassembly.core-data-runner.receipt.v3"
+        } else if self.selected_creation() {
             "tradeassembly.core-data-runner.receipt.v2"
         } else {
             "tradeassembly.core-data-runner.receipt.v1"
         }
     }
     pub fn binding_schema(&self) -> &'static str {
-        if self.selected_creation() {
+        if self.scheduler_dispatch() {
+            "tradeassembly.core-data-mutation-binding.v3"
+        } else if self.selected_creation() {
             "tradeassembly.core-data-mutation-binding.v2"
         } else {
             "tradeassembly.core-data-mutation-binding.v1"
@@ -245,6 +279,9 @@ impl DataRunnerCommand {
     deny_unknown_fields
 )]
 pub enum DataRunnerResult {
+    Dispatch {
+        job: Value,
+    },
     SelectedPlan {
         scope: data_plans::PlanScope,
         revision_id: String,
@@ -375,6 +412,9 @@ impl DurableCoreDataRunner {
         c.validate(&self.expected_release)?;
         let (path, body) = self.preflight(c)?;
         let (scope, graph, domain) = match &c.operation {
+            DataRunnerOperation::DispatchSession { dispatch } => {
+                session_dispatch::remote_binding(&self.service, dispatch)?
+            }
             DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } => (
                 p.scope.clone(),
                 p.capability_graph_revision.clone(),
@@ -435,7 +475,7 @@ impl DurableCoreDataRunner {
             capability_graph_revision: graph,
             action: crate::control_plane::http_envelope("core-data-runner", "POST", path, &body)?
                 .command_name,
-            resource_kind: if c.selected_creation() {
+            resource_kind: if c.selected_creation() || c.scheduler_dispatch() {
                 Some(
                     crate::finance_authority::authority_definition(
                         &crate::control_plane::http_envelope(
@@ -468,6 +508,13 @@ impl DurableCoreDataRunner {
         }
         let mode = c.mode.name();
         let (path, mut body) = match &c.operation {
+            DataRunnerOperation::DispatchSession { dispatch } => {
+                session_dispatch::remote_binding(&self.service, dispatch)?;
+                (
+                    "/scheduler/run",
+                    json!({"sessionDispatch":dispatch.local()?}),
+                )
+            }
             DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } => {
                 if p.mode != mode {
                     return Err("data_runner_mode_mismatch".into());
@@ -596,6 +643,11 @@ impl DurableCoreDataRunner {
     }
     fn project(&self, c: &DataRunnerCommand, body: Value) -> Result<DataRunnerResult, String> {
         match &c.operation {
+            DataRunnerOperation::DispatchSession { dispatch } => {
+                let job = body["job"].clone();
+                session_dispatch::validate_remote_snapshot(&self.service, dispatch, &job)?;
+                Ok(DataRunnerResult::Dispatch { job })
+            }
             DataRunnerOperation::PrepareSelectionPlan {
                 selection_plan: command,
             } => {
@@ -745,6 +797,7 @@ impl DurableCoreDataRunner {
         result: &DataRunnerResult,
     ) -> Result<(), String> {
         let body = match result {
+            DataRunnerResult::Dispatch { job } => json!({"job":job}),
             DataRunnerResult::Plan { revision_id, .. }
             | DataRunnerResult::SelectedPlan { revision_id, .. } => {
                 json!({"plan":data_plans::current(&self.service,revision_id)?})
@@ -947,9 +1000,16 @@ impl DurableCoreDataRunner {
         let response = self
             .service
             .handle_http_from_source("core-data-runner", "POST", path, body);
+        let response_body = if c.scheduler_dispatch() && response.body["ok"] == true {
+            response.body["body"].clone()
+        } else {
+            response.body.clone()
+        };
         let (state, result, error) = if response.status >= 500
             || response.body["error"]["code"] == "idempotency_in_progress"
-            || response.status < 400 && response.body["executionAuthorityGranted"] != false
+            || response.status < 400
+                && response.body["ok"] != false
+                && response_body["executionAuthorityGranted"] != false
         {
             (
                 DataRunnerState::Uncertain,
@@ -957,11 +1017,11 @@ impl DurableCoreDataRunner {
                 Some("data_runner_upstream_outcome_uncertain".to_string()),
             )
         } else {
-            let result = if response.status >= 400 {
+            let result = if response.status >= 400 || response.body["ok"] == false {
                 Err(super::service_error_code(&response.body)
                     .unwrap_or_else(|| "data_runner_upstream_failed".into()))
             } else {
-                self.project(c, response.body)
+                self.project(c, response_body)
             };
             match result {
                 Ok(result) => (DataRunnerState::Completed, Some(result), None),
@@ -1147,5 +1207,50 @@ mod tests {
             "fixture.release"
         )
         .is_err());
+    }
+    #[test]
+    fn scheduler_remote_versions_are_closed_and_background_is_not_delegated() {
+        let mut v = command();
+        v["schemaVersion"] = json!(DATA_RUNNER_SCHEMA_V3);
+        v["operation"] = json!({"kind":"dispatch_session","dispatch":{"kind":"inspect","jobId":"sessionjob_fixture"}});
+        let c =
+            DataRunnerCommand::parse(&serde_json::to_vec(&v).unwrap(), "fixture.release").unwrap();
+        assert_eq!(
+            c.receipt_schema(),
+            "tradeassembly.core-data-runner.receipt.v3"
+        );
+        assert_eq!(
+            c.binding_schema(),
+            "tradeassembly.core-data-mutation-binding.v3"
+        );
+        assert_eq!(
+            c.reach_schema(),
+            "tradeassembly.relay.reach-data-command/v3"
+        );
+        for version in [DATA_RUNNER_SCHEMA, DATA_RUNNER_SCHEMA_V2] {
+            v["schemaVersion"] = json!(version);
+            assert!(
+                DataRunnerCommand::parse(&serde_json::to_vec(&v).unwrap(), "fixture.release")
+                    .is_err()
+            );
+        }
+        v["schemaVersion"] = json!(DATA_RUNNER_SCHEMA_V3);
+        for kind in [
+            "start_worker",
+            "stop_worker",
+            "resume_workers",
+            "submit_order",
+        ] {
+            v["operation"]["dispatch"]["kind"] = json!(kind);
+            assert!(
+                DataRunnerCommand::parse(&serde_json::to_vec(&v).unwrap(), "fixture.release")
+                    .is_err()
+            );
+        }
+        v["operation"]["dispatch"]["kind"] = json!("inspect");
+        v["mode"] = json!("backtest");
+        assert!(
+            DataRunnerCommand::parse(&serde_json::to_vec(&v).unwrap(), "fixture.release").is_err()
+        );
     }
 }

@@ -35,6 +35,37 @@ struct StoredIdentity {
 }
 
 impl LocalOwnerIdentity {
+    /// Read an established installation identity without creating or repairing it.
+    pub fn existing_for_database(database_path: impl AsRef<Path>) -> Result<Self, String> {
+        let database_path = database_path.as_ref();
+        if database_path.as_os_str().is_empty() || database_path == Path::new(":memory:") {
+            return Err("local_owner_database_path_invalid".into());
+        }
+        let mut directory = database_path.as_os_str().to_os_string();
+        directory.push(".local-owner");
+        let directory = PathBuf::from(directory);
+        #[cfg(windows)]
+        crate::windows_private::validate_directory(&directory)
+            .map_err(|_| "local_owner_state_directory_insecure")?;
+        #[cfg(not(windows))]
+        {
+            reject_symlink_components(&directory)?;
+            let meta = fs::symlink_metadata(&directory).map_err(|_| "local_owner_state_missing")?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return Err("local_owner_state_directory_invalid".into());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o077 != 0 {
+                    return Err("local_owner_state_directory_insecure".into());
+                }
+            }
+        }
+        let stored = read_state(&directory.join(STATE_FILE))?;
+        validate_stored(&stored)?;
+        Ok(Self::from_stored(stored))
+    }
     /// Derive the installation state directory from a real database path.
     pub fn for_database(database_path: impl AsRef<Path>) -> Result<Self, String> {
         let database_path = database_path.as_ref();
@@ -216,4 +247,26 @@ fn validate_stored(stored: &StoredIdentity) -> Result<(), String> {
         return Err("local_owner_state_id_invalid".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod existing_identity_tests {
+    use super::*;
+    #[test]
+    fn consumer_read_never_creates_or_repairs_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let db = root.join("consumer.db");
+        let state = root.join("consumer.db.local-owner");
+        assert!(LocalOwnerIdentity::existing_for_database(&db).is_err());
+        assert!(!state.exists());
+        let original = LocalOwnerIdentity::for_database(&db).unwrap();
+        assert_eq!(
+            LocalOwnerIdentity::existing_for_database(&db).unwrap(),
+            original
+        );
+        fs::remove_file(state.join(STATE_FILE)).unwrap();
+        assert!(LocalOwnerIdentity::existing_for_database(&db).is_err());
+        assert!(!state.join(STATE_FILE).exists());
+    }
 }

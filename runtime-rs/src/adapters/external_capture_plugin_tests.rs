@@ -1925,6 +1925,7 @@ fn session_calendar_process_fixture(closed:bool){
   connection.execute_batch("DROP TRIGGER fail_upstream_complete;").unwrap();let recovered=runner.dispatch(&uncertain).unwrap();assert_eq!(recovered.state,DataRunnerState::Completed);assert_eq!(recovered.previous_receipt_sha256,Some(result.receipt_sha256));assert_eq!(runner.dispatch(&uncertain).unwrap(),recovered);write_screen_interface_evidence(case,"data-runner-uncertain-recovered.json",&serde_json::to_value(&recovered).unwrap());
  }
  maybe_run_data_runner_process(dir.path(),&runner_command,case);
+ if !closed {maybe_run_joint_reach_data_process(dir.path(),&service,&runner_command,case);}
  write_screen_interface_evidence(case,"data-runner-command.json",&serde_json::to_value(&runner_command).unwrap());write_screen_interface_evidence(case,"data-runner-receipt.json",&serde_json::to_value(&runner_receipt).unwrap());
  drop(runner);
  let db=dir.path().join("service.db").to_string_lossy().into_owned();drop(service);drop(operations);
@@ -1967,3 +1968,12 @@ fn maybe_run_data_runner_process(root:&std::path::Path,command:&crate::service::
 include!("external_selection_evaluation_tests.rs");
 #[test]
 fn selected_instrument_set_drives_native_pipeline_warmup_and_signals(){screen_process_fixture("selected_eval");screen_process_fixture("selected_empty");}
+
+include!("external_reach_data_process_tests.rs");
+
+#[test]
+#[ignore="explicit actual Core and local Relay fixture process gate"]
+fn reach_data_actual_core_relay_process_journey(){
+ for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
+ session_calendar_process_fixture(false);
+}

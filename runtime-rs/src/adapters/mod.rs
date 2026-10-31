@@ -15,6 +15,7 @@ pub(crate) mod plugin_provider_failure;
 pub mod plugin_registry;
 pub mod plugin_sandbox;
 pub(crate) mod plugin_submission_failure;
+pub mod reach_data_http;
 pub mod robustness_repository;
 pub mod self_hosted;
 pub mod studio_identity;

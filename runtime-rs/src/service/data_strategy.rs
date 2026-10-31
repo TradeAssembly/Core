@@ -62,7 +62,7 @@ fn context(service: &TradeAssemblyService, body: &Value) -> Result<SideEffectCon
     )
     .with_agent_execution(service.agent_mcp_execution_context()))
 }
-fn preparation_request(
+pub(crate) fn preparation_request(
     service: &TradeAssemblyService,
     body: &Value,
 ) -> Result<(data_plans::PlanScope, PipelineRequest, DataStrategy), String> {

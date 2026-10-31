@@ -295,6 +295,23 @@ pub struct DurableCoreDataRunner {
     service: TradeAssemblyService,
     expected_release: String,
 }
+/// Current read-only facts used to bind a remote command. This is not a grant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DataMutationBinding {
+    pub schema_version: String,
+    pub core_revision: String,
+    /// Present only when the owning service has an independently bound principal.
+    pub owner_binding_sha256: Option<String>,
+    pub command_sha256: String,
+    pub scope: data_plans::PlanScope,
+    pub capability_graph_revision: String,
+    pub action: String,
+    pub mode: DataRunnerMode,
+    pub domain_binding_sha256: String,
+    pub policy_sha256: String,
+    pub execution_authority_granted: bool,
+}
 impl DurableCoreDataRunner {
     pub fn new(service: TradeAssemblyService, expected_release: String) -> Result<Self, String> {
         if !label(&expected_release) {
@@ -303,6 +320,75 @@ impl DurableCoreDataRunner {
         Ok(Self {
             service,
             expected_release,
+        })
+    }
+    pub fn mutation_binding(&self, c: &DataRunnerCommand) -> Result<DataMutationBinding, String> {
+        c.validate(&self.expected_release)?;
+        let (path, body) = self.preflight(c)?;
+        let (scope, graph, domain) = match &c.operation {
+            DataRunnerOperation::PrepareStrategy { .. } => {
+                let (scope, request, program) =
+                    super::data_strategy::preparation_request(&self.service, &body)?;
+                let content = data_plans::prepare(&self.service, scope.clone(), request)?;
+                program.validate(&content.plan)?;
+                (
+                    scope,
+                    content.plan.request.capability_graph_revision.clone(),
+                    hash(&content)?,
+                )
+            }
+            DataRunnerOperation::PrepareRecipe { scope, program } => {
+                let content = data_recipes::prepare(&self.service, scope.clone(), program.clone())?;
+                (
+                    scope.clone(),
+                    content.plan.request.capability_graph_revision.clone(),
+                    hash(&content)?,
+                )
+            }
+            DataRunnerOperation::EvaluateStrategy { step }
+            | DataRunnerOperation::EvaluateRecipe { step } => {
+                let plan = data_plans::current(&self.service, &step.plan_revision_id)?;
+                (
+                    plan.content.scope.clone(),
+                    plan.content.plan.request.capability_graph_revision.clone(),
+                    plan.revision_sha256,
+                )
+            }
+            DataRunnerOperation::EvaluateScreen { screen } => (
+                screen.scope.clone(),
+                screen.capability_graph_revision.clone(),
+                instrument_screens::command_binding(&self.service, screen)?,
+            ),
+            DataRunnerOperation::PrepareSession { schedule } => (
+                schedule.scope.clone(),
+                schedule.capability_graph_revision.clone(),
+                session_schedules::command_binding(&self.service, schedule)?,
+            ),
+        };
+        Ok(DataMutationBinding {
+            schema_version: "tradeassembly.core-data-mutation-binding.v1".into(),
+            core_revision: crate::build_identity::current()
+                .ok_or("data_runner_build_identity_unavailable")?
+                .revision()
+                .into(),
+            owner_binding_sha256: self
+                .service
+                .invocation_owner()
+                .map(|owner| hash(&owner))
+                .transpose()?,
+            command_sha256: c.canonical_hash()?,
+            scope,
+            capability_graph_revision: graph,
+            action: crate::control_plane::http_envelope("core-data-runner", "POST", path, &body)?
+                .command_name,
+            mode: c.mode.clone(),
+            domain_binding_sha256: domain,
+            policy_sha256: self
+                .service
+                .runtime()
+                .finance_authority
+                .command_policy_sha256()?,
+            execution_authority_granted: false,
         })
     }
     fn body(&self, c: &DataRunnerCommand) -> Result<(&'static str, Value), String> {

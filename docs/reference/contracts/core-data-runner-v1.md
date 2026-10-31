@@ -1,8 +1,9 @@
 # Data-computation runner V1
 
-`tradeassembly-core-runner` adds `dispatch_data` with a closed
+`tradeassembly-core-runner --data-only` adds `dispatch_data` with a closed
 `tradeassembly.core-data-runner.v1` command and `data_receipt` with workspace_id
-and command_id. Existing backtest/paper V1 command enums remain unchanged and
+and command_id. Read-only `data_binding` resolves current resource/policy facts
+for an exact command, without admission or permission. Existing backtest/paper V1 command enums remain unchanged and
 reject new operation kinds. `core.runner.data@1.0.0` advertises this separate
 local computation protocol. It does not grant Relay mutations or brokerage access.
 
@@ -53,3 +54,8 @@ connected-runner handoff, queued session execution/retries, selection/warmup bin
 research accounting and journal pagination, sizing/risk/order/synthetic-exit stages,
 production provider coverage and signed combined release qualification. Native
 fixtures and local process protocol tests do not establish these capabilities.
+
+Data-only startup opens the configured service without resuming local scheduler
+workers and refuses legacy bridge/paper operations. Conversely, legacy startup
+refuses the new data operations; it retains its existing behavior. Consumers must
+select the explicit mode before startup. No metadata query starts a worker.

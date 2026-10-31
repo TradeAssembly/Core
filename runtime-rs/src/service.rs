@@ -56,6 +56,7 @@ mod positions;
 mod providers;
 pub mod public_workspace;
 pub mod reach;
+pub mod reach_data;
 mod replay;
 mod research;
 mod research_notebook;
@@ -504,6 +505,12 @@ impl TradeAssemblyService {
         let service = Self::from_config_without_local_scheduler_resume(config)?;
         service.resume_local_scheduler_workers();
         Ok(service)
+    }
+
+    /// Explicit bounded-computation host: opening it does not resume existing
+    /// scheduler workers. This factory does not authenticate or grant permission.
+    pub fn from_config_data_only(config: RuntimeConfig) -> Result<Self, String> {
+        Self::from_config_without_local_scheduler_resume(config)
     }
 
     pub(crate) fn from_config_without_local_scheduler_resume(

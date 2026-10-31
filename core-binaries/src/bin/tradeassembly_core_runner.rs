@@ -23,6 +23,9 @@ const CORE_REVISION: &str = env!("TRADEASSEMBLY_CORE_REVISION");
 #[derive(Debug, Parser)]
 #[command(name = "tradeassembly-core-runner")]
 struct Args {
+    /// Accept only finite data commands; do not resume existing scheduler work.
+    #[arg(long)]
+    data_only: bool,
     #[arg(long, conflicts_with_all = ["db", "runtime_config", "core_release"])]
     build_identity: bool,
     #[arg(long, conflicts_with_all = ["db", "runtime_config", "core_release", "build_identity"])]
@@ -49,6 +52,9 @@ enum ProtocolRequest {
         command: Box<PaperRunnerCommand>,
     },
     DispatchData {
+        command: Value,
+    },
+    DataBinding {
         command: Value,
     },
     DataReceipt {
@@ -81,8 +87,14 @@ fn main() {
         return;
     }
     let core_release = args.core_release.unwrap_or_else(|| process::exit(2));
+    let data_only = args.data_only;
     let config = resolve_runner_config(args.db, args.runtime_config.as_deref());
-    let service = match config.and_then(TradeAssemblyService::from_config) {
+    let factory = if data_only {
+        TradeAssemblyService::from_config_data_only
+    } else {
+        TradeAssemblyService::from_config
+    };
+    let service = match config.and_then(factory) {
         Ok(service) => service,
         Err(_) => {
             write_response(&error_response(RunnerBridgeError {
@@ -131,7 +143,27 @@ fn main() {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let response = match serde_json::from_slice::<ProtocolRequest>(&line) {
+        let request = serde_json::from_slice::<ProtocolRequest>(&line);
+        if let Ok(request) = &request {
+            let data_request = matches!(
+                request,
+                ProtocolRequest::DispatchData { .. }
+                    | ProtocolRequest::DataBinding { .. }
+                    | ProtocolRequest::DataReceipt { .. }
+            );
+            if data_only != data_request {
+                let code = if data_only {
+                    "data_runner_legacy_operation_forbidden"
+                } else {
+                    "data_runner_data_only_mode_required"
+                };
+                if write_response(&data_error_response(code.into())).is_err() {
+                    process::exit(1);
+                }
+                continue;
+            }
+        }
+        let response = match request {
             Ok(ProtocolRequest::Dispatch { command }) => bridge
                 .dispatch(command.as_ref())
                 .map(|receipt| json!({"ok": true, "receipt": receipt}))
@@ -159,6 +191,12 @@ fn main() {
                 .and_then(|bytes| DataRunnerCommand::parse(&bytes, &data_core_release))
                 .and_then(|command| data_bridge.dispatch(&command))
                 .map(|receipt| json!({"ok":true,"receipt":receipt}))
+                .unwrap_or_else(data_error_response),
+            Ok(ProtocolRequest::DataBinding { command }) => serde_json::to_vec(&command)
+                .map_err(|_| "data_runner_command_invalid".to_string())
+                .and_then(|bytes| DataRunnerCommand::parse(&bytes, &data_core_release))
+                .and_then(|command| data_bridge.mutation_binding(&command))
+                .map(|binding| json!({"ok":true,"binding":binding}))
                 .unwrap_or_else(data_error_response),
             Ok(ProtocolRequest::DataReceipt {
                 workspace_id,

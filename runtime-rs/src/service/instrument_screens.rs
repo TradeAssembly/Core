@@ -402,6 +402,20 @@ fn prepare(service: &TradeAssemblyService, c: &ScreenCommand) -> Result<Prepared
         input_expires_at_ms: expires,
     })
 }
+pub(crate) fn command_binding(
+    service: &TradeAssemblyService,
+    c: &ScreenCommand,
+) -> Result<String, String> {
+    let p = prepare(service, c)?;
+    hash(&(
+        &p.policy,
+        &p.pin,
+        &p.contract_sha256,
+        &p.request,
+        &p.allowed_contexts,
+        p.input_expires_at_ms,
+    ))
+}
 fn validate_mode(c: &ScreenCommand, ctx: &SideEffectContext) -> Result<(), String> {
     if ctx.authority.account_mode != if c.mode == "live" { "live" } else { "paper" } {
         return Err("instrument_screen_mode_mismatch".into());

@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 #[test]
-fn data_runner_wire_is_explicit_bounded_and_does_not_expand_paper_v1() {
+fn data_only_process_has_bounded_wire_and_refuses_legacy_execution() {
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join(".tradeassembly");
     std::fs::create_dir(&state).unwrap();
@@ -19,6 +19,7 @@ fn data_runner_wire_is_explicit_bounded_and_does_not_expand_paper_v1() {
     }
     let mut child = Command::new(env!("CARGO_BIN_EXE_tradeassembly-core-runner"))
         .args([
+            "--data-only",
             "--db",
             root.path().join("runner.db").to_str().unwrap(),
             "--core-release",

@@ -21,6 +21,11 @@ pub const TRADEASSEMBLY_PEP_MANIFEST: &str =
     include_str!("../config/warden/tradeassembly-core-peps.json");
 
 pub trait FinanceAuthorityPort: Send + Sync {
+    /// Non-secret identity of the exact configured control-plane policy.
+    /// Metadata only: possession of this digest is never an authorization.
+    fn command_policy_sha256(&self) -> Result<String, String> {
+        Err("command_policy_identity_unsupported".into())
+    }
     /// Availability only; callers must not treat this as an order permit.
     fn verify_broker_boundary(&self) -> Result<(), String> {
         Err("broker_submission_authority_unavailable".into())
@@ -978,6 +983,11 @@ impl WardenSidecarAuthority {
 }
 
 impl FinanceAuthorityPort for WardenSidecarAuthority {
+    fn command_policy_sha256(&self) -> Result<String, String> {
+        let bytes = serde_json_canonicalizer::to_vec(&self.policy_bundle)
+            .map_err(|_| "command_policy_identity_invalid")?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
     fn verify_broker_boundary(&self) -> Result<(), String> {
         self.preflight()
     }
@@ -1881,6 +1891,11 @@ pub(crate) mod tests {
         .unwrap();
         let original: Value = serde_json::from_str(TRADEASSEMBLY_POLICY_BUNDLE).unwrap();
         assert_eq!(authority.policy_bundle, original);
+        let original_digest = authority.command_policy_sha256().unwrap();
+        assert_eq!(
+            original_digest,
+            authority.clone().command_policy_sha256().unwrap()
+        );
         for invalid in [
             Value::Null,
             json!({"schema_version":"other","rules":[]}),
@@ -1891,6 +1906,15 @@ pub(crate) mod tests {
         }
         let mut changed = original.clone();
         changed["version"] = json!("isolated-version");
+        assert_ne!(
+            original_digest,
+            authority
+                .clone()
+                .with_policy_bundle(changed.clone())
+                .unwrap()
+                .command_policy_sha256()
+                .unwrap()
+        );
         assert_eq!(
             authority
                 .clone()

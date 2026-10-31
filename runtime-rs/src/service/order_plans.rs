@@ -428,6 +428,14 @@ pub(crate) fn verify_signal(
     let (plan, receipt) = measured("signal.verify_round", || {
         data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)
     })?;
+    if plan
+        .content
+        .selection_source
+        .as_ref()
+        .is_some_and(|source| source.managed_position_id.is_some())
+    {
+        return Err("order_plan_managed_exit_evidence_cannot_enter".into());
+    }
     if plan.content.scope != c.scope
         || plan.content.plan.request.capability_graph_revision != c.capability_graph_revision
         || plan.content.plan.request.mode != c.mode

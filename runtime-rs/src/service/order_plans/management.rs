@@ -330,6 +330,66 @@ pub fn register(
     }
     inspect(s, &id)
 }
+/// Current host witness for a computation-only managed exit plan. No caller
+/// supplies the traded instrument, account, activation or executable authority.
+pub(in crate::service) fn exit_plan_subject(
+    s: &TradeAssemblyService,
+    id: &str,
+    scope: &data_plans::PlanScope,
+) -> Result<(crate::data_pipeline::InstrumentContext, String, String), String> {
+    let (_, pos) = load(s, id)?;
+    let entry = read_owned(s, &pos.entry_plan_id)?;
+    if entry.command.scope != *scope
+        || entry.command.mode != "paper"
+        || !pos
+            .quantity
+            .checked_subtract(pos.closed_quantity)?
+            .positive()
+    {
+        return Err("managed_plan_scope_or_remaining_lot_invalid".into());
+    }
+    let (_, config) = management_run(s, &pos.activation_id)?;
+    if config["strategyId"] != scope.strategy_id
+        || config["strategyVersionId"] != scope.strategy_version_id
+        || config["strategySpecHash"] != scope.strategy_spec_hash
+        || config["capabilityGraphRevisionId"] != entry.command.capability_graph_revision
+        || config["canonicalAccount"]
+            != value(
+                entry
+                    .canonical_account
+                    .as_ref()
+                    .ok_or("managed_account_required")?,
+            )?
+        || policy(s, scope)?.as_ref() != Some(&pos.policy)
+        || pos.policy.rules.reversal_signal.as_deref() != Some("typed.exit")
+    {
+        return Err("managed_plan_activation_or_policy_invalid".into());
+    }
+    let (_, original) = submission::record(s, &entry)?.ok_or("managed_entry_submission_missing")?;
+    if original.intent["originalRequest"]["activationId"] != pos.activation_id {
+        return Err("managed_plan_activation_invalid".into());
+    }
+    settlement::verify_historical_entry(s, &entry, &pos.entry_settlement_sha256)?;
+    let (quantity, basis, _, _) = settlement::entry_basis(s, &entry)?;
+    if quantity != pos.quantity || basis != pos.basis {
+        return Err("managed_plan_entry_basis_changed".into());
+    }
+    let source = settlement::current_source(s, &entry, &original)?;
+    let instrument = crate::data_pipeline::InstrumentContext {
+        instrument_id: entry.order.instrument.instrument_id.clone(),
+        asset_class: entry.order.instrument.asset_class.clone(),
+        instrument_family: entry.order.instrument.instrument_family.clone(),
+    };
+    // High water, closed quantity, reservations and leases are mutable checks,
+    // not source identity. Settled entry, account, policy and source are pinned.
+    let proof = hash(
+        &json!({"schemaVersion":"tradeassembly.managed_exit_plan_source.v1",
+        "owner":owner(s)?,"positionId":pos.position_id,"entryPlanSha256":hash(&entry)?,
+        "entrySettlementSha256":pos.entry_settlement_sha256,"activationId":pos.activation_id,
+        "policySha256":hash(&pos.policy)?,"configSha256":hash(&config)?,"source":source}),
+    )?;
+    Ok((instrument, entry.command.capability_graph_revision, proof))
+}
 pub fn inspect(s: &TradeAssemblyService, id: &str) -> Result<Value, String> {
     let (_, p) = load(s, id)?;
     Ok(
@@ -543,6 +603,15 @@ fn reversal(
     let (plan, r) = data_evaluation::indexed_receipt(s, id)?;
     if plan.content.scope != entry.command.scope || r.receipt_sha256 != id {
         return Err("managed_reversal_scope_mismatch".into());
+    }
+    if plan
+        .content
+        .selection_source
+        .as_ref()
+        .and_then(|source| source.managed_position_id.as_deref())
+        .is_some_and(|id| id != p.position_id)
+    {
+        return Err("managed_reversal_position_lineage_mismatch".into());
     }
     let frame = r.signals.last().ok_or("managed_reversal_not_ready")?;
     if frame.trade_instruments.len() != 1

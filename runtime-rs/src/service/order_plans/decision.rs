@@ -168,6 +168,10 @@ pub(crate) fn select(
     if p.content.scope != plan_scope(&config)?
         || p.content.plan.request.capability_graph_revision != config["capabilityGraphRevisionId"]
         || p.content.selection_source.is_none()
+        || p.content
+            .selection_source
+            .as_ref()
+            .is_some_and(|source| source.managed_position_id.is_some())
         || config["selectionPolicy"] != "selected_receipt_head"
     {
         return Err("typed_selection_binding_mismatch".into());

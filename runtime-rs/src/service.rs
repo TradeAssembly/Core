@@ -1397,6 +1397,9 @@ impl TradeAssemblyService {
                     Err(_) => ServiceResponse::object_unavailable(),
                 }
             }
+            ("POST", "/product/strategies/managed-position-plans/prepare") => {
+                selection_plans::prepare_managed_response(self, body)
+            }
             ("POST", "/product/strategies/selection-plans/prepare") => {
                 selection_plans::prepare_response(self, body)
             }

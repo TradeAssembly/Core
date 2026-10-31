@@ -7,6 +7,17 @@ use std::collections::BTreeMap;
 use tradeassembly_plugin_sdk::instrument_set::SelectionStatus;
 use tradeassembly_strategy::spec::{SelectorType, StrategySpec};
 pub(super) const PATH: &str = "/product/strategies/selection-plans/prepare";
+pub(super) const MANAGED_PATH: &str = "/product/strategies/managed-position-plans/prepare";
+/// Separate local wire: the legacy V2 SelectionPlanCommand is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedPositionPlanCommand {
+    pub schema_version: String,
+    pub scope: data_plans::PlanScope,
+    pub managed_position_id: String,
+    pub selection_receipts: BTreeMap<String, String>,
+    pub source_captures: BTreeMap<String, String>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectionPlanCommand {
@@ -20,6 +31,10 @@ pub struct SelectionPlanCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectionPlanSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_position_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_position_sha256: Option<String>,
     pub command: SelectionPlanCommand,
     pub prepared_at_ms: i64,
     pub known_at_ms: i64,
@@ -75,6 +90,14 @@ fn resolve(
     c: &SelectionPlanCommand,
     prepared_at_ms: i64,
 ) -> Result<SelectionPlanSource, String> {
+    resolve_inner(service, c, prepared_at_ms, None)
+}
+fn resolve_inner(
+    service: &TradeAssemblyService,
+    c: &SelectionPlanCommand,
+    prepared_at_ms: i64,
+    managed_position_id: Option<&str>,
+) -> Result<SelectionPlanSource, String> {
     if !matches!(c.mode.as_str(), "paper" | "live" | "backtest")
         || prepared_at_ms <= 0
         || prepared_at_ms > service.runtime().clock.now_ms()
@@ -90,6 +113,21 @@ fn resolve(
     {
         return Err("selection_plan_binding_unknown".into());
     }
+    let managed = managed_position_id
+        .map(|id| -> Result<_, String> {
+            if c.mode != "paper" {
+                return Err("managed_plan_paper_required".into());
+            }
+            let (subject, graph, proof) =
+                super::order_plans::management::exit_plan_subject(service, id, &c.scope)?;
+            if c.subject_instrument_id != subject.instrument_id
+                || c.capability_graph_revision != graph
+            {
+                return Err("managed_plan_subject_or_graph_mismatch".into());
+            }
+            Ok((subject, proof))
+        })
+        .transpose()?;
     let mut selected = BTreeMap::new();
     let mut evidence = BTreeMap::new();
     let mut known = prepared_at_ms;
@@ -129,6 +167,8 @@ fn resolve(
                 }
                 match r.instrument_set.status {
                     SelectionStatus::CompleteNonempty => {}
+                    SelectionStatus::CompleteEmpty
+                        if managed.is_some() && name == &template.trade_selection_ref => {}
                     SelectionStatus::CompleteEmpty => {
                         return Err("selection_plan_no_eligible_instrument".into())
                     }
@@ -176,8 +216,33 @@ fn resolve(
         };
         selected.insert(name.clone(), members);
     }
-    let resolved_program = template.resolve(&selected, &c.subject_instrument_id)?;
+    let resolved_program = if let Some((subject, _)) = &managed {
+        // Metadata category remains the published trade market category.
+        let binding = template
+            .selections
+            .get(&template.trade_selection_ref)
+            .ok_or("selection_plan_market_missing")?;
+        let market = spec
+            .signal_market_requirements
+            .iter()
+            .find(|m| m.requirement_id == binding.market_requirement_ref)
+            .ok_or("selection_plan_market_missing")?;
+        if serde_json::to_value(&market.asset_class)
+            .map_err(|_| "managed_plan_instrument_invalid")?
+            != json!(subject.asset_class)
+            || serde_json::to_value(&market.instrument_family)
+                .map_err(|_| "managed_plan_instrument_invalid")?
+                != json!(subject.instrument_family)
+        {
+            return Err("managed_plan_instrument_mismatch".into());
+        }
+        template.resolve_managed(&selected, subject)?
+    } else {
+        template.resolve(&selected, &c.subject_instrument_id)?
+    };
     Ok(SelectionPlanSource {
+        managed_position_id: managed_position_id.map(str::to_owned),
+        managed_position_sha256: managed.map(|(_, proof)| proof),
         command: c.clone(),
         prepared_at_ms,
         known_at_ms: known,
@@ -205,7 +270,12 @@ pub(super) fn rebuild(
     service: &TradeAssemblyService,
     source: &SelectionPlanSource,
 ) -> Result<data_plans::DataPlanContent, String> {
-    let fresh = resolve(service, &source.command, source.prepared_at_ms)?;
+    let fresh = resolve_inner(
+        service,
+        &source.command,
+        source.prepared_at_ms,
+        source.managed_position_id.as_deref(),
+    )?;
     if fresh != *source {
         return Err("selection_plan_source_stale".into());
     }
@@ -244,6 +314,10 @@ pub(super) fn preflight(
     path: &str,
     body: &Value,
 ) -> Option<ServiceResponse> {
+    if path == MANAGED_PATH {
+        let result = managed_content(service, body).map(|_| ());
+        return result.err().map(|code| ServiceResponse::conflict(&code));
+    }
     if path != PATH {
         return None;
     }
@@ -301,13 +375,141 @@ fn original(
     plan: data_plans::StoredDataPlan,
     command: &SelectionPlanCommand,
 ) -> Result<data_plans::StoredDataPlan, String> {
-    if plan
-        .content
-        .selection_source
-        .as_ref()
-        .is_none_or(|s| s.command != *command)
-    {
+    if plan.content.selection_source.as_ref().is_none_or(|s| {
+        s.command != *command
+            || s.managed_position_id.is_some()
+            || s.managed_position_sha256.is_some()
+    }) {
         return Err("selection_plan_idempotency_conflict".into());
     }
     Ok(plan)
+}
+
+fn managed_command(
+    service: &TradeAssemblyService,
+    body: &Value,
+) -> Result<(ManagedPositionPlanCommand, SelectionPlanCommand), String> {
+    if serde_json::to_vec(body)
+        .map_err(|_| "managed_plan_command_invalid")?
+        .len()
+        > 131072
+    {
+        return Err("managed_plan_command_too_large".into());
+    }
+    let c: ManagedPositionPlanCommand = serde_json::from_value(body["managedPositionPlan"].clone())
+        .map_err(|_| "managed_plan_command_invalid")?;
+    if c.schema_version != "tradeassembly.managed_position_plan.v1"
+        || c.managed_position_id.is_empty()
+        || c.managed_position_id.len() > 256
+        || c.selection_receipts.len() > 16
+        || c.source_captures.len() > 32
+        || crate::control_plane::http_envelope("http", "POST", MANAGED_PATH, body)?
+            .authority
+            .account_mode
+            != "paper"
+    {
+        return Err("managed_plan_command_invalid".into());
+    }
+    let (subject, graph, _) = super::order_plans::management::exit_plan_subject(
+        service,
+        &c.managed_position_id,
+        &c.scope,
+    )?;
+    let internal = SelectionPlanCommand {
+        scope: c.scope.clone(),
+        capability_graph_revision: graph,
+        mode: "paper".into(),
+        subject_instrument_id: subject.instrument_id,
+        selection_receipts: c.selection_receipts.clone(),
+        source_captures: c.source_captures.clone(),
+    };
+    Ok((c, internal))
+}
+fn managed_content(
+    service: &TradeAssemblyService,
+    body: &Value,
+) -> Result<data_plans::DataPlanContent, String> {
+    let (c, internal) = managed_command(service, body)?;
+    build(
+        service,
+        resolve_inner(
+            service,
+            &internal,
+            service.runtime().clock.trusted_now_ms()?,
+            Some(&c.managed_position_id),
+        )?,
+    )
+}
+pub(super) fn prepare_managed_response(
+    service: &TradeAssemblyService,
+    body: Value,
+) -> ServiceResponse {
+    let result = (|| {
+        let (c, internal) = managed_command(service, &body)?;
+        let authority =
+            crate::control_plane::http_envelope("http", "POST", MANAGED_PATH, &body)?.authority;
+        let context = SideEffectContext::new(
+            authority,
+            IdempotencyKey::new(
+                body["idempotencyKey"]
+                    .as_str()
+                    .ok_or("managed_plan_idempotency_required")?,
+            )?,
+        )
+        .with_agent_execution(service.agent_mcp_execution_context());
+        if let Some(plan) = data_plans::previous(service, &c.scope, &context)? {
+            if plan.content.selection_source.as_ref().is_none_or(|source| {
+                source.command != internal
+                    || source.managed_position_id.as_deref() != Some(c.managed_position_id.as_str())
+            }) {
+                return Err("managed_plan_idempotency_conflict".into());
+            }
+            return Ok(plan);
+        }
+        let content = managed_content(service, &body)?;
+        data_plans::persist(service.runtime().storage.as_ref(), content, &context)
+    })();
+    match result {
+        Ok(plan) => ServiceResponse::ok(
+            json!({"plan":plan,"entryAdmissionAllowed":false,"automaticReversalSupported":false,"executionAuthorityGranted":false,"managedPositionEffects":false}),
+        ),
+        Err(code) => ServiceResponse::conflict(&code),
+    }
+}
+
+#[cfg(test)]
+mod managed_wire_tests {
+    use super::*;
+    #[test]
+    fn managed_command_is_a_separate_closed_wire_without_caller_subject_or_account() {
+        let scope = json!({"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"});
+        let value = json!({"schemaVersion":"tradeassembly.managed_position_plan.v1","scope":scope,"managedPositionId":"position_owned","selectionReceipts":{},"sourceCaptures":{}});
+        assert!(serde_json::from_value::<ManagedPositionPlanCommand>(value.clone()).is_ok());
+        for field in [
+            "subjectInstrumentId",
+            "accountRef",
+            "activationId",
+            "mode",
+            "capabilityGraphRevision",
+            "entry",
+            "quantity",
+        ] {
+            let mut bad = value.clone();
+            bad[field] = json!("forbidden");
+            assert!(
+                serde_json::from_value::<ManagedPositionPlanCommand>(bad).is_err(),
+                "{field}"
+            );
+        }
+        let mut legacy = json!({"scope":scope,"capabilityGraphRevision":"g","mode":"paper","subjectInstrumentId":"subject","selectionReceipts":{},"sourceCaptures":{}});
+        assert!(serde_json::from_value::<SelectionPlanCommand>(legacy.clone()).is_ok());
+        legacy["managedPositionId"] = json!("position_owned");
+        assert!(serde_json::from_value::<SelectionPlanCommand>(legacy).is_err());
+    }
+    #[test]
+    fn unmanaged_selection_source_serialization_omits_both_new_fields() {
+        let legacy = json!({"command":{"scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},"capabilityGraphRevision":"g","mode":"paper","subjectInstrumentId":"subject","selectionReceipts":{},"sourceCaptures":{}},"preparedAtMs":1,"knownAtMs":1,"selectionSha256":{},"resolvedProgram":{"version":1,"nodes":[],"bindings":[],"tradeInstruments":[],"entry":{"kind":"is_true","value":{"kind":"boolean","value":false}},"exit":{"kind":"is_true","value":{"kind":"boolean","value":true}}}});
+        let source: SelectionPlanSource = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(source).unwrap(), legacy);
+    }
 }

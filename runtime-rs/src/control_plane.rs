@@ -417,7 +417,8 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/order-plans/reconcile") => {
             "strategy.order_plan.reconcile".into()
         }
-        ("POST", "/product/strategies/selection-plans/prepare") => {
+        ("POST", "/product/strategies/managed-position-plans/prepare")
+        | ("POST", "/product/strategies/selection-plans/prepare") => {
             "strategy.selection_plan.prepare".into()
         }
         ("POST", "/product/strategies/session-schedules/prepare") => {
@@ -1532,6 +1533,9 @@ fn command_group(command_name: &str) -> &str {
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
     let scope = match path {
+        "/product/strategies/managed-position-plans/prepare" => {
+            Some("/managedPositionPlan/scope/strategyId")
+        }
         "/product/strategies/order-plans/prepare" => Some("/orderPlan/scope/strategyId"),
         "/product/strategies/positions/register"
         | "/product/strategies/positions/advance"

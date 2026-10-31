@@ -51,6 +51,16 @@ pub(super) fn program_for_content(
 ) -> Result<Option<DataStrategy>, String> {
     match &content.selection_source {
         Some(source) => {
+            if source.managed_position_id.is_some()
+                && (source.command.mode != "paper"
+                    || source.managed_position_sha256.is_none()
+                    || source.resolved_program.entry
+                        != (crate::data_strategy::Rule::IsTrue {
+                            value: crate::data_strategy::Operand::Boolean { value: false },
+                        }))
+            {
+                return Err("managed_plan_entry_admission_invalid".into());
+            }
             if source.command.scope != content.scope
                 || super::selection_plans::template(service, &content.scope)?.is_none()
             {

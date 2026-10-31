@@ -171,6 +171,36 @@ impl SelectionStrategy {
             .and_then(|s| s.iter().find(|s| s.instrument_id == subject))
             .ok_or("selection_strategy_subject_not_selected")?
             .clone();
+        self.resolve_subject(selected, &subject, false)
+    }
+    /// Host-only managed subject resolution. Explicit Selected contexts retain
+    /// their current members; only the admission membership check is omitted.
+    pub(crate) fn resolve_managed(
+        &self,
+        selected: &BTreeMap<String, Vec<InstrumentContext>>,
+        subject: &InstrumentContext,
+    ) -> Result<DataStrategy, String> {
+        if self.schema_version != "tradeassembly.selection_strategy.v1"
+            || self.selections.is_empty()
+            || self.selections.len() > 16
+            || self.nodes.is_empty()
+            || self.nodes.len() > 32
+            || selected.keys().ne(self.selections.keys())
+            || !self.selections.contains_key(&self.trade_selection_ref)
+            || subject.instrument_id.is_empty()
+            || subject.asset_class.is_empty()
+            || subject.instrument_family.is_empty()
+        {
+            return Err("selection_strategy_invalid".into());
+        }
+        self.resolve_subject(selected, subject, true)
+    }
+    fn resolve_subject(
+        &self,
+        selected: &BTreeMap<String, Vec<InstrumentContext>>,
+        subject: &InstrumentContext,
+        managed: bool,
+    ) -> Result<DataStrategy, String> {
         let context = |c: &ContextTemplate| -> Result<DataContext, String> {
             Ok(match c {
                 ContextTemplate::Subject { interval_ms } => DataContext {
@@ -207,13 +237,21 @@ impl SelectionStrategy {
             })
             .collect::<Result<_, String>>()?;
         let mut count = 0;
+        let entry = rule(&self.entry, &subject.instrument_id, 0, &mut count)?;
+        let exit = rule(&self.exit, &subject.instrument_id, 0, &mut count)?;
         Ok(DataStrategy {
             version: 1,
             nodes,
             bindings: self.bindings.clone(),
             trade_instruments: vec![subject.clone()],
-            entry: rule(&self.entry, &subject.instrument_id, 0, &mut count)?,
-            exit: rule(&self.exit, &subject.instrument_id, 0, &mut count)?,
+            entry: if managed {
+                Rule::IsTrue {
+                    value: Operand::Boolean { value: false },
+                }
+            } else {
+                entry
+            },
+            exit,
         })
     }
 }
@@ -242,6 +280,99 @@ mod tests {
         assert_eq!(
             template.resolve(&selected, "A").unwrap_err(),
             "selection_strategy_invalid"
+        );
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    fn template() -> SelectionStrategy {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion":"tradeassembly.selection_strategy.v1",
+            "selections":{"primary":{"marketRequirementRef":"trade","selectorRef":"screen"},"underlying":{"marketRequirementRef":"context","selectorRef":"fixed"}},
+            "tradeSelectionRef":"primary",
+            "nodes":[
+                {"graphNodeId":"subject","parameters":{"period":3},"context":{"kind":"subject","intervalMs":86400000},"inputContexts":{}},
+                {"graphNodeId":"context","parameters":{},"context":{"kind":"selected","selectionRef":"underlying","intervalMs":86400000},"inputContexts":{}},
+                {"graphNodeId":"trade_context","parameters":{},"context":{"kind":"selected","selectionRef":"primary","intervalMs":86400000},"inputContexts":{}}
+            ],"bindings":[],
+            "entry":{"kind":"is_true","value":{"kind":"boolean","value":true}},
+            "exit":{"kind":"compare","left":{"kind":"output","node":"subject","port":"value","instrument":{"kind":"subject"},"sample":"current"},"op":"less","right":{"kind":"output","node":"subject","port":"value","instrument":{"kind":"subject"},"sample":"previous"}}
+        })).unwrap()
+    }
+    fn instrument(id: &str) -> InstrumentContext {
+        InstrumentContext {
+            instrument_id: id.into(),
+            asset_class: "equity".into(),
+            instrument_family: "equity".into(),
+        }
+    }
+    #[test]
+    fn managed_subject_bypasses_only_membership_and_never_rewrites_selected_contexts() {
+        let t = template();
+        let selected = BTreeMap::from([
+            ("primary".into(), vec![]),
+            ("underlying".into(), vec![instrument("SPY")]),
+        ]);
+        assert_eq!(
+            t.resolve(&selected, "OWNED").unwrap_err(),
+            "selection_strategy_subject_not_selected"
+        );
+        let managed = t.resolve_managed(&selected, &instrument("OWNED")).unwrap();
+        assert_eq!(
+            managed.entry,
+            Rule::IsTrue {
+                value: Operand::Boolean { value: false }
+            }
+        );
+        assert_eq!(managed.trade_instruments, vec![instrument("OWNED")]);
+        assert_eq!(
+            managed.nodes[0].context.instruments,
+            vec![instrument("OWNED")]
+        );
+        assert_eq!(
+            managed.nodes[1].context.instruments,
+            vec![instrument("SPY")]
+        );
+        assert!(managed.nodes[2].context.instruments.is_empty());
+        assert_eq!(managed.nodes[0].parameters, serde_json::json!({"period":3}));
+        assert!(matches!(
+            managed.exit,
+            Rule::Compare {
+                left: Operand::Output {
+                    sample: Sample::Current,
+                    ..
+                },
+                right: Operand::Output {
+                    sample: Sample::Previous,
+                    ..
+                },
+                ..
+            }
+        ));
+        let mut incomplete = selected.clone();
+        incomplete.remove("underlying");
+        assert!(t
+            .resolve_managed(&incomplete, &instrument("OWNED"))
+            .is_err());
+    }
+    #[test]
+    fn managed_resolution_does_not_relax_published_rule_bounds() {
+        let mut t = template();
+        let selected = BTreeMap::from([
+            ("primary".into(), vec![instrument("OTHER")]),
+            ("underlying".into(), vec![instrument("SPY")]),
+        ]);
+        for _ in 0..10 {
+            t.exit = RuleTemplate::Not {
+                rule: Box::new(t.exit),
+            };
+        }
+        assert_eq!(
+            t.resolve_managed(&selected, &instrument("OWNED"))
+                .unwrap_err(),
+            "selection_strategy_rule_limit"
         );
     }
 }

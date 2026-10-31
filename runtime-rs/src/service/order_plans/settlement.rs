@@ -13,6 +13,8 @@ pub struct Command {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct CapitalCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_kind: Option<String>,
     pub account_key: String,
     pub ledger_epoch: String,
     pub sequence: u64,
@@ -57,12 +59,58 @@ fn read_receipt(s: &TradeAssemblyService, id: &str) -> Result<Receipt, String> {
     }
     Ok(v)
 }
-fn account_semantics(a: &AccountSnapshot) -> Result<String, String> {
+pub(super) fn entry_basis(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+) -> Result<(Decimal, Decimal, String, ObservationTime), String> {
+    if p.management.is_some() || p.order.position_action != PositionAction::BuyToOpen {
+        return Err("managed_entry_purchase_required".into());
+    }
+    let (_, record) = submission::record(s, p)?.ok_or("managed_entry_submission_missing")?;
+    if record.phase != submission::Phase::Consumed {
+        return Err("managed_entry_terminal_required".into());
+    }
+    let receipt = read_receipt(
+        s,
+        record
+            .settlement_receipt_sha256
+            .as_deref()
+            .ok_or("managed_entry_final_posting_required")?,
+    )?;
+    let qty = *receipt.observation.order.filled_quantity.required()?;
+    if !qty.positive()
+        || qty != record.filled_quantity
+        || !receipt.observation.gross_cash.positive()
+    {
+        return Err("managed_entry_fill_required".into());
+    }
+    let basis = receipt.observation.gross_cash.checked_divide(
+        qty.multiply(p.order.instrument.multiplier)?
+            .round(12, Rounding::Exact)?,
+        12,
+        Rounding::Exact,
+    )?;
+    if basis
+        .multiply(qty)?
+        .multiply(p.order.instrument.multiplier)?
+        .round(12, Rounding::Exact)?
+        != receipt.observation.gross_cash
+    {
+        return Err("managed_entry_basis_precision_unsupported".into());
+    }
+    Ok((
+        qty,
+        basis,
+        receipt.receipt_sha256,
+        receipt.observation.checkpoint.account.time,
+    ))
+}
+pub(super) fn account_semantics(a: &AccountSnapshot) -> Result<String, String> {
     let mut v = value(a)?;
     v.as_object_mut().unwrap().remove("time");
     hash(&v)
 }
-fn gross_floor(a: &AccountSnapshot) -> Result<Decimal, String> {
+pub(super) fn gross_floor(a: &AccountSnapshot) -> Result<Decimal, String> {
     let mut total = *a.gross_exposure.required()?;
     let mut positions = Decimal::ZERO;
     for p in a.positions.required()? {
@@ -91,6 +139,12 @@ pub(super) fn verify_checkpoint(
     s: &TradeAssemblyService,
     c: &CapitalCheckpoint,
 ) -> Result<(), String> {
+    if c.receipt_kind.as_deref() == Some("close_settlement") {
+        return super::management::verify_capital(s, c);
+    }
+    if c.receipt_kind.is_some() {
+        return Err("cash_settlement_checkpoint_kind_invalid".into());
+    }
     let r = read_receipt(s, &c.receipt_sha256)?;
     let a = &r.observation.checkpoint.account;
     if c.account_key != r.account_key
@@ -103,6 +157,19 @@ pub(super) fn verify_checkpoint(
         return Err("cash_settlement_checkpoint_invalid".into());
     }
     Ok(())
+}
+pub(super) fn capital_time(
+    s: &TradeAssemblyService,
+    c: &CapitalCheckpoint,
+) -> Result<ObservationTime, String> {
+    if c.receipt_kind.as_deref() == Some("close_settlement") {
+        return super::management::capital_time(s, c);
+    }
+    Ok(read_receipt(s, &c.receipt_sha256)?
+        .observation
+        .checkpoint
+        .account
+        .time)
 }
 pub(super) fn funding_floor(
     s: &TradeAssemblyService,
@@ -127,7 +194,7 @@ pub(super) fn funding_floor(
         }
     }
 }
-fn current_source(
+pub(super) fn current_source(
     s: &TradeAssemblyService,
     p: &OrderPlan,
     r: &submission::SubmissionRecord,
@@ -200,6 +267,9 @@ pub(crate) fn settle(
     let p = read_owned(s, &c.plan_id)?;
     if c.scope != p.command.scope {
         return Err("cash_settlement_scope_mismatch".into());
+    }
+    if p.management.is_some() {
+        return super::management::settle(s, &p, ctx);
     }
     let key = hash(&(owner(s)?, &c, ctx.idempotency_key.as_str()))?;
     if let Some(prior) = s.runtime().storage.get_json(KEYS, &key)? {
@@ -351,9 +421,9 @@ pub(super) fn commit(
         .ok_or("cash_settlement_reservation_missing")?;
     let mut ledger = ledger_owned(s, old_cash.clone())?;
     if let Some(old) = &ledger.capital_checkpoint {
-        let previous = read_receipt(s, &old.receipt_sha256)?;
-        if a.time.observed_at_ms < previous.observation.checkpoint.account.time.observed_at_ms
-            || a.time.known_at_ms < previous.observation.checkpoint.account.time.known_at_ms
+        let previous = capital_time(s, old)?;
+        if a.time.observed_at_ms < previous.observed_at_ms
+            || a.time.known_at_ms < previous.known_at_ms
         {
             return Err("cash_settlement_checkpoint_time_regressed".into());
         }
@@ -413,6 +483,7 @@ pub(super) fn commit(
     receipt.receipt_sha256 = receipt_hash(&receipt)?;
     ledger.reservations.remove(&p.plan_id);
     ledger.capital_checkpoint = Some(CapitalCheckpoint {
+        receipt_kind: None,
         account_key: p.account_key.clone(),
         ledger_epoch: o.checkpoint.ledger_epoch.clone(),
         sequence: o.checkpoint.sequence,
@@ -477,6 +548,9 @@ pub(super) fn verify_record(
     p: &OrderPlan,
     r: &submission::SubmissionRecord,
 ) -> Result<(), String> {
+    if p.management.is_some() {
+        return super::management::verify_close_record(s, p, r);
+    }
     if let Some(id) = &r.settlement_receipt_sha256 {
         let receipt = read_receipt(s, id)?;
         if receipt.plan_id != p.plan_id

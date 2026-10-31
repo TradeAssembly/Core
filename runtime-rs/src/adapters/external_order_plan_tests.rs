@@ -35,7 +35,8 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  use crate::service::{order_plans as plans,data_collections as collections};
  use tradeassembly_plugin_sdk::execution_snapshot as obs;
  let forward=Arc::new(ForwardNative::default());let (mut dir,base,_,_)=data_plans::tests::fixture_service(Some(forward.clone()));
- if v2_case==Some("financial_screen_auto"){dir.disable_cleanup(true);eprintln!("retained automatic fixture root {}",dir.path().display());}
+ if v2_case.is_some_and(|c|c.starts_with("financial_screen_auto")){dir.disable_cleanup(true);eprintln!("retained automatic fixture root {}",dir.path().display());}
+ let automatic=v2_case.is_some_and(|c|c.starts_with("financial_screen_auto"));let managed=v2_case==Some("financial_screen_auto_managed");
  let dynamic=v2_case.is_some_and(|c|c.starts_with("financial_screen_"));
  let replay=install_fixture_variant(&base,dir.path(),false,60000,false,dynamic,true);
  let facts=install_execution_package(&base,dir.path(),false);let sizing=install_execution_package(&base,dir.path(),true);
@@ -43,7 +44,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let warden=v2_case.map(|_|crate::finance_authority::tests::spawn_mock_warden(crate::finance_authority::tests::MockBehavior::Allow));
 
  base.runtime().plugins.put_instance(&replay.plugin_ref,json!({"instanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"providerRef":replay.plugin_ref,"enabled":true,"activePackageSha256":replay.package_sha256,"configuration":{}}),&ctx("execution-replay-instance")).unwrap();
- let dynamic_fixture=if dynamic{Some(setup_dynamic_execution_fixture(&base,dir.path(),v2_case==Some("financial_screen_refresh"),v2_case==Some("financial_screen_auto")))}else{None};
+ let dynamic_fixture=if dynamic{Some(setup_dynamic_execution_fixture(&base,dir.path(),v2_case==Some("financial_screen_refresh"),automatic))}else{None};
  let financial_clock_offset=(v2_case==Some("financial_token_expire")).then(||Arc::new(std::sync::atomic::AtomicI64::new(0)));
  let db=std::path::Path::new(base.db()).canonicalize().unwrap();let owner=crate::local_owner_identity::LocalOwnerIdentity::for_database(&db).unwrap();let mut rt=(*base.runtime()).clone();if v2_case.is_some_and(|c|c.starts_with("financial_")||c.starts_with("settlement_")){rt.finance_authority=Arc::new(FixtureFinancialAuthority);}
  if let Some(offset)=&financial_clock_offset {rt.clock=Arc::new(FinancialWitnessClock{base:rt.clock.clone(),offset:offset.clone()});}
@@ -76,8 +77,9 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
   bindings["exec_broker"]=json!({"pluginInstanceRef":broker.plugin_ref,"pluginRef":broker.plugin_ref,"operationId":crate::broker_submission::v2::SUBMIT_OPERATION,"accountRef":format!("account://{}/fixture.paper.provider",broker.plugin_ref)});
  }
  if let Some((screen,_))=&dynamic_fixture{configure_dynamic_execution_spec(&service,&mut spec,&mut bindings,&replay,screen,&snapshot);}
- if v2_case==Some("financial_screen_auto"){spec["stages"]["exit_policy"]["enabled"]=json!(false);configure_dispatch_calendar_fixture(&service,&mut spec);spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["offset_ms"]=json!(0);spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]["max_lateness_ms"]=json!(600000);bindings["calendar"]=json!({"pluginInstanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"operationId":"calendar"});}
+ if automatic{spec["stages"]["exit_policy"]["enabled"]=json!(false);configure_dispatch_calendar_fixture(&service,&mut spec);spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["offset_ms"]=json!(0);spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]["max_lateness_ms"]=json!(600000);bindings["calendar"]=json!({"pluginInstanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"operationId":"calendar"});}
 
+ if managed {spec["stages"]["exit_policy"]["enabled"]=json!(true);spec["stages"]["exit_policy"]["policy"]=json!({"monitoring":["synthetic"],"triggers":[{"id":"stop_loss","kind":"price","scope":"full_position"},{"id":"trailing","kind":"price","scope":"full_position"}],"composition":"priority","precedence":["stop_loss","trailing"],"end_of_data":"preserve_open_positions"});spec["stages"]["exit_policy"]["config"]["tradeassembly.managed_exit.v1"]=json!({"rules":{"schemaVersion":"tradeassembly.position_exit_rules.v1","priceBasis":"bid","stopLossRatio":"0.1","trailingRatio":"0.2","trailingStart":{"kind":"immediate"},"reversalSignal":null,"precedence":["stop_loss","trailing"],"maxQuoteAgeMs":30000},"entryBasis":"provider_final_gross_excluding_fees","feeCashCap":"1","maxLimitSlippageRatio":"0.01","timeInForce":"day","maxReversalAgeMs":30000});}
  let validation=crate::spec::validate_strategy_spec_report(&spec);assert!(validation.valid,"{validation:?}");
  let created=service.handle_http("POST","/product/strategies/create",json!({"name":"Authored native execution fixture","spec":spec,"idempotencyKey":"execution-create"}));assert_eq!(created.status,201,"{}",created.body);
  let id=created.body["body"]["strategy"]["id"].as_str().unwrap();let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":id,"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"idempotencyKey":"execution-publish"}));assert_eq!(published.body["body"]["published"],true,"{}",published.body);
@@ -88,7 +90,8 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let step=json!({"runId":"execution-signal","planRevisionId":prepared.body["plan"]["revisionId"],"window":{"eventStartMs":now-60000,"eventEndMs":now,"asOfMs":service.runtime().clock.now_ms()},"expectedCheckpointSha256":null});
  let signal=service.handle_http("POST","/product/strategies/data-runs/step",json!({"step":step,"idempotencyKey":"execution-signal-step"}));assert_eq!(signal.status,200,"{}",signal.body);assert_eq!(signal.body["receipt"]["signals"][0]["entry"],json!({"status":"ready","value":true}));
  if matches!(v2_case,Some("financial_joint"|"financial_settlement_joint")) {let root=dir.keep();prepare_financial_joint_driver(&service,&root,&scope,revision,&prepared.body,&signal.body,&warden.as_ref().unwrap().base_url);return;}
- if v2_case==Some("financial_screen_auto"){exercise_native_automatic_cycle(&service,&scope,revision,&snapshot,dir.path());if let Some((_,server))=dynamic_fixture{server.join().unwrap();}return;}
+ if automatic{exercise_native_automatic_cycle(&service,&scope,revision,&snapshot,dir.path());if managed {exercise_native_managed_close(&service,&scope,revision,dir.path());}
+ if let Some((_,server))=dynamic_fixture{server.join().unwrap();}return;}
  let orders=service.runtime().storage.list_json("orders").unwrap();let positions=service.runtime().storage.list_json("positions").unwrap();
  let acquire=|node:&str,schema:&str,key:&str| collections::acquire(&service,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:node.into(),mode:"paper".into(),response_schema_ref:schema.into(),input:json!({})},&ctx(key)).unwrap().collection_id;
  let command=plans::PrepareCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),reserve_cash:true,signal_receipt_sha256:signal.body["receipt"]["receiptSha256"].as_str().unwrap().into(),account_collection_id:acquire("exec_account",obs::ACCOUNT_SCHEMA,"execution-account"),metadata_collection_id:acquire("exec_metadata",obs::METADATA_SCHEMA,"execution-metadata"),quote_collection_id:acquire("exec_quote",obs::QUOTE_SCHEMA,"execution-quote")};

@@ -334,12 +334,45 @@ impl PluginOperationPort for LocalPluginOperations {
                     provider_outcome_id: o.provider_order_id.clone(),
                     reconciliation_required: false,
                 };
-                self.storage.put_json_if_absent(
-                    RECEIPTS_NS,
-                    &plan.original_key,
-                    serde_json::to_value(&original).map_err(|_| "broker_v2_observation_invalid")?,
-                    context,
-                )?;
+                let candidate =
+                    serde_json::to_value(&original).map_err(|_| "broker_v2_observation_invalid")?;
+                let existing = self.storage.get_json(RECEIPTS_NS, &plan.original_key)?;
+                let existing = if existing.is_some() {
+                    existing
+                } else {
+                    match self.storage.put_json_if_absent(
+                        RECEIPTS_NS,
+                        &plan.original_key,
+                        candidate,
+                        context,
+                    ) {
+                        Ok(_) => None,
+                        Err(e) if e == "immutable_storage_conflict" => Some(
+                            self.storage
+                                .get_json(RECEIPTS_NS, &plan.original_key)?
+                                .ok_or("broker_v2_original_receipt_missing")?,
+                        ),
+                        Err(e) => return Err(e),
+                    }
+                };
+                if let Some(raw) = existing {
+                    let historical = validated_stored_response(raw, &plan.original)?;
+                    let observed: tradeassembly_plugin_sdk::broker_v2::OrderObservation =
+                        serde_json::from_value(historical.payload)
+                            .map_err(|_| "broker_v2_original_receipt_invalid")?;
+                    observed.validate(source.service().runtime().clock.now_ms())?;
+                    let p = source.historical()?;
+                    if historical.schema_ref
+                        != tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA
+                        || observed.order != p.order
+                        || Some(observed.canonical_account_sha256.as_str())
+                            != p.canonical_account
+                                .as_ref()
+                                .map(|a| a.identity_sha256.as_str())
+                    {
+                        return Err("broker_v2_original_receipt_binding_invalid".into());
+                    }
+                }
                 if receipt.is_none() {
                     receipt = Some(original)
                 }

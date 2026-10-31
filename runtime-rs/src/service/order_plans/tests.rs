@@ -139,6 +139,7 @@ fn plan(s: &TradeAssemblyService, f: &Facts, p: &Policy, id: &str) -> OrderPlan 
         client_order_id: format!("fixture-{id}"),
     };
     let mut r = OrderPlan {
+        management: None,
         plan_id: String::new(),
         entry_id: id.into(),
         command: PrepareCommand {

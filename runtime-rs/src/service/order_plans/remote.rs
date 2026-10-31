@@ -223,6 +223,9 @@ pub(crate) fn binding(
         }
         _ => {
             let p = read_owned(s, op.plan_id().ok_or("financial_runner_plan_required")?)?;
+            if p.management.is_some() {
+                return Err("financial_runner_close_version_unsupported".into());
+            }
             if p.command.scope != *op.scope() {
                 return Err("financial_runner_scope_mismatch".into());
             }

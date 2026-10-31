@@ -215,6 +215,21 @@ pub fn load_current_state(
     request: &PluginOperationRequest,
     context: &SideEffectContext,
 ) -> Result<BrokerCurrentState, String> {
+    load_current_state_inner(deps, request, context, false)
+}
+pub(crate) fn load_management_state(
+    deps: &BrokerSubmissionDependencies,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+) -> Result<BrokerCurrentState, String> {
+    load_current_state_inner(deps, request, context, true)
+}
+fn load_current_state_inner(
+    deps: &BrokerSubmissionDependencies,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+    management: bool,
+) -> Result<BrokerCurrentState, String> {
     let now_ms = deps.clock.trusted_now_ms()?;
     if !matches!(request.mode.as_str(), "paper" | "live") {
         return Err("broker_submission_mode_invalid".into());
@@ -263,11 +278,14 @@ pub fn load_current_state(
     {
         return Err("activation_binding_mismatch".into());
     }
-    if controls_blocked(&controls)
-        || controls["activationId"] != activation_id
+    if (if management {
+        management_controls_blocked(&controls)
+    } else {
+        controls_blocked(&controls)
+    }) || controls["activationId"] != activation_id
         || reconciliation["activationId"] != activation_id
         || reconciliation["state"] != "clear"
-        || reconciliation["newEntriesPaused"] != false
+        || (!management && reconciliation["newEntriesPaused"] != false)
     {
         return Err("execution_controls_blocked".into());
     }
@@ -611,6 +629,18 @@ fn stored_entitlements(
         );
     }
     Ok(grants)
+}
+
+pub(crate) fn management_controls_blocked(v: &Value) -> bool {
+    v["paused"] == true
+        || v["stopRequested"] == true
+        || v["emergencyStop"] == true
+        || v["stop"] == "requested"
+        || v["stop"] == "stopped"
+        || v["emergencyStop"] == "requested"
+        || v["emergencyStop"] == "engaged"
+        || v["lastControl"]["action"] == "stop"
+        || v["lastControl"]["action"] == "emergency_stop"
 }
 
 pub(crate) fn controls_blocked(controls: &Value) -> bool {

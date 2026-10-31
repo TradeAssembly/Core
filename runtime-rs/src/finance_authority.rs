@@ -762,7 +762,9 @@ pub fn authority_definition(
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
         "strategy.selection_plan.prepare" => &SELECTION_PLAN_PREPARE,
         "strategy.order_plan.submit" => &ORDER_PLAN_SUBMIT_REQUEST,
-        "strategy.order_plan.prepare"
+        "strategy.position.register"
+        | "strategy.position.advance"
+        | "strategy.order_plan.prepare"
         | "strategy.order_plan.reserve"
         | "strategy.order_plan.release"
         | "strategy.order_plan.reconcile"

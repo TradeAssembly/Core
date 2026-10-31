@@ -63,18 +63,34 @@ fn validate(
     {
         return Err("broker_v2_strategy_binding_mismatch".into());
     }
+    let managing = p.management.is_some();
     let state = order_plans::measured("broker.load_current_state", || {
-        load_current_state(deps, request, context)
+        if managing {
+            load_management_state(deps, request, context)
+        } else {
+            load_current_state(deps, request, context)
+        }
     })?;
     validate_prepared_binding(&state, prepared)?;
-    let signal = source.verified_signal()?;
-    if state.config["orchestrator"] == "typed_pipeline" {
+    let signal = if managing {
+        None
+    } else {
+        Some(source.verified_signal()?)
+    };
+    if managing {
+        order_plans::management::validate_approval(
+            source.service(),
+            &p,
+            &state.run,
+            &state.config,
+        )?;
+    } else if state.config["orchestrator"] == "typed_pipeline" {
         let selection = order_plans::decision::check_plan_with_signal(
             source.service(),
             &p,
             &state.run,
             &state.config,
-            &signal,
+            signal.as_ref().ok_or("broker_v2_signal_missing")?,
         )?;
         if state.run["orderPlanApprovals"][&p.plan_id]["selectionBindingSha256"] != selection {
             return Err("broker_v2_selection_changed".into());
@@ -97,9 +113,10 @@ fn validate(
         return Err("broker_v2_plan_decision_missing".into());
     }
 
-    if state.config["orderPlanPolicySha256"]
-        != crate::data_pipeline::canonical_sha256(&p.policy)
-            .map_err(|_| "broker_v2_policy_invalid")?
+    if !managing
+        && state.config["orderPlanPolicySha256"]
+            != crate::data_pipeline::canonical_sha256(&p.policy)
+                .map_err(|_| "broker_v2_policy_invalid")?
     {
         return Err("broker_v2_risk_policy_not_activated".into());
     }
@@ -157,7 +174,11 @@ fn validate(
         return Err("broker_v2_lookup_permission_unavailable".into());
     }
     if order_plans::measured("broker.source.snapshot", || {
-        source.snapshot_with_signal(&signal)
+        if let Some(signal) = &signal {
+            source.snapshot_with_signal(signal)
+        } else {
+            source.snapshot()
+        }
     })? != p
     {
         return Err("broker_v2_plan_changed".into());

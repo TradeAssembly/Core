@@ -56,6 +56,7 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
         return Err("typed_execution_declared_broker_required".into());
     }
 
+    let managed_exit_policy = order_plans::management::policy(s, &c.scope)?;
     let selected_template = super::super::selection_plans::template(s, &c.scope)?;
     let selected = selected_template.is_some();
     if c.automatic_execution.is_some() {
@@ -76,7 +77,9 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
                 )
             })
         };
-        if !entry_only || version["spec"]["stages"]["exit_policy"]["enabled"] != false {
+        if managed_exit_policy.is_none()
+            && (!entry_only || version["spec"]["stages"]["exit_policy"]["enabled"] != false)
+        {
             return Err("typed_cycle_exit_admission_not_supported".into());
         }
     }
@@ -147,9 +150,11 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
             &json!({"command":c,"owner":owner,"account":witness.identity,"brokerBinding":witness.binding_sha256,"policy":policy})
         )?
     );
-    Ok(
-        json!({"kind":"ExecutionConfig","configId":id,"executionContractVersion":VERSION,"typedExecution":c,"orchestrator":"typed_pipeline","strategyId":c.scope.strategy_id,"strategyVersionId":c.scope.strategy_version_id,"strategySpecHash":c.scope.strategy_spec_hash,"capabilityGraphRevisionId":c.capability_graph_revision,"capabilityGraphFingerprint":rev["graphFingerprint"],"mode":"paper","accountRef":witness.account_ref,"providerRef":binding["pluginRef"],"canonicalAccount":witness.identity,"brokerAccountBindingSha256":witness.binding_sha256,"orderPlanPolicySha256":typed_hash(&policy)?,"orderPlanBrokerNode":c.broker_requirement_ref,"selectionPolicy":if selected{"selected_receipt_head"}else{"published_static"},"symbol":Value::Null,"timeframe":Value::Null,"calendarRef":Value::Null,"dataFreshnessPolicy":{"maxAgeMs":policy.max_snapshot_age_ms},"riskLimits":{"typedPolicySha256":typed_hash(&policy)?},"schedulerIntervalSeconds":60,"warmup":{"source":"typed_data_plan_readiness"},"status":"configured"}),
-    )
+    let mut result = json!({"kind":"ExecutionConfig","configId":id,"executionContractVersion":VERSION,"typedExecution":c,"orchestrator":"typed_pipeline","strategyId":c.scope.strategy_id,"strategyVersionId":c.scope.strategy_version_id,"strategySpecHash":c.scope.strategy_spec_hash,"capabilityGraphRevisionId":c.capability_graph_revision,"capabilityGraphFingerprint":rev["graphFingerprint"],"mode":"paper","accountRef":witness.account_ref,"providerRef":binding["pluginRef"],"canonicalAccount":witness.identity,"brokerAccountBindingSha256":witness.binding_sha256,"orderPlanPolicySha256":typed_hash(&policy)?,"orderPlanBrokerNode":c.broker_requirement_ref,"selectionPolicy":if selected{"selected_receipt_head"}else{"published_static"},"symbol":Value::Null,"timeframe":Value::Null,"calendarRef":Value::Null,"dataFreshnessPolicy":{"maxAgeMs":policy.max_snapshot_age_ms},"riskLimits":{"typedPolicySha256":typed_hash(&policy)?},"schedulerIntervalSeconds":60,"warmup":{"source":"typed_data_plan_readiness"},"status":"configured"});
+    if let Some(p) = managed_exit_policy {
+        result["managedExitPolicySha256"] = json!(typed_hash(&p)?);
+    }
+    Ok(result)
 }
 pub(super) fn save(s: &TradeAssemblyService, body: &Value) -> Value {
     let result = (|| {

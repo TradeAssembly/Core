@@ -1104,6 +1104,9 @@ impl TradeAssemblyService {
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = order_plans::management::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = order_plans::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1344,6 +1347,19 @@ impl TradeAssemblyService {
         match (normalized_method.as_str(), normalized_path.as_str()) {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
+            }
+            (
+                "POST",
+                "/product/strategies/positions/register" | "/product/strategies/positions/advance",
+            ) => order_plans::management::response(self, &normalized_path, body),
+            ("GET", path) if path.starts_with("/product/strategies/positions/") => {
+                match order_plans::management::inspect(
+                    self,
+                    path.trim_start_matches("/product/strategies/positions/"),
+                ) {
+                    Ok(v) => ServiceResponse::ok(v),
+                    Err(_) => ServiceResponse::object_unavailable(),
+                }
             }
             ("POST", "/product/strategies/order-plans/prepare") => {
                 order_plans::response(self, order_plans::PREPARE, body)

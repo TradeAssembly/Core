@@ -7,6 +7,7 @@
 pub mod broker_v2;
 pub mod canonical;
 pub mod cash_settlement;
+pub mod close_settlement;
 pub mod data_contract;
 pub mod data_evaluation;
 pub mod data_history;

@@ -141,6 +141,40 @@ impl Decimal {
         let (a, b, _) = self.aligned(step)?;
         Ok(a % b == 0)
     }
+    pub fn checked_divide(self, other: Self, scale: u8, mode: Rounding) -> Result<Self, String> {
+        if !other.positive() || scale > MAX_SCALE {
+            return Err("execution_decimal_divisor_invalid".into());
+        }
+        let shift = i16::from(other.scale) + i16::from(scale) - i16::from(self.scale);
+        let (a, b) = if shift >= 0 {
+            (
+                self.coefficient
+                    .checked_mul(pow(shift as u8)?)
+                    .ok_or("execution_decimal_overflow")?,
+                other.coefficient,
+            )
+        } else {
+            (
+                self.coefficient,
+                other
+                    .coefficient
+                    .checked_mul(pow((-shift) as u8)?)
+                    .ok_or("execution_decimal_overflow")?,
+            )
+        };
+        let q = a / b;
+        let r = a % b;
+        let delta = match mode {
+            Rounding::Exact if r != 0 => return Err("execution_decimal_precision_loss".into()),
+            Rounding::Ceil if r > 0 => 1,
+            Rounding::Floor if r < 0 => -1,
+            _ => 0,
+        };
+        Self::from_parts(
+            q.checked_add(delta).ok_or("execution_decimal_overflow")?,
+            scale,
+        )
+    }
     pub fn multiply(self, other: Self) -> Result<Product, String> {
         Product {
             coefficient: self.coefficient,

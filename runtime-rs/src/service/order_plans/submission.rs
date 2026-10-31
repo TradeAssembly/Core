@@ -82,6 +82,9 @@ pub(crate) fn release_guard(
     s: &TradeAssemblyService,
     p: &OrderPlan,
 ) -> Result<Option<Value>, String> {
+    if p.management.is_some() {
+        return Err("managed_close_requires_final_settlement".into());
+    }
     match record(s, p)? {
         None => Ok(None),
         Some((raw, r)) if matches!(r.phase, Phase::Denied | Phase::Rejected | Phase::Cancelled) => {
@@ -108,6 +111,10 @@ impl OrderPlanSource {
         verify_signal(&self.service, &self.historical()?.command)
     }
     pub(crate) fn snapshot(&self) -> Result<OrderPlan, String> {
+        let p = self.historical()?;
+        if p.management.is_some() {
+            return super::management::snapshot(&self.service, &p);
+        }
         let signal = self.verified_signal()?;
         self.snapshot_with_signal(&signal)
     }
@@ -370,7 +377,7 @@ impl OrderPlanSource {
             ],
             phase,
             Some(o),
-            release,
+            release && self.historical()?.management.is_none(),
             ctx,
         )
     }

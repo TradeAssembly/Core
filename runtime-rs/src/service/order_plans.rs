@@ -12,6 +12,7 @@ use tradeassembly_plugin_sdk::{
     execution::*, execution_calculation as calc, execution_snapshot::*,
 };
 pub mod decision;
+pub mod management;
 pub mod remote;
 pub mod settlement;
 pub mod submission;
@@ -65,6 +66,8 @@ pub struct PrepareCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrderPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management: Option<management::CloseBinding>,
     pub plan_id: String,
     pub entry_id: String,
     pub command: PrepareCommand,
@@ -1050,6 +1053,7 @@ pub fn prepare(
         return Err("order_plan_sources_changed".into());
     }
     let mut result = OrderPlan {
+        management: None,
         plan_id: String::new(),
         entry_id: f.entry_id.clone(),
         command: c,

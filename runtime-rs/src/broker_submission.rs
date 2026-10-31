@@ -613,7 +613,7 @@ fn stored_entitlements(
     Ok(grants)
 }
 
-fn controls_blocked(controls: &Value) -> bool {
+pub(crate) fn controls_blocked(controls: &Value) -> bool {
     controls["paused"] == true
         || controls["stopRequested"] == true
         || controls["emergencyStop"] == true

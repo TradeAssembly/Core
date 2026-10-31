@@ -36,7 +36,7 @@ fn validate(
     if owner.issuer != deps.owner.issuer || owner.subject != deps.owner.subject {
         return Err("broker_v2_owner_mismatch".into());
     }
-    let p = source.snapshot()?;
+    let p = source.historical()?;
     let input: wire::SubmitRequest =
         serde_json::from_value(request.input.clone()).map_err(|_| "broker_v2_request_invalid")?;
     input.validate()?;
@@ -63,9 +63,25 @@ fn validate(
     {
         return Err("broker_v2_strategy_binding_mismatch".into());
     }
-    let state = load_current_state(deps, request, context)?;
+    let state = order_plans::measured("broker.load_current_state", || {
+        load_current_state(deps, request, context)
+    })?;
     validate_prepared_binding(&state, prepared)?;
-    validate_order_symbol(&state.config, &p.order.instrument.provider_symbol)?;
+    let signal = source.verified_signal()?;
+    if state.config["orchestrator"] == "typed_pipeline" {
+        let selection = order_plans::decision::check_plan_with_signal(
+            source.service(),
+            &p,
+            &state.run,
+            &state.config,
+            &signal,
+        )?;
+        if state.run["orderPlanApprovals"][&p.plan_id]["selectionBindingSha256"] != selection {
+            return Err("broker_v2_selection_changed".into());
+        }
+    } else {
+        validate_order_symbol(&state.config, &p.order.instrument.provider_symbol)?;
+    }
     if state.config["executionContractVersion"] != "tradeassembly.typed_execution.v2" {
         return Err("broker_v2_typed_activation_required".into());
     }
@@ -103,6 +119,48 @@ fn validate(
         })
     {
         return Err("broker_v2_lookup_operation_missing".into());
+    }
+    let status = deps
+        .credentials
+        .status(required_value(&state.instance, "credentialRef")?);
+    let entry = crate::plugin_catalog::stored_plugin_entry(
+        &state.instance,
+        &state.manifest,
+        &status,
+        state.instance["health"]["state"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+    )
+    .ok_or("broker_v2_lookup_permission_unavailable")?;
+    let lookup = deps.capability_resolver.resolve(
+        CapabilityRequirement {
+            requirement_id: "broker-v2-admission-recovery".into(),
+            capability: LOOKUP_CAPABILITY.into(),
+            mode: "paper".into(),
+            plugin_instance_ref: Some(request.plugin_instance_ref.clone()),
+            plugin_ref: Some(request.plugin_ref.clone()),
+            operation_id: Some(LOOKUP_OPERATION.into()),
+            account_ref: request.account_ref.clone(),
+            purpose: Some("recovery".into()),
+            asset_class: Some(p.order.instrument.asset_class.clone()),
+            instrument_family: Some(p.order.instrument.instrument_family.clone()),
+            fallback_policy: "deny".into(),
+            ..Default::default()
+        },
+        CapabilityResolverCatalog {
+            plugins: vec![entry],
+            entitlements: stored_entitlements(deps.storage.as_ref())?,
+        },
+    );
+    if !lookup.ok {
+        return Err("broker_v2_lookup_permission_unavailable".into());
+    }
+    if order_plans::measured("broker.source.snapshot", || {
+        source.snapshot_with_signal(&signal)
+    })? != p
+    {
+        return Err("broker_v2_plan_changed".into());
     }
     let (mut intent, _) = bound_intent(
         &state,

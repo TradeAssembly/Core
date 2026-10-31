@@ -11,6 +11,8 @@ use std::{cmp::Ordering, collections::BTreeMap};
 use tradeassembly_plugin_sdk::{
     execution::*, execution_calculation as calc, execution_snapshot::*,
 };
+pub mod decision;
+pub mod remote;
 pub mod submission;
 pub mod transport;
 const CONFIG: &str = "tradeassembly.order_plan";
@@ -23,6 +25,8 @@ const RELEASES: &str = "execution_cash_releases_v1";
 pub(super) const PREPARE: &str = "/product/strategies/order-plans/prepare";
 pub(super) const RESERVE: &str = "/product/strategies/order-plans/reserve";
 pub(super) const RECONCILE: &str = "/product/strategies/order-plans/reconcile";
+pub(super) const DECIDE: &str = "/product/strategies/order-plans/decide";
+pub(super) const SELECT: &str = "/product/strategies/order-plans/select";
 pub(super) const SUBMIT: &str = "/product/strategies/order-plans/submit";
 pub(super) const RELEASE: &str = "/product/strategies/order-plans/release";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -244,15 +248,19 @@ fn within(a: Decimal, b: Decimal) -> Result<(), String> {
     }
 }
 fn policy(s: &TradeAssemblyService, c: &PrepareCommand) -> Result<Policy, String> {
-    s.require_object("strategy", &c.scope.strategy_id)
+    published_policy(s, &c.scope)
+}
+pub(super) fn published_policy(
+    s: &TradeAssemblyService,
+    scope: &data_plans::PlanScope,
+) -> Result<Policy, String> {
+    s.require_object("strategy", &scope.strategy_id)
         .map_err(|_| "order_plan_not_available")?;
-    let v = strategy::strategy_versions(s, &c.scope.strategy_id)
+    let v = strategy::strategy_versions(s, &scope.strategy_id)
         .into_iter()
-        .find(|v| {
-            v["id"] == c.scope.strategy_version_id && v["specHash"] == c.scope.strategy_spec_hash
-        })
+        .find(|v| v["id"] == scope.strategy_version_id && v["specHash"] == scope.strategy_spec_hash)
         .ok_or("order_plan_version_missing")?;
-    if crate::spec::canonical_hash(&v["spec"])? != c.scope.strategy_spec_hash
+    if crate::spec::canonical_hash(&v["spec"])? != scope.strategy_spec_hash
         || !tradeassembly_strategy::spec::validate(&v["spec"]).valid
     {
         return Err("order_plan_spec_invalid".into());
@@ -327,6 +335,23 @@ fn observation(now: i64, time: &ObservationTime, host: i64, age: i64) -> Result<
         .checked_add(age)
         .ok_or("order_plan_time_invalid".into())
 }
+#[inline]
+pub(crate) fn measured<T>(stage: &'static str, f: impl FnOnce() -> T) -> T {
+    #[cfg(not(test))]
+    {
+        let _ = stage;
+        f()
+    }
+    #[cfg(test)]
+    {
+        let start = std::time::Instant::now();
+        let result = f();
+        if std::env::var_os("FINANCIAL_PROFILE").is_some() {
+            eprintln!("FIN_PROFILE {stage} {}us", start.elapsed().as_micros());
+        }
+        result
+    }
+}
 fn collection(
     s: &TradeAssemblyService,
     c: &PrepareCommand,
@@ -334,7 +359,7 @@ fn collection(
     schema_ref: &str,
     schema: Value,
 ) -> Result<data_collections::CollectionReceipt, String> {
-    let r = data_collections::current(s, id)?;
+    let r = measured("collection.current", || data_collections::current(s, id))?;
     if r.command.scope != c.scope
         || r.command.capability_graph_revision != c.capability_graph_revision
         || r.command.mode != c.mode
@@ -357,18 +382,65 @@ fn funding_capacity(account: &AccountSnapshot) -> Result<Decimal, String> {
         *account.non_marginable_buying_power.required()?,
     )
 }
+// Call-local evidence only: no Clone/serde/storage and no public constructor.
+// Every approval/admission revalidation round loads a fresh instance.
+pub(crate) struct VerifiedSignal {
+    owner_sha256: String,
+    database: String,
+    command: PrepareCommand,
+    plan: data_plans::StoredDataPlan,
+    receipt: data_evaluation::EvaluationReceipt,
+}
+impl VerifiedSignal {
+    pub(crate) fn matches(
+        &self,
+        s: &TradeAssemblyService,
+        c: &PrepareCommand,
+    ) -> Result<(), String> {
+        if self.owner_sha256 != owner(s)? || self.database != s.db() || self.command != *c {
+            return Err("order_plan_signal_witness_mismatch".into());
+        }
+        Ok(())
+    }
+}
+pub(crate) fn verify_signal(
+    s: &TradeAssemblyService,
+    c: &PrepareCommand,
+) -> Result<VerifiedSignal, String> {
+    let (plan, receipt) = measured("signal.verify_round", || {
+        data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)
+    })?;
+    if plan.content.scope != c.scope
+        || plan.content.plan.request.capability_graph_revision != c.capability_graph_revision
+        || plan.content.plan.request.mode != c.mode
+        || receipt.receipt_sha256 != c.signal_receipt_sha256
+    {
+        return Err("order_plan_signal_binding_mismatch".into());
+    }
+    Ok(VerifiedSignal {
+        owner_sha256: owner(s)?,
+        database: s.db().into(),
+        command: c.clone(),
+        plan,
+        receipt,
+    })
+}
 fn facts(s: &TradeAssemblyService, c: &PrepareCommand, p: &Policy) -> Result<Facts, String> {
+    let signal = verify_signal(s, c)?;
+    facts_with_signal(s, c, p, &signal)
+}
+fn facts_with_signal(
+    s: &TradeAssemblyService,
+    c: &PrepareCommand,
+    p: &Policy,
+    verified: &VerifiedSignal,
+) -> Result<Facts, String> {
+    verified.matches(s, c)?;
     if c.mode != "paper" {
         return Err("order_plan_mode_unsupported".into());
     }
     let now = s.runtime().clock.now_ms();
-    let (plan, signal) = data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)?;
-    if plan.content.scope != c.scope
-        || plan.content.plan.request.capability_graph_revision != c.capability_graph_revision
-        || plan.content.plan.request.mode != c.mode
-    {
-        return Err("order_plan_signal_binding_mismatch".into());
-    }
+    let signal = &verified.receipt;
     let frame = signal
         .signals
         .last()
@@ -519,7 +591,7 @@ fn facts(s: &TradeAssemblyService, c: &PrepareCommand, p: &Policy) -> Result<Fac
     }
     let available = funding_capacity(&account)?;
     let receipts = BTreeMap::from([
-        ("signal".into(), signal.receipt_sha256),
+        ("signal".into(), signal.receipt_sha256.clone()),
         ("account".into(), ar.receipt_sha256),
         ("metadata".into(), mr.receipt_sha256),
         ("quote".into(), qr.receipt_sha256),
@@ -856,7 +928,7 @@ pub fn prepare(
     if c.reserve_cash && ledger.reservations.len() >= 256 {
         return Err("order_plan_reservation_capacity".into());
     }
-    let (graph, selected, pin) = calculation(s, &c, &p, &f)?;
+    let (graph, selected, pin) = measured("calculation.pin", || calculation(s, &c, &p, &f))?;
     if s.runtime()
         .storage
         .get_json(ENTRIES, &f.entry_id)?
@@ -942,7 +1014,7 @@ pub fn prepare(
     if fresh.receipts != f.receipts
         || fresh.canonical_account != f.canonical_account
         || fresh.account_binding_sha256 != f.account_binding_sha256
-        || calculation(s, &c, &p, &fresh)?.2 != pin
+        || measured("calculation.pin", || calculation(s, &c, &p, &fresh))?.2 != pin
     {
         return Err("order_plan_sources_changed".into());
     }
@@ -1101,21 +1173,38 @@ pub fn current(s: &TradeAssemblyService, id: &str) -> Result<OrderPlan, String> 
     checked_current(s, id).map(|(r, _)| r)
 }
 fn checked_current(s: &TradeAssemblyService, id: &str) -> Result<(OrderPlan, Facts), String> {
-    let r = read_owned(s, id)?;
-    if released(s, &r)?.is_some() {
+    let p = read_owned(s, id)?;
+    // Terminal release and expiry refuse before loading external data lineage.
+    // Preserve the legacy refusal ordering even when a signal is unavailable.
+    current_record(s, &p)?;
+    let signal = verify_signal(s, &p.command)?;
+    checked_current_with_signal(s, id, &signal)
+}
+fn current_record(s: &TradeAssemblyService, r: &OrderPlan) -> Result<Policy, String> {
+    if released(s, r)?.is_some() {
         return Err("order_plan_reservation_released".into());
     }
     let p = policy(s, &r.command)?;
     if p != r.policy || s.runtime().clock.now_ms() >= r.valid_until_ms {
         return Err("order_plan_stale".into());
     }
-    let f = facts(s, &r.command, &p)?;
+    Ok(p)
+}
+fn checked_current_with_signal(
+    s: &TradeAssemblyService,
+    id: &str,
+    signal: &VerifiedSignal,
+) -> Result<(OrderPlan, Facts), String> {
+    let r = read_owned(s, id)?;
+    signal.matches(s, &r.command)?;
+    let p = current_record(s, &r)?;
+    let f = facts_with_signal(s, &r.command, &p, signal)?;
     if r.entry_id != f.entry_id
         || r.source_receipts != f.receipts
         || r.account_key != f.account_key
         || r.canonical_account != f.canonical_account
         || r.account_binding_sha256 != f.account_binding_sha256
-        || calculation(s, &r.command, &p, &f)?.2 != r.calculation
+        || measured("calculation.pin", || calculation(s, &r.command, &p, &f))?.2 != r.calculation
         || risk(&p, &f, &r.order, r.available_cash)? != r.purchase_cash
     {
         return Err("order_plan_binding_stale".into());
@@ -1202,7 +1291,13 @@ pub(super) fn preflight(
     path: &str,
     body: &Value,
 ) -> Option<ServiceResponse> {
-    if path != PREPARE && path != RESERVE && path != RELEASE && path != SUBMIT && path != RECONCILE
+    if path != PREPARE
+        && path != RESERVE
+        && path != RELEASE
+        && path != SUBMIT
+        && path != RECONCILE
+        && path != DECIDE
+        && path != SELECT
     {
         return None;
     }
@@ -1225,9 +1320,22 @@ pub(super) fn preflight(
             // graph and artifact checks remain inside prepare before invocation
             // and immediately before its atomic plan/cash commit.
             policy(s, &c)?;
+        } else if path == SELECT {
+            let c: decision::SelectionCommand = serde_json::from_value(body["selection"].clone())
+                .map_err(|_| "typed_selection_command_invalid")?;
+            s.require_object("execution_activation", &c.activation_id)
+                .map_err(|_| "typed_selection_not_available")?;
+            let plan = data_plans::current(s, &c.plan_revision_id)?;
+            if body["scope"] != value(&plan.content.scope)?
+                || e.target_object.as_deref() != Some(plan.content.scope.strategy_id.as_str())
+            {
+                return Err("order_plan_scope_mismatch".into());
+            }
         } else {
             let plan_id = if path == SUBMIT {
                 body["submission"]["planId"].as_str()
+            } else if path == DECIDE {
+                body["decision"]["planId"].as_str()
             } else {
                 body["planId"].as_str()
             }
@@ -1262,6 +1370,20 @@ pub(super) fn response(s: &TradeAssemblyService, path: &str, body: Value) -> Ser
             let r = prepare(s, command(&body)?, &ctx)?;
             Ok(
                 json!({"planId":r.plan_id,"order":r.order,"purchaseCash":r.purchase_cash,"validUntilMs":r.valid_until_ms,"cashReservedAtPreparation":r.command.reserve_cash,"currentness":"not_checked","executionAuthorityGranted":false,"brokerDispatchAllowed":false}),
+            )
+        } else if path == DECIDE {
+            decision::decide(
+                s,
+                serde_json::from_value(body["decision"].clone())
+                    .map_err(|_| "typed_entry_command_invalid")?,
+                &ctx,
+            )
+        } else if path == SELECT {
+            decision::select(
+                s,
+                serde_json::from_value(body["selection"].clone())
+                    .map_err(|_| "typed_selection_command_invalid")?,
+                &ctx,
             )
         } else if path == RECONCILE {
             transport::reconcile(

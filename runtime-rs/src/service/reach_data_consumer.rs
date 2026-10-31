@@ -348,7 +348,6 @@ impl ReachDataConsumer {
         if c.node != self.node || c.source_binding_sha256 != self.source {
             return Err("reach_data_source_scope_unavailable".into());
         }
-        let current = self.runner.mutation_binding(&c.command)?;
         // An expired accepted command may only reconcile an already-final local
         // receipt; it never starts or resumes another effect under that expiry.
         let now = self.service.runtime().clock.now_ms();
@@ -359,8 +358,13 @@ impl ReachDataConsumer {
             matches!(
                 r.state,
                 DataRunnerState::Completed | DataRunnerState::Failed
-            )
+            ) || c.command.financial() && r.state == DataRunnerState::Uncertain
         });
+        let current = if final_prior {
+            self.runner.reconciliation_binding(&c.command)?
+        } else {
+            self.runner.mutation_binding(&c.command)?
+        };
         if now >= c.expires_at_ms && !final_prior {
             return Ok(ReachDataPoll::Blocked {
                 request_id: c.request_id.clone(),

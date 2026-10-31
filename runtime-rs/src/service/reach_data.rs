@@ -50,6 +50,7 @@ impl ReachDataCommand {
         let encoded = serde_json::to_vec(self).map_err(|_| "reach_data_encoding_invalid")?;
         canonical_sha256(self).map_err(|_| "reach_data_number_invalid")?;
         let action = match &self.command.operation {
+            super::data_runner::DataRunnerOperation::Financial { financial } => financial.action(),
             super::data_runner::DataRunnerOperation::DispatchSession { .. } => "scheduler.run",
             super::data_runner::DataRunnerOperation::PrepareSelectionPlan { .. } => {
                 "strategy.selection_plan.prepare"
@@ -73,6 +74,13 @@ impl ReachDataCommand {
                 "strategy.session_schedule.prepare"
             }
         };
+        if let super::data_runner::DataRunnerOperation::Financial { financial } =
+            &self.command.operation
+        {
+            if self.resource.scope != *financial.scope() {
+                return Err("reach_data_command_invalid".into());
+            }
+        }
         if let super::data_runner::DataRunnerOperation::PrepareSelectionPlan { selection_plan } =
             &self.command.operation
         {
@@ -122,7 +130,9 @@ impl ReachDataCommand {
             || self.resource.mode != self.command.mode
             || self.resource.action != action
             || self.resource.resource_kind.as_deref()
-                != if self.command.scheduler_dispatch() {
+                != if self.command.financial() {
+                    Some("strategy_order_plan")
+                } else if self.command.scheduler_dispatch() {
                     Some("scheduler")
                 } else if self.command.selected_creation() {
                     Some("strategy_selection_plan")
@@ -428,5 +438,40 @@ mod tests {
         let mut old = prep;
         old.schema = "tradeassembly.relay.reach-data-preparation/v2".into();
         assert!(old.signing_payload().is_err());
+    }
+    #[test]
+    fn financial_reach_couples_scope_action_resource_and_all_versions() {
+        use super::super::data_runner::{DataRunnerOperation, DATA_RUNNER_SCHEMA_V4};
+        let mut c = fixture();
+        let scope = c.resource.scope.clone();
+        c.command.operation = DataRunnerOperation::Financial {
+            financial: super::super::order_plans::remote::FinancialOperation::Release {
+                scope,
+                plan_id: "owned-plan".into(),
+            },
+        };
+        c.command.schema_version = DATA_RUNNER_SCHEMA_V4.into();
+        c.schema = c.command.reach_schema().into();
+        c.resource.schema_version = c.command.binding_schema().into();
+        c.resource.command_sha256 = c.command.canonical_hash().unwrap();
+        c.resource.action = "strategy.order_plan.release".into();
+        c.resource.resource_kind = Some("strategy_order_plan".into());
+        c.validate().unwrap();
+        for n in 0..7 {
+            let mut bad = c.clone();
+            match n {
+                0 => bad.schema = "tradeassembly.relay.reach-data-command/v3".into(),
+                1 => bad.command.schema_version = "tradeassembly.core-data-runner.v3".into(),
+                2 => {
+                    bad.resource.schema_version =
+                        "tradeassembly.core-data-mutation-binding.v3".into()
+                }
+                3 => bad.resource.resource_kind = Some("scheduler".into()),
+                4 => bad.resource.action = "strategy.order_plan.submit".into(),
+                5 => bad.resource.scope.strategy_id = "foreign".into(),
+                _ => bad.command.mode = super::super::data_runner::DataRunnerMode::Backtest,
+            };
+            assert!(bad.validate().is_err(), "variant {n}");
+        }
     }
 }

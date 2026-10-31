@@ -1354,6 +1354,12 @@ impl TradeAssemblyService {
             ("POST", "/product/strategies/order-plans/release") => {
                 order_plans::response(self, order_plans::RELEASE, body)
             }
+            ("POST", "/product/strategies/order-plans/decide") => {
+                order_plans::response(self, order_plans::DECIDE, body)
+            }
+            ("POST", "/product/strategies/order-plans/select") => {
+                order_plans::response(self, order_plans::SELECT, body)
+            }
             ("POST", "/product/strategies/order-plans/submit") => {
                 order_plans::response(self, order_plans::SUBMIT, body)
             }
@@ -3503,6 +3509,8 @@ impl TradeAssemblyService {
                         | "tradeassembly.strategy.order_plan.prepare"
                         | "tradeassembly.strategy.order_plan.reserve"
                         | "tradeassembly.strategy.order_plan.release"
+                        | "tradeassembly.strategy.order_plan.decide"
+                        | "tradeassembly.strategy.order_plan.select"
                         | "tradeassembly.strategy.order_plan.submit"
                         | "tradeassembly.strategy.order_plan.reconcile"
                         | "tradeassembly.strategy.order_plan.status"
@@ -3890,6 +3898,14 @@ impl TradeAssemblyService {
             }
             "tradeassembly.strategy.order_plan.release" => {
                 self.dispatch_http("POST", order_plans::RELEASE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.decide" => {
+                self.dispatch_http("POST", order_plans::DECIDE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.select" => {
+                self.dispatch_http("POST", order_plans::SELECT, arguments)
                     .body
             }
             "tradeassembly.strategy.order_plan.submit" => {
@@ -4533,6 +4549,8 @@ impl TradeAssemblyService {
                 | "tradeassembly.strategy.order_plan.prepare"
                 | "tradeassembly.strategy.order_plan.reserve"
                 | "tradeassembly.strategy.order_plan.release"
+                | "tradeassembly.strategy.order_plan.decide"
+                | "tradeassembly.strategy.order_plan.select"
                 | "tradeassembly.strategy.order_plan.submit"
                 | "tradeassembly.strategy.order_plan.reconcile"
                 | "tradeassembly.strategy.order_plan.status"
@@ -5477,6 +5495,8 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
         "tradeassembly.strategy.order_plan.prepare" => Some(order_plans::PREPARE),
         "tradeassembly.strategy.order_plan.reserve" => Some(order_plans::RESERVE),
         "tradeassembly.strategy.order_plan.release" => Some(order_plans::RELEASE),
+        "tradeassembly.strategy.order_plan.decide" => Some(order_plans::DECIDE),
+        "tradeassembly.strategy.order_plan.select" => Some(order_plans::SELECT),
         "tradeassembly.strategy.order_plan.submit" => Some(order_plans::SUBMIT),
         "tradeassembly.strategy.order_plan.reconcile" => Some(order_plans::RECONCILE),
         "tradeassembly.strategy.selection_plan.prepare" => Some(selection_plans::PATH),

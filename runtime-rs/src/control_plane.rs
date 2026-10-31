@@ -407,7 +407,9 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/order-plans/prepare") => "strategy.order_plan.prepare".into(),
         ("POST", "/product/strategies/order-plans/reserve") => "strategy.order_plan.reserve".into(),
         ("POST", "/product/strategies/order-plans/release") => "strategy.order_plan.release".into(),
-        ("POST", "/product/strategies/order-plans/submit") => "strategy.order_plan.submit".into(),
+        ("POST", "/product/strategies/order-plans/decide")
+        | ("POST", "/product/strategies/order-plans/select")
+        | ("POST", "/product/strategies/order-plans/submit") => "strategy.order_plan.submit".into(),
         ("POST", "/product/strategies/order-plans/reconcile") => {
             "strategy.order_plan.reconcile".into()
         }
@@ -1516,6 +1518,8 @@ fn target_object(path: &str, body: &Value) -> Option<String> {
         "/product/strategies/order-plans/prepare" => Some("/orderPlan/scope/strategyId"),
         "/product/strategies/order-plans/reserve"
         | "/product/strategies/order-plans/release"
+        | "/product/strategies/order-plans/decide"
+        | "/product/strategies/order-plans/select"
         | "/product/strategies/order-plans/submit"
         | "/product/strategies/order-plans/reconcile" => Some("/scope/strategyId"),
         _ => None,

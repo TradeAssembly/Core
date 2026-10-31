@@ -101,8 +101,20 @@ impl OrderPlanSource {
     pub(crate) fn historical(&self) -> Result<OrderPlan, String> {
         read_owned(&self.service, &self.id)
     }
+    pub(crate) fn verified_signal(&self) -> Result<VerifiedSignal, String> {
+        verify_signal(&self.service, &self.historical()?.command)
+    }
     pub(crate) fn snapshot(&self) -> Result<OrderPlan, String> {
-        let (p, f) = checked_current(&self.service, &self.id)?;
+        let signal = self.verified_signal()?;
+        self.snapshot_with_signal(&signal)
+    }
+    pub(crate) fn snapshot_with_signal(
+        &self,
+        signal: &VerifiedSignal,
+    ) -> Result<OrderPlan, String> {
+        let (p, f) = measured("snapshot.checked_current", || {
+            checked_current_with_signal(&self.service, &self.id, signal)
+        })?;
         if p.canonical_account.is_none() || p.account_binding_sha256.is_none() {
             return Err("broker_v2_canonical_plan_required".into());
         }

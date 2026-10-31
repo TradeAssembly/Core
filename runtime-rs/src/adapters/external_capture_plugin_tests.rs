@@ -417,9 +417,21 @@ fn instrument_screen_process_no_match_incomplete_foreign_and_unaccounted_cases()
 }
 #[test]
 fn instrument_screen_atomic_commit_failure_reuses_response_without_new_invocation() {screen_process_fixture("atomic");}
+thread_local! { static NATIVE_EXECUTION_EVIDENCE_CASE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
+struct NativeExecutionEvidenceCase;
+impl NativeExecutionEvidenceCase {
+    fn enter(case: &str) -> Self {
+        NATIVE_EXECUTION_EVIDENCE_CASE.with(|v| { assert!(v.borrow().is_none()); *v.borrow_mut() = Some(case.into()); });
+        Self
+    }
+}
+impl Drop for NativeExecutionEvidenceCase {
+    fn drop(&mut self) { NATIVE_EXECUTION_EVIDENCE_CASE.with(|v| *v.borrow_mut() = None); }
+}
 fn write_screen_interface_evidence(case:&str,name:&str,value:&Value) {
     let Some(root)=std::env::var_os("SCREEN_INTERFACE_EVIDENCE_DIR") else {return;};
-    let directory=std::path::PathBuf::from(root).join(case);fs::create_dir_all(&directory).unwrap();
+    let root=NATIVE_EXECUTION_EVIDENCE_CASE.with(|v| v.borrow().as_ref().map_or_else(||std::path::PathBuf::from(&root),|case|std::path::PathBuf::from(&root).join(case)));
+    let directory=root.join(case);fs::create_dir_all(&directory).unwrap();
     let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(directory.join(name)).unwrap();
     file.write_all(&serde_json::to_vec_pretty(value).unwrap()).unwrap();file.write_all(b"\n").unwrap();
 }
@@ -2041,3 +2053,5 @@ fn scheduler_v3_actual_core_relay_record_ack_loss_process_journey(){
 }
 
 include!("external_order_submission_tests.rs");
+
+include!("external_dynamic_execution_tests.rs");

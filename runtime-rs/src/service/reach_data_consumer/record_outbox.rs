@@ -88,7 +88,7 @@ impl ReachDataConsumer {
         {
             return Err("reach_data_source_scope_unavailable".into());
         }
-        let current = self.runner.mutation_binding(&c.command)?;
+        let current = self.runner.reconciliation_binding(&c.command)?;
         c.validate_reconciliation_bindings(
             &self.node,
             &self.source,

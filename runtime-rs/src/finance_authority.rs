@@ -237,6 +237,13 @@ action!(
     Write
 );
 action!(
+    SELECTION_PLAN_PREPARE,
+    "strategy.selection_plan.prepare",
+    "strategy_selection_plan",
+    "strategy_configuration",
+    Write
+);
+action!(
     DATA_PLAN_PREPARE,
     "strategy.data_plan.prepare",
     "strategy_data_plan",
@@ -640,6 +647,7 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     DATA_COLLECTION_CREATE,
     INSTRUMENT_SCREEN_CREATE,
     SESSION_SCHEDULE_PREPARE,
+    SELECTION_PLAN_PREPARE,
     DATA_PLAN_PREPARE,
     DATA_RECIPE_PREPARE,
     DATA_RECIPE_STEP,
@@ -736,6 +744,7 @@ pub fn authority_definition(
         "strategy.session_schedule.prepare" => &SESSION_SCHEDULE_PREPARE,
         "strategy.data_collection.create" => &DATA_COLLECTION_CREATE,
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
+        "strategy.selection_plan.prepare" => &SELECTION_PLAN_PREPARE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
         "strategy.data_recipe.prepare" => &DATA_RECIPE_PREPARE,
         "strategy.data_recipe.step" => &DATA_RECIPE_STEP,

@@ -158,6 +158,7 @@
   "tradeassembly.strategy.data_run.step",
   "tradeassembly.strategy.data_collection.create",
   "tradeassembly.strategy.data_collection.get",
+  "tradeassembly.strategy.selection_plan.prepare",
   "tradeassembly.strategy.session_schedule.prepare",
   "tradeassembly.strategy.session_schedule.get",
   "tradeassembly.strategy.instrument_screen.create",

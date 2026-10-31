@@ -24,6 +24,7 @@ pub(super) fn authorize_private_request(
         .or_else(|| body.pointer("/collection/scope"))
         .or_else(|| body.pointer("/screen/scope"))
         .or_else(|| body.pointer("/schedule/scope"))
+        .or_else(|| body.pointer("/selectionPlan/scope"))
         .or_else(|| body.pointer("/selection/scope"))
         .and_then(|scope| string_field(scope, &["strategyId", "strategy_id"]));
     let strategy_id = if method == "GET" && path.starts_with("/strategies/") {
@@ -523,6 +524,10 @@ mod tests {
             (
                 "tradeassembly.strategy.data_capture.create",
                 "/capture/policy/scope",
+            ),
+            (
+                "tradeassembly.strategy.selection_plan.prepare",
+                "/selectionPlan/scope",
             ),
             ("tradeassembly.strategy.data_plan.prepare", "/scope"),
             ("tradeassembly.strategy.data_run.step", "/scope"),

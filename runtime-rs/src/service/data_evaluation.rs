@@ -448,7 +448,7 @@ pub(crate) fn inspect_receipt(
 ) -> Result<EvaluationReceipt, String> {
     let plan = data_plans::current(service, &request.plan_revision_id)?;
     super::data_captures::validate_window(service, &plan, &request.window)?;
-    if let Some(program) = super::data_strategy::program(service, &plan.content.scope)? {
+    if let Some(program) = super::data_strategy::program_for_content(service, &plan.content)? {
         program.validate(&plan.content.plan)?;
     }
     let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
@@ -485,11 +485,19 @@ pub fn step(
         .started;
     let plan = request_plan(service, &request)?;
     request_budget(service)?;
+    if plan
+        .content
+        .selection_source
+        .as_ref()
+        .is_some_and(|s| s.known_at_ms > request.window.as_of_ms)
+    {
+        return Err("selection_plan_not_yet_known".into());
+    }
     super::data_captures::validate_window(service, &plan, &request.window)?;
     if plan.content.plan.execution_order.len() > MAX_NODES {
         return Err("data_evaluation_plan_too_large".into());
     }
-    if let Some(program) = super::data_strategy::program(service, &plan.content.scope)? {
+    if let Some(program) = super::data_strategy::program_for_content(service, &plan.content)? {
         program.validate(&plan.content.plan)?;
     }
     let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
@@ -528,7 +536,7 @@ pub fn step(
     }
     if checkpoint.generation > 0
         && checkpoint.last_frame.is_empty()
-        && super::data_strategy::program(service, &plan.content.scope)?.is_some()
+        && super::data_strategy::program_for_content(service, &plan.content)?.is_some()
     {
         return Err("data_strategy_history_missing_requires_replay".into());
     }
@@ -933,7 +941,7 @@ impl StepEnvironment<'_> {
             .take(MAX_FRAMES)
             .collect::<Vec<_>>();
         let mut outputs: BTreeMap<String, Vec<DataEvaluationResponse>> = BTreeMap::new();
-        let program = super::data_strategy::program(self.service, &self.plan.content.scope)?;
+        let program = super::data_strategy::program_for_content(self.service, &self.plan.content)?;
         let mut signals = Vec::new();
         let mut source_writes = BTreeMap::new();
         let mut any_ready = false;
@@ -1018,13 +1026,23 @@ impl StepEnvironment<'_> {
                 outputs.entry(node_id.clone()).or_default().push(response);
             }
             if let Some(program) = &program {
-                signals.push(program.evaluate(
+                let mut signal = program.evaluate(
                     plan,
                     &values,
                     &checkpoint.last_frame,
                     *frame,
                     self.request.window.as_of_ms,
-                )?);
+                )?;
+                if let Some(source) = &self.plan.content.selection_source {
+                    signal.known_at_ms = signal.known_at_ms.max(source.known_at_ms);
+                    signal.arrived_at_ms = signal.arrived_at_ms.max(source.prepared_at_ms);
+                    signal
+                        .upstream_content_sha256
+                        .extend(source.selection_sha256.values().cloned());
+                    signal.upstream_content_sha256.sort();
+                    signal.upstream_content_sha256.dedup();
+                }
+                signals.push(signal);
                 for response in values.values_mut() {
                     response.state.clear();
                 }

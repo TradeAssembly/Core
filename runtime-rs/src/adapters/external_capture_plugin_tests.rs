@@ -428,7 +428,7 @@ fn screen_process_fixture(case:&str) {
     use crate::service::{data_collections as collections,instrument_screens as screens};
     use tradeassembly_plugin_sdk::instrument_screen as wire;
     let operations=Arc::new(ForwardNative::default());
-    let (dir,service,original_scope,_)=data_plans::tests::fixture_service(Some(operations.clone()));
+    let (dir,service,original_scope,original_request)=data_plans::tests::fixture_service(Some(operations.clone()));
     let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
     let complete=case!="incomplete";
     let server=std::thread::spawn(move|| {
@@ -446,6 +446,9 @@ fn screen_process_fixture(case:&str) {
     });
     let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
     let calculator=install_screen_package(&service,dir.path());
+    let evaluation_calculator=if matches!(case,"selected_eval"|"selected_empty"){Some(install_fixture_with_recipe(&service,dir.path(),true,86400000,false))}else{None};
+    if let Some(p)=&evaluation_calculator{service.runtime().plugins.put_instance(&p.plugin_ref,json!({"instanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"providerRef":p.plugin_ref,"enabled":true,"activePackageSha256":p.package_sha256,"configuration":{}}),&ctx("selected-evaluation-instance")).unwrap();}
+
     for package in [&source,&calculator] {
         let mut instance=json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"configuration":if package.plugin_ref==source.plugin_ref {json!({"dataApiUrl":format!("http://{address}")})}else{json!({})}});
         if package.plugin_ref==source.plugin_ref {instance["credentialRef"]=json!("screen-fixture-source");}
@@ -456,7 +459,8 @@ fn screen_process_fixture(case:&str) {
     let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();spec["strategy_id"]=json!(original_scope.strategy_id);
     let mut screen_policy=json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"fixture.screen.v1","inputs":{"contracts":{"capability_requirement_ref":"screen_source","response_schema_ref":"schema://capture-fixture/response@1","query":{"literal":{},"date_bindings":{}},"max_age_ms":300000,"coverage":{"complete_pointer":"/snapshot/coverage/complete","scope_pointer":"/snapshot/coverage/scope","scope_value":"fixture_candidates"}}},"candidate_input":"contracts","candidate_records_pointer":"/snapshot/rows","candidate_id_pointer":"/id","parameters":{"minDte":45,"maxDte":60,"maxOiAgeDays":1},"coverage":"complete_configured_inputs","max_candidates":7,"top_n":1,"ttl_ms":120000});
     if case=="integral" {screen_policy["top_n"]=json!(1.0);}
-    if case=="no_match" {screen_policy["parameters"]["minDte"]=json!(100);screen_policy["parameters"]["maxDte"]=json!(200);}
+    if matches!(case,"selected_eval"|"selected_empty") {screen_policy["ttl_ms"]=json!(300000);}
+    if matches!(case,"no_match"|"selected_empty") {screen_policy["parameters"]["minDte"]=json!(100);screen_policy["parameters"]["maxDte"]=json!(200);}
     if case=="foreign" {screen_policy["parameters"]["fault"]=json!("foreign_member");}
     if case=="unaccounted" {screen_policy["parameters"]["fault"]=json!("omit_rejections");}
     if case=="undeclared_context" {screen_policy["parameters"]["fault"]=json!("undeclared_context");}
@@ -471,12 +475,23 @@ fn screen_process_fixture(case:&str) {
         spec["capability_requirements"]["required"].as_array_mut().unwrap().push(requirement);
         service.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("screen-grant")).unwrap();
     }
+    if matches!(case,"selected_eval"|"selected_empty") {
+        configure_selected_evaluation_fixture(&service,&mut spec,&original_request);
+    }
     let report=crate::spec::validate_strategy_spec_report(&spec);assert!(report.valid,"{:?}",report.diagnostics);
     assert!(crate::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
     let saved=service.handle_http("POST","/product/strategies/save-draft",json!({"strategyId":original_scope.strategy_id,"spec":spec}));assert_eq!(saved.body["body"]["draftSaved"],true,"{}",saved.body);
     let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":original_scope.strategy_id,"expectedDraftHash":saved.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));assert_eq!(published.body["body"]["published"],true,"{}",published.body);
     let version=&published.body["body"]["version"];let scope=data_plans::PlanScope{strategy_id:original_scope.strategy_id,strategy_version_id:version["id"].as_str().unwrap().into(),strategy_spec_hash:version["specHash"].as_str().unwrap().into()};
-    let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"screen-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"screen_source":{"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"acquire"},"screen":{"pluginInstanceRef":calculator.plugin_ref,"pluginRef":calculator.plugin_ref,"operationId":"screen"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper"}));assert_eq!(graph.body["revision"]["graph"]["ok"],true,"{}",graph.body);
+    let mut graph_command=json!({"configId":"screen-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"screen_source":{"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"acquire"},"screen":{"pluginInstanceRef":calculator.plugin_ref,"pluginRef":calculator.plugin_ref,"operationId":"screen"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper"});
+    if let Some(p)=&evaluation_calculator{
+        for capability in ["test.capture.derive","test.capture.replay"] {
+            service.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("selected-native-test-grant")).unwrap();
+        }
+        graph_command["bindings"]["derived"]=json!({"pluginInstanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"operationId":"derive"});
+        graph_command["additionalRequirements"]=json!([{"requirementId":"derived","capability":"test.capture.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]);
+    }
+    let graph=service.handle_http("POST","/capability-graph-revisions",graph_command);assert_eq!(graph.body["revision"]["graph"]["ok"],true,"{}",graph.body);
     let revision=graph.body["revision"]["revisionId"].as_str().unwrap().to_string();
     let collection=collections::acquire(&service,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.clone(),acquisition_node:"screen_source".into(),mode:"paper".into(),response_schema_ref:"schema://capture-fixture/response@1".into(),input:json!({})},&ctx("screen-source-acquire")).unwrap();server.join().unwrap();
     let command=screens::ScreenCommand{scope,capability_graph_revision:revision,mode:"paper".into(),signal_requirement_ref:"signal_primary".into(),selector_ref:"screened".into(),collections:BTreeMap::from([("contracts".into(),collection.collection_id)]),knowledge_cutoff_ms:service.runtime().clock.now_ms()};
@@ -520,7 +535,7 @@ fn screen_process_fixture(case:&str) {
     assert!(response.body["selection"].get("response").is_none());
     let selection=screens::current(&service,response.body["selection"]["selectionId"].as_str().unwrap()).unwrap();
     assert_eq!(response.body["instrumentSet"],serde_json::to_value(&selection.instrument_set).unwrap());
-    if case!="no_match" {
+    if !matches!(case,"no_match"|"selected_empty") {
     assert_eq!(selection.instrument_set.members[0].instrument_id,"A");assert_eq!(selection.instrument_set.candidate_count,7);assert_eq!(selection.instrument_set.members[0].context_instruments,["SPY"]);
     assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="below_rank_cutoff" && r.count==2));
     assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="missing_open_interest"));
@@ -532,6 +547,7 @@ fn screen_process_fixture(case:&str) {
         assert_eq!(selection.instrument_set.candidate_count,7);
         assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="expiry_out_of_range" && r.count==7));
     }
+    if matches!(case,"selected_eval"|"selected_empty") {exercise_selected_evaluation_fixture(&service,&selection,case);return;}
     let duplicate=service.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
     assert_eq!(duplicate.body["selection"],response.body["selection"]);assert_eq!(duplicate.body["instrumentSet"],response.body["instrumentSet"]);
     let mcp=service.call_mcp_tool("tradeassembly.strategy.instrument_screen.get",json!({"selectionId":selection.selection_id}));assert_eq!(mcp["structuredContent"]["instrumentSet"],response.body["instrumentSet"]);
@@ -1947,3 +1963,7 @@ fn maybe_run_data_runner_process(root:&std::path::Path,command:&crate::service::
   assert_eq!(responses[1],responses[2]);assert_eq!(responses[1],responses[3]);write_screen_interface_evidence(case,if deny{"process-deny.json"}else{"process-allow.json"},&serde_json::to_value(responses).unwrap());
  }
 }
+
+include!("external_selection_evaluation_tests.rs");
+#[test]
+fn selected_instrument_set_drives_native_pipeline_warmup_and_signals(){screen_process_fixture("selected_eval");screen_process_fixture("selected_empty");}

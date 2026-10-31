@@ -55,6 +55,7 @@ pub mod local_install;
 pub mod local_live_authorization;
 pub mod local_owner_identity;
 pub mod option_selection;
+pub mod selection_strategy;
 #[doc(hidden)]
 #[path = "../../platform/workspace_bootstrap.rs"]
 pub mod workspace_bootstrap;

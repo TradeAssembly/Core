@@ -322,6 +322,7 @@ const HTTP_ROUTE_REGISTRY: &[&str] = &[
     "POST /product/strategies/option-selections/create",
     "POST /product/strategies/data-captures/create",
     "POST /product/strategies/data-captures/get",
+    "POST /product/strategies/selection-plans/prepare",
     "POST /product/strategies/data-plans/prepare",
     "POST /product/strategies/data-runs/step",
     "POST /product/strategies/duplicate",

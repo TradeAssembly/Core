@@ -404,6 +404,9 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/option-selections/create") => {
             "strategy.option_selection.create".into()
         }
+        ("POST", "/product/strategies/selection-plans/prepare") => {
+            "strategy.selection_plan.prepare".into()
+        }
         ("POST", "/product/strategies/session-schedules/prepare") => {
             "strategy.session_schedule.prepare".into()
         }
@@ -718,6 +721,9 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.strategy.option_selection.create" => {
             return "strategy.option_selection.create".into()
+        }
+        "tradeassembly.strategy.selection_plan.prepare" => {
+            return "strategy.selection_plan.prepare".into()
         }
         "tradeassembly.strategy.session_schedule.prepare" => {
             return "strategy.session_schedule.prepare".into()

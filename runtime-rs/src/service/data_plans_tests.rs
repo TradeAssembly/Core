@@ -7,6 +7,7 @@ fn content() -> DataPlanContent {
     let (graph, request, contracts) = crate::data_pipeline::tests::fixture();
     DataPlanContent {
         recipe_source: None,
+        selection_source: None,
         source_authentication: BTreeMap::new(),
         scope: PlanScope {
             strategy_id: "test-strategy".into(),

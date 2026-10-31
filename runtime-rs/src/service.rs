@@ -64,6 +64,7 @@ mod risk;
 mod robustness;
 pub mod robustness_lifecycle;
 mod scheduler;
+pub mod selection_plans;
 pub mod session_schedules;
 mod sightline;
 mod strategy;
@@ -1097,6 +1098,9 @@ impl TradeAssemblyService {
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = selection_plans::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = session_schedules::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1331,6 +1335,9 @@ impl TradeAssemblyService {
         match (normalized_method.as_str(), normalized_path.as_str()) {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/selection-plans/prepare") => {
+                selection_plans::prepare_response(self, body)
             }
             ("POST", "/product/strategies/session-schedules/prepare") => {
                 session_schedules::prepare_response(self, body)
@@ -3464,6 +3471,7 @@ impl TradeAssemblyService {
                         | "tradeassembly.strategy.data_recipe.prepare"
                         | "tradeassembly.strategy.data_recipe.step"
                         | "tradeassembly.strategy.session_schedule.prepare"
+                        | "tradeassembly.strategy.selection_plan.prepare"
                         | "tradeassembly.strategy.data_capture.create"
                         | "tradeassembly.strategy.data_plan.prepare"
                         | "tradeassembly.strategy.data_run.step"
@@ -3485,6 +3493,16 @@ impl TradeAssemblyService {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "option_selection_preflight_failed".into());
                 return mcp::tool_error(name, &code, "Option selection failed closed.", None);
+            }
+            if let Some(response) = selection_plans::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "selection_plan_preflight_failed".into());
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Selection-bound plan preparation failed closed.",
+                    None,
+                );
             }
             if let Some(response) = session_schedules::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
@@ -3817,6 +3835,10 @@ impl TradeAssemblyService {
                     arguments,
                 )
                 .body
+            }
+            "tradeassembly.strategy.selection_plan.prepare" => {
+                self.dispatch_http("POST", selection_plans::PATH, arguments)
+                    .body
             }
             "tradeassembly.strategy.session_schedule.prepare" => {
                 self.dispatch_http(
@@ -4374,6 +4396,7 @@ impl TradeAssemblyService {
             || name.starts_with("tradeassembly.comparison.")
             || name.starts_with("tradeassembly.strategy.data_")
             || name.starts_with("tradeassembly.strategy.instrument_screen.")
+            || name.starts_with("tradeassembly.strategy.selection_plan.")
             || name.starts_with("tradeassembly.strategy.session_schedule.")
         {
             if let Some(code) = service_error_code(&payload) {
@@ -4424,6 +4447,7 @@ impl TradeAssemblyService {
         if matches!(
             name,
             "tradeassembly.strategy.option_selection.create"
+                | "tradeassembly.strategy.selection_plan.prepare"
                 | "tradeassembly.strategy.data_recipe.prepare"
                 | "tradeassembly.strategy.data_recipe.step"
         ) {
@@ -5362,6 +5386,7 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
         "tradeassembly.strategy.option_selection.create" => {
             Some("/product/strategies/option-selections/create")
         }
+        "tradeassembly.strategy.selection_plan.prepare" => Some(selection_plans::PATH),
         "tradeassembly.strategy.session_schedule.prepare" => {
             Some("/product/strategies/session-schedules/prepare")
         }

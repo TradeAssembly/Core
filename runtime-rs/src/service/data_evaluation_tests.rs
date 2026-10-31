@@ -1319,3 +1319,217 @@ fn public_request_budget_is_not_restarted_by_evaluation() {
             .is_empty());
     }
 }
+
+#[test]
+fn selected_subject_product_plan_warms_signals_and_resumes_without_changing_positions() {
+    for (subject, context_only) in [("TEST", false), ("SPY", true)] {
+        use crate::selection_strategy::*;
+        let (directory, service, baseline, operations) = rig();
+        let old_request = &baseline.content.plan.request;
+        let template = SelectionStrategy {
+            schema_version: "tradeassembly.selection_strategy.v1".into(),
+            selections: BTreeMap::from([(
+                "primary".into(),
+                SelectorRef {
+                    market_requirement_ref: "signal_primary".into(),
+                    selector_ref: "primary_symbol".into(),
+                },
+            )]),
+            trade_selection_ref: "primary".into(),
+            nodes: old_request
+                .nodes
+                .iter()
+                .map(|n| NodeTemplate {
+                    graph_node_id: n.graph_node_id.clone(),
+                    parameters: n.parameters.clone(),
+                    context: if context_only {
+                        ContextTemplate::Literal {
+                            context: n.context.clone(),
+                        }
+                    } else {
+                        ContextTemplate::Subject {
+                            interval_ms: n.context.interval_ms,
+                        }
+                    },
+                    input_contexts: BTreeMap::new(),
+                })
+                .collect(),
+            bindings: old_request.bindings.clone(),
+            entry: RuleTemplate::Compare {
+                left: OperandTemplate::Output {
+                    node: "derived".into(),
+                    port: "value".into(),
+                    instrument: if context_only {
+                        InstrumentRef::Literal {
+                            instrument_id: "TEST".into(),
+                        }
+                    } else {
+                        InstrumentRef::Subject
+                    },
+                    sample: crate::data_strategy::Sample::Current,
+                },
+                op: crate::data_strategy::Comparison::Greater,
+                right: OperandTemplate::Output {
+                    node: "derived".into(),
+                    port: "value".into(),
+                    instrument: if context_only {
+                        InstrumentRef::Literal {
+                            instrument_id: "TEST".into(),
+                        }
+                    } else {
+                        InstrumentRef::Subject
+                    },
+                    sample: crate::data_strategy::Sample::Previous,
+                },
+            },
+            exit: RuleTemplate::IsTrue {
+                value: OperandTemplate::Boolean { value: false },
+            },
+        };
+        let mut spec: Value = serde_json::from_str(include_str!(
+            "../../../examples/strategy-spec/v3/valid/static-equity.json"
+        ))
+        .unwrap();
+        spec["signal_market_requirements"][0]["selectors"][0]["normalized_id"] = json!(subject);
+        spec["stages"]["evaluate"]["substeps"][0]["config"] =
+            json!({(crate::selection_strategy::CONFIG_KEY):template});
+        let created = service.handle_http(
+            "POST",
+            "/product/strategies/create",
+            json!({"name":"Bound selected subject fixture","spec":spec}),
+        );
+        assert_eq!(created.status, 201, "{}", created.body);
+        let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":created.body["body"]["strategy"]["id"],"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));
+        let v = &published.body["body"]["version"];
+        let scope = data_plans::PlanScope {
+            strategy_id: v["strategyId"].as_str().unwrap().into(),
+            strategy_version_id: v["id"].as_str().unwrap().into(),
+            strategy_spec_hash: v["specHash"].as_str().unwrap().into(),
+        };
+        let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"selected-subject-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+        assert_eq!(
+            graph.body["revision"]["graph"]["ok"], true,
+            "{}",
+            graph.body
+        );
+        let command = crate::service::selection_plans::SelectionPlanCommand {
+            scope: scope.clone(),
+            capability_graph_revision: graph.body["revision"]["revisionId"]
+                .as_str()
+                .unwrap()
+                .into(),
+            mode: "paper".into(),
+            subject_instrument_id: subject.into(),
+            selection_receipts: BTreeMap::new(),
+            source_captures: BTreeMap::new(),
+        };
+        let body = json!({"selectionPlan":command,"idempotencyKey":"selected-prepare"});
+        service.runtime().storage.put_json("positions","managed-before-reselection",json!({"strategyId":scope.strategy_id,"symbol":"PREVIOUS-MEMBER","quantity":1,"status":"open"}),&context("existing-managed-position")).unwrap();
+        let positions = service.runtime().storage.list_json("positions").unwrap();
+        let orders = service.runtime().storage.list_json("orders").unwrap();
+        let response =
+            service.handle_http("POST", crate::service::selection_plans::PATH, body.clone());
+        assert_eq!(response.status, 200, "{}", response.body);
+        let plan: data_plans::StoredDataPlan =
+            serde_json::from_value(response.body["plan"].clone()).unwrap();
+        assert_eq!(
+            plan.content.plan.request.trade_instruments[0].instrument_id,
+            subject
+        );
+        assert!(plan.content.selection_source.is_some());
+        let retry =
+            service.handle_http("POST", crate::service::selection_plans::PATH, body.clone());
+        assert_eq!(retry.body["plan"], response.body["plan"]);
+        let direct = crate::service::selection_plans::prepare_response(&service, body);
+        assert_eq!(
+            direct.body["plan"], response.body["plan"],
+            "domain retry must retain original host selection time"
+        );
+        let mut rejected = command.clone();
+        rejected.subject_instrument_id = "NOT-SELECTED".into();
+        let before = service
+            .runtime()
+            .storage
+            .list_json("compiled_data_plan_revisions_v1")
+            .unwrap();
+        assert_eq!(
+            service
+                .handle_http(
+                    "POST",
+                    crate::service::selection_plans::PATH,
+                    json!({"selectionPlan":rejected,"idempotencyKey":"unselected"})
+                )
+                .status,
+            409
+        );
+        assert_eq!(
+            service
+                .runtime()
+                .storage
+                .list_json("compiled_data_plan_revisions_v1")
+                .unwrap(),
+            before
+        );
+        let mut request = request(&plan, "selected-evaluation", 10, 16, None);
+        request.window.as_of_ms = service.runtime().clock.now_ms();
+        let evaluated = service.handle_http(
+            "POST",
+            "/product/strategies/data-runs/step",
+            json!({"step":request,"idempotencyKey":"selected-warm"}),
+        );
+        assert_eq!(evaluated.status, 200, "{}", evaluated.body);
+        let receipt: EvaluationReceipt =
+            serde_json::from_value(evaluated.body["receipt"].clone()).unwrap();
+        assert!(!receipt.signals.is_empty());
+        assert!(receipt.signals.iter().all(|s| s.trade_instruments
+            == plan.content.plan.request.trade_instruments
+            && s.known_at_ms >= plan.content.selection_source.as_ref().unwrap().known_at_ms));
+        assert!(receipt
+            .signals
+            .iter()
+            .any(|s| s.entry == crate::data_strategy::SignalValue::WarmingUp));
+        assert!(receipt
+            .signals
+            .iter()
+            .any(|s| s.entry == crate::data_strategy::SignalValue::Ready { value: true }));
+        let db = directory
+            .path()
+            .join("service.db")
+            .to_string_lossy()
+            .into_owned();
+        let mut runtime = crate::adapters::local::test_runtime(&db);
+        runtime.plugin_packages = Arc::new(
+            crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+                directory.path().join("package-store"),
+            )
+            .unwrap(),
+        );
+        runtime.plugin_operations = Arc::new(FixtureOperations::default());
+        drop(service);
+        drop(operations);
+        let reopened = TradeAssemblyService::from_runtime(&db, runtime);
+        assert_eq!(
+            data_plans::current(&reopened, &plan.revision_id).unwrap(),
+            plan
+        );
+        let mut next = request.clone();
+        next.window.event_start_ms = 16 * INTERVAL;
+        next.window.event_end_ms = 17 * INTERVAL;
+        next.expected_checkpoint_sha256 = Some(receipt.checkpoint.checkpoint_sha256.clone());
+        next.window.as_of_ms = reopened.runtime().clock.now_ms();
+        let resumed = reopened.handle_http(
+            "POST",
+            "/product/strategies/data-runs/step",
+            json!({"step":next,"idempotencyKey":"selected-resume"}),
+        );
+        assert_eq!(resumed.status, 200, "{}", resumed.body);
+        assert_eq!(
+            reopened.runtime().storage.list_json("positions").unwrap(),
+            positions
+        );
+        assert_eq!(
+            reopened.runtime().storage.list_json("orders").unwrap(),
+            orders
+        );
+    }
+}

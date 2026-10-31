@@ -190,6 +190,13 @@ action!(
     Write
 );
 action!(
+    DATA_COLLECTION_CREATE,
+    "strategy.data_collection.create",
+    "strategy_data_collection",
+    "data_acquisition",
+    Write
+);
+action!(
     DATA_CAPTURE_CREATE,
     "strategy.data_capture.create",
     "strategy_data_capture",
@@ -611,6 +618,7 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     CAPABILITY_BINDING_CONFIGURE,
     OPTION_SELECTION_CREATE,
     DATA_CAPTURE_CREATE,
+    DATA_COLLECTION_CREATE,
     DATA_PLAN_PREPARE,
     DATA_RECIPE_PREPARE,
     DATA_RECIPE_STEP,
@@ -703,6 +711,7 @@ pub fn authority_definition(
         "strategy.duplicate" | "strategy.archive" | "strategy.restore" => &STRATEGY_LIFECYCLE,
         "capability.binding.revision.save" => &CAPABILITY_BINDING_CONFIGURE,
         "strategy.option_selection.create" => &OPTION_SELECTION_CREATE,
+        "strategy.data_collection.create" => &DATA_COLLECTION_CREATE,
         "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
         "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
         "strategy.data_recipe.prepare" => &DATA_RECIPE_PREPARE,

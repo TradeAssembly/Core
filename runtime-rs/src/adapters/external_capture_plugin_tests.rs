@@ -362,6 +362,72 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
     }
 }
 #[test]
+fn collection_real_process_admission_idempotency_recreation_and_revocation() {
+    use crate::service::data_collections as collections;
+    let r = rig();
+    let command = collections::CollectionCommand {
+        scope: r.command.policy.scope.clone(),
+        capability_graph_revision: r.command.policy.capability_graph_revision.clone(),
+        acquisition_node: "acquire".into(), mode: "paper".into(),
+        response_schema_ref: "schema://capture-fixture/response@1".into(), input: json!({}),
+    };
+    let body=json!({"collection":command,"idempotencyKey":"collection-process"});
+    let response=r.service.handle_http("POST","/product/strategies/data-collections/create",body.clone());
+    assert_eq!(response.status,200,"{}",response.body);
+    assert_eq!(response.body["executionAuthorityGranted"],false);
+    let receipt=collections::current(&r.service,response.body["collection"]["collectionId"].as_str().unwrap()).unwrap();
+    assert_eq!(receipt.response.payload["snapshot"]["values"],json!([10,20,30]));
+    assert!(receipt.host_known_at_ms>=receipt.response.observed_at_ms);
+    assert!(!serde_json::to_string(&receipt).unwrap().contains("fake-capture-canary"));
+    assert_eq!(r.service.handle_http("POST","/product/strategies/data-collections/create",body.clone()).body["collection"],response.body["collection"]);
+    let read=r.service.call_mcp_tool("tradeassembly.strategy.data_collection.get",json!({"collectionId":receipt.collection_id}));
+    assert_eq!(read["structuredContent"]["collection"],response.body["collection"],"{}",read);
+    assert_eq!(r.service.call_mcp_tool("tradeassembly.strategy.data_collection.get",json!({"collectionId":"missing"}))["isError"],true);
+    let mut changed=body.clone(); changed["collection"]["input"]=json!({"changed":true});
+    assert_eq!(r.service.handle_http("POST","/product/strategies/data-collections/create",changed).status,409);
+    let mut wrong_mode=body.clone(); wrong_mode["accountMode"]=json!("live");
+    assert_eq!(r.service.handle_http("POST","/product/strategies/data-collections/create",wrong_mode).status,409);
+    r.server.join().unwrap();
+    let db=r.dir.path().join("service.db").to_string_lossy().into_owned();
+    drop(r.service); drop(r.operations);
+    let mut runtime=crate::adapters::local::test_runtime(&db);
+    runtime.plugin_packages=Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(r.dir.path().join("package-store")).unwrap());
+    // No operation invoker is restored: reopening/retrying must use original
+    // evidence and must not silently reacquire another provider snapshot.
+    let reopened=crate::service::TradeAssemblyService::from_runtime(&db,runtime);
+    assert_eq!(collections::current(&reopened,&receipt.collection_id).unwrap(),receipt);
+    assert_eq!(reopened.handle_http("POST","/product/strategies/data-collections/create",body.clone()).body["collection"],response.body["collection"]);
+    let alice=reopened.for_authenticated_invocation("test","alice",None,None);
+    alice.bind_owned_object("strategy",&receipt.command.scope.strategy_id).unwrap();
+    for instance in reopened.runtime().plugins.list_instances().unwrap() {
+        alice.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();
+    }
+    let bob=reopened.for_authenticated_invocation("test","bob",None,None);
+    assert_eq!(bob.call_mcp_tool("tradeassembly.strategy.data_collection.get",json!({"collectionId":receipt.collection_id}))["isError"],true);
+    let storage=reopened.runtime().storage.clone();
+    let mut forged=serde_json::to_value(&receipt).unwrap(); forged["response"]["payload"]["snapshot"]["values"]=json!([999]);
+    storage.put_json("data_collection_receipts_v1",&receipt.collection_id,forged,&ctx("tamper")).unwrap();
+    assert_eq!(collections::current(&reopened,&receipt.collection_id).unwrap_err(),"data_collection_receipt_invalid");
+    storage.put_json("data_collection_receipts_v1",&receipt.collection_id,serde_json::to_value(&receipt).unwrap(),&ctx("restore")).unwrap();
+    let mut instance=reopened.runtime().plugins.get_instance(&receipt.acquisition.plugin_instance_ref).unwrap().unwrap(); instance["enabled"]=json!(false);
+    reopened.runtime().plugins.put_instance(&receipt.acquisition.plugin_instance_ref,instance,&ctx("revoke")).unwrap();
+    assert!(collections::current(&reopened,&receipt.collection_id).is_err());
+    assert_eq!(reopened.call_mcp_tool("tradeassembly.strategy.data_collection.get",json!({"collectionId":receipt.collection_id}))["isError"],true);
+    assert_ne!(reopened.handle_http("POST","/product/strategies/data-collections/create",body).status,200);
+}
+
+#[test]
+fn collection_process_atomic_failure_leaves_no_receipt_or_key() {
+    let r=rig();
+    let connection=rusqlite::Connection::open(r.dir.path().join("service.db")).unwrap();
+    connection.execute_batch("CREATE TRIGGER fail_collection BEFORE INSERT ON tradeassembly_kv WHEN NEW.namespace='data_collection_receipts_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    let response=r.service.handle_http("POST","/product/strategies/data-collections/create",json!({"collection":{"scope":r.command.policy.scope,"capabilityGraphRevision":r.command.policy.capability_graph_revision,"acquisitionNode":"acquire","mode":"paper","responseSchemaRef":"schema://capture-fixture/response@1","input":{}},"idempotencyKey":"collection-atomic"}));
+    assert_eq!(response.status,409,"{}",response.body);
+    for namespace in ["data_collection_receipts_v1","data_collection_keys_v1"] { assert!(r.service.runtime().storage.list_json(namespace).unwrap().is_empty()); }
+    r.server.join().unwrap();
+}
+
+#[test]
 fn data_capture_real_process_product_admission_replay_and_service_recreation() {
     let r = rig();
     let response = r.service.handle_http(
@@ -765,9 +831,17 @@ fn data_capture_process_tamper_foreign_owner_and_revoked_cached_retry_fail_close
 #[test]
 #[ignore = "requires an explicitly pinned DATA_CAPTURE_PROVIDER_CONFIG; loopback mock and fake credentials only"]
 fn data_capture_external_provider_package_admits_replays_and_reopens_without_live_services() {
+    external_provider_admission_fixture("DATA_CAPTURE_PROVIDER_CONFIG",false);
+}
+#[test]
+#[ignore = "requires explicitly pinned DATA_COLLECTION_PROVIDER_CONFIG; loopback mock and fake credentials only"]
+fn collection_external_provider_package_admits_reopens_and_preserves_evidence_without_live_services() {
+    external_provider_admission_fixture("DATA_COLLECTION_PROVIDER_CONFIG",true);
+}
+fn external_provider_admission_fixture(config_env:&str,collection:bool) {
     let config: Value = serde_json::from_slice(
         &fs::read(
-            std::env::var_os("DATA_CAPTURE_PROVIDER_CONFIG")
+            std::env::var_os(config_env)
                 .expect("explicit fixture config required"),
         )
         .unwrap(),
@@ -791,24 +865,30 @@ fn data_capture_external_provider_package_admits_replays_and_reopens_without_liv
         .map(|mut e| {
             let mut bytes = vec![];
             e.read_to_end(&mut bytes).unwrap();
+            if let Some(expected)=config["manifestDocumentSha256"].as_str() { assert_eq!(sha256(&bytes),expected); }
             serde_yaml::from_slice(&bytes).unwrap()
         })
         .unwrap();
-    assert_eq!(
-        canonical_sha256(&manifest).unwrap(),
-        config["manifestSha256"].as_str().unwrap()
-    );
+    if let Some(expected)=config["manifestSha256"].as_str() { assert_eq!(canonical_sha256(&manifest).unwrap(),expected); }
+    assert!(config["manifestSha256"].is_string() || config["manifestDocumentSha256"].is_string());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let mock_body = serde_json::to_vec(&config["httpResponse"]).unwrap();
+    let responses=config["httpResponses"].as_array().cloned().unwrap_or_else(||vec![config["httpResponse"].clone()]);
+    let query_fragments=config["httpQueryFragments"].as_array().cloned().unwrap_or_default();
     let prefix = config["httpRequestPrefix"].as_str().unwrap().to_string();
     let server = std::thread::spawn(move || {
+      for (index,response) in responses.iter().enumerate() {
+        let mock_body=serde_json::to_vec(response).unwrap();
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 8192];
         let n = stream.read(&mut buf).unwrap();
-        assert!(String::from_utf8_lossy(&buf[..n]).starts_with(&prefix));
+        let request=String::from_utf8_lossy(&buf[..n]);
+        assert!(request.starts_with(&prefix));
+        for fragment in &query_fragments { assert!(request.lines().next().unwrap().contains(fragment.as_str().unwrap())); }
+        if index>0 { assert!(request.lines().next().unwrap().contains("page_token=")); }
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",mock_body.len()).unwrap();
         stream.write_all(&mock_body).unwrap();
+      }
     });
     let package = service
         .runtime()
@@ -855,6 +935,7 @@ fn data_capture_external_provider_package_admits_replays_and_reopens_without_liv
         ("acquire", "acquisitionOperation"),
         ("source", "replayOperation"),
     ] {
+        if collection && node=="source" {continue;}
         let operation = manifest["operations"]
             .as_array()
             .unwrap()
@@ -872,6 +953,29 @@ fn data_capture_external_provider_package_admits_replays_and_reopens_without_liv
         "{}",
         graph.body
     );
+    if collection {
+        use crate::service::data_collections as collections;
+        let command=collections::CollectionCommand {scope,capability_graph_revision:graph.body["revision"]["revisionId"].as_str().unwrap().into(),acquisition_node:"acquire".into(),mode:"paper".into(),response_schema_ref:config["responseSchemaRef"].as_str().unwrap().into(),input:config["input"].clone()};
+        let body=json!({"collection":command,"idempotencyKey":"external-native-collection"});
+        let response=service.handle_http("POST","/product/strategies/data-collections/create",body.clone());
+        assert_eq!(response.status,200,"{}",response.body);
+        let receipt=collections::current(&service,response.body["collection"]["collectionId"].as_str().unwrap()).unwrap();
+        assert_eq!(receipt.acquisition.package_sha256,sha256(&archive));
+        assert!(response.body["collection"].get("response").is_none());
+        assert!(response.body["collection"].get("input").is_none());
+        assert!(!serde_json::to_string(&response.body).unwrap().contains("nextPageToken"));
+        for secret in fields.values() { assert!(!serde_json::to_string(&receipt).unwrap().contains(secret)); }
+        for (pointer,expected) in config["expectedPayload"].as_object().unwrap() { assert_eq!(receipt.response.payload.pointer(pointer),Some(expected)); }
+        assert_eq!(service.handle_http("POST","/product/strategies/data-collections/create",body.clone()).body["collection"],response.body["collection"]);
+        server.join().unwrap();
+        let db=dir.path().join("service.db").to_string_lossy().into_owned(); drop(service);drop(operations);
+        let mut runtime=crate::adapters::local::test_runtime(&db);
+        runtime.plugin_packages=Arc::new(crate::adapters::plugin_packages::LocalPluginPackageStore::new(dir.path().join("package-store")).unwrap());
+        let reopened=crate::service::TradeAssemblyService::from_runtime(&db,runtime);
+        assert_eq!(collections::current(&reopened,&receipt.collection_id).unwrap(),receipt);
+        assert_eq!(reopened.handle_http("POST","/product/strategies/data-collections/create",body).body["collection"],response.body["collection"]);
+        return;
+    }
     let command = captures::CaptureCommand {
         policy: captures::CapturePolicy {
             scope: scope.clone(),

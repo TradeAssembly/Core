@@ -26,6 +26,7 @@ pub mod core_runner;
 mod credentials;
 pub(crate) mod data_binding;
 pub mod data_captures;
+pub mod data_collections;
 pub mod data_evaluation;
 pub mod data_plans;
 pub mod data_recipes;
@@ -1070,6 +1071,9 @@ impl TradeAssemblyService {
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = data_collections::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1295,6 +1299,12 @@ impl TradeAssemblyService {
         match (normalized_method.as_str(), normalized_path.as_str()) {
             ("POST", "/product/strategies/option-selections/create") => {
                 option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/data-collections/create") => {
+                data_collections::create_response(self, body)
+            }
+            ("POST", "/product/strategies/data-collections/get") => {
+                data_collections::read_response(self, body)
             }
             ("POST", "/product/strategies/data-captures/create") => {
                 data_captures::create(self, body)
@@ -3419,6 +3429,11 @@ impl TradeAssemblyService {
                     .unwrap_or_else(|| "option_selection_preflight_failed".into());
                 return mcp::tool_error(name, &code, "Option selection failed closed.", None);
             }
+            if let Some(response) = data_collections::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_collection_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Collection admission failed closed.", None);
+            }
             if let Some(response) = data_captures::preflight(self, path, &arguments) {
                 let code = service_error_code(&response.body)
                     .unwrap_or_else(|| "data_capture_preflight_failed".into());
@@ -3732,6 +3747,22 @@ impl TradeAssemblyService {
                 self.dispatch_http(
                     "POST",
                     "/product/strategies/option-selections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_collection.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-collections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_collection.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-collections/get",
                     arguments,
                 )
                 .body
@@ -5229,6 +5260,12 @@ fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
         "tradeassembly.strategy.option_selection.create" => {
             Some("/product/strategies/option-selections/create")
+        }
+        "tradeassembly.strategy.data_collection.create" => {
+            Some("/product/strategies/data-collections/create")
+        }
+        "tradeassembly.strategy.data_collection.get" => {
+            Some("/product/strategies/data-collections/get")
         }
         "tradeassembly.strategy.data_capture.create" => {
             Some("/product/strategies/data-captures/create")

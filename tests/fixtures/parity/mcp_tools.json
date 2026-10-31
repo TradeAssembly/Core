@@ -155,5 +155,7 @@
   "tradeassembly.strategy.data_plan.prepare",
   "tradeassembly.strategy.data_recipe.prepare",
   "tradeassembly.strategy.data_recipe.step",
-  "tradeassembly.strategy.data_run.step"
+  "tradeassembly.strategy.data_run.step",
+  "tradeassembly.strategy.data_collection.create",
+  "tradeassembly.strategy.data_collection.get"
 ]

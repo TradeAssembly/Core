@@ -152,6 +152,19 @@ fn management_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
 fn has_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
     Ok(!j.status.terminal() || management_work(s, j)?)
 }
+fn start_admission(
+    terminal: bool,
+    management_work: impl FnOnce() -> Result<bool, String>,
+    validate_entry: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if terminal {
+        if !management_work()? {
+            return Err("session_dispatch_job_terminal".into());
+        }
+        return Ok(());
+    }
+    validate_entry()
+}
 pub(super) fn start(s: &TradeAssemblyService, id: &str) -> Result<(), String> {
     if s.agent_mcp_execution_context().is_some() {
         return Err("session_dispatch_background_agent_delegation_unsupported".into());
@@ -161,13 +174,14 @@ pub(super) fn start(s: &TradeAssemblyService, id: &str) -> Result<(), String> {
     if j.core_revision != revision()? {
         return Err("session_dispatch_source_changed".into());
     }
-    if !has_work(s, &j)? {
-        return Err("session_dispatch_job_terminal".into());
-    }
     if j.paused {
         return Err("session_dispatch_job_paused".into());
     }
-    validate_request(s, &j.request)?;
+    start_admission(
+        j.status.terminal(),
+        || management_work(s, &j),
+        || validate_request(s, &j.request).map(|_| ()),
+    )?;
     let _ = key(s, id)?;
     set(s, id, true)?;
     spawn(s.clone(), id.into())
@@ -258,6 +272,19 @@ fn spawn(service: TradeAssemblyService, id: String) -> Result<(), String> {
     }
     Ok(())
 }
+fn wake_deadline(
+    terminal: bool,
+    management_due: Option<i64>,
+    entry_due: impl FnOnce() -> Result<i64, String>,
+) -> Result<i64, String> {
+    if terminal {
+        if let Some(due) = management_due {
+            return Ok(due);
+        }
+    }
+    let entry = entry_due()?;
+    Ok(management_due.map_or(entry, |due| entry.min(due)))
+}
 fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<(), String> {
     let mut nonce = [0u8; 16];
     use rand::RngCore;
@@ -305,24 +332,23 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         if j.paused || !has_work(s, &j)? {
             return Ok(());
         }
-        let schedule = session_schedules::current(s, &j.request.occurrence_id)?;
         let now = s.runtime().clock.now_ms();
-        let due = if j.started_at_ms.is_none() {
-            schedule.occurrence.due_at_ms.unwrap_or(now)
-        } else {
-            now
-        };
-        let mut target = due.max(j.next_attempt_at_ms);
         let management_remaining = management_work(s, &j)?;
-        if management_remaining {
-            let management_due =
-                crate::service::order_plans::management::automation::next_due(s, &j)?;
-            target = if j.status.terminal() {
-                management_due
+        let management_due = if management_remaining {
+            Some(crate::service::order_plans::management::automation::next_due(s, &j)?)
+        } else {
+            None
+        };
+        let mut target = wake_deadline(j.status.terminal(), management_due, || {
+            // Nonterminal entry jobs retain their original validation and due time.
+            let schedule = session_schedules::current(s, &j.request.occurrence_id)?;
+            let due = if j.started_at_ms.is_none() {
+                schedule.occurrence.due_at_ms.unwrap_or(now)
             } else {
-                target.min(management_due)
+                now
             };
-        }
+            Ok(due.max(j.next_attempt_at_ms))
+        })?;
         if manage {
             if let Some(next) = response.body["body"]["management"]["nextAttemptAtMs"].as_i64() {
                 target = target.max(next)
@@ -414,4 +440,83 @@ pub(super) fn halt_for_test(s: &TradeAssemblyService, id: &str) {
         .halted
         .store(true, std::sync::atomic::Ordering::SeqCst);
     v.wake.notify();
+}
+
+#[cfg(test)]
+mod management_wake_tests {
+    use super::*;
+    #[test]
+    fn terminal_owned_management_does_not_read_stale_entry_schedule() {
+        assert_eq!(
+            wake_deadline(true, Some(1234), || panic!(
+                "original schedule must not be read"
+            ))
+            .unwrap(),
+            1234
+        );
+    }
+    #[test]
+    fn nonterminal_entry_validation_and_earliest_management_turn_are_preserved() {
+        assert_eq!(wake_deadline(false, Some(1234), || Ok(2000)).unwrap(), 1234);
+        assert_eq!(
+            wake_deadline(false, Some(1234), || Err("original_schedule_stale".into())).unwrap_err(),
+            "original_schedule_stale"
+        );
+        assert_eq!(wake_deadline(false, None, || Ok(2000)).unwrap(), 2000);
+    }
+}
+
+#[cfg(test)]
+mod management_start_tests {
+    use super::start_admission;
+
+    #[test]
+    fn terminal_managed_start_skips_original_entry_calendar() {
+        assert_eq!(
+            start_admission(
+                true,
+                || Ok(true),
+                || panic!("old calendar must not be read")
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn nonterminal_start_preserves_entry_calendar_validation() {
+        let called = std::cell::Cell::new(false);
+        let result = start_admission(
+            false,
+            || panic!("entry admission must not require management work"),
+            || {
+                called.set(true);
+                Err("original_schedule_stale".into())
+            },
+        );
+        assert!(called.get());
+        assert_eq!(result.unwrap_err(), "original_schedule_stale");
+        assert_eq!(start_admission(false, || Ok(false), || Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn terminal_start_requires_current_management_work() {
+        assert_eq!(
+            start_admission(
+                true,
+                || Ok(false),
+                || panic!("old calendar must not be read")
+            )
+            .unwrap_err(),
+            "session_dispatch_job_terminal"
+        );
+        assert_eq!(
+            start_admission(
+                true,
+                || Err("managed_controls_blocked".into()),
+                || panic!("old calendar must not be read"),
+            )
+            .unwrap_err(),
+            "managed_controls_blocked"
+        );
+    }
 }

@@ -62,9 +62,24 @@ fn exercise_native_v2_broker(s:&crate::service::TradeAssemblyService,scope:&data
 #[ignore="explicit native synthetic C5 fixture"]
 fn native_v2_c5_rejection_and_unknown_acceptance_reconcile_without_resubmission(){for case in ["reject","timeout_after_accept"]{native_execution_plan_fixture(Some(case));}}
 
+// Runs in the existing managed native fixture BEFORE its normal config save.
+// No new fixture/provider setup and no entry is admitted by this negative probe.
+fn assert_rollover_config_refuses_unknown_trigger_before_entry(
+ s:&crate::service::TradeAssemblyService, scope:&data_plans::PlanScope, typed:&Value,
+){
+ let namespaces=["execution_configs","execution_activations","execution_runs","execution_attempts","execution_order_plans_v1","execution_cash_reservations_v1","execution_order_plan_submissions_v2","execution_managed_positions_v1","plugin_operation_receipts"];
+ let before=namespaces.iter().map(|ns|s.runtime().storage.list_json(ns).unwrap()).collect::<Vec<_>>();
+ let mut invalid=typed.clone();invalid["automaticExecution"]["management"]["calendarRollover"]=json!({"schemaVersion":"tradeassembly.management_calendar_rollover.v1","triggerRef":"unknown_rollover_trigger_before_entry","refreshIntervalMs":60000,"observationPolicy":"execution_session_only","sourceInputs":{}});
+ let denied=s.handle_http("POST","/product/strategy-execution-configs/save",json!({"strategyId":scope.strategy_id,"typedExecution":invalid,"mode":"paper","accountMode":"paper","idempotencyKey":"rollover-unknown-trigger-before-entry"}));
+ assert_eq!(denied.body["error"]["code"],"management_window_trigger_missing","{}",denied.body);
+ assert_eq!(namespaces.iter().map(|ns|s.runtime().storage.list_json(ns).unwrap()).collect::<Vec<_>>(),before,"invalid rollover must not admit a config, activation, order or provider effect");
+ write_screen_interface_evidence("calendar_rollover","unknown-trigger-config-save-before-entry.json",&json!({"response":denied.body,"guardedNamespacesUnchanged":namespaces,"entryAdmitted":false,"providerCalls":0,"qualification":"normal config-save negative inside existing native managed setup; does not qualify rollover execution"}));
+}
+
 fn activate_native_typed_execution(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,scenario:&str){
  let mut typed=json!({"scope":scope,"capabilityGraphRevision":revision,"brokerRequirementRef":"exec_broker"});if scenario.starts_with("financial_screen_auto"){typed["automaticExecution"]=json!({"sourceInputs":{"account_data":{},"instrument_metadata":{},"pricing_quote":{}},"maxSubjectsPerOccurrence":1});}
  if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{typed["automaticExecution"]["management"]=json!({"cadenceMs":1000,"maxPositionsPerRound":1,"sourceInputs":{"account_data":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"instrument_metadata":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"pricing_quote":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}}}});}
+ if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{assert_rollover_config_refuses_unknown_trigger_before_entry(s,scope,&typed);}
  let saved=s.handle_http("POST","/product/strategy-execution-configs/save",json!({"strategyId":scope.strategy_id,"typedExecution":typed,"mode":"paper","accountMode":"paper","idempotencyKey":"normal-typed-save"}));assert_eq!(saved.status,200,"{}",saved.body);let config=saved.body["body"]["configId"].as_str().unwrap_or_else(||panic!("normal config missing: {}",saved.body));
  let active=s.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":config,"activationId":"fixture-v2-activation","accountMode":"paper","mode":"paper","idempotencyKey":"normal-typed-activation"}));assert_eq!(active.status,200,"{}",active.body);assert_eq!(active.body["body"]["run"]["orchestrator"],"typed_pipeline","{}",active.body);assert_eq!(active.body["body"]["scheduler"]["continuousExecution"],false);write_screen_interface_evidence("typed_execution",&format!("{scenario}-activation.json"),&active.body);
  let legacy=s.handle_http("POST","/product/strategy-execution-activations/fixture-v2-activation/evaluate-tick",json!({"activationId":"fixture-v2-activation","accountMode":"paper","idempotencyKey":"typed-refuses-legacy"}));assert_ne!(legacy.status,200);

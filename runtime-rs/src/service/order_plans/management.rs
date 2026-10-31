@@ -390,6 +390,57 @@ pub(in crate::service) fn exit_plan_subject(
     )?;
     Ok((instrument, entry.command.capability_graph_revision, proof))
 }
+/// Stable owned position/entry lineage; no active-control or calendar authority.
+pub(in crate::service) fn window_lineage(
+    s: &TradeAssemblyService,
+    id: &str,
+) -> Result<crate::service::management_windows::Lineage, String> {
+    let (_, pos) = load(s, id)?;
+    let entry = read_owned(s, &pos.entry_plan_id)?;
+    if entry.management.is_some() || entry.command.mode != "paper" {
+        return Err("management_window_entry_invalid".into());
+    }
+    let (_, original) = submission::record(s, &entry)?.ok_or("managed_entry_submission_missing")?;
+    if original.intent["originalRequest"]["activationId"] != pos.activation_id {
+        return Err("management_window_activation_mismatch".into());
+    }
+    settlement::verify_historical_entry(s, &entry, &pos.entry_settlement_sha256)?;
+    let (quantity, basis, _, _) = settlement::entry_basis(s, &entry)?;
+    if quantity != pos.quantity || basis != pos.basis {
+        return Err("management_window_entry_basis_changed".into());
+    }
+    Ok(crate::service::management_windows::Lineage {
+        owner_sha256: owner(s)?, position_id: pos.position_id,
+        original_entry_plan_id: entry.plan_id, activation_id: pos.activation_id,
+        scope: entry.command.scope, capability_graph_revision: entry.command.capability_graph_revision,
+        exit_policy_sha256: hash(&pos.policy)?, entry_settlement_sha256: pos.entry_settlement_sha256,
+    })
+}
+/// Fresh owner/activation/config/source witness for new management windows.
+pub(in crate::service) fn window_subject(
+    s: &TradeAssemblyService,
+    id: &str,
+) -> Result<crate::service::management_windows::Subject, String> {
+    let lineage = window_lineage(s, id)?;
+    let (_, pos) = load(s, id)?;
+    if !pos.quantity.checked_subtract(pos.closed_quantity)?.positive() {
+        return Err("management_window_remaining_lot_required".into());
+    }
+    let entry = read_owned(s, &lineage.original_entry_plan_id)?;
+    let (_, config) = management_run(s, &lineage.activation_id)?;
+    if config["strategyId"] != lineage.scope.strategy_id
+        || config["strategyVersionId"] != lineage.scope.strategy_version_id
+        || config["strategySpecHash"] != lineage.scope.strategy_spec_hash
+        || config["capabilityGraphRevisionId"] != lineage.capability_graph_revision
+        || config["canonicalAccount"] != value(entry.canonical_account.as_ref().ok_or("managed_account_required")?)?
+        || policy(s, &lineage.scope)?.as_ref() != Some(&pos.policy) {
+        return Err("management_window_activation_or_policy_invalid".into());
+    }
+    let (_, original) = submission::record(s, &entry)?.ok_or("managed_entry_submission_missing")?;
+    let source = settlement::current_source(s, &entry, &original)?;
+    Ok(crate::service::management_windows::Subject { lineage, config_sha256: hash(&config)?, source_binding_sha256: hash(&source)? })
+}
+
 pub fn inspect(s: &TradeAssemblyService, id: &str) -> Result<Value, String> {
     let (_, p) = load(s, id)?;
     Ok(
@@ -974,6 +1025,34 @@ fn execution_window(
     p: &OrderPlan,
     id: &str,
 ) -> Result<(Value, i64), String> {
+    if id.starts_with("management_window_") {
+        let current = crate::service::management_windows::current(s, id)?;
+        let r = current.receipt;
+        let original_entry = match p.management.as_ref() {
+            Some(binding) => read_owned(s, &binding.original_entry_plan_id)?,
+            None => p.clone(),
+        };
+        if original_entry.management.is_some() || original_entry.order.position_action != PositionAction::BuyToOpen
+            || original_entry.owner_sha256 != p.owner_sha256 || original_entry.command.scope != p.command.scope
+            || r.command.scope != p.command.scope || r.subject.lineage.original_entry_plan_id != original_entry.plan_id
+            || p.management.as_ref().is_some_and(|b| b.position_id != r.command.position_id)
+            || r.subject.lineage.capability_graph_revision != p.command.capability_graph_revision {
+            return Err("managed_execution_window_scope_mismatch".into());
+        }
+        if current.status != crate::service::management_windows::Status::Active {
+            return Err("managed_execution_window_closed".into());
+        }
+        let open = r.selection.open_at_ms.ok_or("managed_execution_window_missing")?;
+        let provider_close = r.selection.close_at_ms.ok_or("managed_execution_window_missing")?;
+        // Calendar freshness is also an exclusive final admission deadline.
+        // The immutable receipt retains the provider's actual interval bounds.
+        let close = provider_close.min(r.fresh_until_ms);
+        let now = s.runtime().clock.trusted_now_ms()?;
+        if now < open || now >= close { return Err("managed_execution_window_closed".into()); }
+        return Ok((json!({"schemaVersion":"tradeassembly.management_window_constraint.v1", "scope":p.command.scope,
+            "windowId":id,"windowReceiptSha256":r.receipt_sha256,"positionId":r.command.position_id,
+            "originalEntryPlanId":original_entry.plan_id,"capabilityGraphRevision":p.command.capability_graph_revision,"openAtMs":open,"closeAtMs":close}),close));
+    }
     let r = crate::service::session_schedules::current(s, id)?;
     let open = r
         .occurrence

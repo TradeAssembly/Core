@@ -16,12 +16,17 @@ const ROLES: [&str; 3] = ["account_data", "instrument_metadata", "pricing_quote"
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Config {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_rollover: Option<CalendarRollover>,
     pub cadence_ms: i64,
     pub max_positions_per_round: usize,
     pub source_inputs: BTreeMap<String, BTreeMap<String, typed_cycle::InputValue>>,
 }
 impl Config {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(rollover) = &self.calendar_rollover {
+            rollover.validate()?;
+        }
         if !(1000..=60_000).contains(&self.cadence_ms)
             || !(1..=32).contains(&self.max_positions_per_round)
             || self
@@ -79,6 +84,116 @@ impl Config {
     }
 }
 
+/// Explicit future-session opt-in. No after-hours protection is claimed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CalendarRollover {
+    pub schema_version: String,
+    pub trigger_ref: String,
+    pub refresh_interval_ms: i64,
+    pub observation_policy: ObservationPolicy,
+    pub source_inputs: BTreeMap<String, CalendarInput>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ObservationPolicy {
+    ExecutionSessionOnly,
+    ContinuousObservation,
+}
+/// Existing input variants retain their exact serde contract. Only calendar
+/// acquisition may request a zone-derived civil date; it is never a market fact.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum CalendarInput {
+    Existing(typed_cycle::InputValue),
+    Date(CalendarDate),
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum CalendarDate {
+    CalendarDate { offset_days: i32 },
+}
+impl CalendarRollover {
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != "tradeassembly.management_calendar_rollover.v1"
+            || self.trigger_ref.is_empty()
+            || self.trigger_ref.len() > 128
+            || self.trigger_ref.trim() != self.trigger_ref
+            || self.trigger_ref.chars().any(char::is_control)
+            || !(1000..=3_600_000).contains(&self.refresh_interval_ms)
+            || self.source_inputs.len() > 32
+        {
+            return Err("management_automation_calendar_config_invalid".into());
+        }
+        if self.observation_policy != ObservationPolicy::ExecutionSessionOnly {
+            return Err("management_automation_continuous_observation_unsupported".into());
+        }
+        for (name, input) in &self.source_inputs {
+            if name.is_empty()
+                || name.len() > 128
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || matches!(
+                    name.as_str(),
+                    "config" | "credentials" | "authority" | "accountRef" | "account_ref"
+                )
+            {
+                return Err("management_automation_calendar_input_invalid".into());
+            }
+            match input {
+                CalendarInput::Existing(typed_cycle::InputValue::Literal { value }) => {
+                    crate::service::data_captures::capturable_payload(value)?
+                }
+                CalendarInput::Date(CalendarDate::CalendarDate { offset_days })
+                    if !(-366..=366).contains(offset_days) =>
+                {
+                    return Err("management_automation_calendar_date_offset_invalid".into())
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    fn input(&self, instrument: &str, timezone: &str, now: i64) -> Result<Value, String> {
+        self.validate()?;
+        if now <= 0 || now > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64 {
+            return Err("management_automation_calendar_clock_invalid".into());
+        }
+        let zone: chrono_tz::Tz = timezone
+            .parse()
+            .map_err(|_| "management_automation_calendar_timezone_unsupported")?;
+        let today = chrono::DateTime::from_timestamp_millis(now)
+            .ok_or("management_automation_calendar_clock_invalid")?
+            .with_timezone(&zone)
+            .date_naive();
+        let mut result = serde_json::Map::new();
+        for (name, input) in &self.source_inputs {
+            let value = match input {
+                CalendarInput::Existing(typed_cycle::InputValue::Literal { value }) => {
+                    value.clone()
+                }
+                CalendarInput::Existing(typed_cycle::InputValue::TradeInstrumentId {}) => {
+                    json!(instrument)
+                }
+                CalendarInput::Date(CalendarDate::CalendarDate { offset_days }) => {
+                    let date = today
+                        .checked_add_signed(chrono::Duration::days(i64::from(*offset_days)))
+                        .ok_or("management_automation_calendar_date_invalid")?
+                        .to_string();
+                    tradeassembly_plugin_sdk::session_calendar::date_ordinal(&date)?;
+                    json!(date)
+                }
+            };
+            result.insert(name.clone(), value);
+        }
+        Ok(Value::Object(result))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
@@ -108,6 +223,8 @@ impl Work {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
+    CollectCalendar {},
+    PrepareWindow {},
     Collect { role: String },
     Advance {},
     Submit { plan_id: String },
@@ -125,7 +242,17 @@ struct Child {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WindowHead {
+    window_id: Option<String>,
+    refresh_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    deferred_children: Vec<Child>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct State {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    window_heads: BTreeMap<String, WindowHead>,
     schema_version: String,
     activation_id: String,
     owner_sha256: String,
@@ -237,6 +364,18 @@ fn load_state(s: &TradeAssemblyService, b: &Binding) -> Result<Option<(Value, St
         || state.config_sha256 != b.config_hash
         || state.core_revision != b.revision
         || state.state_sha256 != state_hash(&state)?
+        || state.window_heads.len() > MAX_ENTRIES
+        || state.window_heads.values().any(|head| {
+            head.refresh_at_ms <= 0
+                || head
+                    .window_id
+                    .as_ref()
+                    .is_some_and(|id| !id.starts_with("management_window_") || id.len() != 82)
+                || head.deferred_children.len() > 4
+                || head.deferred_children.iter().any(|child| {
+                    !calendar_action(&child.action) && !observation_action(&child.action)
+                })
+        })
         || state.cursor > state.work.len()
         || state.work.len() > MAX_ENTRIES + 32
         || state.failures > 16
@@ -478,6 +617,196 @@ fn advance_child(
         Action::Advance {},
     )
 }
+fn calendar_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::CollectCalendar {} | Action::PrepareWindow {}
+    )
+}
+fn observation_action(action: &Action) -> bool {
+    matches!(action, Action::Collect { .. } | Action::Advance {})
+}
+fn head_current(
+    s: &TradeAssemblyService,
+    state: &State,
+    position_id: &str,
+    now: i64,
+) -> Result<Option<crate::service::management_windows::Current>, String> {
+    let Some(head) = state.window_heads.get(position_id) else {
+        return Ok(None);
+    };
+    if now >= head.refresh_at_ms {
+        return Ok(None);
+    }
+    let Some(id) = &head.window_id else {
+        return Ok(None);
+    };
+    match crate::service::management_windows::current(s, id) {
+        Ok(current) => Ok(Some(current)),
+        Err(error) if error == "management_window_calendar_stale" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+fn effect_window(
+    s: &TradeAssemblyService,
+    state: &State,
+    position_id: &str,
+) -> Result<Option<crate::service::management_windows::Current>, String> {
+    let Some(id) = state
+        .window_heads
+        .get(position_id)
+        .and_then(|head| head.window_id.as_ref())
+    else {
+        return Ok(None);
+    };
+    match crate::service::management_windows::current(s, id) {
+        Ok(current) => Ok(Some(current)),
+        Err(error) if error == "management_window_calendar_stale" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+fn refresh_deadline(now: i64, interval: i64, fresh_until: i64, close: Option<i64>) -> i64 {
+    now.saturating_add(interval)
+        .min(fresh_until)
+        .min(close.unwrap_or(i64::MAX))
+}
+fn refresh_at(
+    receipt: &crate::service::management_windows::Receipt,
+    rollover: &CalendarRollover,
+    now: i64,
+) -> i64 {
+    refresh_deadline(
+        now,
+        rollover.refresh_interval_ms,
+        receipt.fresh_until_ms,
+        receipt.selection.close_at_ms,
+    )
+}
+/// A retained read/evidence request never changes body or key on restart.
+/// Deferred requests remain in the owned head even if its lot becomes flat;
+/// cache pruning does not silently discard an unknown original read outcome.
+fn defer_pending(state: &mut State, position_id: &str) -> Result<(), String> {
+    let pending = state
+        .pending
+        .as_ref()
+        .ok_or("management_automation_child_missing")?
+        .clone();
+    if !calendar_action(&pending.action) && !observation_action(&pending.action) {
+        return Err("management_automation_financial_child_cannot_be_deferred".into());
+    }
+    if !state.window_heads.contains_key(position_id) && state.window_heads.len() >= MAX_ENTRIES {
+        return Err("management_automation_window_head_limit".into());
+    }
+    let head = state
+        .window_heads
+        .entry(position_id.into())
+        .or_insert(WindowHead {
+            window_id: None,
+            refresh_at_ms: 1,
+            deferred_children: Vec::new(),
+        });
+    if head.deferred_children.len() >= 4 {
+        return Err("management_automation_deferred_child_limit".into());
+    }
+    if head
+        .deferred_children
+        .iter()
+        .any(|child| child.key == pending.key)
+    {
+        return Err("management_automation_deferred_child_conflict".into());
+    }
+    head.deferred_children.push(pending);
+    state.pending = None;
+    Ok(())
+}
+/// Only free positions reach this function; pending close recovery precedes it.
+fn rollover_child(
+    s: &TradeAssemblyService,
+    rollover: &CalendarRollover,
+    state: &mut State,
+    work: &Work,
+    entry: &OrderPlan,
+    position: &Position,
+) -> Result<WindowStep, String> {
+    let now = s.runtime().clock.trusted_now_ms()?;
+    if let Some(retained) = state
+        .window_heads
+        .get_mut(&position.position_id)
+        .and_then(|head| {
+            let index = head
+                .deferred_children
+                .iter()
+                .position(|child| calendar_action(&child.action))?;
+            Some(head.deferred_children.remove(index))
+        })
+    {
+        return Ok(WindowStep::Child(retained));
+    }
+    if let Some(collection) = work.collections.get("execution_calendar") {
+        return child(state, crate::service::management_windows::PREPARE, json!({"managementWindow":{
+            "scope":entry.command.scope,"positionId":position.position_id,"triggerRef":rollover.trigger_ref,
+            "executionCalendarCollectionId":collection}}), Action::PrepareWindow {}).map(WindowStep::Child);
+    }
+    let observation_started = ROLES
+        .iter()
+        .any(|role| work.collections.contains_key(*role));
+    let current = if observation_started {
+        effect_window(s, state, &position.position_id)?
+    } else {
+        head_current(s, state, &position.position_id, now)?
+    };
+    if let Some(current) = current {
+        if current.status != crate::service::management_windows::Status::Active {
+            return Ok(WindowStep::Wait);
+        }
+        let id = current.receipt.window_id;
+        if let Some(retained) = state
+            .window_heads
+            .get_mut(&position.position_id)
+            .and_then(|head| {
+                if head.deferred_children.is_empty() {
+                    None
+                } else {
+                    Some(head.deferred_children.remove(0))
+                }
+            })
+        {
+            return Ok(WindowStep::Child(retained));
+        }
+        return Ok(WindowStep::Ready(id));
+    }
+    if !state.window_heads.contains_key(&position.position_id)
+        && state.window_heads.len() >= MAX_ENTRIES
+    {
+        return Err("management_automation_window_head_limit".into());
+    }
+    let target = crate::service::management_windows::acquisition(
+        s,
+        &position.position_id,
+        &rollover.trigger_ref,
+    )?;
+    if target.scope != entry.command.scope
+        || target.capability_graph_revision != entry.command.capability_graph_revision
+    {
+        return Err("management_automation_calendar_scope_mismatch".into());
+    }
+    let input = rollover.input(
+        &entry.order.instrument.instrument_id,
+        &target.calendar.timezone,
+        now,
+    )?;
+    child(state, "/product/strategies/data-collections/create", json!({"collection":{
+        "scope":target.scope,"capabilityGraphRevision":target.capability_graph_revision,
+        "acquisitionNode":target.calendar.capability_requirement_ref,"mode":"paper",
+        "responseSchemaRef":tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA,"input":input}}),
+        Action::CollectCalendar {}).map(WindowStep::Child)
+}
+enum WindowStep {
+    Child(Child),
+    Ready(String),
+    Wait,
+}
+
 fn next_child(
     s: &TradeAssemblyService,
     b: &Binding,
@@ -578,6 +907,21 @@ fn next_child(
                     };
                 }
             }
+        } else if s.runtime().clock.trusted_now_ms()? >= plan.valid_until_ms {
+            // An unsent expired reservation is released through the original
+            // normal Advance before any calendar refresh or new proposal.
+            return advance_child(
+                state,
+                &plan,
+                &position,
+                &close.execution_occurrence_id,
+                [
+                    &plan.command.account_collection_id,
+                    &plan.command.metadata_collection_id,
+                    &plan.command.quote_collection_id,
+                ],
+            )
+            .map(Some);
         } else if let Some(submission) = &work.submission {
             if submission["planId"] != plan.plan_id {
                 return Err("management_automation_submission_binding_invalid".into());
@@ -617,8 +961,17 @@ fn next_child(
     if position.policy.rules.reversal_signal.is_some() {
         return Err("management_automation_reversal_evidence_unsupported".into());
     }
-    // A completed occurrence is no permission for the next market session.
-    execution_window(s, &entry, &state.occurrence_id)?;
+    let occurrence = if let Some(rollover) = &b.config.calendar_rollover {
+        match rollover_child(s, rollover, state, &work, &entry, &position)? {
+            WindowStep::Child(child) => return Ok(Some(child)),
+            WindowStep::Wait => return Ok(None),
+            WindowStep::Ready(id) => id,
+        }
+    } else {
+        // Legacy opt-in remains limited to the exact original occurrence.
+        execution_window(s, &entry, &state.occurrence_id)?;
+        state.occurrence_id.clone()
+    };
     for (role, schema) in [
         ("account_data", ACCOUNT_SCHEMA),
         ("instrument_metadata", METADATA_SCHEMA),
@@ -636,7 +989,6 @@ fn next_child(
                 "input":b.config.input(role, &entry.order.instrument.instrument_id)?}}), Action::Collect { role:role.into() }).map(Some);
         }
     }
-    let occurrence = state.occurrence_id.clone();
     advance_child(
         state,
         &entry,
@@ -663,6 +1015,18 @@ fn fail_work(state: &mut State, now: i64, cadence: i64, error: String) {
     state.next_due_ms = now.saturating_add(backoff);
     complete_work(state);
 }
+fn validate_retained_window_command(
+    child: &Child,
+    command: &crate::service::management_windows::Command,
+) -> Result<(), String> {
+    let requested: crate::service::management_windows::Command =
+        serde_json::from_value(child.body["managementWindow"].clone())
+            .map_err(|_| "management_automation_window_request_invalid")?;
+    if requested != *command {
+        return Err("management_automation_window_result_binding_invalid".into());
+    }
+    Ok(())
+}
 fn apply_response(
     s: &TradeAssemblyService,
     b: &Binding,
@@ -675,6 +1039,55 @@ fn apply_response(
         .get_mut(state.cursor)
         .ok_or("management_automation_work_missing")?;
     match &child.action {
+        Action::CollectCalendar {} => {
+            let id = response.body["collection"]["collectionId"]
+                .as_str()
+                .ok_or("management_automation_calendar_result_invalid")?;
+            if id.is_empty() || id.len() > 256 {
+                return Err("management_automation_calendar_result_invalid".into());
+            }
+            work.collections
+                .insert("execution_calendar".into(), id.into());
+        }
+        Action::PrepareWindow {} => {
+            let returned: crate::service::management_windows::Receipt =
+                serde_json::from_value(response.body["managementWindow"].clone())
+                    .map_err(|_| "management_automation_window_result_invalid")?;
+            let receipt = crate::service::management_windows::historical(s, &returned.window_id)?;
+            let rollover = b
+                .config
+                .calendar_rollover
+                .as_ref()
+                .ok_or("management_automation_rollover_disabled")?;
+            validate_retained_window_command(child, &receipt.command)?;
+            if returned != receipt
+                || receipt.command.position_id != work.id
+                || work.kind != Kind::Position
+                || receipt.command.trigger_ref != rollover.trigger_ref
+                || receipt.subject.lineage.activation_id != b.activation
+                || receipt.subject.config_sha256 != b.config_hash
+            {
+                return Err("management_automation_window_result_binding_invalid".into());
+            }
+            let deferred_children = state
+                .window_heads
+                .get_mut(&work.id)
+                .map(|head| std::mem::take(&mut head.deferred_children))
+                .unwrap_or_default();
+            state.window_heads.insert(
+                work.id.clone(),
+                WindowHead {
+                    window_id: Some(receipt.window_id.clone()),
+                    refresh_at_ms: refresh_at(
+                        &receipt,
+                        rollover,
+                        s.runtime().clock.trusted_now_ms()?,
+                    ),
+                    deferred_children,
+                },
+            );
+            work.collections.remove("execution_calendar");
+        }
         Action::Collect { role } => {
             let id = response.body["collection"]["collectionId"]
                 .as_str()
@@ -752,6 +1165,7 @@ pub(crate) fn advance(
             None => (
                 None,
                 State {
+                    window_heads: BTreeMap::new(),
                     schema_version: "tradeassembly.management_automation.v1".into(),
                     activation_id: b.activation.clone(),
                     owner_sha256: b.owner.clone(),
@@ -777,8 +1191,16 @@ pub(crate) fn advance(
         }
         if state.cursor == state.work.len() && state.pending.is_none() {
             state.work = entry_work(s, &b, job)?;
+            let owned_positions = position_ids(s, &b, job)?;
+            let live = owned_positions
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            state
+                .window_heads
+                .retain(|id, head| live.contains(id) || !head.deferred_children.is_empty());
             let selected = rotate(
-                &position_ids(s, &b, job)?,
+                &owned_positions,
                 state.position_cursor.as_deref(),
                 b.config.max_positions_per_round,
             );
@@ -792,7 +1214,9 @@ pub(crate) fn advance(
                 .checked_add(1)
                 .filter(|n| *n <= tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER)
                 .ok_or("management_automation_round_exhausted")?;
-            state.occurrence_id = job.request.occurrence_id.clone();
+            if b.config.calendar_rollover.is_none() {
+                state.occurrence_id = job.request.occurrence_id.clone();
+            }
             if state.work.is_empty() {
                 state.next_due_ms = now.saturating_add(b.config.cadence_ms);
                 save(s, &b, old, &mut state, None)?;
@@ -820,6 +1244,53 @@ pub(crate) fn advance(
                         )),
                     )?;
                     return Ok(summary(&state));
+                }
+                if s.runtime().clock.trusted_now_ms()? >= plan.valid_until_ms {
+                    state.pending = None;
+                    if let Some(work) = state.work.get_mut(state.cursor) {
+                        work.submission = None;
+                    }
+                    save(
+                        s,
+                        &b,
+                        old,
+                        &mut state,
+                        Some((
+                            &pending,
+                            json!({"status":"original_unsent_submit_expired","submissionStateAbsent":true,"normalAbortRequired":true}),
+                        )),
+                    )?;
+                    return Ok(summary(&state));
+                }
+            }
+        }
+        if b.config.calendar_rollover.is_some() {
+            if let Some(pending) = state.pending.clone() {
+                let work = state
+                    .work
+                    .get(state.cursor)
+                    .cloned()
+                    .ok_or("management_automation_work_missing")?;
+                if work.kind == Kind::Position
+                    && (calendar_action(&pending.action) || observation_action(&pending.action))
+                {
+                    let (_, position) = load(s, &work.id)?;
+                    let financial_pending = !position.reservations.is_empty();
+                    let outside_session =
+                        if observation_action(&pending.action) && !financial_pending {
+                            effect_window(s, &state, &work.id)?.is_none_or(|window| {
+                                window.status != crate::service::management_windows::Status::Active
+                            })
+                        } else {
+                            false
+                        };
+                    if (financial_pending && !matches!(&pending.action, Action::Advance {}))
+                        || outside_session
+                    {
+                        defer_pending(&mut state, &work.id)?;
+                        save(s, &b, old, &mut state, None)?;
+                        return Ok(summary(&state));
+                    }
                 }
             }
         }
@@ -858,6 +1329,33 @@ pub(crate) fn advance(
             // child was retained. Leave it pending for the lookup branch above.
             if submission::record(s, &read_owned(s, plan_id)?)?.is_some() {
                 return Err("management_automation_existing_submission_lookup_required".into());
+            }
+        }
+        if b.config.calendar_rollover.is_some()
+            && (calendar_action(&pending.action) || observation_action(&pending.action))
+        {
+            let work = state
+                .work
+                .get(state.cursor)
+                .cloned()
+                .ok_or("management_automation_work_missing")?;
+            if work.kind == Kind::Position {
+                let (_, position) = load(s, &work.id)?;
+                let financial_pending = !position.reservations.is_empty();
+                let outside_session = if observation_action(&pending.action) && !financial_pending {
+                    effect_window(s, &state, &work.id)?.is_none_or(|window| {
+                        window.status != crate::service::management_windows::Status::Active
+                    })
+                } else {
+                    false
+                };
+                if (financial_pending && !matches!(&pending.action, Action::Advance {}))
+                    || outside_session
+                {
+                    defer_pending(&mut state, &work.id)?;
+                    save(s, &b, old, &mut state, None)?;
+                    return Ok(summary(&state));
+                }
             }
         }
         let response = s.handle_http("POST", &pending.path, pending.body.clone());
@@ -911,6 +1409,7 @@ mod tests {
     use std::collections::BTreeSet;
     fn config() -> Config {
         Config {
+            calendar_rollover: None,
             cadence_ms: 1000,
             max_positions_per_round: 2,
             source_inputs: ROLES
@@ -968,5 +1467,252 @@ mod tests {
             seen.extend(batch);
         }
         assert_eq!(seen, ids.into_iter().collect());
+    }
+    fn rollover() -> CalendarRollover {
+        serde_json::from_value(json!({"schemaVersion":"tradeassembly.management_calendar_rollover.v1","triggerRef":"owned_execution","refreshIntervalMs":60000,"observationPolicy":"execution_session_only","sourceInputs":{
+            "symbol":{"kind":"trade_instrument_id"},"from":{"kind":"calendar_date","offsetDays":-1},"to":{"kind":"calendar_date","offsetDays":1},"feed":{"kind":"literal","value":"explicit_primary_sessions"}
+        }})).unwrap()
+    }
+    fn ms(text: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .timestamp_millis()
+    }
+    fn legacy_state() -> State {
+        serde_json::from_value(json!({"schemaVersion":"tradeassembly.management_automation.v1","activationId":"activation","ownerSha256":"owner","configSha256":"config","coreRevision":"revision","occurrenceId":"occurrence_original","round":1,"generation":0,"childSequence":0,"nextDueMs":1,"positionCursor":null,"work":[],"cursor":0,"pending":null,"error":null,"failures":0,"stateSha256":""})).unwrap()
+    }
+    #[test]
+    fn absent_rollover_preserves_legacy_config_bytes_and_state_hash() {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Legacy<'a> {
+            cadence_ms: i64,
+            max_positions_per_round: usize,
+            source_inputs: &'a BTreeMap<String, BTreeMap<String, typed_cycle::InputValue>>,
+        }
+        let c = config();
+        let old = Legacy {
+            cadence_ms: c.cadence_ms,
+            max_positions_per_round: c.max_positions_per_round,
+            source_inputs: &c.source_inputs,
+        };
+        assert_eq!(
+            serde_json::to_vec(&c).unwrap(),
+            serde_json::to_vec(&old).unwrap()
+        );
+        let original = serde_json::to_value(&old).unwrap();
+        let decoded: Config = serde_json::from_value(original.clone()).unwrap();
+        assert_eq!(hash(&decoded).unwrap(), hash(&original).unwrap());
+        assert!(decoded.calendar_rollover.is_none());
+        let state = legacy_state();
+        let mut old = serde_json::to_value(&state).unwrap();
+        assert!(old.get("windowHeads").is_none());
+        old["stateSha256"] = json!("");
+        assert_eq!(state_hash(&state).unwrap(), hash(&old).unwrap());
+        let decoded: State = serde_json::from_value(old.clone()).unwrap();
+        assert!(decoded.window_heads.is_empty());
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), old);
+    }
+    #[test]
+    fn rollover_config_is_closed_bounded_and_session_only() {
+        let good = rollover();
+        good.validate().unwrap();
+        let mut c = good.clone();
+        c.observation_policy = ObservationPolicy::ContinuousObservation;
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "management_automation_continuous_observation_unsupported"
+        );
+        for interval in [999, 3600001] {
+            let mut c = good.clone();
+            c.refresh_interval_ms = interval;
+            assert!(c.validate().is_err());
+        }
+        let mut c = good.clone();
+        c.schema_version = "tradeassembly.management_calendar_rollover.v2".into();
+        assert!(c.validate().is_err());
+        let mut c = good.clone();
+        c.source_inputs.insert(
+            "credentials".into(),
+            CalendarInput::Existing(typed_cycle::InputValue::Literal { value: json!("no") }),
+        );
+        assert!(c.validate().is_err());
+        let mut c = good.clone();
+        c.source_inputs.insert(
+            "from".into(),
+            CalendarInput::Date(CalendarDate::CalendarDate { offset_days: 367 }),
+        );
+        assert!(c.validate().is_err());
+        let mut body = serde_json::to_value(&good).unwrap();
+        body["marketOpen"] = json!("09:30");
+        assert!(serde_json::from_value::<CalendarRollover>(body).is_err());
+        assert!(serde_json::from_value::<CalendarInput>(
+            json!({"kind":"calendar_date","offsetDays":0,"timezone":"UTC"})
+        )
+        .is_err());
+        // Date materialization is calendar-only; old account/metadata/quote inputs stay closed.
+        assert!(serde_json::from_value::<typed_cycle::InputValue>(
+            json!({"kind":"calendar_date","offsetDays":0})
+        )
+        .is_err());
+    }
+    #[test]
+    fn calendar_dates_use_published_zone_and_no_market_time_assumptions() {
+        let c = rollover();
+        let at = ms("2026-03-09T01:00:00Z");
+        let new_york = c.input("OWNED", "America/New_York", at).unwrap();
+        assert_eq!(
+            new_york,
+            json!({"symbol":"OWNED","from":"2026-03-07","to":"2026-03-09","feed":"explicit_primary_sessions"})
+        );
+        let utc = c.input("OWNED", "Etc/UTC", at).unwrap();
+        assert_eq!(utc["from"], "2026-03-08");
+        assert_eq!(utc["to"], "2026-03-10");
+        let after_dst = c
+            .input("OWNED", "America/New_York", ms("2026-03-09T05:00:00Z"))
+            .unwrap();
+        assert_eq!(after_dst["from"], "2026-03-08");
+        assert_eq!(
+            c.input("OWNED", "unsupported-provider-label", at)
+                .unwrap_err(),
+            "management_automation_calendar_timezone_unsupported"
+        );
+        assert!(c.input("OWNED", "Etc/UTC", 0).is_err());
+    }
+    #[test]
+    fn retained_calendar_child_survives_durable_reload_without_new_key_or_new_date() {
+        let (_dir, s, _, _) = crate::service::data_plans::tests::fixture_service(None);
+        let config = config();
+        let binding = Binding {
+            activation: "activation".into(),
+            config,
+            config_hash: "config".into(),
+            owner: "owner".into(),
+            revision: "revision".into(),
+        };
+        let mut state = legacy_state();
+        state
+            .work
+            .push(Work::new(Kind::Position, "position_owned".into()));
+        let input = rollover()
+            .input("OWNED", "America/New_York", ms("2026-03-09T01:00:00Z"))
+            .unwrap();
+        let retained = child(
+            &mut state,
+            "/product/strategies/data-collections/create",
+            json!({"collection":{"input":input,"acquisitionNode":"published_execution_calendar"}}),
+            Action::CollectCalendar {},
+        )
+        .unwrap();
+        state.pending = Some(retained.clone());
+        let before = s
+            .runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap();
+        save(&s, &binding, None, &mut state, None).unwrap();
+        let restored = TradeAssemblyService::from_runtime(s.db(), (*s.runtime()).clone());
+        let (_, loaded) = load_state(&restored, &binding).unwrap().unwrap();
+        assert_eq!(loaded.pending, Some(retained.clone()));
+        assert_eq!(loaded.child_sequence, state.child_sequence);
+        assert_ne!(
+            rollover()
+                .input("OWNED", "America/New_York", ms("2026-03-10T05:00:00Z"))
+                .unwrap(),
+            retained.body["collection"]["input"]
+        );
+        assert_eq!(
+            s.runtime()
+                .storage
+                .list_json("plugin_operation_receipts")
+                .unwrap(),
+            before
+        );
+    }
+    #[test]
+    fn deferred_observation_and_calendar_requests_survive_reload_without_financial_retargeting() {
+        let mut state = legacy_state();
+        state
+            .work
+            .push(Work::new(Kind::Position, "position_owned".into()));
+        let first = child(
+            &mut state,
+            "/product/strategies/data-collections/create",
+            json!({"collection":{"input":{"symbol":"OWNED"}}}),
+            Action::Collect {
+                role: "pricing_quote".into(),
+            },
+        )
+        .unwrap();
+        state.pending = Some(first.clone());
+        defer_pending(&mut state, "position_owned").unwrap();
+        let second=child(&mut state,crate::service::management_windows::PREPARE,json!({"managementWindow":{"positionId":"position_owned","executionCalendarCollectionId":"original_collection"}}),Action::PrepareWindow{}).unwrap();
+        state.pending = Some(second.clone());
+        defer_pending(&mut state, "position_owned").unwrap();
+        let restored: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(
+            restored.window_heads["position_owned"].deferred_children,
+            vec![first, second]
+        );
+        assert!(restored.pending.is_none());
+        assert_eq!(restored.occurrence_id, "occurrence_original");
+        let financial = child(
+            &mut state,
+            SUBMIT,
+            json!({"submission":{"planId":"original_close"}}),
+            Action::Submit {
+                plan_id: "original_close".into(),
+            },
+        )
+        .unwrap();
+        state.pending = Some(financial.clone());
+        assert_eq!(
+            defer_pending(&mut state, "position_owned").unwrap_err(),
+            "management_automation_financial_child_cannot_be_deferred"
+        );
+        assert_eq!(state.pending, Some(financial));
+        assert!(!calendar_action(&Action::Reconcile {}));
+        assert!(!observation_action(&Action::Settle {}));
+    }
+    #[test]
+    fn refresh_deadline_never_outlives_explicit_policy_freshness_or_execution_close() {
+        assert_eq!(refresh_deadline(1000, 60000, 100000, Some(100000)), 61000);
+        assert_eq!(refresh_deadline(1000, 60000, 2000, Some(100000)), 2000);
+        assert_eq!(refresh_deadline(1000, 60000, 100000, Some(3000)), 3000);
+        assert_eq!(refresh_deadline(1000, 60000, 2000, None), 2000);
+    }
+    #[test]
+    fn retained_prepare_window_binds_original_body_after_transient_work_is_recreated() {
+        let mut state = legacy_state();
+        let command = crate::service::management_windows::Command {
+            scope: crate::service::data_plans::PlanScope {
+                strategy_id: "s".into(),
+                strategy_version_id: "v".into(),
+                strategy_spec_hash: "a".repeat(64),
+            },
+            position_id: "position_owned".into(),
+            trigger_ref: "owned_execution".into(),
+            execution_calendar_collection_id: "original_calendar_collection".into(),
+        };
+        let retained = child(
+            &mut state,
+            crate::service::management_windows::PREPARE,
+            json!({"managementWindow":command}),
+            Action::PrepareWindow {},
+        )
+        .unwrap();
+        let restored: Child =
+            serde_json::from_slice(&serde_json::to_vec(&retained).unwrap()).unwrap();
+        let new_work = Work::new(Kind::Position, "position_owned".into());
+        assert!(new_work.collections.is_empty());
+        validate_retained_window_command(&restored, &command).unwrap();
+        let mut wrong = command;
+        wrong.execution_calendar_collection_id = "reacquired_different_collection".into();
+        assert_eq!(
+            validate_retained_window_command(&restored, &wrong).unwrap_err(),
+            "management_automation_window_result_binding_invalid"
+        );
+        assert_eq!(restored.key, retained.key);
+        assert_eq!(restored.body, retained.body);
     }
 }

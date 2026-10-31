@@ -110,6 +110,19 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
     if rev["strategySpecHash"] != c.scope.strategy_spec_hash || rev["graph"]["ok"] != true {
         return Err("typed_execution_graph_stale".into());
     }
+    if let Some(rollover) = c
+        .automatic_execution
+        .as_ref()
+        .and_then(|automatic| automatic.management.as_ref())
+        .and_then(|management| management.calendar_rollover.as_ref())
+    {
+        crate::service::management_windows::policy_binding(
+            s,
+            &c.scope,
+            &c.capability_graph_revision,
+            &rollover.trigger_ref,
+        )?;
+    }
     let node = rev["graph"]["nodes"]
         .as_array()
         .and_then(|ns| ns.iter().find(|n| n["nodeId"] == c.broker_requirement_ref))

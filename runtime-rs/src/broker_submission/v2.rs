@@ -244,6 +244,7 @@ fn validate(
         &state.run["orderPlanApprovals"][&p.plan_id]["executionWindow"],
         &p.command.scope,
         final_now,
+        p.management.as_ref().map(|b| (&p.order.position_action, b, p.command.capability_graph_revision.as_str())),
     )?;
     Ok((state, p, intent))
 }
@@ -624,13 +625,53 @@ struct ExecutionWindowConstraint {
     open_at_ms: i64,
     close_at_ms: i64,
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManagementWindowConstraint {
+    schema_version: String,
+    scope: crate::service::data_plans::PlanScope,
+    window_id: String,
+    window_receipt_sha256: String,
+    position_id: String,
+    original_entry_plan_id: String,
+    capability_graph_revision: String,
+    open_at_ms: i64,
+    close_at_ms: i64,
+}
+fn validate_management_window_constraint(
+    value: &Value,
+    scope: &crate::service::data_plans::PlanScope,
+    now: i64,
+    managed: Option<(&tradeassembly_plugin_sdk::execution::PositionAction, &crate::service::order_plans::management::CloseBinding, &str)>,
+) -> Result<(), String> {
+    let (action, binding, graph) = managed.ok_or("broker_v2_execution_window_invalid")?;
+    let w: ManagementWindowConstraint = serde_json::from_value(value.clone()).map_err(|_| "broker_v2_execution_window_invalid")?;
+    if w.schema_version != "tradeassembly.management_window_constraint.v1"
+        || action != &tradeassembly_plugin_sdk::execution::PositionAction::SellToClose
+        || w.scope != *scope || w.window_id != format!("management_window_{}", w.window_receipt_sha256)
+        || w.window_id != binding.execution_occurrence_id
+        || w.position_id != binding.position_id || w.original_entry_plan_id != binding.original_entry_plan_id
+        || w.capability_graph_revision != graph
+        || w.window_receipt_sha256.len() != 64
+        || !w.window_receipt_sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || w.open_at_ms <= 0 || w.close_at_ms <= w.open_at_ms
+        || w.close_at_ms > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64 {
+        return Err("broker_v2_execution_window_invalid".into());
+    }
+    if now < w.open_at_ms || now >= w.close_at_ms { return Err("broker_v2_outside_execution_window".into()); }
+    Ok(())
+}
 fn validate_execution_window(
     value: &Value,
     scope: &crate::service::data_plans::PlanScope,
     now: i64,
+    managed: Option<(&tradeassembly_plugin_sdk::execution::PositionAction, &crate::service::order_plans::management::CloseBinding, &str)>,
 ) -> Result<(), String> {
     if value.is_null() {
         return Ok(());
+    }
+    if value["schemaVersion"] == "tradeassembly.management_window_constraint.v1" {
+        return validate_management_window_constraint(value, scope, now, managed);
     }
     let window: ExecutionWindowConstraint =
         serde_json::from_value(value.clone()).map_err(|_| "broker_v2_execution_window_invalid")?;
@@ -666,11 +707,29 @@ mod window_tests {
         let window = json!({"schemaVersion":"tradeassembly.execution_window_constraint.v1","scope":scope,"occurrenceId":"occurrence_fixture","scheduleReceiptSha256":"a".repeat(64),"openAtMs":1000,"closeAtMs":2000});
         for now in [999, 2000] {
             assert_eq!(
-                validate_execution_window(&window, &scope, now).unwrap_err(),
+                validate_execution_window(&window, &scope, now, None).unwrap_err(),
                 "broker_v2_outside_execution_window"
             );
         }
-        assert!(validate_execution_window(&window, &scope, 1000).is_ok());
-        assert!(validate_execution_window(&Value::Null, &scope, 2000).is_ok());
+        assert!(validate_execution_window(&window, &scope, 1000, None).is_ok());
+        assert!(validate_execution_window(&Value::Null, &scope, 2000, None).is_ok());
+    }
+    #[test]
+    fn management_window_is_only_for_exact_owned_sell_close_binding() {
+        use tradeassembly_plugin_sdk::execution::PositionAction;
+        let scope = crate::service::data_plans::PlanScope {strategy_id:"s".into(),strategy_version_id:"v".into(),strategy_spec_hash:"h".into()};
+        let binding=crate::service::order_plans::management::CloseBinding {execution_occurrence_id:format!("management_window_{}","a".repeat(64)),position_id:"position_1".into(),trigger_sha256:"c".repeat(64),exit_policy_sha256:"d".repeat(64),original_entry_plan_id:"entry_1".into()};
+        let w = json!({"schemaVersion":"tradeassembly.management_window_constraint.v1","scope":scope,"windowId":binding.execution_occurrence_id,"windowReceiptSha256":"a".repeat(64),"positionId":"position_1","originalEntryPlanId":"entry_1","capabilityGraphRevision":"graph_1","openAtMs":1000,"closeAtMs":2000});
+        let close=Some((&PositionAction::SellToClose,&binding,"graph_1"));
+        assert!(validate_execution_window(&w,&scope,1000,close).is_ok());
+        for now in [999,2000] { assert_eq!(validate_execution_window(&w,&scope,now,close).unwrap_err(),"broker_v2_outside_execution_window"); }
+        assert_eq!(validate_execution_window(&w,&scope,1000,None).unwrap_err(),"broker_v2_execution_window_invalid");
+        assert_eq!(validate_execution_window(&w,&scope,1000,Some((&PositionAction::BuyToOpen,&binding,"graph_1"))).unwrap_err(),"broker_v2_execution_window_invalid");
+        for field in ["occurrenceId","scheduleReceiptSha256","quantity"] { let mut bad=w.clone();bad[field]=json!(1);assert_eq!(validate_execution_window(&bad,&scope,1000,close).unwrap_err(),"broker_v2_execution_window_invalid"); }
+        for (field,value) in [("positionId",json!("position_2")),("originalEntryPlanId",json!("entry_2")),("capabilityGraphRevision",json!("graph_2"))] {
+            let mut bad=w.clone();bad[field]=value;assert_eq!(validate_execution_window(&bad,&scope,1000,close).unwrap_err(),"broker_v2_execution_window_invalid");
+        }
+        let mut wrong=w.clone();wrong["windowId"]=json!(format!("management_window_{}","b".repeat(64)));wrong["windowReceiptSha256"]=json!("b".repeat(64));assert!(validate_execution_window(&wrong,&scope,1000,close).is_err());
+        let mut old=w;old["schemaVersion"]=json!("tradeassembly.execution_window_constraint.v1");assert!(validate_execution_window(&old,&scope,1000,close).is_err());
     }
 }

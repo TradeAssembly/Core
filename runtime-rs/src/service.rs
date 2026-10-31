@@ -42,6 +42,7 @@ pub mod instrument_screens;
 mod journal_view;
 mod lifecycle_calendar;
 mod live_authorization;
+pub mod management_windows;
 mod marketdata;
 mod object_authorization;
 mod onboarding;
@@ -1113,6 +1114,9 @@ impl TradeAssemblyService {
         if let Some(response) = selection_plans::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) = management_windows::preflight(self, &normalized_path, &body) {
+            return response;
+        }
         if let Some(response) = session_schedules::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1402,6 +1406,9 @@ impl TradeAssemblyService {
             }
             ("POST", "/product/strategies/selection-plans/prepare") => {
                 selection_plans::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/management-windows/prepare") => {
+                management_windows::prepare_response(self, body)
             }
             ("POST", "/product/strategies/session-schedules/prepare") => {
                 session_schedules::prepare_response(self, body)

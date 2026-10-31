@@ -24,6 +24,7 @@ pub(super) fn authorize_private_request(
         .or_else(|| body.pointer("/collection/scope"))
         .or_else(|| body.pointer("/screen/scope"))
         .or_else(|| body.pointer("/schedule/scope"))
+        .or_else(|| body.pointer("/managementWindow/scope"))
         .or_else(|| body.pointer("/selectionPlan/scope"))
         .or_else(|| body.pointer("/managedPositionPlan/scope"))
         .or_else(|| body.pointer("/orderPlan/scope"))

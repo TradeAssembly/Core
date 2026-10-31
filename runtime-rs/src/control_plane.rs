@@ -421,7 +421,8 @@ fn http_command_name(method: &str, path: &str) -> String {
         | ("POST", "/product/strategies/selection-plans/prepare") => {
             "strategy.selection_plan.prepare".into()
         }
-        ("POST", "/product/strategies/session-schedules/prepare") => {
+        ("POST", "/product/strategies/management-windows/prepare")
+        | ("POST", "/product/strategies/session-schedules/prepare") => {
             "strategy.session_schedule.prepare".into()
         }
         ("POST", "/product/strategies/session-schedules/get") => {
@@ -1361,7 +1362,8 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     {
         return "read".into();
     }
-    if path == "/product/strategies/session-schedules/prepare"
+    if path == "/product/strategies/management-windows/prepare"
+        || path == "/product/strategies/session-schedules/prepare"
         || path == "/product/strategies/instrument-screens/create"
         || path == "/product/strategies/data-collections/create"
         || path == "/product/strategies/data-captures/create"
@@ -1533,6 +1535,7 @@ fn command_group(command_name: &str) -> &str {
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
     let scope = match path {
+        "/product/strategies/management-windows/prepare" => Some("/managementWindow/scope/strategyId"),
         "/product/strategies/managed-position-plans/prepare" => {
             Some("/managedPositionPlan/scope/strategyId")
         }

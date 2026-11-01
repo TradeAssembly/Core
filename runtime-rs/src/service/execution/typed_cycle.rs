@@ -266,40 +266,48 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
     // Health IO may have outlived a background stop/pause. This private
     // context restricts only the worker; finite manual phases remain valid.
     s.require_background_worker_current()?;
-    let (_run, config) = order_plans::measured("cycle.run", || {
-        order_plans::decision::run(s, &c.activation_id)
-    })?;
-    let automatic = automatic(&config)?;
-    let (plan, receipt) = order_plans::measured("cycle.signal", || {
-        data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)
-    })?;
-    if plan.revision_id != c.plan_revision_id
-        || plan.content.scope != c.scope
-        || config["strategyId"] != c.scope.strategy_id
-        || config["strategyVersionId"] != c.scope.strategy_version_id
-        || config["strategySpecHash"] != c.scope.strategy_spec_hash
-        || config["capabilityGraphRevisionId"]
-            != plan.content.plan.request.capability_graph_revision
-    {
-        return Err("typed_cycle_binding_mismatch".into());
-    }
-    if let Some(management) = &automatic.management {
-        order_plans::measured("cycle.reversal", || {
-            order_plans::management::automation::validate_entry_reversal_sources(
-                s, &plan, &receipt, management,
-            )
+    // Pure validation only: immutable package bytes are shared within this one
+    // phase, while owner/instance/grant/configuration/clock reads remain current.
+    // The scoped service never escapes, and the actual child uses the original
+    // runtime so acquisition and financial admission reverify independently.
+    let (config, automatic, plan, receipt, occurrence) =
+        crate::service::package_validation::with_round(s, |s| {
+            let (_run, config) = order_plans::measured("cycle.run", || {
+                order_plans::decision::run(s, &c.activation_id)
+            })?;
+            let automatic = automatic(&config)?;
+            let (plan, receipt) = order_plans::measured("cycle.signal", || {
+                data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)
+            })?;
+            if plan.revision_id != c.plan_revision_id
+                || plan.content.scope != c.scope
+                || config["strategyId"] != c.scope.strategy_id
+                || config["strategyVersionId"] != c.scope.strategy_version_id
+                || config["strategySpecHash"] != c.scope.strategy_spec_hash
+                || config["capabilityGraphRevisionId"]
+                    != plan.content.plan.request.capability_graph_revision
+            {
+                return Err("typed_cycle_binding_mismatch".into());
+            }
+            if let Some(management) = &automatic.management {
+                order_plans::measured("cycle.reversal", || {
+                    order_plans::management::automation::validate_entry_reversal_sources(
+                        s, &plan, &receipt, management,
+                    )
+                })?;
+            }
+            let occurrence = order_plans::measured("cycle.schedule", || {
+                session_schedules::current(s, &c.occurrence_id)
+            })?;
+            if occurrence.command.scope != c.scope
+                || occurrence.command.mode != "paper"
+                || occurrence.command.capability_graph_revision
+                    != plan.content.plan.request.capability_graph_revision
+            {
+                return Err("typed_cycle_occurrence_mismatch".into());
+            }
+            Ok((config, automatic, plan, receipt, occurrence))
         })?;
-    }
-    let occurrence = order_plans::measured("cycle.schedule", || {
-        session_schedules::current(s, &c.occurrence_id)
-    })?;
-    if occurrence.command.scope != c.scope
-        || occurrence.command.mode != "paper"
-        || occurrence.command.capability_graph_revision
-            != plan.content.plan.request.capability_graph_revision
-    {
-        return Err("typed_cycle_occurrence_mismatch".into());
-    }
     let now = s.runtime().clock.trusted_now_ms()?;
     let open = occurrence
         .occurrence

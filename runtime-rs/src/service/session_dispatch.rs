@@ -474,6 +474,30 @@ fn child(j: &Job, key: String, path: &str, mut body: Value) -> Child {
         body,
     }
 }
+// A progressing cycle keeps its immutable command payload. Only its next
+// transport key changes, exactly as next() previously derived it. Persist this
+// intent with the result before another turn; the child still performs all
+// current scope/configuration/source/clock checks before every phase/effect.
+fn cycle_continuation(j: &Job, c: &Child, body: &Value) -> Result<Option<Child>, String> {
+    if c.path != super::execution::typed_cycle::INTERNAL || body["status"] != "running" {
+        return Ok(None);
+    }
+    let (prefix, counter) = c
+        .key
+        .rsplit_once(':')
+        .filter(|(prefix, _)| prefix.starts_with("execute:"))
+        .ok_or("typed_cycle_child_key_invalid")?;
+    let counter = counter
+        .parse::<u8>()
+        .ok()
+        .filter(|n| *n < 7)
+        .ok_or("typed_cycle_child_key_invalid")?;
+    let key = format!("{prefix}:{}", counter + 1);
+    if j.results.contains_key(&key) {
+        return Err("typed_cycle_child_key_conflict".into());
+    }
+    Ok(Some(child(j, key, &c.path, c.body.clone())))
+}
 fn next(s: &TradeAssemblyService, j: &mut Job) -> Result<Option<Child>, String> {
     let r = &j.request;
     let (spec, template) =
@@ -1012,7 +1036,7 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
         if response.status == 200 {
             j.results
                 .insert(c.key.clone(), projection(&c, &response.body)?);
-            j.pending = None;
+            j.pending = cycle_continuation(&j, &c, &response.body)?;
             j.attempts = 0;
             j.error = None;
             j.next_attempt_at_ms = s.runtime().clock.now_ms();

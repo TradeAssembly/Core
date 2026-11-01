@@ -53,7 +53,15 @@ fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope
  let positions=s.runtime().storage.list_json("positions").unwrap();let orders=s.runtime().storage.list_json("orders").unwrap();let mut final_job=None;
  for step in 0..24{
   let active=if step>=5{crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None)}else{s.clone()};
-  let result=active.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("auto-advance-{step}")}));assert_eq!(result.status,200,"{}",result.body);assert_eq!(result.body["ok"],true,"{}",result.body);let job:dispatch::Job=serde_json::from_value(result.body["body"]["job"].clone()).unwrap();if !matches!(job.status,dispatch::Status::Pending|dispatch::Status::Running){final_job=Some(job);break;}
+  let result=active.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("auto-advance-{step}")}));assert_eq!(result.status,200,"{}",result.body);assert_eq!(result.body["ok"],true,"{}",result.body);let job:dispatch::Job=serde_json::from_value(result.body["body"]["job"].clone()).unwrap();
+  let wire=&result.body["body"]["job"];
+  let cycles=wire["results"].as_object().unwrap().iter().filter(|(key,_)|key.starts_with("execute:")).collect::<Vec<_>>();
+  if job.status==dispatch::Status::Running && cycles.iter().any(|(_,v)|v["status"]=="running") && !cycles.iter().any(|(_,v)|matches!(v["status"].as_str(),Some("complete"|"skipped"|"blocked"|"uncertain"))) {
+   assert_eq!(wire["pending"]["path"],"internal:typed-financial-cycle","progressing cycle must persist the next original payload before restart: {wire}");
+   assert_eq!(wire["pending"]["body"]["cycle"]["scope"],serde_json::to_value(scope).unwrap());
+   assert_eq!(wire["pending"]["body"]["cycle"]["activationId"],"fixture-v2-activation");
+  }
+  if !matches!(job.status,dispatch::Status::Pending|dispatch::Status::Running){final_job=Some(job);break;}
  }
  let job=final_job.expect("bounded selected evaluation-to-C5 path");assert_eq!(job.status,dispatch::Status::Complete,"{job:?}");let calls=||fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap_or_default();assert_eq!(calls().lines().filter(|x|*x=="submit").count(),1);
  let state=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();assert_eq!(state.len(),1);assert_eq!(state[0].1["phase"],"open");assert_eq!(state[0].1["retainedCash"],"41");

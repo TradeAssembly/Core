@@ -992,6 +992,7 @@ pub(super) fn validate_bindings(
         .first()
         .ok_or("management_reversal_source_binding_invalid")?;
     let mut roots = std::collections::BTreeSet::new();
+    let mut metadata_round = crate::service::data_binding::OperationMetadataRound::default();
     for node in &template.nodes {
         for context in std::iter::once(&node.context).chain(node.input_contexts.values()) {
             let actual = match context {
@@ -1013,12 +1014,23 @@ pub(super) fn validate_bindings(
             .find(|entry| entry.node_id == node.graph_node_id)
             .and_then(|entry| entry.selected.as_ref())
             .ok_or("management_reversal_source_binding_invalid")?;
-        let pin = crate::service::data_binding::pin(s, selected)?;
-        let metadata = s
-            .runtime()
-            .plugin_packages
-            .operation_data(&pin.package_sha256, &pin.operation_id)?
-            .ok_or("management_reversal_operation_contract_missing")?;
+        let operations = template
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                resolved_graph
+                    .nodes
+                    .iter()
+                    .find(|entry| entry.node_id == node.graph_node_id)
+                    .and_then(|entry| entry.selected.as_ref())
+            })
+            .filter(|entry| entry.plugin_ref == selected.plugin_ref)
+            .map(|entry| entry.operation_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (_, metadata) = metadata_round.pin_operation(s, selected, &operations)?;
+        let metadata = metadata.ok_or("management_reversal_operation_contract_missing")?;
         // A stateless input-free provider has no formula state to reconstruct.
         // Keep all declared V3 semantics when present; transforms still require
         // qualified V3 history/state and sources must prove complete captures.

@@ -27,6 +27,45 @@ pub(crate) fn pin(
     })
 }
 
+/// One current validation call's immutable operation metadata. Do not retain this
+/// across calls: later validation and every dispatch must verify package bytes
+/// again. Per-instance ownership/configuration/credential pins stay fresh below.
+#[derive(Default)]
+pub(crate) struct OperationMetadataRound {
+    snapshots: std::collections::BTreeMap<String, crate::ports::OperationDataSnapshot>,
+}
+impl OperationMetadataRound {
+    pub(crate) fn pin_operation(
+        &mut self,
+        service: &TradeAssemblyService,
+        selected: &CapabilitySelection,
+        operations: &[String],
+    ) -> Result<
+        (
+            PinnedOperation,
+            Option<tradeassembly_plugin_sdk::data_history::VersionedOperationData>,
+        ),
+        String,
+    > {
+        let pin = pin_with_package_loader(service, selected, |digest| {
+            if !self.snapshots.contains_key(digest) {
+                let snapshot = service
+                    .runtime()
+                    .plugin_packages
+                    .operation_data_snapshot(digest, operations)?
+                    .ok_or("data_plan_package_missing")?;
+                self.snapshots.insert(digest.to_owned(), snapshot);
+            }
+            Ok(self.snapshots[digest].package.clone())
+        })?;
+        let contract = self.snapshots[&pin.package_sha256]
+            .contracts
+            .get(&selected.operation_id)
+            .cloned();
+        Ok((pin, contract))
+    }
+}
+
 /// Only immutable package data may be reused inside one current-validation call.
 /// Instance, ownership, configuration and credential bindings are always read now.
 pub(crate) fn pin_with_package_loader(
@@ -84,3 +123,7 @@ pub(crate) fn pin_with_package_loader(
         account_ref: selected.account_ref.clone(),
     })
 }
+
+#[cfg(test)]
+#[path = "data_binding_tests.rs"]
+mod tests;

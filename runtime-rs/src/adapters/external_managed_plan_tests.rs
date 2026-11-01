@@ -254,6 +254,21 @@ fn exercise_native_managed_plan(
             end + index
         };
         let mut waits = Vec::new();
+        // The daily fixture's three warmup bars are historical. With real
+        // minute aliases, an intermediate warmup bar can also be prospective.
+        // Wait for its actual completion rather than asking the host to accept
+        // future data or changing the immutable source/plan after publication.
+        if minute_math && index < 3 {
+            loop {
+                let now = restored.runtime().clock.trusted_now_ms().unwrap();
+                assert!(now < end.checked_add(30000).unwrap(), "minute warmup exceeded the final frame deadline");
+                if now >= t { break; }
+                let wait_ms = (t-now).min(45000);
+                waits.push(json!({"waitStartedAtMs":now,"targetEventEndMs":t,"sleepMs":wait_ms}));
+                write_screen_interface_evidence("managed_plan", &format!("{grid_label}-warmup-{index}-wait-{}.json", waits.len()), &json!({"finalEventEndMs":end,"waits":waits}));
+                std::thread::sleep(std::time::Duration::from_millis(u64::try_from(wait_ms).unwrap()));
+            }
+        }
         if actual_math && index == 3 {
             loop {
                 let now=restored.runtime().clock.trusted_now_ms().unwrap();

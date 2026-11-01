@@ -58,7 +58,14 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
     let managed_exit_policy = order_plans::management::policy(s, &c.scope)?;
     if let Some(automatic) = &c.automatic_execution {
         if let Some(policy) = &managed_exit_policy {
-            order_plans::management::validate_automatic_policy(policy)?;
+            if automatic
+                .management
+                .as_ref()
+                .and_then(|m| m.reversal_evaluation.as_ref())
+                .is_none()
+            {
+                order_plans::management::validate_automatic_policy(policy)?;
+            }
         }
         if managed_exit_policy.is_some() != automatic.management.is_some() {
             return Err("typed_automatic_management_policy_required".into());
@@ -108,6 +115,19 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
     .map_err(|_| "typed_execution_graph_stale")?;
     if rev["strategySpecHash"] != c.scope.strategy_spec_hash || rev["graph"]["ok"] != true {
         return Err("typed_execution_graph_stale".into());
+    }
+    if let Some(management) = c
+        .automatic_execution
+        .as_ref()
+        .and_then(|a| a.management.as_ref())
+    {
+        order_plans::management::automation::validate_reversal_config(
+            s,
+            &c.scope,
+            &c.capability_graph_revision,
+            managed_exit_policy.as_ref(),
+            management,
+        )?;
     }
     if let Some(rollover) = c
         .automatic_execution

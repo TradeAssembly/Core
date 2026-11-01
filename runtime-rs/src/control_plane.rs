@@ -440,7 +440,9 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/data-collections/get") => {
             "strategy.data_collection.get".into()
         }
-        ("POST", "/product/strategies/data-captures/create") => {
+        ("POST", "/product/strategies/data-captures/create")
+        | ("POST", "/product/strategies/managed-data-streams/create")
+        | ("POST", "/product/strategies/managed-data-streams/append") => {
             "strategy.data_capture.create".to_string()
         }
         ("POST", "/product/strategies/data-captures/get") => {
@@ -458,7 +460,10 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/data-plans/prepare") => {
             "strategy.data_plan.prepare".to_string()
         }
-        ("POST", "/product/strategies/data-runs/step") => "strategy.data_run.step".to_string(),
+        ("POST", "/product/strategies/data-runs/step")
+        | ("POST", "/product/strategies/managed-data-runs/step") => {
+            "strategy.data_run.step".to_string()
+        }
         ("POST", "/capability-graph-revisions") => "capability.binding.revision.save".to_string(),
         ("POST", "/capability-graph-revisions/currentness") => {
             "capability.graph.currentness.check".to_string()
@@ -1373,6 +1378,8 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
         || path == "/product/strategies/instrument-screens/create"
         || path == "/product/strategies/data-collections/create"
         || path == "/product/strategies/data-captures/create"
+        || path == "/product/strategies/managed-data-streams/create"
+        || path == "/product/strategies/managed-data-streams/append"
         || path == "/product/strategies/option-selections/create"
     {
         return "research".into();
@@ -1417,7 +1424,9 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     }
     if matches!(
         path,
-        "/product/strategies/data-runs/step" | "/product/strategies/data-recipes/step"
+        "/product/strategies/data-runs/step"
+            | "/product/strategies/data-recipes/step"
+            | "/product/strategies/managed-data-runs/step"
     ) {
         return "research".to_string();
     }
@@ -1549,7 +1558,10 @@ fn target_object(path: &str, body: &Value) -> Option<String> {
             Some("/managedPositionPlan/scope/strategyId")
         }
         "/product/strategies/order-plans/prepare" => Some("/orderPlan/scope/strategyId"),
-        "/product/strategies/positions/register"
+        "/product/strategies/managed-data-streams/create"
+        | "/product/strategies/managed-data-streams/append"
+        | "/product/strategies/managed-data-runs/step"
+        | "/product/strategies/positions/register"
         | "/product/strategies/positions/advance"
         | "/product/strategies/positions/inspect"
         | "/product/strategies/order-plans/reserve"

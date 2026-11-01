@@ -174,6 +174,9 @@ pub(crate) fn preflight(
                 serde_json::from_value(body["step"].clone())
                     .map_err(|_| "data_strategy_step_invalid")?;
             let plan = data_plans::current(service, &step.plan_revision_id)?;
+            if !super::managed_data_streams::plan_roots(&plan).is_empty() {
+                return Err("managed_stream_step_route_required".into());
+            }
             program_for_content(service, &plan.content)?
                 .ok_or("data_strategy_program_missing")?
                 .validate(&plan.content.plan)?;

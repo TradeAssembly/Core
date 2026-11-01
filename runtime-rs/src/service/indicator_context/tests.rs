@@ -489,6 +489,7 @@ fn rig_in_mode(options: Options, mode: &str) -> Rig {
     let capture = data_captures::acquire(
         &service,
         data_captures::CaptureCommand {
+            receipt_version: None,
             policy: data_captures::CapturePolicy {
                 scope: scope.clone(),
                 capability_graph_revision: graph.clone(),

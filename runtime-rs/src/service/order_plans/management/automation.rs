@@ -4,6 +4,7 @@
 //! lookup/settlement, never another submit. Calendar rollover and automatic
 //! reversal-signal evaluation are deliberately not qualified here.
 use super::*;
+pub(crate) mod reversal;
 use crate::service::{execution::typed_cycle, session_dispatch};
 
 const STATE: &str = "execution_management_automation_v1";
@@ -17,6 +18,8 @@ const ROLES: [&str; 3] = ["account_data", "instrument_metadata", "pricing_quote"
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reversal_evaluation: Option<reversal::Config>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_rollover: Option<CalendarRollover>,
     pub cadence_ms: i64,
     pub max_positions_per_round: usize,
@@ -24,6 +27,9 @@ pub(crate) struct Config {
 }
 impl Config {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(reversal) = &self.reversal_evaluation {
+            reversal.validate()?;
+        }
         if let Some(rollover) = &self.calendar_rollover {
             rollover.validate()?;
         }
@@ -223,6 +229,7 @@ impl Work {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
+    Reversal { step: reversal::Action },
     CollectCalendar {},
     PrepareWindow {},
     Collect { role: String },
@@ -252,6 +259,8 @@ struct WindowHead {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct State {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    reversal_heads: BTreeMap<String, reversal::Progress>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     window_heads: BTreeMap<String, WindowHead>,
     schema_version: String,
     activation_id: String,
@@ -279,6 +288,51 @@ struct Binding {
     revision: String,
 }
 
+pub(crate) fn validate_reversal_config(
+    s: &TradeAssemblyService,
+    scope: &data_plans::PlanScope,
+    graph: &str,
+    policy: Option<&ExitPolicy>,
+    config: &Config,
+) -> Result<(), String> {
+    let Some(reversal) = &config.reversal_evaluation else {
+        return Ok(());
+    };
+    let policy = policy
+        .filter(|p| p.rules.reversal_signal.as_deref() == Some("typed.exit"))
+        .ok_or("management_reversal_policy_binding_invalid")?;
+    reversal.validate_reversal_age(policy.max_reversal_age_ms)?;
+    reversal::validate_bindings(s, scope, graph, reversal)
+}
+pub(crate) fn validate_entry_reversal_sources(
+    s: &TradeAssemblyService,
+    plan: &data_plans::StoredDataPlan,
+    receipt: &data_evaluation::EvaluationReceipt,
+    config: &Config,
+) -> Result<(), String> {
+    let Some(reversal) = &config.reversal_evaluation else {
+        return Ok(());
+    };
+    reversal::validate_entry_sources(s, plan, reversal)?;
+    if receipt
+        .signals
+        .last()
+        .is_none_or(|frame| !matches!(frame.exit, crate::data_strategy::SignalValue::Ready { .. }))
+    {
+        return Err("management_reversal_exit_warmup_required_before_entry".into());
+    }
+    Ok(())
+}
+fn retain_reversal_child(state: &mut State, now: i64, cadence: i64, error: String) {
+    state.error = Some(error);
+    state.failures = state.failures.saturating_add(1).min(16);
+    state.next_due_ms = now.saturating_add(
+        cadence
+            .saturating_mul(1_i64 << state.failures.min(6))
+            .min(60_000),
+    );
+    // Keep cursor, all source/checkpoint progress, and the exact original child.
+}
 fn current_owner(s: &TradeAssemblyService) -> Result<String, String> {
     let (issuer, session) = s
         .responsible_human_identity()
@@ -364,6 +418,11 @@ fn load_state(s: &TradeAssemblyService, b: &Binding) -> Result<Option<(Value, St
         || state.config_sha256 != b.config_hash
         || state.core_revision != b.revision
         || state.state_sha256 != state_hash(&state)?
+        || state.reversal_heads.len() > MAX_ENTRIES
+        || state
+            .reversal_heads
+            .values()
+            .any(|progress| progress.validate().is_err())
         || state.window_heads.len() > MAX_ENTRIES
         || state.window_heads.values().any(|head| {
             head.refresh_at_ms <= 0
@@ -418,7 +477,11 @@ fn save(
     let mut writes = vec![StorageWrite::new(STATE, &id, raw, ctx.clone())];
     let mut expectations = vec![StorageExpectation::new(STATE, &id, old)];
     if let Some((child, response)) = outcome {
-        let child_id = hash(&child.key)?;
+        let child_id = if response["retryRetainedOriginalChild"] == true {
+            hash(&(&child.key, state.generation))?
+        } else {
+            hash(&child.key)?
+        };
         let record = json!({"schemaVersion":"tradeassembly.management_automation_child.v1",
             "activationId":b.activation,"ownerSha256":b.owner,"coreRevision":b.revision,
             "configSha256":b.config_hash,"child":child,"response":response});
@@ -656,6 +719,7 @@ fn advance_child(
     position: &Position,
     occurrence: &str,
     collections: [&str; 3],
+    reversal_receipt: Option<&str>,
 ) -> Result<Child, String> {
     child(
         state,
@@ -663,7 +727,7 @@ fn advance_child(
         json!({"scope":plan.command.scope,"advance":{
         "executionOccurrenceId":occurrence,"positionId":position.position_id,
         "accountCollectionId":collections[0],"metadataCollectionId":collections[1],
-        "quoteCollectionId":collections[2],"reversalSignalReceiptSha256":null}}),
+        "quoteCollectionId":collections[2],"reversalSignalReceiptSha256":reversal_receipt}}),
         Action::Advance {},
     )
 }
@@ -674,7 +738,10 @@ fn calendar_action(action: &Action) -> bool {
     )
 }
 fn observation_action(action: &Action) -> bool {
-    matches!(action, Action::Collect { .. } | Action::Advance {})
+    matches!(
+        action,
+        Action::Collect { .. } | Action::Advance {} | Action::Reversal { .. }
+    )
 }
 fn head_current(
     s: &TradeAssemblyService,
@@ -970,6 +1037,7 @@ fn next_child(
                     &plan.command.metadata_collection_id,
                     &plan.command.quote_collection_id,
                 ],
+                None,
             )
             .map(Some);
         } else if let Some(submission) = &work.submission {
@@ -998,6 +1066,7 @@ fn next_child(
                 &plan.command.metadata_collection_id,
                 &plan.command.quote_collection_id,
             ],
+            None,
         )
         .map(Some);
     }
@@ -1008,7 +1077,7 @@ fn next_child(
     {
         return Ok(None);
     }
-    if position.policy.rules.reversal_signal.is_some() {
+    if position.policy.rules.reversal_signal.is_some() && b.config.reversal_evaluation.is_none() {
         return Err("management_automation_reversal_evidence_unsupported".into());
     }
     let occurrence = if let Some(rollover) = &b.config.calendar_rollover {
@@ -1021,6 +1090,30 @@ fn next_child(
         // Legacy opt-in remains limited to the exact original occurrence.
         execution_window(s, &entry, &state.occurrence_id)?;
         state.occurrence_id.clone()
+    };
+    if b.config.calendar_rollover.is_none() {
+        if let Some(retained) = state
+            .window_heads
+            .get_mut(&position.position_id)
+            .and_then(|head| {
+                if head.deferred_children.is_empty() {
+                    None
+                } else {
+                    Some(head.deferred_children.remove(0))
+                }
+            })
+        {
+            return Ok(Some(retained));
+        }
+    }
+    let reversal_receipt = if let Some(config) = &b.config.reversal_evaluation {
+        match reversal::next_child(s, config, state, &entry, &position)? {
+            WindowStep::Child(child) => return Ok(Some(child)),
+            WindowStep::Wait => return Ok(None),
+            WindowStep::Ready(receipt) => Some(receipt),
+        }
+    } else {
+        None
     };
     for (role, schema) in [
         ("account_data", ACCOUNT_SCHEMA),
@@ -1049,6 +1142,7 @@ fn next_child(
             &work.collections["instrument_metadata"],
             &work.collections["pricing_quote"],
         ],
+        reversal_receipt.as_deref(),
     )
     .map(Some)
 }
@@ -1084,11 +1178,17 @@ fn apply_response(
     child: &Child,
     response: &ServiceResponse,
 ) -> Result<(), String> {
+    if let Action::Reversal { step } = &child.action {
+        reversal::apply_response(s, b, state, child, step, response)?;
+        state.pending = None;
+        return Ok(());
+    }
     let work = state
         .work
         .get_mut(state.cursor)
         .ok_or("management_automation_work_missing")?;
     match &child.action {
+        Action::Reversal { .. } => return Err("management_reversal_action_invalid".into()),
         Action::CollectCalendar {} => {
             let id = response.body["collection"]["collectionId"]
                 .as_str()
@@ -1215,6 +1315,7 @@ pub(crate) fn advance(
             None => (
                 None,
                 State {
+                    reversal_heads: BTreeMap::new(),
                     window_heads: BTreeMap::new(),
                     schema_version: "tradeassembly.management_automation.v1".into(),
                     activation_id: b.activation.clone(),
@@ -1249,6 +1350,7 @@ pub(crate) fn advance(
             state
                 .window_heads
                 .retain(|id, head| live.contains(id) || !head.deferred_children.is_empty());
+            state.reversal_heads.retain(|id, _| live.contains(id));
             let selected = rotate(
                 &owned_positions,
                 state.position_cursor.as_deref(),
@@ -1314,7 +1416,7 @@ pub(crate) fn advance(
                 }
             }
         }
-        if b.config.calendar_rollover.is_some() {
+        if b.config.calendar_rollover.is_some() || b.config.reversal_evaluation.is_some() {
             if let Some(pending) = state.pending.clone() {
                 let work = state
                     .work
@@ -1326,14 +1428,16 @@ pub(crate) fn advance(
                 {
                     let (_, position) = load(s, &work.id)?;
                     let financial_pending = !position.reservations.is_empty();
-                    let outside_session =
-                        if observation_action(&pending.action) && !financial_pending {
-                            effect_window(s, &state, &work.id)?.is_none_or(|window| {
-                                window.status != crate::service::management_windows::Status::Active
-                            })
-                        } else {
-                            false
-                        };
+                    let outside_session = if b.config.calendar_rollover.is_some()
+                        && observation_action(&pending.action)
+                        && !financial_pending
+                    {
+                        effect_window(s, &state, &work.id)?.is_none_or(|window| {
+                            window.status != crate::service::management_windows::Status::Active
+                        })
+                    } else {
+                        false
+                    };
                     if (financial_pending && !matches!(&pending.action, Action::Advance {}))
                         || outside_session
                     {
@@ -1381,7 +1485,7 @@ pub(crate) fn advance(
                 return Err("management_automation_existing_submission_lookup_required".into());
             }
         }
-        if b.config.calendar_rollover.is_some()
+        if (b.config.calendar_rollover.is_some() || b.config.reversal_evaluation.is_some())
             && (calendar_action(&pending.action) || observation_action(&pending.action))
         {
             let work = state
@@ -1392,7 +1496,10 @@ pub(crate) fn advance(
             if work.kind == Kind::Position {
                 let (_, position) = load(s, &work.id)?;
                 let financial_pending = !position.reservations.is_empty();
-                let outside_session = if observation_action(&pending.action) && !financial_pending {
+                let outside_session = if b.config.calendar_rollover.is_some()
+                    && observation_action(&pending.action)
+                    && !financial_pending
+                {
                     effect_window(s, &state, &work.id)?.is_none_or(|window| {
                         window.status != crate::service::management_windows::Status::Active
                     })
@@ -1407,6 +1514,19 @@ pub(crate) fn advance(
                     return Ok(summary(&state));
                 }
             }
+        }
+        if matches!(pending.action, Action::Reversal { .. }) && b.config.calendar_rollover.is_none()
+        {
+            let work = state
+                .work
+                .get(state.cursor)
+                .ok_or("management_automation_work_missing")?;
+            let (_, position) = load(s, &work.id)?;
+            execution_window(
+                s,
+                &read_owned(s, &position.entry_plan_id)?,
+                &state.occurrence_id,
+            )?;
         }
         let response = s.handle_http("POST", &pending.path, pending.body.clone());
         // Losing the fence leaves the original pending child for safe recovery.
@@ -1432,13 +1552,38 @@ pub(crate) fn advance(
                     state.error = None;
                     state.next_due_ms = after;
                 }
+                Err(error) if matches!(pending.action, Action::Reversal { .. }) => {
+                    retain_reversal_child(
+                        &mut state,
+                        after,
+                        b.config.cadence_ms,
+                        format!("management_reversal_outcome_seal_required:{error}"),
+                    );
+                    let observed =
+                        json!({"retryRetainedOriginalChild":true,"observed":response_value});
+                    save(s, &b, old, &mut state, Some((&pending, observed)))?;
+                    return Ok(summary(&state));
+                }
                 Err(error) => fail_work(&mut state, after, b.config.cadence_ms, error),
             }
         } else {
             let error = crate::service::service_error_code(&response.body)
                 .unwrap_or_else(|| "management_automation_child_failed".into());
-            // A failed finite child is retained in the journal. The next round
-            // gets fresh lookup/read keys; no failed child fabricates evidence.
+            if matches!(pending.action, Action::Reversal { .. })
+                && reversal::unknown_response(&response)
+            {
+                retain_reversal_child(
+                    &mut state,
+                    after,
+                    b.config.cadence_ms,
+                    format!("management_reversal_child_outcome_unknown:{error}"),
+                );
+                let observed = json!({"retryRetainedOriginalChild":true,"observed":response_value});
+                save(s, &b, old, &mut state, Some((&pending, observed)))?;
+                return Ok(summary(&state));
+            }
+            // Known terminal refusals are journaled; unknown new observations
+            // above retain the original key instead of reacquiring evidence.
             fail_work(&mut state, after, b.config.cadence_ms, error);
         }
         if state.cursor == state.work.len() {
@@ -1459,6 +1604,7 @@ mod tests {
     use std::collections::BTreeSet;
     fn config() -> Config {
         Config {
+            reversal_evaluation: None,
             calendar_rollover: None,
             cadence_ms: 1000,
             max_positions_per_round: 2,
@@ -1554,15 +1700,75 @@ mod tests {
         let decoded: Config = serde_json::from_value(original.clone()).unwrap();
         assert_eq!(hash(&decoded).unwrap(), hash(&original).unwrap());
         assert!(decoded.calendar_rollover.is_none());
+        assert!(decoded.reversal_evaluation.is_none());
         let state = legacy_state();
         let mut old = serde_json::to_value(&state).unwrap();
         assert!(old.get("windowHeads").is_none());
+        assert!(old.get("reversalHeads").is_none());
         old["stateSha256"] = json!("");
         assert_eq!(state_hash(&state).unwrap(), hash(&old).unwrap());
         let decoded: State = serde_json::from_value(old.clone()).unwrap();
         assert!(decoded.window_heads.is_empty());
         assert_eq!(serde_json::to_value(&decoded).unwrap(), old);
     }
+    #[test]
+    fn reversal_unknown_child_restarts_with_exact_original_bytes_key_and_no_cursor_advance() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory
+            .path()
+            .join("reversal-retained.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let service = TradeAssemblyService::test_local(&db);
+        let binding = Binding {
+            activation: "activation".into(),
+            config: config(),
+            config_hash: "config".into(),
+            owner: "owner".into(),
+            revision: "revision".into(),
+        };
+        let mut state = legacy_state();
+        state.work = vec![Work::new(Kind::Position, "owned-position".into())];
+        let pending = child(
+            &mut state,
+            "/product/strategies/managed-data-runs/step",
+            json!({"scope":{"strategyId":"s"},"managedStep":{"step":{"runId":"retained-run",
+                "window":{"eventStartMs":10,"eventEndMs":20,"asOfMs":21},
+                "expectedCheckpointSha256":"a".repeat(64)}}}),
+            Action::Reversal {
+                step: reversal::Action::Evaluate {},
+            },
+        )
+        .unwrap();
+        state.pending = Some(pending.clone());
+        save(&service, &binding, None, &mut state, None).unwrap();
+        let restarted = TradeAssemblyService::test_local(&db);
+        let (raw, mut loaded) = load_state(&restarted, &binding).unwrap().unwrap();
+        assert_eq!(loaded.pending.as_ref(), Some(&pending));
+        assert_eq!(loaded.cursor, 0);
+        retain_reversal_child(
+            &mut loaded,
+            100,
+            1000,
+            "management_reversal_child_outcome_unknown".into(),
+        );
+        save(&restarted,&binding,Some(raw),&mut loaded,Some((&pending,
+            json!({"retryRetainedOriginalChild":true,"observed":{"status":503,"body":{"error":{"code":"outcome_uncertain"}}}})))).unwrap();
+        let restarted = TradeAssemblyService::test_local(&db);
+        let (_, again) = load_state(&restarted, &binding).unwrap().unwrap();
+        assert_eq!(again.pending.as_ref(), Some(&pending));
+        assert_eq!(again.cursor, 0);
+        assert_eq!(again.child_sequence, state.child_sequence);
+        assert_eq!(
+            again.pending.unwrap().body["managedStep"]["step"]["expectedCheckpointSha256"],
+            "a".repeat(64)
+        );
+        let observed = restarted.runtime().storage.list_json(CHILDREN).unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].1["child"], value(&pending).unwrap());
+        assert_eq!(observed[0].1["response"]["observed"]["status"], 503);
+    }
+
     #[test]
     fn rollover_config_is_closed_bounded_and_session_only() {
         let good = rollover();

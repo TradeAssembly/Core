@@ -390,6 +390,7 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
         graph.body
     );
     let command = captures::CaptureCommand {
+        receipt_version: None,
         policy: captures::CapturePolicy {
             scope,
             capability_graph_revision: graph.body["revision"]["revisionId"]
@@ -1250,6 +1251,7 @@ fn external_provider_admission_fixture(config_env:&str,collection:bool) {
         return;
     }
     let command = captures::CaptureCommand {
+        receipt_version: None,
         policy: captures::CapturePolicy {
             scope: scope.clone(),
             capability_graph_revision: graph.body["revision"]["revisionId"]
@@ -2075,3 +2077,65 @@ include!("external_dynamic_execution_tests.rs");
 include!("external_financial_joint_tests.rs");
 
 include!("external_financial_resume_tests.rs");
+
+#[test]
+#[ignore = "explicit normal Core V2 input witness/native process/mock-Warden/synthetic HTTP fixture"]
+fn data_capture_v2_real_process_witness_recreation_and_no_version_retrofit() {
+    let r = rig();
+    let mut c = r.command.clone();
+    c.receipt_version = Some(captures::CaptureReceiptVersion::V2);
+    let body =
+        json!({"capture":c,"accountMode":"paper","idempotencyKey":"capture-v2-input-witness"});
+    let first = r.service.handle_http(
+        "POST",
+        "/product/strategies/data-captures/create",
+        body.clone(),
+    );
+    assert_eq!(first.status, 200, "{}", first.body);
+    let receipt: captures::CaptureReceipt =
+        serde_json::from_value(first.body["capture"].clone()).unwrap();
+    assert_eq!(receipt.schema_version, captures::CaptureReceiptVersion::V2);
+    let witness = captures::verified_input_witness(&receipt).unwrap();
+    assert_eq!(witness.input, c.input);
+    assert_eq!(
+        canonical_sha256(&witness.input).unwrap(),
+        receipt.input_sha256
+    );
+    r.server.join().unwrap();
+    let reopened = crate::service::TradeAssemblyService::from_runtime(
+        r.service.db(),
+        r.service.runtime().as_ref().clone(),
+    );
+    let again = reopened.handle_http(
+        "POST",
+        "/product/strategies/data-captures/create",
+        body.clone(),
+    );
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.body["capture"], first.body["capture"]);
+    assert_eq!(
+        captures::current(&reopened, &receipt.capture_id).unwrap(),
+        receipt
+    );
+    let mut changed = body.clone();
+    changed["capture"]["receiptVersion"] = json!("tradeassembly.data_capture_receipt.v1");
+    let refused = reopened.handle_http("POST", "/product/strategies/data-captures/create", changed);
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let mut changed = body;
+    changed["capture"]["input"] = json!({"feed":"different"});
+    assert_eq!(
+        reopened
+            .handle_http("POST", "/product/strategies/data-captures/create", changed)
+            .status,
+        409
+    );
+    assert_eq!(
+        reopened
+            .runtime()
+            .storage
+            .list_json("data_acquisition_receipts_v1")
+            .unwrap()
+            .len(),
+        1
+    );
+}

@@ -18,6 +18,16 @@ pub struct ManagedPositionPlanCommand {
     pub selection_receipts: BTreeMap<String, String>,
     pub source_captures: BTreeMap<String, String>,
 }
+/// Closed V2 managed-only source family; legacy v1 rejects sourceStreams.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedPositionStreamPlanCommand {
+    pub schema_version: String,
+    pub scope: data_plans::PlanScope,
+    pub managed_position_id: String,
+    pub selection_receipts: BTreeMap<String, String>,
+    pub source_streams: BTreeMap<String, String>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectionPlanCommand {
@@ -31,6 +41,8 @@ pub struct SelectionPlanCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectionPlanSource {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_streams: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_position_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,6 +130,21 @@ fn resolve_inner(
     prepared_at_ms: i64,
     managed_position_id: Option<&str>,
 ) -> Result<SelectionPlanSource, String> {
+    resolve_bound(
+        service,
+        c,
+        prepared_at_ms,
+        managed_position_id,
+        &BTreeMap::new(),
+    )
+}
+fn resolve_bound(
+    service: &TradeAssemblyService,
+    c: &SelectionPlanCommand,
+    prepared_at_ms: i64,
+    managed_position_id: Option<&str>,
+    source_streams: &BTreeMap<String, String>,
+) -> Result<SelectionPlanSource, String> {
     if !matches!(c.mode.as_str(), "paper" | "live" | "backtest")
         || prepared_at_ms <= 0
         || prepared_at_ms > service.runtime().clock.now_ms()
@@ -152,6 +179,16 @@ fn resolve_inner(
     let mut evidence = BTreeMap::new();
     let mut known = prepared_at_ms;
     for (name, binding) in &template.selections {
+        if !source_streams.is_empty()
+            && name != &template.trade_selection_ref
+            && !selection_is_context(&template, name)
+        {
+            selected.insert(name.clone(), Vec::new());
+            evidence.insert(name.clone(),canonical_sha256(&json!({
+                "schemaVersion":"tradeassembly.managed_unused_selection.v1","selection":name,"binding":binding,
+            })).map_err(|_| "selection_plan_encoding_invalid")?);
+            continue;
+        }
         let markets = spec
             .signal_market_requirements
             .iter()
@@ -171,6 +208,12 @@ fn resolve_inner(
         }
         let selector = selectors[0];
         let used_as_context = selection_is_context(&template, name);
+        if !source_streams.is_empty()
+            && used_as_context
+            && selector.selector_type == SelectorType::Screened
+        {
+            return Err("managed_stream_screened_context_continuity_unsupported".into());
+        }
         if name == &template.trade_selection_ref && !used_as_context {
             if let Some((subject, proof)) = &managed {
                 evidence.insert(
@@ -283,6 +326,7 @@ fn resolve_inner(
         template.resolve(&selected, &c.subject_instrument_id)?
     };
     Ok(SelectionPlanSource {
+        source_streams: source_streams.clone(),
         managed_position_id: managed_position_id.map(str::to_owned),
         managed_position_sha256: managed.map(|(_, proof)| proof),
         command: c.clone(),
@@ -312,11 +356,12 @@ pub(super) fn rebuild(
     service: &TradeAssemblyService,
     source: &SelectionPlanSource,
 ) -> Result<data_plans::DataPlanContent, String> {
-    let fresh = resolve_inner(
+    let fresh = resolve_bound(
         service,
         &source.command,
         source.prepared_at_ms,
         source.managed_position_id.as_deref(),
+        &source.source_streams,
     )?;
     if fresh != *source {
         return Err("selection_plan_source_stale".into());
@@ -338,7 +383,13 @@ fn build(
         nodes: program.nodes.clone(),
         bindings: program.bindings.clone(),
     };
-    data_plans::prepare_selected(service, c.scope.clone(), request, source)
+    let scope = c.scope.clone();
+    let streams = source.source_streams.clone();
+    let mut content = data_plans::prepare_selected(service, scope, request, source)?;
+    if !streams.is_empty() {
+        super::managed_data_streams::bind_plan_sources(service, &mut content, &streams)?;
+    }
+    Ok(content)
 }
 fn command(body: &Value) -> Result<SelectionPlanCommand, String> {
     if serde_json::to_vec(body)
@@ -421,6 +472,7 @@ fn original(
         s.command != *command
             || s.managed_position_id.is_some()
             || s.managed_position_sha256.is_some()
+            || !s.source_streams.is_empty()
     }) {
         return Err("selection_plan_idempotency_conflict".into());
     }
@@ -430,7 +482,14 @@ fn original(
 fn managed_command(
     service: &TradeAssemblyService,
     body: &Value,
-) -> Result<(ManagedPositionPlanCommand, SelectionPlanCommand), String> {
+) -> Result<
+    (
+        ManagedPositionPlanCommand,
+        SelectionPlanCommand,
+        BTreeMap<String, String>,
+    ),
+    String,
+> {
     if serde_json::to_vec(body)
         .map_err(|_| "managed_plan_command_invalid")?
         .len()
@@ -438,10 +497,60 @@ fn managed_command(
     {
         return Err("managed_plan_command_too_large".into());
     }
-    let c: ManagedPositionPlanCommand = serde_json::from_value(body["managedPositionPlan"].clone())
-        .map_err(|_| "managed_plan_command_invalid")?;
-    if c.schema_version != "tradeassembly.managed_position_plan.v1"
-        || c.managed_position_id.is_empty()
+    let (c, streams) = if body["managedPositionPlan"]["schemaVersion"]
+        == "tradeassembly.managed_position_plan.v2"
+    {
+        let c: ManagedPositionStreamPlanCommand =
+            serde_json::from_value(body["managedPositionPlan"].clone())
+                .map_err(|_| "managed_plan_command_invalid")?;
+        if c.source_streams.is_empty()
+            || c.source_streams.len() > 8
+            || !c.selection_receipts.is_empty()
+        {
+            return Err("managed_stream_plan_bindings_invalid".into());
+        }
+        if let Some(agent) = service.agent_mcp_execution_context() {
+            crate::agent_runner::bind_mcp_execution_context(
+                service.runtime().as_ref(),
+                agent,
+                "tradeassembly.strategy.selection_plan.prepare",
+                body.clone(),
+            )?;
+            if agent.mode() != "paper" {
+                return Err("agent_mcp_execution_context_mismatch".into());
+            }
+        }
+        let mut seed_captures = BTreeMap::new();
+        for (node, id) in &c.source_streams {
+            let binding = super::managed_data_streams::binding(service, id, &c.scope)?;
+            if binding.position_id != c.managed_position_id || binding.replay_node != *node {
+                return Err("managed_stream_plan_position_or_node_mismatch".into());
+            }
+            seed_captures.insert(node.clone(), binding.seed_capture_id);
+        }
+        (
+            ManagedPositionPlanCommand {
+                schema_version: c.schema_version,
+                scope: c.scope,
+                managed_position_id: c.managed_position_id,
+                selection_receipts: c.selection_receipts,
+                source_captures: seed_captures,
+            },
+            c.source_streams,
+        )
+    } else {
+        let c: ManagedPositionPlanCommand =
+            serde_json::from_value(body["managedPositionPlan"].clone())
+                .map_err(|_| "managed_plan_command_invalid")?;
+        if c.schema_version != "tradeassembly.managed_position_plan.v1" {
+            return Err("managed_plan_command_invalid".into());
+        }
+        (c, BTreeMap::new())
+    };
+    if !matches!(
+        c.schema_version.as_str(),
+        "tradeassembly.managed_position_plan.v1" | "tradeassembly.managed_position_plan.v2"
+    ) || c.managed_position_id.is_empty()
         || c.managed_position_id.len() > 256
         || c.selection_receipts.len() > 16
         || c.source_captures.len() > 32
@@ -465,20 +574,21 @@ fn managed_command(
         selection_receipts: c.selection_receipts.clone(),
         source_captures: c.source_captures.clone(),
     };
-    Ok((c, internal))
+    Ok((c, internal, streams))
 }
 fn managed_content(
     service: &TradeAssemblyService,
     body: &Value,
 ) -> Result<data_plans::DataPlanContent, String> {
-    let (c, internal) = managed_command(service, body)?;
+    let (c, internal, streams) = managed_command(service, body)?;
     build(
         service,
-        resolve_inner(
+        resolve_bound(
             service,
             &internal,
             service.runtime().clock.trusted_now_ms()?,
             Some(&c.managed_position_id),
+            &streams,
         )?,
     )
 }
@@ -487,7 +597,7 @@ pub(super) fn prepare_managed_response(
     body: Value,
 ) -> ServiceResponse {
     let result = (|| {
-        let (c, internal) = managed_command(service, &body)?;
+        let (c, internal, streams) = managed_command(service, &body)?;
         let authority =
             crate::control_plane::http_envelope("http", "POST", MANAGED_PATH, &body)?.authority;
         let context = SideEffectContext::new(
@@ -502,6 +612,7 @@ pub(super) fn prepare_managed_response(
         if let Some(plan) = data_plans::previous(service, &c.scope, &context)? {
             if plan.content.selection_source.as_ref().is_none_or(|source| {
                 source.command != internal
+                    || source.source_streams != streams
                     || source.managed_position_id.as_deref() != Some(c.managed_position_id.as_str())
             }) {
                 return Err("managed_plan_idempotency_conflict".into());
@@ -630,6 +741,25 @@ mod managed_wire_tests {
         assert!(!selection_is_context(&template, "other"));
     }
 
+    #[test]
+    fn managed_v2_stream_wire_does_not_widen_v1_or_allow_caller_capture_state() {
+        let q = json!({"schemaVersion":"tradeassembly.managed_position_plan.v2",
+            "scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},
+            "managedPositionId":"owned","selectionReceipts":{},"sourceStreams":{"root":"managedstream_owned"}});
+        assert!(serde_json::from_value::<ManagedPositionStreamPlanCommand>(q.clone()).is_ok());
+        assert!(serde_json::from_value::<ManagedPositionPlanCommand>(q.clone()).is_err());
+        for field in [
+            "sourceCaptures",
+            "checkpoint",
+            "providerResponse",
+            "subjectInstrumentId",
+            "accountRef",
+        ] {
+            let mut invalid = q.clone();
+            invalid[field] = json!({});
+            assert!(serde_json::from_value::<ManagedPositionStreamPlanCommand>(invalid).is_err());
+        }
+    }
     #[test]
     fn unmanaged_selection_source_serialization_omits_both_new_fields() {
         let legacy = json!({"command":{"scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},"capabilityGraphRevision":"g","mode":"paper","subjectInstrumentId":"subject","selectionReceipts":{},"sourceCaptures":{}},"preparedAtMs":1,"knownAtMs":1,"selectionSha256":{},"resolvedProgram":{"version":1,"nodes":[],"bindings":[],"tradeInstruments":[],"entry":{"kind":"is_true","value":{"kind":"boolean","value":false}},"exit":{"kind":"is_true","value":{"kind":"boolean","value":true}}}});

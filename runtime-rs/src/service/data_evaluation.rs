@@ -21,14 +21,75 @@ use tradeassembly_plugin_sdk::{
 pub(super) struct DataStepRequest {
     started: std::time::Instant,
     verified: std::sync::Mutex<Option<(EvaluationStep, data_plans::StoredDataPlan)>>,
+    source_snapshot: std::sync::Mutex<Option<super::managed_data_streams::Snapshot>>,
 }
 pub(super) fn request_service(service: &TradeAssemblyService) -> TradeAssemblyService {
     let mut scoped = service.clone();
     scoped.data_step_request = Some(std::sync::Arc::new(DataStepRequest {
         started: std::time::Instant::now(),
         verified: Default::default(),
+        source_snapshot: Default::default(),
     }));
     scoped
+}
+pub(super) fn attach_source_snapshot(
+    service: &TradeAssemblyService,
+    snapshot: super::managed_data_streams::Snapshot,
+) -> Result<(), String> {
+    let context = service
+        .data_step_request
+        .as_ref()
+        .ok_or("managed_stream_private_request_context_required")?;
+    let mut current = context
+        .source_snapshot
+        .lock()
+        .map_err(|_| "data_evaluation_request_context_unavailable")?;
+    if current.as_ref().is_some_and(|prior| prior != &snapshot) {
+        return Err("managed_stream_original_snapshot_changed".into());
+    }
+    *current = Some(snapshot);
+    Ok(())
+}
+pub(super) fn source_snapshot(
+    service: &TradeAssemblyService,
+    plan: &data_plans::StoredDataPlan,
+    window: &EvaluationWindow,
+) -> Result<Option<super::managed_data_streams::Snapshot>, String> {
+    let has_streams = plan.content.source_authentication.values().any(|source| {
+        matches!(
+            source,
+            super::data_captures::SourceAuthentication::HostCaptureStream { .. }
+        )
+    });
+    if !has_streams {
+        return Ok(None);
+    }
+    let snapshot = service
+        .data_step_request
+        .as_ref()
+        .ok_or("managed_stream_private_snapshot_required")?
+        .source_snapshot
+        .lock()
+        .map_err(|_| "data_evaluation_request_context_unavailable")?
+        .clone()
+        .ok_or("managed_stream_private_snapshot_required")?;
+    if snapshot.plan_revision_id != plan.revision_id || snapshot.window != *window {
+        return Err("managed_stream_snapshot_request_mismatch".into());
+    }
+    super::managed_data_streams::validate_snapshot_plan(service, plan, &snapshot)?;
+    Ok(Some(snapshot))
+}
+fn receipt_snapshot_matches(
+    service: &TradeAssemblyService,
+    plan: &data_plans::StoredDataPlan,
+    request: &EvaluationStep,
+    receipt: &EvaluationReceipt,
+) -> Result<(), String> {
+    let expected = source_snapshot(service, plan, &request.window)?.map(|s| s.snapshot_sha256);
+    if receipt.source_snapshot_sha256 != expected {
+        return Err("managed_stream_step_receipt_snapshot_mismatch".into());
+    }
+    Ok(())
 }
 fn request_budget(service: &TradeAssemblyService) -> Result<(), String> {
     if service
@@ -136,6 +197,8 @@ pub enum EvaluationStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_snapshot_sha256: Option<String>,
     /// Immutable origin for downstream verification across transports. It is
     /// evidence only, never the authority used to invoke a downstream operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -461,7 +524,9 @@ pub(crate) fn inspect_receipt(
         .get_json(RECEIPTS, &receipt_key)?
         .ok_or("data_evaluation_receipt_missing")?;
     let request_hash = hash(&json!({"request":request,"authority":context.authority}))?;
-    validate_stored_receipt(value, &request_hash, request)
+    let receipt = validate_stored_receipt(value, &request_hash, request)?;
+    receipt_snapshot_matches(service, &plan, request, &receipt)?;
+    Ok(receipt)
 }
 
 /// Read immutable signal evidence by its host-committed index. This grants no
@@ -471,6 +536,21 @@ pub(crate) fn inspect_receipt(
 pub fn indexed_receipt(
     service: &TradeAssemblyService,
     digest: &str,
+) -> Result<(data_plans::StoredDataPlan, EvaluationReceipt), String> {
+    read_indexed_receipt(service, digest, data_plans::current)
+}
+/// Owned immutable origin only. Never a current-data or execution witness; the
+/// managed caller must first prove its actual original entry and final posting.
+pub(crate) fn historical_indexed_receipt(
+    service: &TradeAssemblyService,
+    digest: &str,
+) -> Result<(data_plans::StoredDataPlan, EvaluationReceipt), String> {
+    read_indexed_receipt(service, digest, data_plans::read_owned)
+}
+fn read_indexed_receipt(
+    service: &TradeAssemblyService,
+    digest: &str,
+    read_plan: fn(&TradeAssemblyService, &str) -> Result<data_plans::StoredDataPlan, String>,
 ) -> Result<(data_plans::StoredDataPlan, EvaluationReceipt), String> {
     if digest.len() != 64
         || !digest
@@ -484,7 +564,7 @@ pub fn indexed_receipt(
         .storage
         .get_json(RECEIPT_INDEX, digest)?
         .ok_or("data_evaluation_receipt_index_missing")?;
-    let plan = data_plans::current(
+    let plan = read_plan(
         service,
         index["planRevisionId"]
             .as_str()
@@ -555,7 +635,9 @@ pub fn step(
     let receipt_key = key(&[&run_key, context.idempotency_key.as_str()])?;
     let runtime = service.runtime();
     if let Some(value) = runtime.storage.get_json(RECEIPTS, &receipt_key)? {
-        return validate_stored_receipt(value, &request_hash, &request);
+        let receipt = validate_stored_receipt(value, &request_hash, &request)?;
+        receipt_snapshot_matches(service, &plan, &request, &receipt)?;
+        return Ok(receipt);
     }
 
     let prior = runtime.storage.get_json(RUNS, &run_key)?;
@@ -750,6 +832,57 @@ impl StepEnvironment<'_> {
         serde_json::from_value(revision["revision"]["graph"].clone())
             .map_err(|_| "data_evaluation_graph_invalid".into())
     }
+    fn acquire_stream_source(
+        &self,
+        node: &PipelineNode,
+        contract: &VersionedOperationData,
+        selected: &CapabilitySelection,
+        payload: &DataEvaluationRequest,
+        claim: &mut LeaseClaim,
+    ) -> Result<DataEvaluationResponse, String> {
+        let snapshot = source_snapshot(self.service, self.plan, &self.request.window)?
+            .ok_or("managed_stream_private_snapshot_required")?;
+        let parts = super::managed_data_streams::replay_parts(
+            self.service,
+            &snapshot,
+            &node.graph_node_id,
+        )?;
+        let mut combined = DataEvaluationResponse {
+            schema_version: EvaluationVersion::V1,
+            outputs: BTreeMap::new(),
+            state: BTreeMap::new(),
+        };
+        for part in parts {
+            self.check_budget()?;
+            let mut request = payload.clone();
+            request.parameters = part.capture.replay_parameters.clone();
+            request.window = part.window.clone();
+            let mut response = self.acquire(node, contract, selected, &request, claim)?;
+            super::managed_data_streams::envelope_part(&part, &mut response)?;
+            if !response.state.is_empty() || response.outputs.keys().ne(contract.outputs.keys()) {
+                return Err("managed_stream_replay_response_invalid".into());
+            }
+            for (port, batch) in response.outputs {
+                let target = combined.outputs.entry(port).or_insert_with(|| DataBatch {
+                    schema: batch.schema.clone(),
+                    shape: batch.shape.clone(),
+                    points: Vec::new(),
+                });
+                if target.schema != batch.schema || target.shape != batch.shape {
+                    return Err("managed_stream_replay_schema_changed".into());
+                }
+                target.points.extend(batch.points);
+                if target.points.len() > MAX_POINTS || bytes(target)? > MAX_STEP_BYTES {
+                    return Err("managed_stream_replay_budget_exceeded".into());
+                }
+            }
+        }
+        if combined.outputs.keys().ne(contract.outputs.keys()) || bytes(&combined)? > MAX_STEP_BYTES
+        {
+            return Err("managed_stream_replay_response_invalid".into());
+        }
+        Ok(combined)
+    }
     fn acquire(
         &self,
         node: &PipelineNode,
@@ -900,8 +1033,24 @@ impl StepEnvironment<'_> {
                 prior_state: BTreeMap::new(),
                 max_points: MAX_POINTS as u64,
             };
-            let mut response = self.acquire(node, contract, selected, &payload, claim)?;
-            super::data_captures::envelope_source(self.service, self.plan, node, &mut response)?;
+            let response = if matches!(
+                self.plan
+                    .content
+                    .source_authentication
+                    .get(&node.graph_node_id),
+                Some(super::data_captures::SourceAuthentication::HostCaptureStream { .. })
+            ) {
+                self.acquire_stream_source(node, contract, selected, &payload, claim)?
+            } else {
+                let mut response = self.acquire(node, contract, selected, &payload, claim)?;
+                super::data_captures::envelope_source(
+                    self.service,
+                    self.plan,
+                    node,
+                    &mut response,
+                )?;
+                response
+            };
             self.check_budget()?;
             if !response.state.is_empty() || response.outputs.len() != contract.outputs.len() {
                 return Err("data_evaluation_provider_response_invalid".into());
@@ -1193,6 +1342,8 @@ impl StepEnvironment<'_> {
         }
         checkpoint.checkpoint_sha256 = checkpoint_hash(checkpoint)?;
         let mut receipt = EvaluationReceipt {
+            source_snapshot_sha256: source_snapshot(self.service, self.plan, &self.request.window)?
+                .map(|snapshot| snapshot.snapshot_sha256),
             request_authority: Some(self.context.authority.clone()),
             receipt_sha256: String::new(),
             request_sha256: self.request_hash.clone(),
@@ -1802,4 +1953,71 @@ pub(crate) fn admitted_signal(
     }
     validate_state_availability(&receipt.checkpoint)?;
     Ok((plan, receipt))
+}
+
+#[cfg(test)]
+mod stream_bridge_tests {
+    use super::*;
+    #[test]
+    fn absent_source_snapshot_preserves_legacy_receipt_bytes_and_hash() {
+        let value = json!({"receiptSha256":"b".repeat(64),"requestSha256":"a".repeat(64),
+            "status":"warming_up","checkpoint":{"runId":"r","planRevisionId":"p","generation":0,
+                "cursors":{},"states":{},"validCounts":{},"lastFrame":{},"checkpointSha256":"c".repeat(64)},
+            "outputs":{},"framesProcessed":0});
+        let receipt: EvaluationReceipt = serde_json::from_value(value.clone()).unwrap();
+        assert!(receipt.source_snapshot_sha256.is_none());
+        assert_eq!(serde_json::to_value(&receipt).unwrap(), value);
+        let mut unhashed = value;
+        unhashed["receiptSha256"] = json!("");
+        assert_eq!(receipt_hash(&receipt).unwrap(), hash(&unhashed).unwrap());
+        let mut streamed = receipt;
+        streamed.source_snapshot_sha256 = Some("d".repeat(64));
+        assert_ne!(receipt_hash(&streamed).unwrap(), hash(&unhashed).unwrap());
+    }
+    #[test]
+    fn private_snapshot_cannot_change_within_an_original_host_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory
+            .path()
+            .join("private.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let service = TradeAssemblyService::test_local(&db);
+        // Invalid snapshots in this unit never reach source/provider admission;
+        // this probes the request-local immutability fence, not source authority.
+        let original = super::super::managed_data_streams::Snapshot {
+            schema_version: "tradeassembly.managed_stream_input_snapshot.v1".into(),
+            owner_sha256: "owner".into(),
+            plan_revision_id: "plan".into(),
+            window: EvaluationWindow {
+                event_start_ms: 1,
+                event_end_ms: 2,
+                as_of_ms: 3,
+            },
+            sources: BTreeMap::new(),
+            snapshot_sha256: "a".repeat(64),
+        };
+        assert!(attach_source_snapshot(&service, original.clone()).is_err());
+        let scoped = request_service(&service);
+        attach_source_snapshot(&scoped, original.clone()).unwrap();
+        attach_source_snapshot(&scoped, original.clone()).unwrap();
+        let mut changed = original;
+        changed.window.as_of_ms += 1;
+        assert_eq!(
+            attach_source_snapshot(&scoped, changed).unwrap_err(),
+            "managed_stream_original_snapshot_changed"
+        );
+        assert!(service
+            .runtime()
+            .storage
+            .list_json("managed_stream_step_snapshots_v1")
+            .unwrap()
+            .is_empty());
+        assert!(service
+            .runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap()
+            .is_empty());
+    }
 }

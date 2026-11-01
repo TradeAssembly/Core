@@ -221,6 +221,11 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
     {
         return Err("typed_cycle_binding_mismatch".into());
     }
+    if let Some(management) = &automatic.management {
+        order_plans::management::automation::validate_entry_reversal_sources(
+            s, &plan, &receipt, management,
+        )?;
+    }
     let occurrence = session_schedules::current(s, &c.occurrence_id)?;
     if occurrence.command.scope != c.scope
         || occurrence.command.mode != "paper"

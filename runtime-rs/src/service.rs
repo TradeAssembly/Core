@@ -43,6 +43,8 @@ pub mod instrument_screens;
 mod journal_view;
 mod lifecycle_calendar;
 mod live_authorization;
+pub(crate) mod managed_data_streams;
+pub(crate) mod managed_stream_evaluation;
 pub mod management_windows;
 mod marketdata;
 mod object_authorization;
@@ -1087,7 +1089,9 @@ impl TradeAssemblyService {
         if method.eq_ignore_ascii_case("POST")
             && matches!(
                 normalize_path(path).as_str(),
-                "/product/strategies/data-recipes/step" | "/product/strategies/data-runs/step"
+                "/product/strategies/data-recipes/step"
+                    | "/product/strategies/data-runs/step"
+                    | "/product/strategies/managed-data-runs/step"
             )
             && self.data_step_request.is_none()
         {
@@ -1134,6 +1138,13 @@ impl TradeAssemblyService {
             return response;
         }
         if let Some(response) = order_plans::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = managed_data_streams::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = managed_stream_evaluation::preflight(self, &normalized_path, &body)
+        {
             return response;
         }
         if let Some(response) = selection_plans::preflight(self, &normalized_path, &body) {
@@ -1425,6 +1436,12 @@ impl TradeAssemblyService {
                     Ok(v) => ServiceResponse::ok(v),
                     Err(_) => ServiceResponse::object_unavailable(),
                 }
+            }
+            ("POST", managed_data_streams::CREATE | managed_data_streams::APPEND) => {
+                managed_data_streams::response(self, path, body)
+            }
+            ("POST", managed_stream_evaluation::PATH) => {
+                managed_stream_evaluation::response(self, body)
             }
             ("POST", "/product/strategies/managed-position-plans/prepare") => {
                 selection_plans::prepare_managed_response(self, body)

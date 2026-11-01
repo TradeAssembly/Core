@@ -390,6 +390,47 @@ pub(in crate::service) fn exit_plan_subject(
     )?;
     Ok((instrument, entry.command.capability_graph_revision, proof))
 }
+/// Resolve the immutable entry computation only after proving current ownership
+/// of its remaining settled position. This is computation lineage, never entry
+/// eligibility, selector freshness, or an executable permission.
+pub(in crate::service) fn entry_signal_source(
+    s: &TradeAssemblyService,
+    id: &str,
+    scope: &data_plans::PlanScope,
+) -> Result<
+    (
+        data_plans::StoredDataPlan,
+        data_evaluation::EvaluationReceipt,
+        String,
+    ),
+    String,
+> {
+    let (instrument, graph, proof) = exit_plan_subject(s, id, scope)?;
+    let (_, pos) = load(s, id)?;
+    let entry = read_owned(s, &pos.entry_plan_id)?;
+    let (plan, receipt) =
+        data_evaluation::historical_indexed_receipt(s, &entry.command.signal_receipt_sha256)?;
+    let signal = receipt
+        .signals
+        .last()
+        .ok_or("managed_stream_entry_signal_missing")?;
+    if plan.content.scope != *scope
+        || plan.content.plan.request.mode != "paper"
+        || plan.content.plan.request.capability_graph_revision != graph
+        || receipt.receipt_sha256 != entry.command.signal_receipt_sha256
+        || signal.trade_instruments != vec![instrument]
+        || signal.entry != (crate::data_strategy::SignalValue::Ready { value: true })
+        || plan
+            .content
+            .selection_source
+            .as_ref()
+            .is_some_and(|source| source.managed_position_id.is_some())
+    {
+        return Err("managed_stream_entry_signal_binding_invalid".into());
+    }
+    Ok((plan, receipt, proof))
+}
+
 /// Stable owned position/entry lineage; no active-control or calendar authority.
 pub(in crate::service) fn window_lineage(
     s: &TradeAssemblyService,

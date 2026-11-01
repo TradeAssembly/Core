@@ -2234,7 +2234,7 @@ include!("external_session_process_tests.rs");
 #[test]
 #[ignore="explicit exact frozen Core CLI, owned process driver and synthetic loopback/SRT gate"]
 fn session_actual_compiled_core_process_restart_and_lost_mcp_response(){
- for name in ["SESSION_PROCESS_TEST_BINARY","SESSION_PROCESS_TEST_SCRIPT","SESSION_PROCESS_TEST_SRT","SCREEN_INTERFACE_EVIDENCE_DIR"]{assert!(std::env::var_os(name).is_some(),"missing process gate input {name}");}
+ for name in ["SESSION_PROCESS_TEST_BINARY","SESSION_PROCESS_TEST_BINARY_SHA256","SESSION_PROCESS_TEST_CORE_REVISION","SESSION_PROCESS_TEST_DRIVER","SESSION_PROCESS_TEST_DRIVER_SHA256","SESSION_PROCESS_TEST_SRT","SESSION_PROCESS_TEST_SRT_SHA256","SCREEN_INTERFACE_EVIDENCE_DIR"]{assert!(std::env::var_os(name).is_some(),"missing process gate input {name}");}
  screen_process_fixture("session_process");
 }
 

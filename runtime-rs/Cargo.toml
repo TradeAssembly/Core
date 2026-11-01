@@ -65,3 +65,8 @@ openidconnect = { git = "https://github.com/ramosbugs/openidconnect-rs", rev = "
 rsa = "0.9.8"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+[[example]]
+name = "session-process-driver"
+path = "tests/fixtures/session_process_driver.rs"
+test = true

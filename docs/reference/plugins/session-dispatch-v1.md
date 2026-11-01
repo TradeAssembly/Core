@@ -67,16 +67,44 @@ This is not production authentication, market-data or brokerage acceptance.
 ## Compiled process gate
 
 The ignored `session_actual_compiled_core_process_restart_and_lost_mcp_response`
-gate uses an explicitly frozen Core CLI and `tests/fixtures/session_process_driver.py`.
-It closes the entire MCP reply pipe after initialization, waits for the domain
-commit, replays the original enqueue in a fresh CLI, enables the owned worker,
-and terminates that process before due. Normal `api` startup must resume the
-same enabled intent, produce native warming/ready frames through SRT, and retain
-the completed job across another API restart without a provider invocation.
+gate uses an explicitly frozen Core CLI and the Rust Cargo example
+`session-process-driver` (`tests/fixtures/session_process_driver.rs`). The old
+Python driver is removed from the source lane; historical Python evidence is
+not a runtime dependency. Build/freeze the example with the owning Cargo lane,
+then run its helper tests separately from the actual process qualification:
 
-Inputs are explicit `SESSION_PROCESS_TEST_BINARY`, `SESSION_PROCESS_TEST_SCRIPT`,
-`SESSION_PROCESS_TEST_SRT` and a new `SCREEN_INTERFACE_EVIDENCE_DIR`. The authored
-fixture is bound to the frozen source revision named by its driver; it is not an
-installer, release qualification or permission to reuse receipts against another
-source. Synthetic state and process logs remain isolated for reconciliation.
-The MCP enqueue loss case does not establish Relay HTTP record-ack loss handling.
+```sh
+cargo build --offline -p tradeassembly-runtime --example session-process-driver
+cargo test --offline -p tradeassembly-runtime --example session-process-driver
+```
+
+Inputs are explicit absolute paths `SESSION_PROCESS_TEST_BINARY`,
+`SESSION_PROCESS_TEST_DRIVER`, `SESSION_PROCESS_TEST_SRT`, their corresponding
+`_SHA256` values, `SESSION_PROCESS_TEST_CORE_REVISION` (the frozen CLI's exact
+40-character source revision), and a new `SCREEN_INTERFACE_EVIDENCE_DIR`.
+The wrapper verifies all frozen bytes and launches the driver binary directly.
+The driver independently verifies Core/SRT bytes and actual stored coreRevision;
+there is no implicit historical revision or `SCRIPT`/Python fallback.
+
+After normal MCP initialization it drops the owned response pipe before sending
+enqueue, verifies the actual domain and C3 commit, and replays the exact enqueue
+in a fresh Core process. It enables the same owned worker intent and explicitly
+kills that Core child before due. Normal `api` startup must resume that unchanged
+intent, produce native warming/ready frames through the configured SRT, and keep
+the completed job unchanged across another API restart without provider replay.
+Orders and positions must be empty and unchanged throughout. Financial activation
+is explicitly excluded from this computation fixture.
+
+Execution is explicitly Unix/SRT-only; other platforms refuse the driver rather
+than claim an unqualified sandbox boundary. MCP input/output use owned nonblocking
+pipes and finite deadlines, with no reader threads retaining a supposedly closed
+reply pipe. Database reads use the existing read-only SQLite adapter dependency,
+closed namespace names and row/byte limits. Child kill/join and driver lifetime
+are bounded; failure leaves isolated synthetic state and logs for reconciliation.
+A protected synthetic marker and private files are required, Warden is loopback,
+and Core uses normal local_owner startup with synthetic fixture authority only.
+
+Helper tests and compilation do not qualify this new process driver. The actual
+ignored gate must run against the declared frozen bytes and retain its result.
+This is not an installer or release qualification, does not establish real-provider
+entitlement/credentials, and does not establish Relay HTTP record-ack loss handling.

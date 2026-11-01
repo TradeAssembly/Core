@@ -9,7 +9,8 @@ fn configure_dispatch_calendar_fixture(s:&crate::service::TradeAssemblyService,s
 }
 fn exercise_session_dispatch_fixture(base:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,case:&str){
  use crate::service::{session_schedules as schedules,session_dispatch as dispatch};
- crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+ let fixture_revision=if case=="session_process" {std::env::var("SESSION_PROCESS_TEST_CORE_REVISION").expect("explicit frozen Core revision")}else{"1111111111111111111111111111111111111111".into()};
+ crate::build_identity::install(&fixture_revision).unwrap();
  let calendar=crate::service::data_collections::acquire(base,crate::service::data_collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:"calendar".into(),mode:"paper".into(),response_schema_ref:tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),input:json!({})},&ctx("dispatch-calendar-read")).unwrap();
  let now=base.runtime().clock.now_ms();let date=chrono::DateTime::from_timestamp_millis(now).unwrap().date_naive().to_string();
  let c=schedules::ScheduleCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:calendar.collection_id.clone(),execution_calendar_collection_id:calendar.collection_id,knowledge_cutoff_ms:now};

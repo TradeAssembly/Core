@@ -268,11 +268,17 @@ async fn documented_http_routes_are_served_by_rust_axum_api() {
             "POST /research/jobs" | "POST /product/strategies/research/jobs/create"
         ) {
             assert_eq!(status.as_u16(), 501);
-            assert_eq!(body["error"]["code"], "legacy_constructed_research_disabled");
+            assert_eq!(
+                body["error"]["code"],
+                "legacy_constructed_research_disabled"
+            );
             assert_eq!(body["body"]["status"], "blocked");
             assert_eq!(body["body"]["researchEvidenceQualified"], false);
             assert_eq!(body["body"]["artifacts"], json!([]));
-            assert_eq!(body["body"]["nextAction"]["tool"], "tradeassembly.backtest.run");
+            assert_eq!(
+                body["body"]["nextAction"]["tool"],
+                "tradeassembly.backtest.run"
+            );
             continue;
         }
         assert!(

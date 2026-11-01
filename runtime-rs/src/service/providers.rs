@@ -5,12 +5,13 @@ use crate::capability::{
 use crate::instrument_packs;
 use crate::plugin_catalog::stored_plugin_entry as portable_stored_plugin_entry;
 use crate::ports::{
-    AuthorityContext, CapabilityRequirement, CapabilityRequirementConstraints,
-    CapabilityResolverCatalog, CredentialResolutionStatus, EntitlementGrant, IdempotencyKey,
-    PluginCatalogEntry, PluginOperationContract, PluginOperationRequest, PluginOperationTraits,
-    SideEffectContext,
+    AuthorityContext, CapabilityGraphRequest, CapabilityRequirement,
+    CapabilityRequirementConstraints, CapabilityResolverCatalog, CredentialResolutionStatus,
+    EntitlementGrant, IdempotencyKey, PluginCatalogEntry, PluginOperationContract,
+    PluginOperationRequest, PluginOperationTraits, SideEffectContext,
 };
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const ENTITLEMENT_NS: &str = "entitlement_grants";
 
@@ -455,6 +456,59 @@ fn entitlements_for(
     service: &TradeAssemblyService,
     capability: Option<&str>,
 ) -> Vec<EntitlementGrant> {
+    let capabilities = capability.map(|cap| BTreeSet::from([cap.to_string()]));
+    entitlements_matching(service, capabilities.as_ref())
+}
+
+// A metadata-only superset of every capability the resolver can visit. Include
+// dependencies of all matching alternatives; actual selection, cycles and
+// authority checks still belong to the ordinary resolver.
+fn graph_capabilities(
+    request: &CapabilityGraphRequest,
+    catalog: &[PluginCatalogEntry],
+) -> BTreeSet<String> {
+    let mut capabilities = request
+        .requirements
+        .iter()
+        .map(|r| r.capability.clone())
+        .collect::<BTreeSet<_>>();
+    let mut dependencies: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for operation in catalog.iter().flat_map(|plugin| &plugin.operations) {
+        dependencies
+            .entry(&operation.capability)
+            .or_default()
+            .extend(
+                operation
+                    .dependencies
+                    .iter()
+                    .map(|dependency| dependency.capability.as_str()),
+            );
+    }
+    let mut pending = capabilities.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(capability) = pending.pop_front() {
+        if let Some(children) = dependencies.get(capability.as_str()) {
+            for child in children {
+                if capabilities.insert((*child).to_string()) {
+                    pending.push_back((*child).to_string());
+                }
+            }
+        }
+    }
+    capabilities
+}
+
+pub(super) fn entitlements_for_graph(
+    service: &TradeAssemblyService,
+    request: &CapabilityGraphRequest,
+    catalog: &[PluginCatalogEntry],
+) -> Vec<EntitlementGrant> {
+    entitlements_matching(service, Some(&graph_capabilities(request, catalog)))
+}
+
+fn entitlements_matching(
+    service: &TradeAssemblyService,
+    capabilities: Option<&BTreeSet<String>>,
+) -> Vec<EntitlementGrant> {
     let mut grants = local_full_entitlements();
     let Ok(records) = service.runtime().storage.list_json(ENTITLEMENT_NS) else {
         // Preserve existing defaults, but never regenerate new policy grants
@@ -475,7 +529,7 @@ fn entitlements_for(
         )
         .collect::<Vec<_>>();
     let eligible = if complete {
-        super::default_free_plugins::grants(service, capability)
+        super::default_free_plugins::grants_matching(service, capabilities)
     } else {
         Vec::new()
     };
@@ -1823,6 +1877,35 @@ fn context(event_type: &str, key: &str) -> SideEffectContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eligibility_scope_includes_transitive_alternatives_and_cycles_without_unrelated_operations()
+    {
+        let operation = |id: &str, capability: &str, dependencies: &[&str]| {
+            crate::plugin_catalog::operation_from_manifest(&json!({
+                "id":id,"capability":capability,"financeAction":{"actionId":"test.read"},
+                "dependencies":dependencies.iter().enumerate().map(|(i, cap)| json!({"dependencyId":format!("dep{i}"),"capability":cap,"required":true,"traits":{}})).collect::<Vec<_>>()
+            })).unwrap()
+        };
+        let plugin: PluginCatalogEntry = serde_json::from_value(json!({
+            "instanceRef":"scope-fixture","pluginRef":"fixture.scope","providerRef":"scope-fixture",
+            "accountRef":null,"name":"scope fixture","enabled":true,"trustLevel":"test","manifestFingerprint":"fixture",
+            "capabilities":["a","b","c","z"],
+            "operations":[operation("a.first","a",&["b"]),operation("a.alternative","a",&["c"]),operation("b","b",&["a","missing"]),operation("z","z",&["unrelated"])],
+            "credentialStatus":{"configured":false,"custody":"none","status":"missing","revisionRef":null},"health":"ready"
+        })).unwrap();
+        let request = CapabilityGraphRequest {
+            requirements: vec![CapabilityRequirement {
+                capability: "a".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            graph_capabilities(&request, &[plugin]),
+            BTreeSet::from(["a", "b", "c", "missing"].map(str::to_string))
+        );
+    }
 
     #[test]
     fn requirement_parser_preserves_the_complete_strategy_and_binding_contract() {

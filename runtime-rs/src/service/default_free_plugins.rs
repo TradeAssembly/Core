@@ -3,7 +3,10 @@
 use super::TradeAssemblyService;
 use crate::{default_free_plugin_policy as policy, ports::*};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 struct EligiblePackage {
     metadata: VerifiedPackageMetadataSnapshot,
@@ -88,9 +91,19 @@ fn verified(
         operations,
     })
 }
-pub(super) fn grants(
+#[cfg(test)]
+fn grants(
     service: &TradeAssemblyService,
     requested_capability: Option<&str>,
+) -> Vec<EntitlementGrant> {
+    let capabilities =
+        requested_capability.map(|capability| BTreeSet::from([capability.to_string()]));
+    grants_matching(service, capabilities.as_ref())
+}
+
+pub(super) fn grants_matching(
+    service: &TradeAssemblyService,
+    requested_capabilities: Option<&BTreeSet<String>>,
 ) -> Vec<EntitlementGrant> {
     // The ordinary ownership helper deliberately permits internal ownerless
     // calls. New product eligibility requires an actual authenticated owner.
@@ -100,9 +113,15 @@ pub(super) fn grants(
     let Ok(host_policy) = policy::compiled_policy() else {
         return Vec::new();
     };
-    if requested_capability.is_some_and(|cap| cap.is_empty() || cap.len() > 256) {
-        return Vec::new();
-    }
+    // Invalid/unresolved optional nodes still belong to resolver diagnostics.
+    // They must not remove eligibility for unrelated valid required nodes.
+    let valid_requested = requested_capabilities.map(|caps| {
+        caps.iter()
+            .filter(|cap| !cap.is_empty() && cap.len() <= 256)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    });
+    let requested_capabilities = valid_requested.as_ref();
     let runtime = service.runtime();
     let Ok(instances) = runtime.plugins.list_instances() else {
         return Vec::new();
@@ -146,10 +165,16 @@ pub(super) fn grants(
             continue;
         }
         // Cheap exact declared-capability prefilter BEFORE installed-byte work.
-        if requested_capability.is_some_and(|cap| {
+        if requested_capabilities.is_some_and(|requested| {
             !record["manifest"]["capabilities"]
                 .as_array()
-                .is_some_and(|caps| caps.iter().any(|declared| declared["id"] == cap))
+                .is_some_and(|caps| {
+                    caps.iter().any(|declared| {
+                        declared["id"]
+                            .as_str()
+                            .is_some_and(|cap| requested.contains(cap))
+                    })
+                })
         }) {
             continue;
         }
@@ -171,7 +196,7 @@ pub(super) fn grants(
             continue;
         }
         for operation in &package.operations {
-            if requested_capability.is_some_and(|cap| cap != operation.capability) {
+            if requested_capabilities.is_some_and(|caps| !caps.contains(&operation.capability)) {
                 continue;
             }
             let Some(data) = package.metadata.contracts.get(&operation.id) else {
@@ -263,6 +288,18 @@ mod tests {
             .unwrap();
         let generated = grants(&owner, Some(cap));
         assert_eq!(generated.len(), 1);
+        let selected_caps = BTreeSet::from([cap.to_string(), "indicator.tsi.minute@1".to_string()]);
+        let selected = grants_matching(&owner, Some(&selected_caps));
+        assert_eq!(selected.len(), 2);
+        assert!(selected
+            .iter()
+            .all(|grant| selected_caps.contains(&grant.capability)));
+        assert_eq!(
+            selected.iter().find(|grant| grant.capability == cap),
+            Some(&generated[0]),
+            "request scope cannot change binding identity"
+        );
+        assert!(grants_matching(&owner, Some(&BTreeSet::new())).is_empty());
         assert_eq!(
             before,
             owner
@@ -276,6 +313,64 @@ mod tests {
         assert!(grants(&foreign, Some(cap)).is_empty());
         assert!(grants(&owner, Some("broker.order_submit.live")).is_empty());
         let catalog = super::super::providers::plugin_catalog(&owner);
+        let mut graph_request = CapabilityGraphRequest {
+            requirements: selected_caps
+                .iter()
+                .enumerate()
+                .map(|(index, capability)| CapabilityRequirement {
+                    requirement_id: format!("root{index}"),
+                    capability: capability.clone(),
+                    mode: "paper".into(),
+                    declaration: "required".into(),
+                    fallback_policy: "none".into(),
+                    plugin_instance_ref: Some("owned-calculation".into()),
+                    ..Default::default()
+                })
+                .collect(),
+            evaluation_epoch: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        for (index, capability) in [String::new(), "unresolved".repeat(40)]
+            .into_iter()
+            .enumerate()
+        {
+            graph_request.requirements.push(CapabilityRequirement {
+                requirement_id: format!("optional{index}"),
+                capability,
+                declaration: "optional".into(),
+                mode: "paper".into(),
+                fallback_policy: "none".into(),
+                ..Default::default()
+            });
+        }
+        let full = crate::capability::resolve_graph(
+            graph_request.clone(),
+            CapabilityResolverCatalog {
+                plugins: catalog.clone(),
+                entitlements: super::super::providers::entitlements(&owner),
+            },
+        );
+        let scoped_grants =
+            super::super::providers::entitlements_for_graph(&owner, &graph_request, &catalog);
+        assert_eq!(
+            scoped_grants
+                .iter()
+                .filter(|g| g.source_type == policy::SOURCE_TYPE)
+                .count(),
+            2
+        );
+        let scoped = crate::capability::resolve_graph(
+            graph_request,
+            CapabilityResolverCatalog {
+                plugins: catalog.clone(),
+                entitlements: scoped_grants,
+            },
+        );
+        assert!(full.ok, "{full:?}");
+        assert_eq!(
+            scoped, full,
+            "scoping must preserve selected bindings, diagnostics and immutable graph identity"
+        );
         let plugin = catalog
             .iter()
             .find(|p| p.instance_ref == "owned-calculation")

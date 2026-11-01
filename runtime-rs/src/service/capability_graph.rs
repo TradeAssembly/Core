@@ -1039,11 +1039,13 @@ fn graph_resolution(
     service: &TradeAssemblyService,
     request: &CapabilityGraphRequest,
 ) -> CapabilityGraphResolution {
+    let plugins = providers::plugin_catalog(service);
+    let entitlements = providers::entitlements_for_graph(service, request, &plugins);
     service.runtime().capability_resolver.resolve_graph(
         request.clone(),
         CapabilityResolverCatalog {
-            plugins: providers::plugin_catalog(service),
-            entitlements: providers::entitlements(service),
+            plugins,
+            entitlements,
         },
     )
 }

@@ -403,6 +403,15 @@ fn timing_phase(stage: &'static str) -> bool {
             | "c3.prepare"
             | "c3.dispatch"
             | "c3.complete"
+            | "dispatch.advance"
+            | "dispatch.schedule"
+            | "dispatch.next"
+            | "dispatch.child"
+            | "cycle.advance"
+            | "cycle.run"
+            | "cycle.signal"
+            | "cycle.reversal"
+            | "cycle.schedule"
             | "broker.invoke"
             | "c5.prepare"
             | "c5.admit"
@@ -1610,6 +1619,19 @@ mod financial_timing_tests {
         assert!(timing_requested(Some(std::ffi::OsStr::new("1"))));
         assert!(timing_phase("c5.admit"));
         assert!(timing_phase("management.snapshot"));
+        for phase in [
+            "dispatch.advance",
+            "dispatch.schedule",
+            "dispatch.next",
+            "dispatch.child",
+            "cycle.advance",
+            "cycle.run",
+            "cycle.signal",
+            "cycle.reversal",
+            "cycle.schedule",
+        ] {
+            assert!(timing_phase(phase));
+        }
         assert!(!timing_phase(""));
         assert!(!timing_phase("account://private/request/body"));
         let calls = std::cell::Cell::new(0);

@@ -239,6 +239,7 @@ pub(crate) fn automatic(config: &Value) -> Result<AutomaticConfig, String> {
 /// Exactly one retained financial phase per call; request/child keys are stable
 /// across service/process recreation. A child error never becomes a false signal.
 pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, String> {
+    let _timing = order_plans::financial_timing("cycle.advance");
     s.require_object("execution_activation", &c.activation_id)
         .map_err(|_| "typed_cycle_not_available")?;
     let id = digest(&c)?;
@@ -265,9 +266,13 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
     // Health IO may have outlived a background stop/pause. This private
     // context restricts only the worker; finite manual phases remain valid.
     s.require_background_worker_current()?;
-    let (_run, config) = order_plans::decision::run(s, &c.activation_id)?;
+    let (_run, config) = order_plans::measured("cycle.run", || {
+        order_plans::decision::run(s, &c.activation_id)
+    })?;
     let automatic = automatic(&config)?;
-    let (plan, receipt) = data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)?;
+    let (plan, receipt) = order_plans::measured("cycle.signal", || {
+        data_evaluation::indexed_receipt(s, &c.signal_receipt_sha256)
+    })?;
     if plan.revision_id != c.plan_revision_id
         || plan.content.scope != c.scope
         || config["strategyId"] != c.scope.strategy_id
@@ -279,11 +284,15 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
         return Err("typed_cycle_binding_mismatch".into());
     }
     if let Some(management) = &automatic.management {
-        order_plans::management::automation::validate_entry_reversal_sources(
-            s, &plan, &receipt, management,
-        )?;
+        order_plans::measured("cycle.reversal", || {
+            order_plans::management::automation::validate_entry_reversal_sources(
+                s, &plan, &receipt, management,
+            )
+        })?;
     }
-    let occurrence = session_schedules::current(s, &c.occurrence_id)?;
+    let occurrence = order_plans::measured("cycle.schedule", || {
+        session_schedules::current(s, &c.occurrence_id)
+    })?;
     if occurrence.command.scope != c.scope
         || occurrence.command.mode != "paper"
         || occurrence.command.capability_graph_revision

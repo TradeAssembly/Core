@@ -862,6 +862,7 @@ pub(crate) fn prepared_cycle_commands(
     Ok(commands)
 }
 pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
+    let _timing = super::order_plans::financial_timing("dispatch.advance");
     let who = owner(s)?;
     let (mut j, _) = read(s, id)?;
     if j.owner_sha256 != who || j.core_revision != revision()? {
@@ -875,7 +876,8 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
         return Ok(j);
     }
     s.require_background_worker_current()?;
-    let schedule = validate_request(s, &j.request)?;
+    let schedule =
+        super::order_plans::measured("dispatch.schedule", || validate_request(s, &j.request))?;
     if schedule.receipt_sha256 != j.schedule_sha256 {
         return Err("session_dispatch_schedule_changed".into());
     }
@@ -945,7 +947,7 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
             j.status = Status::Running;
         }
         if j.pending.is_none() {
-            match next(s, &mut j) {
+            match super::order_plans::measured("dispatch.next", || next(s, &mut j)) {
                 Ok(next) => j.pending = next,
                 Err(error) => {
                     j.error = Some(error);
@@ -975,11 +977,13 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
         j.attempts += 1;
         persist(s, old, &mut j)?;
         old = value(&j)?;
-        let response = if c.path == super::execution::typed_cycle::INTERNAL {
-            super::execution::typed_cycle::response(s, &c.body)
-        } else {
-            s.handle_http("POST", &c.path, c.body.clone())
-        };
+        let response = super::order_plans::measured("dispatch.child", || {
+            if c.path == super::execution::typed_cycle::INTERNAL {
+                super::execution::typed_cycle::response(s, &c.body)
+            } else {
+                s.handle_http("POST", &c.path, c.body.clone())
+            }
+        });
         // Even if authority expires during the child, retain original domain
         // evidence and pending request. Never commit through a stale lease.
         owner(s)?;

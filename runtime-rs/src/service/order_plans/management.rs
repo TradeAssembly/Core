@@ -1,6 +1,7 @@
 //! Owned long positions and immutable synthetic exit proposals. Never a broker permit.
 use super::*;
 pub(crate) mod automation;
+pub mod provider_remote;
 pub mod remote;
 #[path = "../position_management/rules.rs"]
 mod rules;

@@ -12,6 +12,7 @@ use tradeassembly_plugin_sdk::instrument_set::InstrumentSet;
 pub const DATA_RUNNER_SCHEMA: &str = "tradeassembly.core-data-runner.v1";
 pub const DATA_RUNNER_SCHEMA_V2: &str = "tradeassembly.core-data-runner.v2";
 pub const DATA_RUNNER_SCHEMA_V6: &str = "tradeassembly.core-data-runner.v6";
+pub const DATA_RUNNER_SCHEMA_V7: &str = "tradeassembly.core-data-runner.v7";
 pub const DATA_RUNNER_SCHEMA_V5: &str = "tradeassembly.core-data-runner.v5";
 pub const DATA_RUNNER_SCHEMA_V4: &str = "tradeassembly.core-data-runner.v4";
 pub const DATA_RUNNER_SCHEMA_V3: &str = "tradeassembly.core-data-runner.v3";
@@ -66,6 +67,9 @@ impl DataRunnerMode {
     deny_unknown_fields
 )]
 pub enum DataRunnerOperation {
+    ProviderManagement {
+        management: super::order_plans::management::provider_remote::ProviderManagementOperation,
+    },
     ManagePosition {
         management: super::order_plans::management::remote::ManagementOperation,
     },
@@ -198,7 +202,9 @@ impl DataRunnerCommand {
         }
         budget(&v, 0, &mut 0)?;
         if self.schema_version
-            != if self.management() {
+            != if self.provider_management() {
+                DATA_RUNNER_SCHEMA_V7
+            } else if self.management() {
                 DATA_RUNNER_SCHEMA_V6
             } else if self.settlement() {
                 DATA_RUNNER_SCHEMA_V5
@@ -220,6 +226,9 @@ impl DataRunnerCommand {
         if matches!(&self.operation,DataRunnerOperation::DispatchSession{dispatch:super::session_dispatch::RemoteRequest::Enqueue{job}} if job.execution_activation_id.is_some())
         {
             return Err("session_dispatch_remote_financial_authority_unsupported".into());
+        }
+        if let DataRunnerOperation::ProviderManagement { management } = &self.operation {
+            management.validate()?;
         }
         if let DataRunnerOperation::ManagePosition { management } = &self.operation {
             management.validate()?;
@@ -251,18 +260,32 @@ impl DataRunnerCommand {
     pub fn management(&self) -> bool {
         matches!(&self.operation, DataRunnerOperation::ManagePosition { .. })
     }
+    pub fn provider_management(&self) -> bool {
+        matches!(
+            &self.operation,
+            DataRunnerOperation::ProviderManagement { .. }
+        )
+    }
+    // Only these families seal immutable child snapshots before an outer receipt.
+    // Keep the old family predicates exact: V7 never adopts a V4/V5/V6 wire.
+    fn protected_outcome(&self) -> bool {
+        self.management() || self.provider_management()
+    }
     pub fn protected(&self) -> bool {
-        self.financial() || self.management()
+        self.financial() || self.protected_outcome()
     }
     fn protected_action(&self) -> Result<&'static str, String> {
         match &self.operation {
+            DataRunnerOperation::ProviderManagement { management } => Ok(management.action()),
             DataRunnerOperation::Financial { financial } => Ok(financial.action()),
             DataRunnerOperation::ManagePosition { management } => Ok(management.action()),
             _ => Err("financial_runner_operation_required".into()),
         }
     }
     pub fn resource_kind(&self) -> Option<&'static str> {
-        if self.management() {
+        if let DataRunnerOperation::ProviderManagement { management } = &self.operation {
+            Some(management.resource_kind())
+        } else if self.management() {
             Some(super::order_plans::management::remote::RESOURCE_KIND)
         } else if self.financial() {
             Some("strategy_order_plan")
@@ -275,14 +298,18 @@ impl DataRunnerCommand {
         }
     }
     fn original_binding_namespace(&self) -> &'static str {
-        if self.management() {
+        if self.provider_management() {
+            "provider_management_original_bindings_v7"
+        } else if self.management() {
             "management_original_bindings_v1"
         } else {
             "financial_original_bindings_v1"
         }
     }
     fn original_binding_schema(&self) -> &'static str {
-        if self.management() {
+        if self.provider_management() {
+            "tradeassembly.provider-management-original-binding.v7"
+        } else if self.management() {
             "tradeassembly.management_original_binding.v1"
         } else {
             "tradeassembly.financial_original_binding.v1"
@@ -298,7 +325,9 @@ impl DataRunnerCommand {
         matches!(&self.operation, DataRunnerOperation::DispatchSession { .. })
     }
     pub fn reach_schema(&self) -> &'static str {
-        if self.management() {
+        if self.provider_management() {
+            "tradeassembly.relay.reach-data-command/v7"
+        } else if self.management() {
             "tradeassembly.relay.reach-data-command/v6"
         } else if self.settlement() {
             "tradeassembly.relay.reach-data-command/v5"
@@ -313,7 +342,9 @@ impl DataRunnerCommand {
         }
     }
     pub fn preparation_schema(&self) -> &'static str {
-        if self.management() {
+        if self.provider_management() {
+            "tradeassembly.relay.reach-data-preparation/v7"
+        } else if self.management() {
             "tradeassembly.relay.reach-data-preparation/v6"
         } else if self.settlement() {
             "tradeassembly.relay.reach-data-preparation/v5"
@@ -334,7 +365,9 @@ impl DataRunnerCommand {
         )
     }
     pub fn receipt_schema(&self) -> &'static str {
-        if self.management() {
+        if self.provider_management() {
+            "tradeassembly.core-data-runner.receipt.v7"
+        } else if self.management() {
             "tradeassembly.core-data-runner.receipt.v6"
         } else if self.settlement() {
             "tradeassembly.core-data-runner.receipt.v5"
@@ -349,7 +382,9 @@ impl DataRunnerCommand {
         }
     }
     pub fn binding_schema(&self) -> &'static str {
-        if self.management() {
+        if self.provider_management() {
+            "tradeassembly.core-data-mutation-binding.v7"
+        } else if self.management() {
             "tradeassembly.core-data-mutation-binding.v6"
         } else if self.settlement() {
             "tradeassembly.core-data-mutation-binding.v5"
@@ -375,6 +410,9 @@ impl DataRunnerCommand {
     deny_unknown_fields
 )]
 pub enum DataRunnerResult {
+    ProviderManagement {
+        snapshot: Box<super::order_plans::management::provider_remote::ProviderManagementSnapshot>,
+    },
     Management {
         snapshot: Box<super::order_plans::management::remote::ManagementSnapshot>,
     },
@@ -556,6 +594,9 @@ impl DurableCoreDataRunner {
     fn financial_binding(&self, c: &DataRunnerCommand) -> Result<DataMutationBinding, String> {
         super::order_plans::remote::require_paper(&c.mode)?;
         let (scope, graph, domain) = match &c.operation {
+            DataRunnerOperation::ProviderManagement { management } => {
+                super::order_plans::management::provider_remote::binding(&self.service, management)?
+            }
             DataRunnerOperation::Financial { financial } => {
                 super::order_plans::remote::binding(&self.service, financial, false)?
             }
@@ -699,7 +740,7 @@ impl DurableCoreDataRunner {
     pub fn mutation_binding(&self, c: &DataRunnerCommand) -> Result<DataMutationBinding, String> {
         c.validate(&self.expected_release)?;
         if c.protected() {
-            if c.management() && self.management_dispatch_started(c)? {
+            if c.protected_outcome() && self.management_dispatch_started(c)? {
                 return self.original_binding(c);
             }
             if self
@@ -719,7 +760,9 @@ impl DurableCoreDataRunner {
         }
         let (path, body, scheduler_binding) = self.preflight(c)?;
         let (scope, graph, domain) = match &c.operation {
-            DataRunnerOperation::Financial { .. } | DataRunnerOperation::ManagePosition { .. } => {
+            DataRunnerOperation::Financial { .. }
+            | DataRunnerOperation::ManagePosition { .. }
+            | DataRunnerOperation::ProviderManagement { .. } => {
                 return Err("financial_runner_binding_required".into())
             }
             DataRunnerOperation::DispatchSession { .. } => {
@@ -822,6 +865,10 @@ impl DurableCoreDataRunner {
         }
         let mode = c.mode.name();
         let (path, mut body) = match &c.operation {
+            DataRunnerOperation::ProviderManagement { management } => {
+                super::order_plans::remote::require_paper(&c.mode)?;
+                management.body()
+            }
             DataRunnerOperation::ManagePosition { management } => {
                 super::order_plans::remote::require_paper(&c.mode)?;
                 management.body()
@@ -918,6 +965,13 @@ impl DurableCoreDataRunner {
             return Err(super::service_error_code(&response.body)
                 .unwrap_or_else(|| "data_runner_owner_unavailable".into()));
         }
+        if let DataRunnerOperation::ProviderManagement { management } = &c.operation {
+            // V7 has a separate positive @2/domain/authority binding. Do not
+            // pass it through coherent V5 settlement or V6 entry-basis guards.
+            // The actual child still uses normal HTTP/C3/C5 admission below.
+            super::order_plans::management::provider_remote::binding(&self.service, management)?;
+            return Ok((path, body, scheduler_binding));
+        }
         let rejection = super::data_strategy::preflight(&self.service, path, &body)
             .or_else(|| data_recipes::preflight(&self.service, path, &body))
             .or_else(|| instrument_screens::preflight(&self.service, path, &body))
@@ -971,6 +1025,16 @@ impl DurableCoreDataRunner {
     }
     fn project(&self, c: &DataRunnerCommand, body: Value) -> Result<DataRunnerResult, String> {
         match &c.operation {
+            DataRunnerOperation::ProviderManagement { management } => {
+                Ok(DataRunnerResult::ProviderManagement {
+                    snapshot: Box::new(super::order_plans::management::provider_remote::project(
+                        &self.service,
+                        management,
+                        &c.canonical_hash()?,
+                        body,
+                    )?),
+                })
+            }
             DataRunnerOperation::ManagePosition { management } => {
                 Ok(DataRunnerResult::Management {
                     snapshot: Box::new(super::order_plans::management::remote::project(
@@ -1143,6 +1207,18 @@ impl DurableCoreDataRunner {
         result: &DataRunnerResult,
     ) -> Result<(), String> {
         if let (
+            DataRunnerOperation::ProviderManagement { management },
+            DataRunnerResult::ProviderManagement { snapshot },
+        ) = (&c.operation, result)
+        {
+            return super::order_plans::management::provider_remote::validate_snapshot(
+                &self.service,
+                management,
+                &c.canonical_hash()?,
+                snapshot,
+            );
+        }
+        if let (
             DataRunnerOperation::ManagePosition { management },
             DataRunnerResult::Management { snapshot },
         ) = (&c.operation, result)
@@ -1167,7 +1243,9 @@ impl DurableCoreDataRunner {
             );
         }
         let body = match result {
-            DataRunnerResult::Financial { .. } | DataRunnerResult::Management { .. } => {
+            DataRunnerResult::Financial { .. }
+            | DataRunnerResult::Management { .. }
+            | DataRunnerResult::ProviderManagement { .. } => {
                 return Err("data_runner_result_mismatch".into())
             }
             DataRunnerResult::Dispatch { job } => json!({"job":job}),
@@ -1265,7 +1343,7 @@ impl DurableCoreDataRunner {
         Ok(r)
     }
     fn management_dispatch_started(&self, c: &DataRunnerCommand) -> Result<bool, String> {
-        if !c.management() {
+        if !c.protected_outcome() {
             return Ok(false);
         }
         Ok(self
@@ -1281,20 +1359,38 @@ impl DurableCoreDataRunner {
         &self,
         c: &DataRunnerCommand,
     ) -> Result<Option<DataRunnerReceipt>, String> {
-        let DataRunnerOperation::ManagePosition { management } = &c.operation else {
+        if !c.protected_outcome() {
             return Ok(None);
-        };
+        }
         let Some(accepted) = self.receipt(&c.workspace_id, &c.command_id)? else {
             return Ok(None);
         };
         if accepted.state != DataRunnerState::Accepted {
             return Ok(None);
         }
-        let snapshot = super::order_plans::management::remote::stored(
-            &self.service,
-            management,
-            &c.canonical_hash()?,
-        )?;
+        let snapshot = match &c.operation {
+            DataRunnerOperation::ManagePosition { management } => {
+                super::order_plans::management::remote::stored(
+                    &self.service,
+                    management,
+                    &c.canonical_hash()?,
+                )?
+                .map(|snapshot| DataRunnerResult::Management {
+                    snapshot: Box::new(snapshot),
+                })
+            }
+            DataRunnerOperation::ProviderManagement { management } => {
+                super::order_plans::management::provider_remote::stored(
+                    &self.service,
+                    management,
+                    &c.canonical_hash()?,
+                )?
+                .map(|snapshot| DataRunnerResult::ProviderManagement {
+                    snapshot: Box::new(snapshot),
+                })
+            }
+            _ => unreachable!(),
+        };
         if snapshot.is_none() && !self.management_dispatch_started(c)? {
             return Ok(None);
         }
@@ -1310,21 +1406,22 @@ impl DurableCoreDataRunner {
             return Ok(Some(accepted));
         }
         let (state, result, error, observed) = match snapshot {
-            Some(snapshot) => {
-                let observed = snapshot.observed_at_ms;
-                (
-                    DataRunnerState::Completed,
-                    Some(DataRunnerResult::Management {
-                        snapshot: Box::new(snapshot),
-                    }),
-                    None,
-                    observed,
-                )
+            Some(result) => {
+                let observed = match &result {
+                    DataRunnerResult::Management { snapshot } => snapshot.observed_at_ms,
+                    DataRunnerResult::ProviderManagement { snapshot } => snapshot.observed_at_ms,
+                    _ => unreachable!(),
+                };
+                (DataRunnerState::Completed, Some(result), None, observed)
             }
             None => (
                 DataRunnerState::Uncertain,
                 None,
-                Some("management_runner_original_outcome_missing_reconciliation_required".into()),
+                Some(if c.provider_management() {
+                    "provider_management_runner_original_outcome_missing_reconciliation_required"
+                } else {
+                    "management_runner_original_outcome_missing_reconciliation_required"
+                }.into()),
                 self.service.runtime().clock.now_ms(),
             ),
         };
@@ -1569,6 +1666,20 @@ impl DurableCoreDataRunner {
         {
             return Err("data_runner_dispatch_fence_conflict".into());
         }
+        if let DataRunnerOperation::ProviderManagement { management } = &c.operation {
+            let (scope, graph, domain) = super::order_plans::management::provider_remote::binding(
+                &self.service,
+                management,
+            )?;
+            let original = self.original_binding(c)?;
+            if original.scope != scope
+                || original.capability_graph_revision != graph
+                || original.domain_binding_sha256 != domain
+            {
+                return Err("provider_management_runner_dispatch_binding_changed".into());
+            }
+            lease.current(self.service.runtime().clock.now_ms())?;
+        }
         if let DataRunnerOperation::ManagePosition { management } = &c.operation {
             let (scope, graph, domain) =
                 super::order_plans::management::remote::binding(&self.service, management)?;
@@ -1612,13 +1723,20 @@ impl DurableCoreDataRunner {
             match result {
                 Ok(result) => (DataRunnerState::Completed, Some(result), None),
                 Err(error)
-                    if c.management() && response.status < 400 && response.body["ok"] != false =>
+                    if c.protected_outcome()
+                        && response.status < 400
+                        && response.body["ok"] != false =>
                 {
                     (
                         DataRunnerState::Uncertain,
                         None,
                         Some(format!(
-                            "management_runner_outcome_seal_failed_reconciliation_required:{error}"
+                            "{}:{error}",
+                            if c.provider_management() {
+                                "provider_management_runner_outcome_seal_failed_reconciliation_required"
+                            } else {
+                                "management_runner_outcome_seal_failed_reconciliation_required"
+                            }
                         )),
                     )
                 }
@@ -1639,6 +1757,7 @@ impl DurableCoreDataRunner {
             state,
             observed_at_ms: match &result {
                 Some(DataRunnerResult::Management { snapshot }) => snapshot.observed_at_ms,
+                Some(DataRunnerResult::ProviderManagement { snapshot }) => snapshot.observed_at_ms,
                 _ => self.service.runtime().clock.now_ms(),
             },
             result,
@@ -1717,12 +1836,15 @@ impl DurableCoreDataRunner {
             return Err("data_runner_receipt_lookup_mismatch".into());
         }
         c.validate(&self.expected_release)?;
-        if c.management() {
+        if c.protected_outcome() {
             self.service
                 .require_object(
                     "strategy",
                     match &c.operation {
                         DataRunnerOperation::ManagePosition { management } => {
+                            &management.scope().strategy_id
+                        }
+                        DataRunnerOperation::ProviderManagement { management } => {
                             &management.scope().strategy_id
                         }
                         _ => unreachable!(),
@@ -2082,6 +2204,378 @@ mod tests {
                 )
                 .is_err());
             }
+        }
+    }
+    #[test]
+    fn provider_management_v7_is_closed_exactly_coupled_and_paper_only() {
+        let scope = json!({"strategyId":"strategy","strategyVersionId":"version","strategySpecHash":"spec"});
+        let plan = format!("orderplan_{}", "a".repeat(64));
+        let cases = vec![
+            (
+                json!({"kind":"observe_settlement","scope":scope,"planId":plan}),
+                "strategy.order_plan.settle",
+                "strategy_order_plan",
+            ),
+            (
+                json!({"kind":"register","scope":scope,"entryPlanId":plan,"activationId":"activation"}),
+                "strategy.position.register",
+                "strategy_managed_position",
+            ),
+            (
+                json!({"kind":"advance","scope":scope,"advance":{"executionOccurrenceId":"occurrence","positionId":"position","accountCollectionId":"account","metadataCollectionId":"metadata","quoteCollectionId":"quote","reversalSignalReceiptSha256":null}}),
+                "strategy.position.advance",
+                "strategy_managed_position",
+            ),
+            (
+                json!({"kind":"submit_close","scope":scope,"submission":{"planId":plan,"activationId":"activation","attemptId":"attempt","brokerRequirementRef":"broker"}}),
+                "strategy.order_plan.submit",
+                "strategy_managed_position",
+            ),
+            (
+                json!({"kind":"reconcile_close","scope":scope,"planId":plan}),
+                "strategy.order_plan.reconcile",
+                "strategy_managed_position",
+            ),
+            (
+                json!({"kind":"settle_close","scope":scope,"planId":plan}),
+                "strategy.order_plan.settle",
+                "strategy_managed_position",
+            ),
+            (
+                json!({"kind":"inspect","scope":scope,"positionId":"position"}),
+                "strategy.position.inspect",
+                "strategy_managed_position",
+            ),
+        ];
+        for (operation, action, resource) in cases {
+            let mut raw = command();
+            raw["schemaVersion"] = json!(DATA_RUNNER_SCHEMA_V7);
+            raw["operation"] = json!({"kind":"provider_management","management":operation});
+            let c = DataRunnerCommand::parse(&serde_json::to_vec(&raw).unwrap(), "fixture.release")
+                .unwrap();
+            if let Some(dir) = std::env::var_os("PROVIDER_MANAGEMENT_V7_WIRE_DIR") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let kind = raw["operation"]["management"]["kind"].as_str().unwrap();
+                let bytes = serde_json::to_vec_pretty(&c).unwrap();
+                std::fs::write(dir.join(format!("command-{kind}.json")), bytes).unwrap();
+            }
+            assert!(c.provider_management());
+            assert!(c.protected());
+            assert!(c.protected_outcome());
+            assert!(!c.management());
+            assert!(!c.financial());
+            assert!(!c.settlement());
+            assert_eq!(c.protected_action().unwrap(), action);
+            assert_eq!(c.resource_kind(), Some(resource));
+            assert_eq!(
+                c.reach_schema(),
+                "tradeassembly.relay.reach-data-command/v7"
+            );
+            assert_eq!(
+                c.preparation_schema(),
+                "tradeassembly.relay.reach-data-preparation/v7"
+            );
+            assert_eq!(
+                c.binding_schema(),
+                "tradeassembly.core-data-mutation-binding.v7"
+            );
+            assert_eq!(
+                c.receipt_schema(),
+                "tradeassembly.core-data-runner.receipt.v7"
+            );
+            assert_eq!(
+                c.original_binding_namespace(),
+                "provider_management_original_bindings_v7"
+            );
+            assert_eq!(
+                c.original_binding_schema(),
+                "tradeassembly.provider-management-original-binding.v7"
+            );
+            let DataRunnerOperation::ProviderManagement { management } = &c.operation else {
+                panic!()
+            };
+            let (path, mut body) = management.body();
+            body["accountMode"] = json!("paper");
+            body["idempotencyKey"] = json!("fixture");
+            let envelope =
+                crate::control_plane::http_envelope("http", "POST", path, &body).unwrap();
+            assert_eq!(envelope.command_name, action);
+            assert_eq!(envelope.target_object.as_deref(), Some("strategy"));
+            for version in [
+                DATA_RUNNER_SCHEMA,
+                DATA_RUNNER_SCHEMA_V2,
+                DATA_RUNNER_SCHEMA_V3,
+                DATA_RUNNER_SCHEMA_V4,
+                DATA_RUNNER_SCHEMA_V5,
+                DATA_RUNNER_SCHEMA_V6,
+            ] {
+                let mut bad = raw.clone();
+                bad["schemaVersion"] = json!(version);
+                assert!(DataRunnerCommand::parse(
+                    &serde_json::to_vec(&bad).unwrap(),
+                    "fixture.release"
+                )
+                .is_err());
+            }
+            for mode in ["backtest", "live"] {
+                let mut bad = raw.clone();
+                bad["mode"] = json!(mode);
+                assert!(DataRunnerCommand::parse(
+                    &serde_json::to_vec(&bad).unwrap(),
+                    "fixture.release"
+                )
+                .is_err());
+            }
+            for field in [
+                "role",
+                "order",
+                "quantity",
+                "price",
+                "accountRef",
+                "providerOrderId",
+                "postingId",
+                "authority",
+                "cursor",
+                "limit",
+            ] {
+                for value in [json!("forbidden"), Value::Null] {
+                    let mut bad = raw.clone();
+                    bad["operation"]["management"][field] = value;
+                    assert!(DataRunnerCommand::parse(
+                        &serde_json::to_vec(&bad).unwrap(),
+                        "fixture.release"
+                    )
+                    .is_err());
+                }
+            }
+            let mut null = raw.clone();
+            null["operation"]["management"] = Value::Null;
+            assert!(DataRunnerCommand::parse(
+                &serde_json::to_vec(&null).unwrap(),
+                "fixture.release"
+            )
+            .is_err());
+            let mut normalized = raw.clone();
+            normalized["submittedAtMs"] = json!(1000.0);
+            assert_eq!(
+                DataRunnerCommand::parse(
+                    &serde_json::to_vec(&normalized).unwrap(),
+                    "fixture.release"
+                )
+                .unwrap()
+                .canonical_hash()
+                .unwrap(),
+                c.canonical_hash().unwrap()
+            );
+            let mut changed = c.clone();
+            changed.command_id.push_str(".other");
+            assert_ne!(
+                changed.canonical_hash().unwrap(),
+                c.canonical_hash().unwrap()
+            );
+        }
+        // V7 is not a blanket upgrade path for any earlier operation family.
+        let mut old = command();
+        old["schemaVersion"] = json!(DATA_RUNNER_SCHEMA_V7);
+        for operation in [
+            command()["operation"].clone(),
+            json!({"kind":"manage_position","management":{"kind":"inspect","scope":scope,"positionId":"position"}}),
+            json!({"kind":"financial","financial":{"kind":"settle","scope":scope,"planId":plan}}),
+            json!({"kind":"dispatch_session","dispatch":{"kind":"inspect","jobId":"sessionjob_fixture"}}),
+        ] {
+            old["operation"] = operation;
+            assert!(DataRunnerCommand::parse(
+                &serde_json::to_vec(&old).unwrap(),
+                "fixture.release"
+            )
+            .is_err());
+        }
+        let legacy = command();
+        let parsed =
+            DataRunnerCommand::parse(&serde_json::to_vec(&legacy).unwrap(), "fixture.release")
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap(),
+            legacy,
+            "old command fields are unchanged"
+        );
+    }
+
+    #[test]
+    fn provider_management_v7_lost_outer_receipt_recovers_uncertain_without_reacquisition() {
+        // Authored accepted/fenced outer state, not source/financial admission or
+        // provider qualification. Exercise the real durable recovery implementation.
+        crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir
+            .path()
+            .join("v7-recovery.db")
+            .to_string_lossy()
+            .into_owned();
+        let runtime = || {
+            let mut runtime = crate::adapters::local::test_runtime(&db);
+            // Use the actual policy-digest implementation. No network call or
+            // authorization result is fabricated; this endpoint is never used.
+            runtime.finance_authority = std::sync::Arc::new(
+                crate::finance_authority::WardenSidecarAuthority::new(
+                    "http://127.0.0.1:9",
+                    "synthetic-unused-policy-metadata-only-token",
+                    crate::finance_authority::REQUIRED_WARDEN_SERVICE_VERSION,
+                )
+                .unwrap(),
+            );
+            runtime
+        };
+        let s = TradeAssemblyService::from_runtime(&db, runtime())
+            .for_authenticated_invocation("fixture", "v7-owner", None, None);
+        s.bind_owned_object("strategy", "strategy").unwrap();
+        let runner = DurableCoreDataRunner::new(s.clone(), "fixture.release".into()).unwrap();
+        let now = s.runtime().clock.trusted_now_ms().unwrap();
+        let mut raw = command();
+        raw["schemaVersion"] = json!(DATA_RUNNER_SCHEMA_V7);
+        raw["submittedAtMs"] = json!(now - 10);
+        raw["operation"] = json!({"kind":"provider_management","management":{"kind":"inspect","scope":{"strategyId":"strategy","strategyVersionId":"version","strategySpecHash":"spec"},"positionId":"position"}});
+        let c = DataRunnerCommand::parse(&serde_json::to_vec(&raw).unwrap(), "fixture.release")
+            .unwrap();
+        let command_sha = c.canonical_hash().unwrap();
+        let storage = s.runtime().storage.clone();
+        let ctx = runner.context(&c).unwrap();
+        let scope = data_plans::PlanScope {
+            strategy_id: "strategy".into(),
+            strategy_version_id: "version".into(),
+            strategy_spec_hash: "spec".into(),
+        };
+        let original = DataMutationBinding {
+            schema_version: c.binding_schema().into(),
+            core_revision: crate::build_identity::current().unwrap().revision().into(),
+            owner_binding_sha256: Some(hash(&s.invocation_owner().unwrap()).unwrap()),
+            command_sha256: command_sha.clone(),
+            scope,
+            capability_graph_revision: "graph".into(),
+            action: c.protected_action().unwrap().into(),
+            resource_kind: c.resource_kind().map(str::to_owned),
+            mode: DataRunnerMode::Paper,
+            domain_binding_sha256: "c".repeat(64),
+            policy_sha256: s
+                .runtime()
+                .finance_authority
+                .command_policy_sha256()
+                .unwrap(),
+            execution_authority_granted: false,
+        };
+        runner
+            .persist_financial_binding(&c, original.clone())
+            .unwrap();
+        let mut accepted = DataRunnerReceipt {
+            schema_version: c.receipt_schema().into(),
+            workspace_id: c.workspace_id.clone(),
+            command_id: c.command_id.clone(),
+            command_sha256: command_sha.clone(),
+            core_release: c.core_release.clone(),
+            core_revision: Some(original.core_revision.clone()),
+            state: DataRunnerState::Accepted,
+            observed_at_ms: now - 5,
+            result: None,
+            error: None,
+            execution_authority_granted: false,
+            receipt_sha256: String::new(),
+            previous_receipt_sha256: None,
+        };
+        accepted.receipt_sha256 = receipt_hash(&accepted).unwrap();
+        let command_key = key(&c.workspace_id, &c.command_id).unwrap();
+        for (namespace, k, v) in [
+            (COMMANDS, command_key.clone(), command_value(&c).unwrap()),
+            (
+                BINDINGS,
+                key(&c.workspace_id, c.idempotency_key.as_str()).unwrap(),
+                json!({"commandId":c.command_id,"commandSha256":command_sha}),
+            ),
+            (
+                RECEIPTS,
+                command_key.clone(),
+                serde_json::to_value(&accepted).unwrap(),
+            ),
+            (
+                HISTORY,
+                accepted.receipt_sha256.clone(),
+                serde_json::to_value(&accepted).unwrap(),
+            ),
+        ] {
+            storage.put_json(namespace, &k, v, &ctx).unwrap();
+        }
+        assert!(
+            runner.recover_management(&c).unwrap().is_none(),
+            "unstarted accepted command has no lost effect"
+        );
+        let claim = s
+            .runtime()
+            .leases
+            .acquire(
+                &format!("data-runner:{command_sha}"),
+                "fixture-fenced-owner",
+                now,
+                120000,
+            )
+            .unwrap()
+            .unwrap();
+        storage
+            .put_json(
+                FENCES,
+                &command_key,
+                serde_json::to_value(&claim).unwrap(),
+                &ctx,
+            )
+            .unwrap();
+        s.runtime().leases.release(&claim).unwrap();
+        // There is no sealed source outcome. Do not synthesize one from a current
+        // position, call a provider, or repeat the original child command.
+        let uncertain = runner.recover_management(&c).unwrap().unwrap();
+        assert_eq!(uncertain.state, DataRunnerState::Uncertain);
+        assert!(uncertain.result.is_none());
+        assert_eq!(
+            uncertain.error.as_deref(),
+            Some("provider_management_runner_original_outcome_missing_reconciliation_required")
+        );
+        assert_eq!(
+            uncertain.previous_receipt_sha256,
+            Some(accepted.receipt_sha256)
+        );
+        let restored = TradeAssemblyService::from_runtime(&db, runtime())
+            .for_authenticated_invocation("fixture", "v7-owner", None, None);
+        let recreated = DurableCoreDataRunner::new(restored, "fixture.release".into()).unwrap();
+        assert_eq!(
+            recreated.dispatch(&c).unwrap(),
+            uncertain,
+            "same command returns exact retained uncertainty after recreation"
+        );
+        assert_eq!(
+            recreated.receipt(&c.workspace_id, &c.command_id).unwrap(),
+            Some(uncertain.clone())
+        );
+        assert_eq!(recreated.reconciliation_binding(&c).unwrap(), original);
+        let mut changed = c.clone();
+        changed.authority_ref = "different-provenance".into();
+        assert!(
+            recreated.dispatch(&changed).is_err(),
+            "same IDs with changed bytes do not reacquire or create a new outcome"
+        );
+        let foreign = TradeAssemblyService::from_runtime(&db, runtime())
+            .for_authenticated_invocation("fixture", "foreign-owner", None, None);
+        let foreign = DurableCoreDataRunner::new(foreign, "fixture.release".into()).unwrap();
+        assert!(foreign.dispatch(&c).is_err());
+        assert!(foreign.receipt(&c.workspace_id, &c.command_id).is_err());
+        assert_eq!(storage.list_json(RECEIPTS).unwrap().len(), 1);
+        assert_eq!(storage.list_json(HISTORY).unwrap().len(), 2);
+        for namespace in [
+            "execution_order_plan_submissions_v2",
+            "execution_cash_reservations_v1",
+            "execution_managed_positions_v1",
+        ] {
+            assert!(
+                storage.list_json(namespace).unwrap().is_empty(),
+                "no recovery effect in {namespace}"
+            );
         }
     }
 }

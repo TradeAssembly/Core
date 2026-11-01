@@ -243,6 +243,131 @@ fn require_read(
 fn summary(r: &Receipt) -> Value {
     json!({"schemaVersion":r.schema_version,"planId":r.plan_id,"role":r.request.role,"receiptSha256":r.receipt_sha256,"status":if r.refused_reason.is_some(){"blocked"}else{match r.observation.status{wire::ProviderObservationStatus::Pending=>"pending",wire::ProviderObservationStatus::Provisional=>"provisional"}},"blockedReason":r.refused_reason,"observation":r.observation,"projection":r.projection,"blockers":r.blockers,"observedAtMs":r.acquired_at_ms,"historicalOutcome":true,"cashReconciled":false,"releasedHold":"0","executionAuthorityGranted":false})
 }
+/// Positive selection and current read authority, without invoking a provider.
+pub(super) fn preflight(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+) -> Result<(submission::SubmissionRecord, BrokerPreparedBinding), String> {
+    let (_, record) = submission::record(s, p)?.ok_or("broker_v2_state_missing")?;
+    observable_phase(&record.phase)?;
+    if !selected(s, p, &record)? {
+        return Err("provider_observation_explicit_selection_required".into());
+    }
+    request(p, &record)?.validate()?;
+    let binding = settlement::current_source(s, p, &record)?;
+    require_read(s, p, &record, &binding)?;
+    Ok((record, binding))
+}
+pub(super) fn historical_entry_basis(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    id: &str,
+) -> Result<(Decimal, Decimal), String> {
+    let r = read_receipt(s, p, id)?;
+    if r.refused_reason.is_some()
+        || r.request.role != wire::Role::Entry
+        || !matches!(
+            r.observation.order.status,
+            broker_v2::OrderStatus::Filled
+                | broker_v2::OrderStatus::Cancelled
+                | broker_v2::OrderStatus::Expired
+        )
+    {
+        return Err("provider_observation_terminal_entry_required".into());
+    }
+    let quantity = *r.observation.order.filled_quantity.required()?;
+    let basis = r.observation.average_fill_price.required()?.price;
+    if !quantity.positive() {
+        return Err("provider_observation_entry_basis_changed".into());
+    }
+    Ok((quantity, basis))
+}
+fn project_receipts(
+    r: Receipt,
+    h: Receipt,
+) -> Result<management::provider_remote::ObservationProjection, String> {
+    use management::provider_remote::{
+        AcceptedObservationProjection, ReportedMoney, ReportedObservation,
+    };
+    let accepted_projection = r
+        .projection
+        .as_ref()
+        .map(|p| AcceptedObservationProjection {
+            generation: p.generation,
+            projection_sha256: p.projection_sha256.clone(),
+            observation_sha256: p.observation_sha256.clone(),
+            filled_quantity: p.filled_quantity,
+            cash_debit: p.cash_debit,
+            average_fill_price: p.average_fill_price.as_ref().map(|m| ReportedMoney {
+                amount: m.amount,
+                currency: m.currency.clone(),
+            }),
+            fee_cash: p.fee_cash.as_ref().map(|m| ReportedMoney {
+                amount: m.amount,
+                currency: m.currency.clone(),
+            }),
+            fee_finality: p.fee_finality,
+        });
+    let blockers = serde_json::to_value(&r.blockers)
+        .map_err(|_| "provider_observation_projection_invalid")?
+        .as_array()
+        .ok_or("provider_observation_projection_invalid")?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "provider_observation_projection_invalid".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(management::provider_remote::ObservationProjection {
+        receipt_sha256: r.receipt_sha256,
+        plan_id: r.plan_id,
+        role: r.request.role,
+        original_intent_sha256: r.original_intent_sha256,
+        source_binding_sha256: hash(&r.source_binding)?,
+        provider_response_sha256: r.response_sha256,
+        observation: ReportedObservation::from_observation(&r.observation)?,
+        accepted_projection,
+        blockers,
+        blocked_reason: r.refused_reason,
+        head_receipt_sha256: h.receipt_sha256,
+        head_blocked_reason: h.refused_reason,
+        observed_at_ms: r.acquired_at_ms,
+        cash_reconciled: false,
+        released_hold: Decimal::ZERO,
+    })
+}
+pub(super) fn project_original_receipt(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    id: &str,
+) -> Result<management::provider_remote::ObservationProjection, String> {
+    let r = read_receipt(s, p, id)?;
+    project_receipts(r.clone(), r)
+}
+pub(super) fn verify_projection(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    v: &management::provider_remote::ObservationProjection,
+) -> Result<(), String> {
+    let expected = project_receipts(
+        read_receipt(s, p, &v.receipt_sha256)?,
+        read_receipt(s, p, &v.head_receipt_sha256)?,
+    )?;
+    if expected != *v {
+        return Err("provider_observation_projection_invalid".into());
+    }
+    Ok(())
+}
+pub(super) fn project_latest(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+) -> Result<Option<management::provider_remote::ObservationProjection>, String> {
+    head(s, p)?
+        .map(|(_, h)| project_original_receipt(s, p, &h.receipt_sha256))
+        .transpose()
+}
+
 pub(super) fn observe(
     s: &TradeAssemblyService,
     p: &OrderPlan,
@@ -251,10 +376,7 @@ pub(super) fn observe(
     if ctx.authority.account_mode != "paper" {
         return Err("provider_observation_paper_required".into());
     }
-    let (_, record) = submission::record(s, p)?.ok_or("broker_v2_state_missing")?;
-    observable_phase(&record.phase)?;
-    let binding = settlement::current_source(s, p, &record)?;
-    require_read(s, p, &record, &binding)?;
+    let (record, binding) = preflight(s, p)?;
     let key = hash(&(owner(s)?, p.plan_id.clone(), ctx.idempotency_key.as_str()))?;
     if let Some(prior) = s.runtime().storage.get_json(KEYS, &key)? {
         let r = read_receipt(

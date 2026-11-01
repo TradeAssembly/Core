@@ -50,6 +50,9 @@ impl ReachDataCommand {
         let encoded = serde_json::to_vec(self).map_err(|_| "reach_data_encoding_invalid")?;
         canonical_sha256(self).map_err(|_| "reach_data_number_invalid")?;
         let action = match &self.command.operation {
+            super::data_runner::DataRunnerOperation::ProviderManagement { management } => {
+                management.action()
+            }
             super::data_runner::DataRunnerOperation::ManagePosition { management } => {
                 management.action()
             }
@@ -77,6 +80,13 @@ impl ReachDataCommand {
                 "strategy.session_schedule.prepare"
             }
         };
+        if let super::data_runner::DataRunnerOperation::ProviderManagement { management } =
+            &self.command.operation
+        {
+            if self.resource.scope != *management.scope() {
+                return Err("reach_data_command_invalid".into());
+            }
+        }
         if let super::data_runner::DataRunnerOperation::ManagePosition { management } =
             &self.command.operation
         {
@@ -551,5 +561,133 @@ mod tests {
         let mut bad = statement;
         bad.schema = "tradeassembly.relay.reach-data-preparation/v5".into();
         assert!(bad.signing_payload().is_err());
+    }
+    #[test]
+    fn provider_management_v7_couples_reach_preparation_resource_action_and_receipt() {
+        use super::super::data_runner::*;
+        let scope = serde_json::to_value(fixture().resource.scope).unwrap();
+        let plan = format!("orderplan_{}", "a".repeat(64));
+        for (management, action, resource) in [
+            (
+                json!({"kind":"observe_settlement","scope":scope,"planId":plan}),
+                "strategy.order_plan.settle",
+                "strategy_order_plan",
+            ),
+            (
+                json!({"kind":"inspect","scope":scope,"positionId":"position"}),
+                "strategy.position.inspect",
+                "strategy_managed_position",
+            ),
+        ] {
+            let mut c = fixture();
+            c.command.schema_version = DATA_RUNNER_SCHEMA_V7.into();
+            c.command.operation = serde_json::from_value(
+                json!({"kind":"provider_management","management":management}),
+            )
+            .unwrap();
+            c.schema = c.command.reach_schema().into();
+            c.resource.schema_version = c.command.binding_schema().into();
+            c.resource.command_sha256 = c.command.canonical_hash().unwrap();
+            c.resource.action = action.into();
+            c.resource.resource_kind = Some(resource.into());
+            c.validate().unwrap();
+            let statement = super::super::reach_data_proofs::Preparation {
+                schema: c.command.preparation_schema().into(),
+                command: c.clone(),
+                source_revision: 1,
+                nonce: "fixture.v7.nonce".into(),
+                issued_at_ms: 1000,
+                signature: String::new(),
+            };
+            let signed = statement.signing_payload().unwrap();
+            assert!(signed.contains("tradeassembly.relay.reach-data-preparation/v7"));
+            for index in 0..9 {
+                let mut bad = c.clone();
+                match index {
+                    0 => bad.schema = "tradeassembly.relay.reach-data-command/v6".into(),
+                    1 => bad.command.schema_version = DATA_RUNNER_SCHEMA_V6.into(),
+                    2 => {
+                        bad.resource.schema_version =
+                            "tradeassembly.core-data-mutation-binding.v6".into()
+                    }
+                    3 => bad.resource.action = "strategy.order_plan.submit".into(),
+                    4 => {
+                        bad.resource.resource_kind = Some(
+                            if resource == "strategy_order_plan" {
+                                "strategy_managed_position"
+                            } else {
+                                "strategy_order_plan"
+                            }
+                            .into(),
+                        )
+                    }
+                    5 => bad.resource.scope.strategy_id = "foreign".into(),
+                    6 => bad.resource.execution_authority_granted = true,
+                    7 => bad.resource.command_sha256 = "f".repeat(64),
+                    _ => bad.command.mode = DataRunnerMode::Backtest,
+                }
+                assert!(bad.validate().is_err());
+            }
+            let mut mixed = statement.clone();
+            mixed.schema = "tradeassembly.relay.reach-data-preparation/v6".into();
+            assert!(mixed.signing_payload().is_err());
+            c.validate_bindings(&c.node, &c.source_binding_sha256, &c.resource, 1001)
+                .unwrap();
+            assert!(c
+                .validate_bindings(&c.node, &c.source_binding_sha256, &c.resource, 2000)
+                .is_err());
+            c.validate_reconciliation_bindings(
+                &c.node,
+                &c.source_binding_sha256,
+                &c.resource,
+                2000,
+            )
+            .unwrap();
+            let mut wrong = c.resource.clone();
+            wrong.owner_binding_sha256 = Some("f".repeat(64));
+            assert!(c
+                .validate_reconciliation_bindings(&c.node, &c.source_binding_sha256, &wrong, 2000)
+                .is_err());
+            let mut changed = c.clone();
+            changed.command.authority_ref = "changed".into();
+            assert_ne!(
+                changed.command.canonical_hash().unwrap(),
+                c.command.canonical_hash().unwrap()
+            );
+            assert!(
+                changed.validate().is_err(),
+                "resource still binds original command hash"
+            );
+
+            // Closed delivery version/state checks; no signature or source/host
+            // admission is claimed by this authored DTO fixture.
+            let receipt = DataRunnerReceipt {
+                schema_version: c.command.receipt_schema().into(),
+                workspace_id: c.node.workspace_id.clone(),
+                command_id: c.command.command_id.clone(),
+                command_sha256: c.resource.command_sha256.clone(),
+                core_release: c.command.core_release.clone(),
+                core_revision: Some(c.resource.core_revision.clone()),
+                state: DataRunnerState::Uncertain,
+                observed_at_ms: 1001,
+                result: None,
+                error: Some("fixture_original_outcome_unavailable".into()),
+                execution_authority_granted: false,
+                receipt_sha256: "a".repeat(64),
+                previous_receipt_sha256: Some("b".repeat(64)),
+            };
+            let delivery = super::super::reach_data_consumer::DataDelivery {
+                command: c.clone(),
+                command_sha256: c.command_sha256().unwrap(),
+                state: super::super::reach_data_consumer::DataDeliveryState::Uncertain,
+                revision: 2,
+                receipt: Some(receipt),
+            };
+            delivery.validate().unwrap();
+            let mut mixed = delivery;
+            mixed.receipt.as_mut().unwrap().schema_version =
+                "tradeassembly.core-data-runner.receipt.v6".into();
+            assert!(mixed.validate().is_err());
+        }
     }
 }

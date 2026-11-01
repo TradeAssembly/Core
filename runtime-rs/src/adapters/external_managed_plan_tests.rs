@@ -462,6 +462,10 @@ fn exercise_native_managed_plan(
         "generic-reversal-owned-removed-member.json",
         &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"nonAtomicObservationOnly":provisional,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"declaredIntervalMs":interval,"syntheticFrameTiming":frame_timing,"exchangeCalendarAlignmentQualified":false,"userDailyBtcStrategyQualified":false,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":math_pack_sha,"qualification":if provisional{"native synthetic C5 entry/close with V3 recovery and non-atomic V2 observations; unsettled owned-position management; cash holds preserved, service recreation, original receipt replay and no duplicate close; no coherent cash reconciliation, automatic/OS restart or real provider claim"}else if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture at declared interval, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/OS-process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
     );
+    if provider["configuration"]["scenario"] == "managed_plan_provisional_v7" {
+        exercise_native_provider_management_v7(s,scope,entry,close,id,root);
+    }
+
 }
 #[test]
 #[ignore = "explicit native generic managed-plan removed-membership/reversal/C5/final-settlement fixture"]
@@ -704,3 +708,34 @@ fn refresh_managed_math_account_health(s:&crate::service::TradeAssemblyService,r
     }
     write_screen_interface_evidence("managed_plan",&format!("provider-health-{phase}.json"),&json!({"phase":phase,"sources":evidence,"manuallyRedatedObservations":0,"realProviderCalls":0,"qualification":"actual normal account.health route/native authored synthetic paper observations for broker and facts; separate isolated provider stores; no freshness relaxation"}));
 }
+
+
+fn exercise_native_provider_management_v7(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,entry:&str,close:&str,position:&str,root:&std::path::Path) {
+    use crate::service::{data_runner::*,order_plans::management::provider_remote::ProviderManagementOperation as M};
+    for instance in ["fixture.broker.v2","fixture.execution.facts"] {
+        let response=s.handle_http("POST",&format!("/plugins/instances/{instance}/health:refresh"),json!({"idempotencyKey":format!("native-v7-health-{instance}")}));assert_eq!(response.status,200,"{}",response.body);
+    }
+    let cash=s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();let submits=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap().lines().filter(|x|*x=="submit").count();assert_eq!(submits,2);
+    for (key,operation) in [
+        ("observe-entry",M::ObserveSettlement{scope:scope.clone(),plan_id:entry.into()}),
+        ("register-original",M::Register{scope:scope.clone(),entry_plan_id:entry.into(),activation_id:"fixture-v2-activation".into()}),
+        ("lookup-close",M::ReconcileClose{scope:scope.clone(),plan_id:close.into()}),
+        ("observe-close",M::SettleClose{scope:scope.clone(),plan_id:close.into()}),
+        ("inspect-position",M::Inspect{scope:scope.clone(),position_id:position.into()}),
+    ] {
+        let runner=DurableCoreDataRunner::new(s.clone(),"fixture.release".into()).unwrap();
+        let command=DataRunnerCommand{schema_version:DATA_RUNNER_SCHEMA_V7.into(),core_release:"fixture.release".into(),workspace_id:"fixture.provider-management".into(),command_id:key.into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new(format!("native-v7-{key}")).unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:s.runtime().clock.now_ms(),operation:DataRunnerOperation::ProviderManagement{management:operation}};
+        let foreign=DurableCoreDataRunner::new(s.for_authenticated_invocation("fixture","foreign",None,None),"fixture.release".into()).unwrap();let receipts=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();assert!(foreign.mutation_binding(&command).is_err());assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),receipts);
+        let witness=runner.verify_financial_dispatch(&command).unwrap();runner.assert_financial_witness_custody(&command,&witness);let receipt=runner.dispatch_verified(&command,witness).unwrap();assert_eq!(receipt.state,DataRunnerState::Completed,"{}",serde_json::to_string(&receipt).unwrap());
+        let Some(DataRunnerResult::ProviderManagement{snapshot})=&receipt.result else{panic!("V7 result required")};assert_eq!(snapshot.schema_version,"tradeassembly.provider-management-snapshot.v7");assert!(!snapshot.execution_authority_granted);
+        if key=="observe-entry"||key=="observe-close" {assert!(snapshot.position.is_none());assert!(snapshot.phase.is_none());let observation=snapshot.observation.as_ref().unwrap();assert!(!observation.cash_reconciled);assert_eq!(observation.released_hold.to_string(),"0");}
+        if key=="inspect-position" {assert_eq!(snapshot.position.as_ref().unwrap().closed_quantity.to_string(),"0.4");assert!(snapshot.journal_included);assert!(!snapshot.journal.is_empty());}
+        let source=s.invocation_owner().unwrap();let restored=DurableCoreDataRunner::new(crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&source.issuer,&source.subject,None,None),"fixture.release".into()).unwrap();let before=fs::read_to_string(root.join("synthetic-broker/observation.log")).unwrap();assert_eq!(restored.dispatch(&command).unwrap(),receipt);assert_eq!(fs::read_to_string(root.join("synthetic-broker/observation.log")).unwrap(),before);
+        let binding=restored.reconciliation_binding(&command).unwrap();assert_eq!(binding.schema_version,"tradeassembly.core-data-mutation-binding.v7");assert_eq!(binding.resource_kind.as_deref(),command.resource_kind());
+        write_screen_interface_evidence("provider_management_v7",&format!("{key}.json"),&json!({"command":command,"binding":binding,"receipt":receipt,"qualification":"actual Core/native authored provider; no signed Relay, whole-Core process, enforcing SRT or real provider claim"}));
+    }
+    assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),cash);assert_eq!(fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap().lines().filter(|x|*x=="submit").count(),submits);
+}
+#[test]
+#[ignore="explicit native V7 observation/register/lookup/inspect and immutable recovery; no real broker"]
+fn native_provider_management_v7_preserves_receipts_and_cash_holds(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_managed_plan_provisional_v7"));}

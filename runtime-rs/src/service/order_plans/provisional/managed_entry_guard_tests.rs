@@ -270,6 +270,98 @@ fn blocked_reported_entry_refuses_static_price_advance_and_c5_snapshot_without_e
         Some(&entry.purchase_cash)
     );
 
+    // V7 historical inspection remains available for a disputed observed entry,
+    // with no current run, policy, provider permission or new close authority.
+    use management::provider_remote::{self, ProviderManagementOperation};
+    let inspect = ProviderManagementOperation::Inspect {
+        scope: entry.command.scope.clone(),
+        position_id: position_id.clone(),
+    };
+    provider_remote::binding(&s, &inspect).unwrap();
+    let response = provider_remote::inspect_response(
+        &s,
+        &json!({"scope":entry.command.scope,"positionId":position_id}),
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let observe = ProviderManagementOperation::ObserveSettlement {
+        scope: entry.command.scope.clone(),
+        plan_id: entry.plan_id.clone(),
+    };
+    let observation_outcome =
+        provider_remote::project(&s, &observe, &"d".repeat(64), accepted.clone()).unwrap();
+    assert!(
+        observation_outcome.position.is_none(),
+        "later mutable position cannot become this original observation outcome"
+    );
+    assert!(observation_outcome.phase.is_none());
+    assert!(observation_outcome.retained_cash.is_none());
+    assert!(observation_outcome.filled_quantity.is_none());
+    assert_eq!(
+        observation_outcome
+            .observation
+            .as_ref()
+            .unwrap()
+            .receipt_sha256,
+        pin
+    );
+    assert_eq!(
+        observation_outcome
+            .observation
+            .as_ref()
+            .unwrap()
+            .head_receipt_sha256,
+        pin
+    );
+    assert!(
+        observation_outcome
+            .observation
+            .as_ref()
+            .unwrap()
+            .head_blocked_reason
+            .is_none(),
+        "later disputed head is not substituted for the original outcome"
+    );
+    let command_hash = "e".repeat(64);
+    let projected = provider_remote::project(&s, &inspect, &command_hash, response.body).unwrap();
+    assert_eq!(
+        projected.position.as_ref().unwrap().closed_quantity,
+        Decimal::ZERO
+    );
+    assert_eq!(
+        projected
+            .observation
+            .as_ref()
+            .unwrap()
+            .head_blocked_reason
+            .as_deref(),
+        Some("settlement_projection_terminal_average_correction")
+    );
+    let mut later = position.clone();
+    later["generation"] = json!(9);
+    later["closedQuantity"] = later["quantity"].clone();
+    later["stateSha256"] = json!("");
+    later["stateSha256"] = json!(hash(&later).unwrap());
+    s.runtime()
+        .storage
+        .put_json("execution_managed_positions_v1", &position_id, later, &ctx)
+        .unwrap();
+    assert_eq!(
+        provider_remote::stored(&s, &inspect, &command_hash).unwrap(),
+        Some(projected.clone()),
+        "sealed original position image survives later state changes"
+    );
+    let foreign = s.for_authenticated_invocation("fixture", "other", None, None);
+    assert!(provider_remote::stored(&foreign, &inspect, &command_hash).is_err());
+    s.runtime()
+        .storage
+        .put_json(
+            "execution_managed_positions_v1",
+            &position_id,
+            position.clone(),
+            &ctx,
+        )
+        .unwrap();
+
     // No management run/control, occurrence, calendar, quote or metadata rows
     // exist: both real paths must refuse the entry head before touching those.
     for trailing in [false, true] {
@@ -312,6 +404,82 @@ fn blocked_reported_entry_refuses_static_price_advance_and_c5_snapshot_without_e
         close.purchase_cash = "1".parse().unwrap();
         close.plan_id.clear();
         close.plan_id = format!("orderplan_{}", hash(&close).unwrap());
+        s.runtime()
+            .storage
+            .put_json(PLANS, &close.plan_id, value(&close).unwrap(), &ctx)
+            .unwrap();
+        let mut coherent = position.clone();
+        coherent["schemaVersion"] = json!("tradeassembly.managed_position.v1");
+        coherent["entryObservationSha256"] = Value::Null;
+        coherent["entryCashReconciled"] = Value::Null;
+        coherent["entrySettlementSha256"] = json!("a".repeat(64));
+        coherent["policy"]["entryBasis"] = json!("provider_final_gross_excluding_fees");
+        // Serialize omitted V1 optional fields exactly as the normal model does.
+        coherent
+            .as_object_mut()
+            .unwrap()
+            .remove("entryObservationSha256");
+        coherent
+            .as_object_mut()
+            .unwrap()
+            .remove("entryCashReconciled");
+        coherent["stateSha256"] = json!("");
+        coherent["stateSha256"] = json!(hash(&coherent).unwrap());
+        s.runtime()
+            .storage
+            .put_json(
+                "execution_managed_positions_v1",
+                &position_id,
+                coherent.clone(),
+                &ctx,
+            )
+            .unwrap();
+        let mut coherent_close = close.clone();
+        coherent_close
+            .management
+            .as_mut()
+            .unwrap()
+            .exit_policy_sha256 = hash(&coherent["policy"]).unwrap();
+        coherent_close.plan_id.clear();
+        coherent_close.plan_id = format!("orderplan_{}", hash(&coherent_close).unwrap());
+        s.runtime()
+            .storage
+            .put_json(
+                PLANS,
+                &coherent_close.plan_id,
+                value(&coherent_close).unwrap(),
+                &ctx,
+            )
+            .unwrap();
+        for op in [
+            ProviderManagementOperation::ObserveSettlement {
+                scope: entry.command.scope.clone(),
+                plan_id: coherent_close.plan_id.clone(),
+            },
+            ProviderManagementOperation::ReconcileClose {
+                scope: entry.command.scope.clone(),
+                plan_id: coherent_close.plan_id.clone(),
+            },
+            ProviderManagementOperation::SettleClose {
+                scope: entry.command.scope.clone(),
+                plan_id: coherent_close.plan_id.clone(),
+            },
+        ] {
+            assert_eq!(
+                provider_remote::binding(&s, &op).unwrap_err(),
+                "provider_management_observed_entry_required",
+                "unsupported position family must refuse before source/read acquisition"
+            );
+        }
+        s.runtime()
+            .storage
+            .put_json(
+                "execution_managed_positions_v1",
+                &position_id,
+                position.clone(),
+                &ctx,
+            )
+            .unwrap();
         let before = stored_state(&s);
         assert_eq!(
             management::advance(

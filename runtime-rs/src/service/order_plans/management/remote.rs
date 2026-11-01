@@ -155,7 +155,7 @@ impl ManagementOperation {
     }
 }
 
-fn original_entry(
+pub(super) fn original_entry(
     s: &TradeAssemblyService,
     op: &ManagementOperation,
 ) -> Result<(OrderPlan, String, Option<Position>, Option<OrderPlan>), String> {
@@ -196,7 +196,7 @@ fn original_entry(
         | ManagementOperation::SettleClose { plan_id, .. } => close_entry(s, plan_id),
     }
 }
-fn close_entry(
+pub(super) fn close_entry(
     s: &TradeAssemblyService,
     id: &str,
 ) -> Result<(OrderPlan, String, Option<Position>, Option<OrderPlan>), String> {
@@ -225,6 +225,19 @@ pub(crate) fn binding(
     s: &TradeAssemblyService,
     op: &ManagementOperation,
 ) -> Result<(data_plans::PlanScope, String, String), String> {
+    binding_impl(s, op, false)
+}
+pub(super) fn binding_for_provider_v7(
+    s: &TradeAssemblyService,
+    op: &ManagementOperation,
+) -> Result<(data_plans::PlanScope, String, String), String> {
+    binding_impl(s, op, true)
+}
+fn binding_impl(
+    s: &TradeAssemblyService,
+    op: &ManagementOperation,
+    provider_v7: bool,
+) -> Result<(data_plans::PlanScope, String, String), String> {
     op.validate()?;
     s.require_object("strategy", &op.scope().strategy_id)
         .map_err(|_| "management_runner_not_available")?;
@@ -240,27 +253,40 @@ pub(crate) fn binding(
         let pos = position
             .as_ref()
             .ok_or("management_runner_position_missing")?;
-        if pos.entry_observation_sha256.is_some() {
+        if pos.entry_observation_sha256.is_some() && !provider_v7 {
             return Err("management_observation_transport_version_required".into());
         }
         let (_, original) =
             submission::record(s, &entry)?.ok_or("management_runner_original_entry_missing")?;
-        verify_entry(s, &entry, pos)?;
+        if provider_v7 {
+            super::provider_remote::historical_entry_evidence(s, &entry, pos)?;
+        } else {
+            verify_entry(s, &entry, pos)?;
+        }
         if pos.entry_plan_id != entry.plan_id
             || original.intent["originalRequest"]["activationId"] != activation
         {
             return Err("management_runner_historical_lineage_invalid".into());
         }
-        bounded_journal(s, pos)?;
+        if provider_v7 {
+            super::provider_remote::validate_historical_journal(s, &entry, pos)?;
+        } else {
+            bounded_journal(s, pos)?;
+        }
         let canonical = entry
             .canonical_account
             .as_ref()
             .ok_or("management_runner_account_missing")?;
+        let historical_proof = if provider_v7 {
+            json!({"entryPlanSha256":hash(&entry)?,"positionId":pos.position_id,"activationId":activation,"entryEvidence":super::provider_remote::historical_entry_evidence(s,&entry,pos)?,"originalIntentSha256":original.intent_sha256,"exitPolicySha256":hash(&pos.policy)?})
+        } else {
+            json!({"entryPlanSha256":hash(&entry)?,"positionId":pos.position_id,"activationId":activation,"entrySettlementSha256":pos.entry_settlement_sha256,"originalIntentSha256":original.intent_sha256,"exitPolicySha256":hash(&pos.policy)?})
+        };
         return Ok((
             op.scope().clone(),
             entry.command.capability_graph_revision.clone(),
             hash(
-                &json!({"schemaVersion":"tradeassembly.management_domain.v1","operation":op,"ownerSha256":owner(s)?,"scope":op.scope(),"graph":entry.command.capability_graph_revision,"canonicalAccountSha256":canonical.identity_sha256,"immutableProof":{"entryPlanSha256":hash(&entry)?,"positionId":pos.position_id,"activationId":activation,"entrySettlementSha256":pos.entry_settlement_sha256,"originalIntentSha256":original.intent_sha256,"exitPolicySha256":hash(&pos.policy)?}}),
+                &json!({"schemaVersion":if provider_v7{"tradeassembly.provider-management-domain.v7"}else{"tradeassembly.management_domain.v1"},"operation":op,"ownerSha256":owner(s)?,"scope":op.scope(),"graph":entry.command.capability_graph_revision,"canonicalAccountSha256":canonical.identity_sha256,"immutableProof":historical_proof}),
             )?,
         ));
     }
@@ -283,10 +309,15 @@ pub(crate) fn binding(
         return Err("management_runner_entry_activation_invalid".into());
     }
     let selected_policy = policy(s, op.scope())?.ok_or("management_runner_policy_required")?;
-    if selected_policy.entry_basis == "provider_reported_average_fill" {
+    if selected_policy.entry_basis == "provider_reported_average_fill" && !provider_v7 {
         return Err("management_observation_transport_version_required".into());
     }
-    settlement::entry_basis(s, &entry)?;
+    entry_basis(
+        s,
+        &entry,
+        &selected_policy,
+        position.as_ref().map(entry_evidence),
+    )?;
     let source = settlement::current_source(s, &entry, &original)?;
     let policy = policy(s, op.scope())?.ok_or("management_runner_policy_required")?;
     if position.as_ref().is_some_and(|p| p.policy != policy) {
@@ -296,12 +327,24 @@ pub(crate) fn binding(
         "entrySettlementSha256":original.settlement_receipt_sha256,"activationId":activation,
         "exitPolicySha256":hash(&policy)?,"configSha256":hash(&config)?,"sourceBindingSha256":hash(&source)?});
     if let Some(pos) = &position {
-        if pos.entry_observation_sha256.is_some() {
+        if pos.entry_observation_sha256.is_some() && !provider_v7 {
             return Err("management_observation_transport_version_required".into());
         }
 
         proof["positionId"] = json!(pos.position_id);
         proof["entrySettlementSha256"] = json!(pos.entry_settlement_sha256);
+    }
+    if provider_v7 {
+        proof
+            .as_object_mut()
+            .unwrap()
+            .remove("entrySettlementSha256");
+        proof["entryEvidence"] = json!(super::provider_remote::entry_evidence_for_binding(
+            s,
+            &entry,
+            position.as_ref(),
+            &policy
+        )?);
     }
     match op {
         ManagementOperation::Advance { advance, .. } => {
@@ -390,17 +433,27 @@ pub(crate) fn binding(
             let source = settlement::current_source(s, close, &record)?;
             if matches!(op, ManagementOperation::SettleClose { .. })
                 && super::super::provisional::selected(s, close, &record)?
+                && !provider_v7
             {
                 return Err("management_observation_transport_version_required".into());
             }
 
             let (operation, capability, purpose) =
                 if matches!(op, ManagementOperation::SettleClose { .. }) {
-                    (
-                        tradeassembly_plugin_sdk::close_settlement::OPERATION,
-                        tradeassembly_plugin_sdk::close_settlement::CAPABILITY,
-                        "settlement",
-                    )
+                    if provider_v7 {
+                        super::super::provisional::preflight(s, close)?;
+                        (
+                            tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_OPERATION,
+                            tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_CAPABILITY,
+                            "recovery",
+                        )
+                    } else {
+                        (
+                            tradeassembly_plugin_sdk::close_settlement::OPERATION,
+                            tradeassembly_plugin_sdk::close_settlement::CAPABILITY,
+                            "settlement",
+                        )
+                    }
                 } else {
                     let package = s
                         .runtime()
@@ -444,13 +497,13 @@ pub(crate) fn binding(
         op.scope().clone(),
         entry.command.capability_graph_revision.clone(),
         hash(&json!({
-        "schemaVersion":"tradeassembly.management_domain.v1","operation":op,"ownerSha256":owner(s)?,
+        "schemaVersion":if provider_v7{"tradeassembly.provider-management-domain.v7"}else{"tradeassembly.management_domain.v1"},"operation":op,"ownerSha256":owner(s)?,
         "scope":op.scope(),"graph":entry.command.capability_graph_revision,"canonicalAccountSha256":canonical.identity_sha256,
         "immutableProof":proof}))?,
     ))
 }
 
-fn require_read_capability(
+pub(super) fn require_read_capability(
     s: &TradeAssemblyService,
     plan: &OrderPlan,
     binding: &crate::ports::broker_submission::BrokerPreparedBinding,

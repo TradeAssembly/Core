@@ -404,7 +404,11 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", "/product/strategies/option-selections/create") => {
             "strategy.option_selection.create".into()
         }
-        ("POST", "/product/strategies/positions/inspect") => "strategy.position.inspect".into(),
+        (
+            "POST",
+            "/product/strategies/positions/inspect"
+            | "/product/strategies/provider-positions/inspect",
+        ) => "strategy.position.inspect".into(),
         ("POST", "/product/strategies/positions/register") => "strategy.position.register".into(),
         ("POST", "/product/strategies/positions/advance") => "strategy.position.advance".into(),
         ("POST", "/product/strategies/order-plans/prepare") => "strategy.order_plan.prepare".into(),
@@ -1385,6 +1389,7 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
         return "read".to_string();
     }
     if path == "/product/strategies/positions/inspect"
+        || path == "/product/strategies/provider-positions/inspect"
         || path == "/product/strategies/session-schedules/get"
         || path == "/product/strategies/instrument-screens/get"
         || path == "/product/strategies/data-captures/get"
@@ -1593,6 +1598,7 @@ fn target_object(path: &str, body: &Value) -> Option<String> {
         | "/product/strategies/positions/register"
         | "/product/strategies/positions/advance"
         | "/product/strategies/positions/inspect"
+        | "/product/strategies/provider-positions/inspect"
         | "/product/strategies/order-plans/reserve"
         | "/product/strategies/order-plans/release"
         | "/product/strategies/order-plans/decide"

@@ -59,11 +59,16 @@ pub(crate) enum Input {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum WindowInput {
-    EventStartMs {},
-    EventEndMs {},
-    AsOfMs {},
-    IntervalMs {},
-    OriginStartMs {},
+    #[serde(rename = "event_start_ms")]
+    EventStart {},
+    #[serde(rename = "event_end_ms")]
+    EventEnd {},
+    #[serde(rename = "as_of_ms")]
+    AsOf {},
+    #[serde(rename = "interval_ms")]
+    Interval {},
+    #[serde(rename = "origin_start_ms")]
+    OriginStart {},
 }
 
 fn name(value: &str) -> bool {
@@ -202,11 +207,11 @@ pub(crate) fn materialize_input(
                     Input::Existing(typed_cycle::InputValue::TradeInstrumentId {}) => {
                         json!(instrument)
                     }
-                    Input::Window(WindowInput::EventStartMs {}) => json!(window.event_start_ms),
-                    Input::Window(WindowInput::EventEndMs {}) => json!(window.event_end_ms),
-                    Input::Window(WindowInput::AsOfMs {}) => json!(window.as_of_ms),
-                    Input::Window(WindowInput::IntervalMs {}) => json!(interval_ms),
-                    Input::Window(WindowInput::OriginStartMs {}) => json!(origin_start_ms),
+                    Input::Window(WindowInput::EventStart {}) => json!(window.event_start_ms),
+                    Input::Window(WindowInput::EventEnd {}) => json!(window.event_end_ms),
+                    Input::Window(WindowInput::AsOf {}) => json!(window.as_of_ms),
+                    Input::Window(WindowInput::Interval {}) => json!(interval_ms),
+                    Input::Window(WindowInput::OriginStart {}) => json!(origin_start_ms),
                 };
                 (key.clone(), value)
             })
@@ -491,7 +496,7 @@ fn step_window(
         || !(1..=64).contains(&max_frames)
         || interval == 0
         || interval > max as u64
-        || (head_end - cursor) as u64 % interval != 0
+        || !((head_end - cursor) as u64).is_multiple_of(interval)
     {
         return Err("management_reversal_window_invalid".into());
     }
@@ -657,7 +662,7 @@ fn stream_view(value: &Value) -> Result<StreamHead, String> {
         || view.interval_ms == 0
         || view.interval_ms > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER
         || view.event_end_ms > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64
-        || (view.event_end_ms - view.original_origin_ms) as u64 % view.interval_ms != 0
+        || !((view.event_end_ms - view.original_origin_ms) as u64).is_multiple_of(view.interval_ms)
         || view.context.interval_ms != Some(view.interval_ms)
         || view.context.instruments.is_empty()
         || view.context.instruments.len() > 32
@@ -986,13 +991,35 @@ pub(super) fn next_child(
         .map(WindowStep::Child);
     }
     let now = s.runtime().clock.trusted_now_ms()?;
+    // A fast source may publish another completed bar while each capture and
+    // calculation is running. Offer a newly evaluated current observation to
+    // position management before chasing that newer bar, or execution can
+    // starve forever. Previously consumed observations do not block refresh.
+    if let Some(receipt) = &progress.signal_receipt_sha256 {
+        // apply_response admitted this receipt only when its final frame ended
+        // at the persisted cursor. A stale cursor cannot select a financial
+        // child; it needs a genuine later acquisition. All other subject and
+        // causal checks still run through the authoritative reversal guard.
+        let current = progress
+            .cursor_ms
+            .is_some_and(|end| end <= now && now - end < position.policy.max_reversal_age_ms);
+        if current && position.last_reversal_receipt.as_ref() != Some(receipt) {
+            match reversal(s, position, entry, Some(receipt), now) {
+                Ok(_) => return Ok(WindowStep::Ready(receipt.clone())),
+                // A bootstrap result may predate the actual entry fill. It
+                // cannot close the position; acquire genuine later data below.
+                Err(code) if code == "managed_reversal_predates_entry" => {}
+                Err(code) => return Err(code),
+            }
+        }
+    }
     let latest = completed_boundary(
         first.original_origin_ms,
         first.interval_ms,
         now,
         config.completion_lag_ms,
     )?;
-    for (root, capture) in &progress.pending_captures {
+    if let Some((root, capture)) = progress.pending_captures.iter().next() {
         let head = progress
             .streams
             .get(root)

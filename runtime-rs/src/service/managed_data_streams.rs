@@ -357,7 +357,7 @@ pub(crate) fn validate_capture_input(
     }
     let mut as_of = None;
     for (field, input) in &source.input_template {
-        if matches!(input, Input::Window(WindowInput::AsOfMs {})) {
+        if matches!(input, Input::Window(WindowInput::AsOf {})) {
             let actual = witness
                 .input
                 .get(field)

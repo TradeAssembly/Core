@@ -1249,6 +1249,23 @@ impl TradeAssemblyService {
             Ok(envelope) => inherit_trusted_correlation(envelope, &body),
             Err(_) => return ServiceResponse::bad_request("invalid_command_envelope"),
         };
+        match research::cached_metadata_projection(
+            self,
+            "http",
+            &format!("{normalized_method} {normalized_path}"),
+            &body,
+            &envelope,
+        ) {
+            Ok(Some(projected)) => {
+                return ServiceResponse::duplicate_with_body(
+                    projected.status,
+                    &envelope.command_id,
+                    projected.body,
+                )
+            }
+            Ok(None) => {}
+            Err(response) => return response,
+        }
         match order_plans::measured(if timing_route { "c3.prepare" } else { "" }, || {
             control_plane::prepare_command(
                 self.runtime.storage.as_ref(),
@@ -2482,9 +2499,28 @@ impl TradeAssemblyService {
                 return json!({"data":{field:response.body}});
             }
         }
-        let command_envelope = match control_plane::graphql_envelope(&request)
-            .map(|envelope| inherit_trusted_graphql_correlation(envelope, &request))
-        {
+        let current_envelope = control_plane::graphql_envelope(&request)
+            .map(|envelope| inherit_trusted_graphql_correlation(envelope, &request));
+        if let Ok(envelope) = &current_envelope {
+            match research::cached_metadata_projection(
+                self,
+                "graphql",
+                &op,
+                &request["variables"],
+                envelope,
+            ) {
+                Ok(Some(projected)) => {
+                    return json!({"data": {
+                        graphql_field(&op): projected.body, "_duplicate": true,
+                    }})
+                }
+                Ok(None) => {}
+                Err(response) => {
+                    return json!({"errors":[{"message":graphql_error_code(&response.body)}]})
+                }
+            }
+        }
+        let command_envelope = match current_envelope {
             Ok(envelope) => match control_plane::prepare_command(
                 self.runtime.storage.as_ref(),
                 self.runtime.finance_authority.as_ref(),
@@ -3888,9 +3924,29 @@ impl TradeAssemblyService {
         let command_envelope = if broker_order_tool {
             None
         } else {
-            match control_plane::mcp_envelope(name, &arguments)
-                .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
-            {
+            let current_envelope = control_plane::mcp_envelope(name, &arguments)
+                .map(|envelope| inherit_trusted_correlation(envelope, &arguments));
+            if let Ok(envelope) = &current_envelope {
+                match research::cached_metadata_projection(self, "mcp", name, &arguments, envelope)
+                {
+                    Ok(Some(projected)) => {
+                        let mut body = projected.body;
+                        body["duplicate"] = json!(true);
+                        return mcp::call_tool_with_payload(name, body);
+                    }
+                    Ok(None) => {}
+                    Err(response) => {
+                        return mcp::tool_error(
+                            name,
+                            &service_error_code(&response.body)
+                                .unwrap_or_else(|| "metadata_replay_failed".into()),
+                            "Historical metadata replay is unavailable.",
+                            None,
+                        )
+                    }
+                }
+            }
+            match current_envelope {
                 Ok(envelope) => match control_plane::prepare_command(
                     self.runtime.storage.as_ref(),
                     self.runtime.finance_authority.as_ref(),

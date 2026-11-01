@@ -231,7 +231,14 @@ fn cross_principal_research_roots_are_private_and_opaque() {
         "/research/datasets",
         json!({"strategyId": strategy_id, "symbol": "BTC/USD"}),
     );
-    assert_eq!(foreign_dataset.status, 200);
+    let missing_dataset = bob.handle_http(
+        "POST",
+        "/research/datasets",
+        json!({"strategyId":"strategy_missing", "symbol":"BTC/USD"}),
+    );
+    assert_eq!(foreign_dataset.status, 404);
+    assert_eq!(foreign_dataset.status, missing_dataset.status);
+    assert_eq!(foreign_dataset.body, missing_dataset.body);
     let serialized = serde_json::to_string(&foreign_dataset.body).expect("serialize dataset");
     assert!(serialized.contains("object_not_available"));
     assert!(!serialized.contains(&dataset_id));

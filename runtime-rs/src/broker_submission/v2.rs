@@ -5,11 +5,118 @@ use crate::{control_plane::ControlPlaneCommandEnvelope, ports::*, service::order
 pub use order_plans::submission::OrderPlanSource;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tradeassembly_plugin_sdk::broker_lookup_v3 as lookup_v3;
 use tradeassembly_plugin_sdk::broker_v2::{self as wire, OrderObservation, OrderStatus};
 pub const SUBMIT_OPERATION: &str = "broker.paper_order_submit_v2";
 pub const SUBMIT_CAPABILITY: &str = "broker.order_submit.paper@2";
 pub const LOOKUP_OPERATION: &str = "broker.order_lookup.paper_v2";
 pub const LOOKUP_CAPABILITY: &str = "broker.order_lookup.paper@2";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryLookup {
+    LegacyV2,
+    OriginalOrderV3,
+}
+impl RecoveryLookup {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::LegacyV2 => LOOKUP_OPERATION,
+            Self::OriginalOrderV3 => lookup_v3::OPERATION_ID,
+        }
+    }
+    fn capability(self) -> &'static str {
+        match self {
+            Self::LegacyV2 => LOOKUP_CAPABILITY,
+            Self::OriginalOrderV3 => lookup_v3::CAPABILITY,
+        }
+    }
+}
+// Selection is an explicit dependency of the immutable submit operation, never
+// an availability-based fallback. Existing V2 packages retain their exact wire.
+fn recovery_lookup(manifest: &Value, submit_operation: &str) -> Result<RecoveryLookup, String> {
+    let operations = manifest["operations"]
+        .as_array()
+        .ok_or("broker_v2_lookup_operation_missing")?;
+    let mut submits = operations
+        .iter()
+        .filter(|op| op["id"] == submit_operation && op["capability"] == SUBMIT_CAPABILITY);
+    let submit = submits
+        .next()
+        .ok_or("broker_v2_lookup_submit_binding_invalid")?;
+    if submits.next().is_some() {
+        return Err("broker_v2_lookup_submit_binding_invalid".into());
+    }
+    let dependencies = submit["dependencies"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let declared = dependencies
+        .iter()
+        .filter(|dependency| dependency["dependencyId"] == lookup_v3::DEPENDENCY_ID)
+        .collect::<Vec<_>>();
+    let selected = match declared.as_slice() {
+        [] => RecoveryLookup::LegacyV2,
+        [dependency]
+            if dependency["required"] == true
+                && dependency["capability"] == lookup_v3::CAPABILITY
+                && dependency["operationId"] == lookup_v3::OPERATION_ID =>
+        {
+            RecoveryLookup::OriginalOrderV3
+        }
+        [dependency]
+            if dependency["required"] == true
+                && dependency["capability"] == LOOKUP_CAPABILITY
+                && dependency["operationId"] == LOOKUP_OPERATION =>
+        {
+            RecoveryLookup::LegacyV2
+        }
+        _ => return Err("broker_v2_lookup_dependency_invalid".into()),
+    };
+    if operations
+        .iter()
+        .filter(|op| {
+            op["id"] == selected.operation()
+                && op["capability"] == selected.capability()
+                && op["effect"] == "read"
+        })
+        .count()
+        != 1
+    {
+        return Err("broker_v2_lookup_operation_missing".into());
+    }
+    Ok(selected)
+}
+fn recovery_input(
+    contract: RecoveryLookup,
+    original: &wire::SubmitRequest,
+    account: &account_identity::CanonicalAccountIdentity,
+) -> Result<Value, String> {
+    original.validate()?;
+    if account.identity_sha256 != original.canonical_account_sha256
+        || account.environment != "paper"
+    {
+        return Err("broker_v2_canonical_account_mismatch".into());
+    }
+    match contract {
+        RecoveryLookup::LegacyV2 => Ok(
+            json!({"schemaVersion":"tradeassembly.broker_lookup.v2","canonicalAccountSha256":original.canonical_account_sha256,"clientOrderId":original.order.client_order_id}),
+        ),
+        RecoveryLookup::OriginalOrderV3 => {
+            let request = lookup_v3::LookupRequestV3 {
+                schema_version: lookup_v3::VERSION.into(),
+                original_submit: original.clone(),
+                expected_account: serde_json::from_value(json!({
+                    "brokerNamespace":account.broker_namespace,
+                    "environment":account.environment,
+                    "providerAccountId":account.provider_account_id,
+                }))
+                .map_err(|_| "broker_v3_expected_account_invalid")?,
+            };
+            request.validate()?;
+            serde_json::to_value(request).map_err(|_| "broker_v3_lookup_encoding_invalid".into())
+        }
+    }
+}
 pub(crate) fn key_hash(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
@@ -125,18 +232,7 @@ fn validate(
         return Err("broker_v2_canonical_account_mismatch".into());
     }
     // Recovery is an independently declared read on the exact same package.
-    if !state.package.manifest["operations"]
-        .as_array()
-        .is_some_and(|ops| {
-            ops.iter().any(|o| {
-                o["id"] == LOOKUP_OPERATION
-                    && o["capability"] == LOOKUP_CAPABILITY
-                    && o["effect"] == "read"
-            })
-        })
-    {
-        return Err("broker_v2_lookup_operation_missing".into());
-    }
+    let recovery = recovery_lookup(&state.package.manifest, &request.operation_id)?;
     let status = deps
         .credentials
         .status(required_value(&state.instance, "credentialRef")?);
@@ -153,11 +249,11 @@ fn validate(
     let lookup = deps.capability_resolver.resolve(
         CapabilityRequirement {
             requirement_id: "broker-v2-admission-recovery".into(),
-            capability: LOOKUP_CAPABILITY.into(),
+            capability: recovery.capability().into(),
             mode: "paper".into(),
             plugin_instance_ref: Some(request.plugin_instance_ref.clone()),
             plugin_ref: Some(request.plugin_ref.clone()),
-            operation_id: Some(LOOKUP_OPERATION.into()),
+            operation_id: Some(recovery.operation().into()),
             account_ref: request.account_ref.clone(),
             purpose: Some("recovery".into()),
             asset_class: Some(p.order.instrument.asset_class.clone()),
@@ -518,7 +614,7 @@ pub(crate) fn prepare_recovery(
         deps.clock.trusted_now_ms()?,
         "paper",
     )?;
-    if serde_json::to_value(account.identity).map_err(|_| "broker_v2_account_invalid")?
+    if serde_json::to_value(&account.identity).map_err(|_| "broker_v2_account_invalid")?
         != state.intent["canonicalAccount"]
     {
         return Err("broker_v2_canonical_account_mismatch".into());
@@ -551,6 +647,7 @@ pub(crate) fn prepare_recovery(
         .plugins
         .get_manifest(&original.plugin_ref)?
         .ok_or("broker_v2_observer_source_missing")?;
+    let recovery = recovery_lookup(&manifest["manifest"], &original.operation_id)?;
     let entry =
         crate::plugin_catalog::stored_plugin_entry(&instance, &manifest, &status, "ready".into())
             .ok_or("broker_v2_observer_binding_invalid")?;
@@ -559,15 +656,15 @@ pub(crate) fn prepare_recovery(
     let resolution = deps.capability_resolver.resolve(
         CapabilityRequirement {
             requirement_id: "broker-v2-recovery".into(),
-            capability: LOOKUP_CAPABILITY.into(),
+            capability: recovery.capability().into(),
             mode: "paper".into(),
             plugin_instance_ref: Some(original.plugin_instance_ref.clone()),
             plugin_ref: Some(original.plugin_ref.clone()),
-            operation_id: Some(LOOKUP_OPERATION.into()),
+            operation_id: Some(recovery.operation().into()),
             account_ref: original.account_ref.clone(),
             purpose: Some("recovery".into()),
-            asset_class: Some(order.order.instrument.asset_class),
-            instrument_family: Some(order.order.instrument.instrument_family),
+            asset_class: Some(order.order.instrument.asset_class.clone()),
+            instrument_family: Some(order.order.instrument.instrument_family.clone()),
             fallback_policy: "deny".into(),
             ..Default::default()
         },
@@ -584,10 +681,10 @@ pub(crate) fn prepare_recovery(
         "broker-recovery-v2:{}",
         key_hash(context.idempotency_key.as_str())
     );
-    lookup.operation_id = LOOKUP_OPERATION.into();
-    lookup.capability = LOOKUP_CAPABILITY.into();
+    lookup.operation_id = recovery.operation().into();
+    lookup.capability = recovery.capability().into();
     lookup.purpose = "recovery".into();
-    lookup.input = json!({"schemaVersion":"tradeassembly.broker_lookup.v2","canonicalAccountSha256":state.intent["canonicalAccount"]["identitySha256"],"clientOrderId":state.intent["order"]["clientOrderId"]});
+    lookup.input = recovery_input(recovery, &order, &account.identity)?;
     lookup.evidence_refs = vec![format!("original-broker-intent:{}", state.intent_sha256)];
     Ok(RecoveryPlan {
         lookup: Some(lookup),
@@ -718,6 +815,116 @@ fn validate_execution_window(
     }
     Ok(())
 }
+#[cfg(test)]
+mod lookup_contract_tests {
+    use super::*;
+
+    fn manifest(dependencies: Value) -> Value {
+        json!({"operations":[
+            {"id":SUBMIT_OPERATION,"capability":SUBMIT_CAPABILITY,"effect":"write","dependencies":dependencies},
+            {"id":LOOKUP_OPERATION,"capability":LOOKUP_CAPABILITY,"effect":"read"},
+            {"id":lookup_v3::OPERATION_ID,"capability":lookup_v3::CAPABILITY,"effect":"read"}
+        ]})
+    }
+    fn original() -> (
+        wire::SubmitRequest,
+        account_identity::CanonicalAccountIdentity,
+    ) {
+        let expected = lookup_v3::ExpectedPaperAccount {
+            broker_namespace: "fixture.broker".into(),
+            environment: lookup_v3::PaperEnvironment::Paper,
+            provider_account_id: "fixture.account".into(),
+        };
+        let digest = expected.canonical_account_sha256().unwrap();
+        let account = account_identity::CanonicalAccountIdentity {
+            schema_version: "tradeassembly.canonical_account.v1".into(),
+            broker_namespace: expected.broker_namespace,
+            environment: "paper".into(),
+            provider_account_id: expected.provider_account_id,
+            identity_sha256: digest.clone(),
+        };
+        let request = serde_json::from_value(json!({"schemaVersion":"tradeassembly.broker_submit.v2","planId":format!("orderplan_{}","a".repeat(64)),"canonicalAccountSha256":digest,"order":{
+            "schemaVersion":"tradeassembly.broker_order.v2","instrument":{"instrumentId":"host.opaque.instrument","providerSymbol":"SPY","assetClass":"equity","instrumentFamily":"equity","quantityUnit":"shares","multiplier":"1","quoteCurrency":"USD"},
+            "positionAction":"buy_to_open","quantity":"0.4","pricing":{"kind":"limit","limitPrice":"100"},"timeInForce":"day","clientOrderId":"fixture.client"
+        }})).unwrap();
+        (request, account)
+    }
+    #[test]
+    fn lookup_v3_selection_is_explicit_and_never_falls_back_by_availability() {
+        assert_eq!(
+            recovery_lookup(&manifest(json!([])), SUBMIT_OPERATION).unwrap(),
+            RecoveryLookup::LegacyV2
+        );
+        let declaration = json!({"dependencyId":lookup_v3::DEPENDENCY_ID,"capability":lookup_v3::CAPABILITY,"operationId":lookup_v3::OPERATION_ID,"required":true,"traits":{}});
+        assert_eq!(
+            recovery_lookup(&manifest(json!([declaration.clone()])), SUBMIT_OPERATION).unwrap(),
+            RecoveryLookup::OriginalOrderV3
+        );
+        let mut missing = manifest(json!([declaration.clone()]));
+        missing["operations"].as_array_mut().unwrap().pop();
+        assert!(
+            recovery_lookup(&missing, SUBMIT_OPERATION).is_err(),
+            "declared V3 must not fall back to existing V2"
+        );
+        for field in ["required", "capability", "operationId"] {
+            let mut bad = declaration.clone();
+            bad[field] = if field == "required" {
+                json!(false)
+            } else {
+                json!("unknown")
+            };
+            assert!(recovery_lookup(&manifest(json!([bad])), SUBMIT_OPERATION).is_err());
+        }
+        assert!(recovery_lookup(
+            &manifest(json!([declaration.clone(), declaration])),
+            SUBMIT_OPERATION
+        )
+        .is_err());
+    }
+    #[test]
+    fn lookup_v3_joins_exact_original_host_order_and_account_and_preserves_v2_wire() {
+        let (original, account) = original();
+        let legacy = recovery_input(RecoveryLookup::LegacyV2, &original, &account).unwrap();
+        assert_eq!(
+            legacy,
+            json!({"schemaVersion":"tradeassembly.broker_lookup.v2","canonicalAccountSha256":original.canonical_account_sha256,"clientOrderId":original.order.client_order_id})
+        );
+        let payload = recovery_input(RecoveryLookup::OriginalOrderV3, &original, &account).unwrap();
+        let decoded =
+            lookup_v3::decode_lookup_json(&serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(decoded.original_submit, original);
+        assert_eq!(
+            decoded.expected_account.provider_account_id,
+            account.provider_account_id
+        );
+        let mut changed = account.clone();
+        changed.provider_account_id = "another-account".into();
+        assert!(recovery_input(RecoveryLookup::OriginalOrderV3, &original, &changed).is_err());
+        changed = account;
+        changed.environment = "live".into();
+        assert!(recovery_input(RecoveryLookup::OriginalOrderV3, &original, &changed).is_err());
+    }
+    #[test]
+    fn lookup_v3_actual_schema_accepts_bound_request_and_refuses_control_labels() {
+        let schema = lookup_v3::request_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let (original, account) = original();
+        let good = recovery_input(RecoveryLookup::OriginalOrderV3, &original, &account).unwrap();
+        assert!(validator.is_valid(&good));
+        let label = jsonschema::validator_for(
+            &schema["properties"]["expectedAccount"]["properties"]["providerAccountId"],
+        )
+        .unwrap();
+        assert!(label.is_valid(&json!("normal.account-id")));
+        for bad in ["line\nbreak", "c1\u{0085}control", "null\0byte"] {
+            assert!(!label.is_valid(&json!(bad)));
+        }
+        let mut extra = good;
+        extra["submittedAtMs"] = json!(1);
+        assert!(!validator.is_valid(&extra));
+    }
+}
+
 #[cfg(test)]
 mod window_tests {
     use super::*;

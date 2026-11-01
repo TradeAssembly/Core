@@ -4,6 +4,7 @@
 //! exactly one [`PluginResponse`] and exits. Credential grants are ephemeral
 //! request transport data and are redacted from debug output.
 
+pub mod broker_lookup_v3;
 pub mod broker_v2;
 pub mod canonical;
 pub mod cash_settlement;

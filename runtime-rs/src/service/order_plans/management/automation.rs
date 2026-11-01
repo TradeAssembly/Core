@@ -709,13 +709,18 @@ pub(crate) fn scheduling_state(
 ) -> Result<SchedulingState, String> {
     let _timing = crate::service::order_plans::financial_timing("manager.next_due");
     let now = s.runtime().clock.trusted_now_ms()?;
-    let Some(b) = binding(s, job)? else {
-        return Ok(SchedulingState {
-            has_work: false,
-            next_due_ms: now.saturating_add(60_000),
-        });
-    };
-    bound_scheduling_state(s, &b, job, now)
+    // This is pure advisory validation. Share immutable package bytes only
+    // inside this call; management effects still use the original runtime and
+    // recheck all current bindings independently after any wait.
+    crate::service::package_validation::with_round(s, |s| {
+        let Some(b) = binding(s, job)? else {
+            return Ok(SchedulingState {
+                has_work: false,
+                next_due_ms: now.saturating_add(60_000),
+            });
+        };
+        bound_scheduling_state(s, &b, job, now)
+    })
 }
 fn summary(state: &State) -> Value {
     let status = if state.error.is_some() {

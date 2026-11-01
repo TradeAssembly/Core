@@ -322,6 +322,17 @@ fn wake_deadline(
     let entry = entry_due()?;
     Ok(management_due.map_or(entry, |due| entry.min(due)))
 }
+fn turn_delay(now: i64, target: i64, pending: bool, attempts: u32, management: bool) -> u64 {
+    if target > now {
+        (target - now) as u64
+    } else if pending && attempts > 0 && !management {
+        // Only an attempted unresolved child gets the historical retry floor.
+        // A persisted successor has attempts=0 and is ready, not a retry.
+        5000
+    } else {
+        1
+    }
+}
 // Set only here, never from a request body, durable intent or remote principal.
 fn background_service(s: &TradeAssemblyService, id: &str) -> TradeAssemblyService {
     let mut scoped = s.clone();
@@ -417,6 +428,21 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         if automatic_health::needs_job_turn(s, &j)? {
             continue;
         }
+        // A successful phase has already persisted its unattempted successor.
+        // Return to the normal owner/intent/health/management checks at the top
+        // of the loop immediately. There is no future wake to plan here and no
+        // authority is carried forward; every effect still validates afresh.
+        if !manage
+            && !j.status.terminal()
+            && j.attempts == 0
+            && j.pending
+                .as_ref()
+                .is_some_and(|c| c.path == super::super::execution::typed_cycle::INTERNAL)
+            && j.next_attempt_at_ms <= s.runtime().clock.trusted_now_ms()?
+        {
+            wake.wait(observed, 1);
+            continue;
+        }
         let health_work = j.status.terminal() && automatic_health::needs_job_turn(s, &j)?;
         let scheduling = scheduling_decision(j.status.terminal(), health_work, || {
             crate::service::order_plans::management::automation::scheduling_state(s, &j)
@@ -449,13 +475,13 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         {
             target = target.min(due);
         }
-        let delay = if target > now {
-            (target - now) as u64
-        } else if j.pending.is_some() && !management_remaining {
-            5000
-        } else {
-            1
-        };
+        let delay = turn_delay(
+            now,
+            target,
+            j.pending.is_some(),
+            j.attempts,
+            management_remaining,
+        );
         wake.wait(observed, delay);
     }
 }
@@ -559,6 +585,18 @@ pub(super) fn halt_for_test(s: &TradeAssemblyService, id: &str) {
 #[cfg(test)]
 mod management_wake_tests {
     use super::*;
+    #[test]
+    fn persisted_successor_is_ready_but_retry_floor_and_future_deadline_are_preserved() {
+        assert_eq!(turn_delay(1000, 1000, true, 0, false), 1);
+        assert_eq!(turn_delay(1000, 999, true, 0, false), 1);
+        for attempts in [1, 2, 8] {
+            assert_eq!(turn_delay(1000, 1000, true, attempts, false), 5000);
+            assert_eq!(turn_delay(1000, 2300, true, attempts, false), 1300);
+        }
+        assert_eq!(turn_delay(1000, 2300, true, 0, false), 1300);
+        assert_eq!(turn_delay(1000, 1000, true, 1, true), 1);
+        assert_eq!(turn_delay(1000, 1000, false, 0, false), 1);
+    }
     #[test]
     fn terminal_owned_management_does_not_read_stale_entry_schedule() {
         assert_eq!(

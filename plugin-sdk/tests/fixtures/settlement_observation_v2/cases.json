@@ -1,0 +1,90 @@
+[
+  {
+    "file": "request-entry.json",
+    "schema": "request",
+    "schemaValid": true,
+    "semanticValid": true,
+    "requestFile": null,
+    "nowMs": 2000
+  },
+  {
+    "file": "request-close.json",
+    "schema": "request",
+    "schemaValid": true,
+    "semanticValid": true,
+    "requestFile": null,
+    "nowMs": 2000
+  },
+  {
+    "file": "request-role-swapped.json",
+    "schema": "request",
+    "schemaValid": false,
+    "semanticValid": false,
+    "requestFile": null,
+    "nowMs": 2000
+  },
+  {
+    "file": "response-sparse-pending.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": true,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-filled-unavailable-cash-fees.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": true,
+    "requestFile": "request-close.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-partial-account.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": true,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-future-evidence.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": false,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-duplicate-evidence-id.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": false,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-unresolved-evidence.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": false,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-unavailable-complete-component.json",
+    "schema": "response",
+    "schemaValid": true,
+    "semanticValid": false,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  },
+  {
+    "file": "response-forbidden-host-status.json",
+    "schema": "response",
+    "schemaValid": false,
+    "semanticValid": false,
+    "requestFile": "request-entry.json",
+    "nowMs": 2000
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "tradeassembly.settlement_observation_request.v2",
+  "role": "close",
+  "hostAccountRef": "account://fixture/fixture-account",
+  "lookup": {
+    "schemaVersion": "tradeassembly.broker_lookup.v3",
+    "expectedAccount": {
+      "brokerNamespace": "fixture.broker",
+      "environment": "paper",
+      "providerAccountId": "fixture-account"
+    },
+    "originalSubmit": {
+      "schemaVersion": "tradeassembly.broker_submit.v2",
+      "planId": "orderplan_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+      "order": {
+        "schemaVersion": "tradeassembly.broker_order.v2",
+        "instrument": {
+          "instrumentId": "opaque.host",
+          "providerSymbol": "FIX",
+          "assetClass": "equity",
+          "instrumentFamily": "equity",
+          "quantityUnit": "shares",
+          "multiplier": "1",
+          "quoteCurrency": "USD"
+        },
+        "positionAction": "buy_to_open",
+        "quantity": "0.123456789012",
+        "pricing": {
+          "kind": "limit",
+          "limitPrice": "12.000000000001"
+        },
+        "timeInForce": "day",
+        "clientOrderId": "original.client"
+      }
+    }
+  }
+}

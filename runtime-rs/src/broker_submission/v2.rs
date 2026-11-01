@@ -933,6 +933,63 @@ mod lookup_contract_tests {
 }
 
 #[cfg(test)]
+mod settlement_observation_contract_tests {
+    use serde_json::Value;
+    use tradeassembly_plugin_sdk::{broker_lookup_v3, settlement_observation_v2 as wire};
+
+    #[test]
+    fn settlement_observation_v2_actual_schema_matches_shared_cases() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../plugin-sdk/tests/fixtures/settlement_observation_v2");
+        let cases: Vec<Value> =
+            serde_json::from_slice(&std::fs::read(fixtures.join("cases.json")).unwrap()).unwrap();
+        let request = wire::request_schema();
+        let response = wire::response_schema();
+        let request_validator = jsonschema::validator_for(&request).unwrap();
+        let response_validator = jsonschema::validator_for(&response).unwrap();
+        for case in &cases {
+            let document: Value = serde_json::from_slice(
+                &std::fs::read(fixtures.join(case["file"].as_str().unwrap())).unwrap(),
+            )
+            .unwrap();
+            let validator = if case["schema"] == "request" {
+                &request_validator
+            } else {
+                &response_validator
+            };
+            let errors = validator
+                .iter_errors(&document)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                errors.is_empty(),
+                case["schemaValid"].as_bool().unwrap(),
+                "case {} structural-schema mismatch: {errors:?}",
+                case["file"]
+            );
+        }
+        if let Some(directory) = std::env::var_os("CORE_PROVIDER_CONTRACT_EXPORT") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir(&directory).unwrap();
+            for (name, schema) in [
+                ("lookup-v3-request.json", broker_lookup_v3::request_schema()),
+                ("settlement-v2-request.json", request),
+                ("settlement-v2-response.json", response),
+            ] {
+                let digest =
+                    tradeassembly_plugin_sdk::canonical::canonical_sha256(&schema).unwrap();
+                std::fs::write(
+                    directory.join(name),
+                    serde_json::to_vec_pretty(&schema).unwrap(),
+                )
+                .unwrap();
+                eprintln!("provider-contract {name} canonicalSha256={digest}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod window_tests {
     use super::*;
     #[test]

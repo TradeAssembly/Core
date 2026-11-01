@@ -520,6 +520,7 @@ fn observations(
     entry: &OrderPlan,
     c: &PrepareCommand,
 ) -> Result<Current, String> {
+    let _timing = crate::service::order_plans::financial_timing("management.observations");
     crate::service::package_validation::with_round(s, |s| observations_in_round(s, p, entry, c))
 }
 fn observations_in_round(
@@ -761,6 +762,7 @@ pub fn advance(
     c: AdvanceCommand,
     ctx: &SideEffectContext,
 ) -> Result<Value, String> {
+    let _timing = crate::service::order_plans::financial_timing("management.advance");
     if ctx.authority.account_mode != "paper" {
         return Err("managed_paper_required".into());
     }
@@ -988,7 +990,10 @@ pub fn advance(
         ),
         ctx.clone(),
     ));
-    if s.runtime().storage.put_json_batch(&writes, &expectations)? != ComparePutOutcome::Updated {
+    if measured("management.advance.commit", || {
+        s.runtime().storage.put_json_batch(&writes, &expectations)
+    })? != ComparePutOutcome::Updated
+    {
         return Err("managed_advance_conflict".into());
     }
     #[cfg(test)]
@@ -1163,6 +1168,7 @@ fn execution_window(
     ))
 }
 pub(crate) fn snapshot(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPlan, String> {
+    let _timing = crate::service::order_plans::financial_timing("management.snapshot");
     // A fresh round for every approval/admission/revalidation. Nested pure
     // validators can share this round; no service escapes to broker dispatch.
     crate::service::package_validation::with_round(s, |s| snapshot_in_round(s, p))
@@ -1171,7 +1177,9 @@ fn snapshot_in_round(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPla
     let b = p.management.as_ref().ok_or("managed_close_required")?;
     let (_, pos) = load(s, &b.position_id)?;
     let entry = read_owned(s, &b.original_entry_plan_id)?;
-    let (_, execution_close) = execution_window(s, &entry, &b.execution_occurrence_id)?;
+    let (_, execution_close) = measured("management.snapshot.window", || {
+        execution_window(s, &entry, &b.execution_occurrence_id)
+    })?;
     if p.valid_until_ms > execution_close {
         return Err("managed_execution_window_invalid".into());
     }
@@ -1201,17 +1209,25 @@ fn snapshot_in_round(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPla
     {
         return Err("managed_trigger_binding_invalid".into());
     }
-    let _ = management_run(s, &pos.activation_id)?;
+    let _ = measured("management.snapshot.run", || {
+        management_run(s, &pos.activation_id)
+    })?;
     let (_, original) = submission::record(s, &entry)?.ok_or("managed_entry_submission_missing")?;
-    let _ = settlement::current_source(s, &entry, &original)?;
-    let _current_reversal = reversal(
-        s,
-        &pos,
-        &entry,
-        t.reversal_receipt_sha256.as_deref(),
-        s.runtime().clock.trusted_now_ms()?,
-    )?;
-    let f = observations_in_round(s, &pos, &entry, &p.command)?;
+    let _ = measured("management.snapshot.source", || {
+        settlement::current_source(s, &entry, &original)
+    })?;
+    let _current_reversal = measured("management.snapshot.reversal", || {
+        reversal(
+            s,
+            &pos,
+            &entry,
+            t.reversal_receipt_sha256.as_deref(),
+            s.runtime().clock.trusted_now_ms()?,
+        )
+    })?;
+    let f = measured("management.snapshot.observations", || {
+        observations_in_round(s, &pos, &entry, &p.command)
+    })?;
     if f.receipts != p.source_receipts
         || p.order.instrument != entry.order.instrument
         || p.order
@@ -1275,7 +1291,8 @@ fn decide(
     config: &Value,
     ctx: &SideEffectContext,
 ) -> Result<Value, String> {
-    snapshot(s, p)?;
+    let _timing = crate::service::order_plans::financial_timing("management.decide");
+    measured("management.decide.first_snapshot", || snapshot(s, p))?;
     let (mut run, fresh_config) = management_run(s, &pos.activation_id)?;
     if &fresh_config != config {
         return Err("managed_config_changed".into());
@@ -1285,11 +1302,10 @@ fn decide(
     let resource = format!("typed-close:{}", p.plan_id);
     let worker = format!("managed-worker:{}", hash(&(owner(s)?, &attempt))?);
     let now = s.runtime().clock.trusted_now_ms()?;
-    let lease = s
-        .runtime()
-        .leases
-        .acquire(&resource, &worker, now, 60000)?
-        .ok_or("managed_close_lease_busy")?;
+    let lease = measured("management.decide.lease", || {
+        s.runtime().leases.acquire(&resource, &worker, now, 60000)
+    })?
+    .ok_or("managed_close_lease_busy")?;
     let result = (|| {
         let old_attempt = s
             .runtime()
@@ -1305,20 +1321,22 @@ fn decide(
                 .execution_occurrence_id,
         )?
         .0;
-        snapshot(s, p)?;
+        measured("management.decide.second_snapshot", || snapshot(s, p))?;
         let a = json!({"attemptId":attempt,"activationId":pos.activation_id,"state":"running","owner":worker,"leaseResource":resource,"fencingToken":lease.fencing_token,"executionContractVersion":crate::service::execution::typed::VERSION});
         let key = format!("run_{}", pos.activation_id);
-        if s.runtime().storage.put_json_batch(
-            &[
-                StorageWrite::new("execution_runs", &key, run, ctx.clone()),
-                StorageWrite::new("execution_attempts", &attempt, a, ctx.clone()),
-            ],
-            &[
-                StorageExpectation::new("execution_runs", &key, Some(old)),
-                StorageExpectation::new("execution_attempts", &attempt, old_attempt),
-                StorageExpectation::new(submission::STATE, &p.plan_id, None),
-            ],
-        )? != ComparePutOutcome::Updated
+        if measured("management.decide.commit", || {
+            s.runtime().storage.put_json_batch(
+                &[
+                    StorageWrite::new("execution_runs", &key, run, ctx.clone()),
+                    StorageWrite::new("execution_attempts", &attempt, a, ctx.clone()),
+                ],
+                &[
+                    StorageExpectation::new("execution_runs", &key, Some(old)),
+                    StorageExpectation::new("execution_attempts", &attempt, old_attempt),
+                    StorageExpectation::new(submission::STATE, &p.plan_id, None),
+                ],
+            )
+        })? != ComparePutOutcome::Updated
         {
             return Err("managed_decision_conflict".into());
         }

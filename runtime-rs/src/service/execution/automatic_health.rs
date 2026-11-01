@@ -217,6 +217,7 @@ fn observed_identity(record: &Value, expected: &CanonicalAccountIdentity) -> Res
     Ok(())
 }
 fn read_provider(s: &TradeAssemblyService, pin: &ProviderPin) -> Result<Value, String> {
+    let _timing = crate::service::order_plans::financial_timing("health.source");
     // Deliberately does NOT call canonical current/observer or graph currentness.
     // It permits only the same read after degraded/null or expired health evidence.
     same_source(&pin.source, &data_binding::pin(s, &pin.selected)?)?;
@@ -328,6 +329,7 @@ struct Binding {
     pins: Pins,
 }
 fn read_binding(s: &TradeAssemblyService, activation: &str) -> Result<Option<Binding>, String> {
+    let _timing = crate::service::order_plans::financial_timing("health.binding");
     s.require_object("execution_activation", activation)
         .map_err(|_| "automatic_health_activation_not_available")?;
     let run = s
@@ -746,6 +748,7 @@ pub(crate) fn needs_job_turn(
     s: &TradeAssemblyService,
     job: &session_dispatch::Job,
 ) -> Result<bool, String> {
+    let _timing = crate::service::order_plans::financial_timing("health.needs_turn");
     let Some(b) = job_binding(s, job)? else {
         return Ok(false);
     };
@@ -905,6 +908,7 @@ fn protected_financial_approval(
     b: &Binding,
     now: i64,
 ) -> Result<bool, String> {
+    let _timing = crate::service::order_plans::financial_timing("health.priority");
     let run = s
         .runtime()
         .storage
@@ -1053,6 +1057,7 @@ fn advance(
     before_effect: impl Fn() -> Result<(), String>,
     prepared_cycle: impl Fn(&Binding) -> Result<bool, String>,
 ) -> Result<Gate, String> {
+    let _timing = crate::service::order_plans::financial_timing("health.advance");
     let now = s.runtime().clock.trusted_now_ms()?;
     let resource = format!("automatic-health:{}", state_id(&b)?);
     let mut nonce = [0u8; 16];
@@ -1163,7 +1168,11 @@ fn advance(
                     }
                     Ok(())
                 },
-                || s.handle_http("POST", &retained.path, retained.body.clone()),
+                || {
+                    crate::service::order_plans::measured("health.effect", || {
+                        s.handle_http("POST", &retained.path, retained.body.clone())
+                    })
+                },
             )?;
             // Preserve exact observed child response before interpreting it. The
             // normal handler may have committed health even when C3 sealing failed.
@@ -1248,6 +1257,7 @@ fn ready(
     state: Option<&State>,
     now: i64,
 ) -> Result<bool, String> {
+    let _timing = crate::service::order_plans::financial_timing("health.ready");
     if state.is_some_and(|st| {
         st.targets
             .iter()

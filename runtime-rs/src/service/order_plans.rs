@@ -353,8 +353,103 @@ fn observation(now: i64, time: &ObservationTime, host: i64, age: i64) -> Result<
         .checked_add(age)
         .ok_or("order_plan_time_invalid".into())
 }
+// Private opt-in diagnostic. No request/owner/account/error payload is retained.
+// The process-relative origin measures durations only; it is never a domain clock.
+pub(crate) struct FinancialTiming(Option<(&'static str, std::time::Instant, u128)>);
+fn timing_phase(stage: &'static str) -> bool {
+    matches!(
+        stage,
+        "collection.current"
+            | "signal.verify_round"
+            | "calculation.pin"
+            | "snapshot.checked_current"
+            | "decision.typed.current"
+            | "broker.source.snapshot"
+            | "broker.load_current_state"
+            | "management.advance"
+            | "management.observations"
+            | "management.advance.commit"
+            | "management.decide"
+            | "management.decide.first_snapshot"
+            | "management.decide.second_snapshot"
+            | "management.decide.lease"
+            | "management.decide.commit"
+            | "management.snapshot"
+            | "management.snapshot.window"
+            | "management.snapshot.run"
+            | "management.snapshot.source"
+            | "management.snapshot.reversal"
+            | "management.snapshot.observations"
+            | "manager.advance"
+            | "manager.next_due"
+            | "worker.management_work"
+            | "worker.has_work"
+            | "manager.binding"
+            | "manager.next_child"
+            | "manager.child.advance"
+            | "manager.child.submit"
+            | "manager.child.collect"
+            | "manager.child.calendar"
+            | "manager.child.other"
+            | "health.advance"
+            | "health.needs_turn"
+            | "health.binding"
+            | "health.source"
+            | "health.priority"
+            | "health.ready"
+            | "health.effect"
+            | "c3.http"
+            | "c3.prepare"
+            | "c3.dispatch"
+            | "c3.complete"
+            | "broker.invoke"
+            | "c5.prepare"
+            | "c5.admit"
+            | "c5.before_send"
+            | "c5.revalidate"
+            | "c5.dispatch"
+            | "c5.denied.observation_stale"
+            | "c5.denied.close_stale"
+            | "c5.denied.reversal_stale"
+            | "c5.denied.window_closed"
+            | "c5.denied.expired"
+            | "c5.denied.state_changed"
+            | "c5.denied.other"
+    )
+}
+fn timing_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+pub(crate) fn financial_timing(stage: &'static str) -> FinancialTiming {
+    if !timing_phase(stage)
+        || !timing_requested(std::env::var_os("TRADEASSEMBLY_FINANCIAL_TIMING").as_deref())
+    {
+        return FinancialTiming(None);
+    }
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(std::time::Instant::now);
+    let start = std::time::Instant::now();
+    FinancialTiming(Some((
+        stage,
+        start,
+        start.duration_since(origin).as_micros(),
+    )))
+}
+impl Drop for FinancialTiming {
+    fn drop(&mut self) {
+        if let Some((phase, start, start_us)) = self.0 {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "CORE_FIN_TIMING phase={phase} start_us={start_us} elapsed_us={}",
+                start.elapsed().as_micros()
+            );
+        }
+    }
+}
 #[inline]
 pub(crate) fn measured<T>(stage: &'static str, f: impl FnOnce() -> T) -> T {
+    let _timing = financial_timing(stage);
     #[cfg(not(test))]
     {
         let _ = stage;
@@ -1484,3 +1579,27 @@ pub(super) fn response(s: &TradeAssemblyService, path: &str, body: Value) -> Ser
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod financial_timing_tests {
+    use super::*;
+    #[test]
+    fn diagnostic_requires_exact_opt_in_and_closed_static_phase() {
+        assert!(!timing_requested(None));
+        for value in ["", "true", "0", "1 ", "secret"] {
+            assert!(!timing_requested(Some(std::ffi::OsStr::new(value))));
+        }
+        assert!(timing_requested(Some(std::ffi::OsStr::new("1"))));
+        assert!(timing_phase("c5.admit"));
+        assert!(timing_phase("management.snapshot"));
+        assert!(!timing_phase(""));
+        assert!(!timing_phase("account://private/request/body"));
+        let calls = std::cell::Cell::new(0);
+        let result: Result<(), &str> = measured("c5.admit", || {
+            calls.set(calls.get() + 1);
+            Err("fixture")
+        });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(result, Err("fixture"));
+    }
+}

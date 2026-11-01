@@ -29,7 +29,6 @@ fn profiled_admission_denial(error: &str) {
     let code = profiled_admission_denial_code(error);
     eprintln!("FIN_PROFILE broker.admission_denied code={code}");
 }
-#[cfg(test)]
 fn profiled_admission_denial_code(error: &str) -> &'static str {
     match error {
         "order_plan_observation_stale" => "order_plan_observation_stale",
@@ -459,6 +458,11 @@ impl LocalPluginOperations {
         context: &SideEffectContext,
         source: Option<&crate::broker_submission::v2::OrderPlanSource>,
     ) -> Result<PluginOperationResponse, String> {
+        let _timing = crate::service::order_plans::financial_timing(if source.is_some() {
+            "broker.invoke"
+        } else {
+            ""
+        });
         if crate::broker_submission::v2::is_submission(request) != source.is_some() {
             return Err("broker_v2_plan_source_required".into());
         }
@@ -575,7 +579,10 @@ impl LocalPluginOperations {
                     .as_ref()
                     .ok_or_else(|| "plugin_operation_unsupported".to_string());
                 match external.and_then(|external| {
-                    let prepared = external.prepare(request, context)?;
+                    let prepared = crate::service::order_plans::measured(
+                        if source.is_some() { "c5.prepare" } else { "" },
+                        || external.prepare(request, context),
+                    )?;
                     let binding = serde_json::to_value(&prepared.binding)
                         .map_err(|_| "plugin_prepared_binding_invalid".to_string())?;
                     if self.storage.put_json_if_absent(
@@ -637,7 +644,9 @@ impl LocalPluginOperations {
                 .as_ref()
                 .ok_or_else(|| "plugin_live_prepared_binding_missing".to_string())?;
             let admission = if let Some(source) = source {
-                boundary.admit_v2(request, context, &prepared_binding.binding, source)
+                crate::service::order_plans::measured("c5.admit", || {
+                    boundary.admit_v2(request, context, &prepared_binding.binding, source)
+                })
             } else {
                 boundary.admit(request, context, &prepared_binding.binding)
             };
@@ -646,6 +655,17 @@ impl LocalPluginOperations {
                 Err(_error) => {
                     #[cfg(test)]
                     profiled_admission_denial(&_error);
+                    let _denied = crate::service::order_plans::financial_timing(
+                        match profiled_admission_denial_code(&_error) {
+                            "order_plan_observation_stale" => "c5.denied.observation_stale",
+                            "managed_close_stale" => "c5.denied.close_stale",
+                            "managed_reversal_not_current" => "c5.denied.reversal_stale",
+                            "managed_execution_window_closed" => "c5.denied.window_closed",
+                            "broker_v2_authority_or_data_expired" => "c5.denied.expired",
+                            "broker_v2_state_changed" => "c5.denied.state_changed",
+                            _ => "c5.denied.other",
+                        },
+                    );
                     if let Some(source) = source {
                         source.denied_before_send(context)?;
                     }
@@ -691,21 +711,24 @@ impl LocalPluginOperations {
 
         if let Some(source) = source {
             let permit = permit.as_ref().ok_or("broker_v2_permit_missing")?;
-            source.before_send(context)?;
-            let recheck = self
-                .broker_boundary
-                .as_ref()
-                .ok_or("broker_boundary_missing")?
-                .revalidate_v2(
-                    request,
-                    context,
-                    &external_prepared
-                        .as_ref()
-                        .ok_or("prepared_binding_missing")?
-                        .binding,
-                    permit,
-                    source,
-                );
+            crate::service::order_plans::measured("c5.before_send", || {
+                source.before_send(context)
+            })?;
+            let recheck = crate::service::order_plans::measured("c5.revalidate", || {
+                self.broker_boundary
+                    .as_ref()
+                    .ok_or("broker_boundary_missing")?
+                    .revalidate_v2(
+                        request,
+                        context,
+                        &external_prepared
+                            .as_ref()
+                            .ok_or("prepared_binding_missing")?
+                            .binding,
+                        permit,
+                        source,
+                    )
+            });
             if let Err(error) = recheck {
                 source.denied_before_send(context)?;
                 self.record_terminal_denial(
@@ -728,11 +751,15 @@ impl LocalPluginOperations {
             ("tradeassembly.core-runtime", "calendar.session.resolve_v1") => {
                 calendar_session(request)
             }
-            _ => self
-                .external
-                .as_ref()
-                .ok_or_else(|| "plugin_operation_unsupported".to_string())?
-                .execute_prepared(external_prepared.expect("external invocation prepared")),
+            _ => crate::service::order_plans::measured(
+                if source.is_some() { "c5.dispatch" } else { "" },
+                || {
+                    self.external
+                        .as_ref()
+                        .ok_or_else(|| "plugin_operation_unsupported".to_string())?
+                        .execute_prepared(external_prepared.expect("external invocation prepared"))
+                },
+            ),
         };
         let mut response = match response {
             Ok(response) => response,

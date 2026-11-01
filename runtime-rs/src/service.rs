@@ -1078,6 +1078,18 @@ impl TradeAssemblyService {
         path: &str,
         body: Value,
     ) -> ServiceResponse {
+        let timing_route = method.eq_ignore_ascii_case("POST")
+            && (matches!(
+                path,
+                "/scheduler/run"
+                    | "/product/strategies/positions/advance"
+                    | "/product/strategies/order-plans/prepare"
+                    | "/product/strategies/order-plans/decide"
+                    | "/product/strategies/order-plans/submit"
+                    | "/product/strategies/data-collections/create"
+            ) || (path.starts_with("/plugins/instances/")
+                && path.ends_with("/health:refresh")));
+        let _timing = order_plans::financial_timing(if timing_route { "c3.http" } else { "" });
         if let Err(code) = self.require_background_worker_current() {
             return ServiceResponse::conflict(&code);
         }
@@ -1209,11 +1221,13 @@ impl TradeAssemblyService {
             Ok(envelope) => inherit_trusted_correlation(envelope, &body),
             Err(_) => return ServiceResponse::bad_request("invalid_command_envelope"),
         };
-        match control_plane::prepare_command(
-            self.runtime.storage.as_ref(),
-            self.runtime.finance_authority.as_ref(),
-            envelope.clone(),
-        ) {
+        match order_plans::measured(if timing_route { "c3.prepare" } else { "" }, || {
+            control_plane::prepare_command(
+                self.runtime.storage.as_ref(),
+                self.runtime.finance_authority.as_ref(),
+                envelope.clone(),
+            )
+        }) {
             Ok(record) if record.duplicate => {
                 return record
                     .response_status
@@ -1250,17 +1264,21 @@ impl TradeAssemblyService {
             Err(_) => return ServiceResponse::internal_error("control plane persistence failed"),
         }
         let dispatch_body = with_control_plane_metadata(body, &envelope);
-        let response = self.dispatch_http(method, path, dispatch_body);
+        let response = order_plans::measured(if timing_route { "c3.dispatch" } else { "" }, || {
+            self.dispatch_http(method, path, dispatch_body)
+        });
         if response.status == 503 && response.body["error"]["retryable"].as_bool() == Some(true) {
             return response;
         }
-        if control_plane::complete_command_with_body(
-            self.runtime.storage.as_ref(),
-            self.runtime.finance_authority.as_ref(),
-            &envelope,
-            response.status,
-            Some(response.body.clone()),
-        )
+        if order_plans::measured(if timing_route { "c3.complete" } else { "" }, || {
+            control_plane::complete_command_with_body(
+                self.runtime.storage.as_ref(),
+                self.runtime.finance_authority.as_ref(),
+                &envelope,
+                response.status,
+                Some(response.body.clone()),
+            )
+        })
         .is_err()
         {
             return ServiceResponse::internal_error("control plane persistence failed");

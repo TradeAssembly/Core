@@ -156,9 +156,11 @@ pub(super) fn enabled(s: &TradeAssemblyService, id: &str) -> Result<bool, String
     Ok(intent(s, id)?.is_some_and(|i| i.enabled))
 }
 fn management_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
+    let _timing = crate::service::order_plans::financial_timing("worker.management_work");
     crate::service::order_plans::management::automation::has_work(s, j)
 }
 pub(super) fn has_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String> {
+    let _timing = crate::service::order_plans::financial_timing("worker.has_work");
     Ok(!j.status.terminal() || automatic_health::needs_job_turn(s, j)? || management_work(s, j)?)
 }
 fn start_admission(

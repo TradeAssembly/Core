@@ -368,6 +368,7 @@ fn binding(
     s: &TradeAssemblyService,
     job: &session_dispatch::Job,
 ) -> Result<Option<Binding>, String> {
+    let _timing = crate::service::order_plans::financial_timing("manager.binding");
     let Some(activation) = job.request.execution_activation_id.as_deref() else {
         return Ok(None);
     };
@@ -672,6 +673,7 @@ pub(crate) fn next_due(
     s: &TradeAssemblyService,
     job: &session_dispatch::Job,
 ) -> Result<i64, String> {
+    let _timing = crate::service::order_plans::financial_timing("manager.next_due");
     let now = s.runtime().clock.trusted_now_ms()?;
     let Some(b) = binding(s, job)? else {
         return Ok(now.saturating_add(60_000));
@@ -1323,6 +1325,7 @@ pub(crate) fn advance(
     s: &TradeAssemblyService,
     job: &session_dispatch::Job,
 ) -> Result<Value, String> {
+    let _timing = crate::service::order_plans::financial_timing("manager.advance");
     let Some(b) = binding(s, job)? else {
         return Ok(json!({"enabled":false,"executionAuthorityGranted":false}));
     };
@@ -1481,7 +1484,7 @@ pub(crate) fn advance(
             }
         }
         if state.pending.is_none() {
-            match next_child(s, &b, job, &mut state) {
+            match measured("manager.next_child", || next_child(s, &b, job, &mut state)) {
                 Ok(Some(next)) => state.pending = Some(next),
                 Ok(None) => complete_work(&mut state),
                 Err(error) => fail_work(&mut state, now, b.config.cadence_ms, error),
@@ -1560,7 +1563,16 @@ pub(crate) fn advance(
                 &state.occurrence_id,
             )?;
         }
-        let response = s.handle_http("POST", &pending.path, pending.body.clone());
+        let phase = match &pending.action {
+            Action::Advance {} => "manager.child.advance",
+            Action::Submit { .. } => "manager.child.submit",
+            Action::Collect { .. } => "manager.child.collect",
+            Action::CollectCalendar {} | Action::PrepareWindow {} => "manager.child.calendar",
+            _ => "manager.child.other",
+        };
+        let response = measured(phase, || {
+            s.handle_http("POST", &pending.path, pending.body.clone())
+        });
         // Losing the fence leaves the original pending child for safe recovery.
         if current_owner(s)? != b.owner
             || s.runtime().leases.current(&lease.resource)?.as_ref() != Some(&lease)

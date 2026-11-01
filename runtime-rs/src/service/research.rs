@@ -415,6 +415,7 @@ fn verified_dataset_metadata(
     service.require_object("dataset_snapshot", id).ok()?;
     let snapshot = service.runtime().dataset_snapshots.get(id).ok()??;
     snapshot.verify().ok()?;
+    super::dataset_projections::verify_publication(service, &snapshot).ok()?;
     if snapshot.dataset_id != id || snapshot.content.strategy_id != strategy {
         return None;
     }
@@ -430,6 +431,7 @@ fn verified_dataset_list(service: &TradeAssemblyService, strategy: &str) -> Vec<
         .filter(|s| {
             s.content.strategy_id == strategy
                 && s.verify().is_ok()
+                && super::dataset_projections::verify_publication(service, s).is_ok()
                 && service
                     .require_object("dataset_snapshot", &s.dataset_id)
                     .is_ok()

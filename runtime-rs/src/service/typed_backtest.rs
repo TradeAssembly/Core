@@ -535,6 +535,7 @@ pub(crate) fn validate_dataset(
         .as_ref()
         .ok_or("typed_backtest_binding_required")?;
     snapshot.verify()?;
+    super::dataset_projections::verify_for_research_at(service, snapshot, b.as_of_ms)?;
     crate::backtest_engine::verify_dataset_configuration(snapshot, c)?;
     crate::backtest_engine::validate_typed_crypto_precision(c, snapshot)?;
     crate::backtest_engine::validate_typed_precision(snapshot)?;

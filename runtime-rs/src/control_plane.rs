@@ -539,6 +539,12 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", path) if path.starts_with("/research-comparisons/") => {
             "research.comparison.read".to_string()
         }
+        ("POST", "/dataset-projections") => "research.dataset.project.create".to_string(),
+        ("POST", path)
+            if path.starts_with("/dataset-projections/") && path.ends_with("/advance") =>
+        {
+            "research.dataset.project.advance".to_string()
+        }
         ("POST", "/dataset-ingestions") => "research.dataset.create".to_string(),
         ("POST", path) if path.starts_with("/dataset-ingestions/") && path.ends_with("/cancel") => {
             "research.dataset.cancel".to_string()
@@ -1460,6 +1466,7 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if path.contains("backtest")
         || path.contains("research")
         || path.contains("dataset-ingestion")
+        || path.contains("dataset-projection")
         || path.contains("monte-carlo")
         || path.contains("portfolio-risk")
     {
@@ -1574,6 +1581,19 @@ fn command_group(command_name: &str) -> &str {
 }
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
+    if path == "/dataset-projections" {
+        return body
+            .pointer("/projection/scope/strategyId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+    if path.starts_with("/dataset-projections/") && path.ends_with("/advance") {
+        return body
+            .pointer("/projection/projectionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+
     if path.starts_with("/backtests/") && path.contains("/recomputations") {
         return body
             .get("request")

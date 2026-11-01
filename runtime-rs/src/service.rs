@@ -34,6 +34,7 @@ pub mod data_recipes;
 pub mod data_runner;
 pub mod data_strategy;
 mod dataset_ingestion;
+mod dataset_projections;
 mod default_free_plugins;
 mod derivatives;
 mod execution;
@@ -1207,6 +1208,11 @@ impl TradeAssemblyService {
         if let Some(response) = data_collections::preflight(self, &normalized_path, &body) {
             return response;
         }
+        if let Some(response) =
+            dataset_projections::preflight(self, &normalized_method, &normalized_path, &body)
+        {
+            return response;
+        }
         if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -1927,6 +1933,15 @@ impl TradeAssemblyService {
             // status, validation, idempotency, and queued response.
             ("POST", "/product/strategies/research-runs/create") => {
                 backtest_lifecycle::create(self, body)
+            }
+            ("POST", "/dataset-projections") => dataset_projections::create(self, body),
+            ("POST", path)
+                if path.starts_with("/dataset-projections/") && path.ends_with("/advance") =>
+            {
+                dataset_projections::advance(self, path, body)
+            }
+            ("GET", path) if path.starts_with("/dataset-projections/") => {
+                dataset_projections::read(self, path.trim_start_matches("/dataset-projections/"))
             }
             ("POST", "/dataset-ingestions") => {
                 dataset_ingestion_response(dataset_ingestion::create(self, body), 201)

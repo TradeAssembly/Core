@@ -114,6 +114,7 @@ fn execute_manifest(
         .dataset_snapshots
         .get(&manifest.content.configuration.dataset.dataset_id)?
         .ok_or_else(|| "backtest_dataset_unavailable".to_string())?;
+    super::dataset_projections::verify_for_research(service, &snapshot)?;
     if manifest.content.configuration.typed_evaluation.is_some() {
         return super::typed_backtest::advance(service, manifest, &version, &snapshot);
     }
@@ -158,6 +159,9 @@ pub fn replay(service: &TradeAssemblyService, run_id: &str) -> ServiceResponse {
     else {
         return ServiceResponse::bad_request("backtest_dataset_unavailable");
     };
+    if let Err(code) = super::dataset_projections::verify_for_research(service, &snapshot) {
+        return ServiceResponse::conflict(&code);
+    }
     let replayed = crate::backtest_engine::replay(&manifest, &version, &snapshot, &expected);
     match replayed {
         Ok(result) => ServiceResponse::ok(json!({
@@ -224,7 +228,12 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
         .dataset_snapshots
         .get(&configuration.dataset.dataset_id)
     {
-        Ok(Some(snapshot)) if snapshot.verify().is_ok() => snapshot,
+        Ok(Some(snapshot))
+            if snapshot.verify().is_ok()
+                && super::dataset_projections::verify_for_research(service, &snapshot).is_ok() =>
+        {
+            snapshot
+        }
         _ => return ServiceResponse::bad_request("backtest_dataset_integrity_failed"),
     };
     if snapshot.snapshot_ref != configuration.dataset.snapshot_ref
@@ -384,7 +393,12 @@ pub fn create_from_manifest(
         .dataset_snapshots
         .get(&manifest.content.configuration.dataset.dataset_id)
     {
-        Ok(Some(snapshot)) if snapshot.verify().is_ok() => snapshot,
+        Ok(Some(snapshot))
+            if snapshot.verify().is_ok()
+                && super::dataset_projections::verify_for_research(service, &snapshot).is_ok() =>
+        {
+            snapshot
+        }
         _ => return ServiceResponse::bad_request("backtest_dataset_integrity_failed"),
     };
     if snapshot.snapshot_ref != manifest.content.configuration.dataset.snapshot_ref

@@ -788,7 +788,9 @@ pub fn authority_definition(
         "credential.test" => &CREDENTIAL_TEST,
         "credential.revoke" => &CREDENTIAL_REVOKE,
         "research.run.create" | "research.sweep.create" | "research.promote.paper" => &RESEARCH_RUN,
-        "research.dataset.create" => &RESEARCH_DATASET,
+        "research.dataset.create"
+        | "research.dataset.project.create"
+        | "research.dataset.project.advance" => &RESEARCH_DATASET,
         "research.dataset.cancel" => &RESEARCH_DATASET_CANCEL,
         "research.universe.create" => &RESEARCH_UNIVERSE,
         "research.job.create" | "research.job.status" => &RESEARCH_JOB,

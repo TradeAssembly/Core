@@ -305,6 +305,17 @@ fn export_owned(service: &TradeAssemblyService) -> Result<PublicWorkspaceBundle,
                 continue;
             }
         }
+        // Unpublished projection snapshots can exist durably without yet being
+        // usable research state. Preserve legacy references, but never export a
+        // projection reference before its owned proof/publication is complete.
+        if ns == "dataset_snapshots_v1"
+            && value["content"]["source"]["upstreamRefs"]
+                .get("captureProjectionId")
+                .is_some()
+            && super::dataset_projections::verify_publication_metadata(service, &value).is_err()
+        {
+            continue;
+        }
         let (target, mut projected) = match ns.as_str() {
             "dataset_snapshots_v1" => (
                 "public_dataset_references_v1",
@@ -591,7 +602,15 @@ fn validate(bundle: &PublicWorkspaceBundle) -> Result<(), String> {
                     if let Some(bytes) = entry.value[field].as_str() {
                         let parsed: Value = serde_json::from_str(bytes)
                             .map_err(|_| code("workspace_strategy_source_invalid"))?;
-                        if &parsed != spec {
+                        // RFC8785 canonical JSON writes integral floats such as
+                        // 100.0 as 100. Compare canonical identity for that field;
+                        // the retained normalized source keeps its exact value.
+                        let matches = if field == "canonicalSpecBytes" {
+                            hash(&parsed)? == expected
+                        } else {
+                            &parsed == spec
+                        };
+                        if !matches {
                             return Err(code("workspace_strategy_source_invalid"));
                         }
                     }

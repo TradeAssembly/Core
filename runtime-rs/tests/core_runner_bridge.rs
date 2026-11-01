@@ -96,6 +96,7 @@ impl CoreRunnerBridgePort for ReferenceBridge {
 
 fn configuration() -> BacktestConfiguration {
     BacktestConfiguration {
+        typed_evaluation: None,
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),
         strategy: StrategyVersionBinding {
             strategy_id: "strategy_fixture".to_string(),

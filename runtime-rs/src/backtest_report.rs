@@ -17,12 +17,19 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 
 pub const BACKTEST_REPORT_SCHEMA: &str = "tradeassembly.backtest-report.v2";
+pub const BACKTEST_REPORT_SCHEMA_V3: &str = "tradeassembly.backtest-report.v3";
 pub const BACKTEST_EXPORT_SCHEMA: &str = "tradeassembly.backtest-export.v1";
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BacktestReport {
     pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::backtest_contracts::present_typed_value"
+    )]
+    pub typed_evaluation: Option<crate::backtest_contracts::TypedBacktestEvidence>,
     pub report_hash: String,
     pub run: BacktestReportRun,
     pub assumptions: BacktestReportAssumptions,
@@ -38,6 +45,68 @@ pub struct BacktestReport {
     pub diagnostics: Vec<BacktestReportDiagnostic>,
     pub metadata: BacktestReportMetadata,
     pub provenance: BacktestReportProvenance,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BacktestReportWire {
+    pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::backtest_contracts::present_typed_value"
+    )]
+    pub typed_evaluation: Option<crate::backtest_contracts::TypedBacktestEvidence>,
+    pub report_hash: String,
+    pub run: BacktestReportRun,
+    pub assumptions: BacktestReportAssumptions,
+    pub overview: BacktestReportOverview,
+    pub chart: BacktestReportChart,
+    pub trades: Vec<BacktestTrade>,
+    pub journal: Vec<BacktestJournalEvent>,
+    pub orders: Vec<Value>,
+    pub fills: Vec<Value>,
+    pub positions: Vec<Value>,
+    pub ledger: Vec<Value>,
+    pub costs_and_risk: BacktestCostsAndRisk,
+    pub diagnostics: Vec<BacktestReportDiagnostic>,
+    pub metadata: BacktestReportMetadata,
+    pub provenance: BacktestReportProvenance,
+}
+impl<'de> Deserialize<'de> for BacktestReport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let typed = raw.get("typedEvaluation");
+        if !matches!(
+            (raw["schema"].as_str(), typed),
+            (Some(BACKTEST_REPORT_SCHEMA), None)
+        ) && !matches!((raw["schema"].as_str(),typed),(Some(BACKTEST_REPORT_SCHEMA_V3),Some(value)) if value.is_object())
+        {
+            return Err(serde::de::Error::custom(
+                "backtest_report_version_binding_mismatch",
+            ));
+        }
+        let wire: BacktestReportWire =
+            serde_json::from_value(raw).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            schema: wire.schema,
+            typed_evaluation: wire.typed_evaluation,
+            report_hash: wire.report_hash,
+            run: wire.run,
+            assumptions: wire.assumptions,
+            overview: wire.overview,
+            chart: wire.chart,
+            trades: wire.trades,
+            journal: wire.journal,
+            orders: wire.orders,
+            fills: wire.fills,
+            positions: wire.positions,
+            ledger: wire.ledger,
+            costs_and_risk: wire.costs_and_risk,
+            diagnostics: wire.diagnostics,
+            metadata: wire.metadata,
+            provenance: wire.provenance,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -294,7 +363,13 @@ pub fn project_with_strategy_spec(
         events,
     );
     let mut report = BacktestReport {
-        schema: BACKTEST_REPORT_SCHEMA.to_string(),
+        schema: if result.content.typed_evaluation.is_some() {
+            BACKTEST_REPORT_SCHEMA_V3
+        } else {
+            BACKTEST_REPORT_SCHEMA
+        }
+        .to_string(),
+        typed_evaluation: result.content.typed_evaluation.clone(),
         report_hash: String::new(),
         run: BacktestReportRun {
             run_id: run.run_id.clone(),
@@ -425,6 +500,33 @@ pub fn project_with_strategy_spec(
             ),
         ),
     };
+    if let Some(typed) = &report.typed_evaluation {
+        let binding = manifest
+            .content
+            .configuration
+            .typed_evaluation
+            .as_ref()
+            .ok_or("backtest_report_typed_binding_invalid")?;
+        if typed.plan_revision_id != binding.plan_revision_id
+            || typed.plan_revision_sha256 != binding.plan_revision_sha256
+            || typed.equity.len() != snapshot.content.observations.len()
+            || typed.equity.last().map(|p| p.equity_micros)
+                != Some(report.overview.ending_equity_micros)
+        {
+            return Err("backtest_report_typed_binding_invalid".into());
+        }
+        report
+            .costs_and_risk
+            .unavailable
+            .retain(|metric| metric.metric != "max_drawdown_bps");
+        report.costs_and_risk.unavailable.push(unavailable("benchmark","no explicit verified benchmark series/model is supported by this typed research version"));
+        report.metadata.warnings.push("Fixed-quantity typed signal simulation with a separately bound fill/mark series; this is not full published sizing, risk, stop or screened-selection parity. Retrospective captured-data replay leaves historical point-in-time availability unqualified. Fills and equity are simulated, not broker observations.".into());
+        report.provenance.strategy_execution_summary = json!({"status":"available","engine":crate::backtest_contracts::TYPED_BACKTEST_ENGINE,
+            "planRevisionId":typed.plan_revision_id,"planRevisionSha256":typed.plan_revision_sha256,"semanticSha256":typed.semantic_sha256,
+            "evaluationReceiptSha256":typed.evaluation_receipts,"initialPosition":"flat","knowledgePolicy":typed.knowledge_policy,"pointInTimeQualified":false});
+    } else if manifest.content.configuration.typed_evaluation.is_some() {
+        return Err("backtest_report_typed_evidence_required".into());
+    }
     report.report_hash =
         canonical_hash(&report_without_hash(&report), "backtest_report_hash_failed")?;
     Ok(report)
@@ -1334,6 +1436,20 @@ fn positions_ledger_csv(report: &BacktestReport) -> String {
 }
 fn equity_csv(report: &BacktestReport) -> String {
     let mut output = "timestamp,ending_cash_micros,market_value_micros,ending_equity_micros,reconciliation_residual_micros\n".to_string();
+    if let Some(typed) = &report.typed_evaluation {
+        for point in &typed.equity {
+            output.push_str(&csv_row(&[
+                chrono::DateTime::from_timestamp_millis(point.event_end_ms)
+                    .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                    .unwrap_or_default(),
+                point.cash_micros.to_string(),
+                (point.equity_micros - point.cash_micros).to_string(),
+                point.equity_micros.to_string(),
+                "0".into(),
+            ]));
+        }
+        return output;
+    }
     output.push_str(&csv_row(&[
         report.chart.range["end"]
             .as_str()

@@ -10,6 +10,126 @@ use std::collections::BTreeMap;
 pub const BACKTEST_CONFIGURATION_SCHEMA: &str = "tradeassembly.backtest-configuration.v1";
 pub const BACKTEST_MANIFEST_SCHEMA: &str = "tradeassembly.backtest-run-manifest.v1";
 pub const BACKTEST_RESULT_SCHEMA: &str = "tradeassembly.backtest-result.v1";
+pub const BACKTEST_CONFIGURATION_SCHEMA_V2: &str = "tradeassembly.backtest-configuration.v2";
+pub const BACKTEST_MANIFEST_SCHEMA_V2: &str = "tradeassembly.backtest-run-manifest.v2";
+pub const BACKTEST_RESULT_SCHEMA_V2: &str = "tradeassembly.backtest-result.v2";
+pub const TYPED_BACKTEST_ENGINE: &str = "tradeassembly.typed-backtest.v1";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TypedCaptureBinding {
+    pub capture_id: String,
+    pub receipt_sha256: String,
+}
+
+/// Explicit retrospective research. Arrival/publication clocks remain genuine;
+/// this declaration never qualifies historical point-in-time availability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TypedBacktestBinding {
+    pub schema_version: String,
+    pub plan_revision_id: String,
+    pub plan_revision_sha256: String,
+    pub source_captures: BTreeMap<String, TypedCaptureBinding>,
+    pub event_start_ms: i64,
+    pub event_end_ms: i64,
+    pub as_of_ms: i64,
+    pub interval_ms: u64,
+    pub max_frames_per_step: u64,
+    pub maximum_frames: u64,
+    pub quantity_micros: i64,
+    pub initial_position: String,
+    pub knowledge_policy: String,
+    pub fill_timestamp_basis: String,
+}
+impl TypedBacktestBinding {
+    /// The immutable source timestamp is retained. Only an explicitly declared
+    /// bar basis determines the decision/end and next-open boundaries.
+    pub(crate) fn fill_bounds(&self, raw_ms: i64) -> Result<(i64, i64), String> {
+        let interval =
+            i64::try_from(self.interval_ms).map_err(|_| "typed_backtest_fill_time_invalid")?;
+        match self.fill_timestamp_basis.as_str() {
+            "event_start" => raw_ms.checked_add(interval).map(|end| (raw_ms, end)),
+            "event_end" => raw_ms.checked_sub(interval).map(|start| (start, raw_ms)),
+            _ => None,
+        }
+        .ok_or_else(|| "typed_backtest_fill_time_invalid".to_string())
+    }
+    pub fn validate(&self) -> bool {
+        let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
+        self.schema_version == "tradeassembly.typed-backtest-binding.v1"
+            && self.initial_position == "flat"
+            && self.knowledge_policy == "retrospective_capture_cutoff"
+            && matches!(
+                self.fill_timestamp_basis.as_str(),
+                "event_start" | "event_end"
+            )
+            && self.event_start_ms > 0
+            && self.event_start_ms < self.event_end_ms
+            && self.event_end_ms <= self.as_of_ms
+            && self.as_of_ms <= max
+            && self.interval_ms > 0
+            && self.interval_ms <= max as u64
+            && (1..=64).contains(&self.max_frames_per_step)
+            && (1..=256).contains(&self.maximum_frames)
+            && self.quantity_micros > 0
+            && !self.plan_revision_id.is_empty()
+            && self.plan_revision_id.len() <= 128
+            && digest(&self.plan_revision_sha256)
+            && !self.source_captures.is_empty()
+            && self.source_captures.len() <= 32
+            && self.source_captures.iter().all(|(node, b)| {
+                !node.is_empty()
+                    && node.len() <= 128
+                    && !b.capture_id.is_empty()
+                    && b.capture_id.len() <= 128
+                    && digest(&b.receipt_sha256)
+            })
+            && ((self.event_end_ms - self.event_start_ms) as u64).is_multiple_of(self.interval_ms)
+            && (self.event_end_ms - self.event_start_ms) as u64 / self.interval_ms
+                <= self.maximum_frames
+    }
+}
+pub(crate) fn present_typed_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+fn digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TypedEquityPoint {
+    pub event_end_ms: i64,
+    pub cash_micros: i64,
+    pub position_quantity_micros: i64,
+    pub mark_micros: i64,
+    pub equity_micros: i64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TypedBacktestEvidence {
+    pub schema_version: String,
+    pub plan_revision_id: String,
+    pub plan_revision_sha256: String,
+    pub evaluation_receipts: Vec<String>,
+    pub final_checkpoint_sha256: String,
+    pub semantic_sha256: String,
+    pub frames_processed: u64,
+    pub warming_frames: u64,
+    pub signals: Vec<serde_json::Value>,
+    pub equity: Vec<TypedEquityPoint>,
+    pub max_drawdown_bps: i64,
+    pub knowledge_policy: String,
+    pub point_in_time_qualified: bool,
+}
+
 pub const BACKTEST_RUN_SCHEMA: &str = "tradeassembly.backtest-run.v2";
 pub const BACKTEST_ATTEMPT_SCHEMA: &str = "tradeassembly.backtest-attempt.v1";
 
@@ -170,10 +290,17 @@ pub struct BacktestRiskConfiguration {
     pub maximum_open_positions: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BacktestConfiguration {
     pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_typed_value"
+    )]
+    #[schemars(with = "TypedBacktestBinding")]
+    pub typed_evaluation: Option<TypedBacktestBinding>,
     pub strategy: StrategyVersionBinding,
     pub dataset: DatasetBinding,
     pub capability_graph: CapabilityGraphBinding,
@@ -191,6 +318,68 @@ pub struct BacktestConfiguration {
     #[serde(default)]
     pub variable_overrides: BTreeMap<String, serde_json::Value>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BacktestConfigurationWire {
+    pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_typed_value"
+    )]
+    pub typed_evaluation: Option<TypedBacktestBinding>,
+    pub strategy: StrategyVersionBinding,
+    pub dataset: DatasetBinding,
+    pub capability_graph: CapabilityGraphBinding,
+    pub capital: CapitalConfiguration,
+    pub execution: ExecutionConfiguration,
+    pub costs: CostConfiguration,
+    pub liquidity: LiquidityConfiguration,
+    pub instruments: Vec<InstrumentConfiguration>,
+    pub risk: BacktestRiskConfiguration,
+    pub end_of_data: EndOfDataPolicy,
+    pub evaluator_version: String,
+    pub compiler_version: String,
+    #[serde(default)]
+    pub plugin_fingerprints: BTreeMap<String, String>,
+    #[serde(default)]
+    pub variable_overrides: BTreeMap<String, serde_json::Value>,
+}
+impl<'de> Deserialize<'de> for BacktestConfiguration {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let typed = raw.get("typedEvaluation");
+        if !matches!(
+            (raw["schema"].as_str(), typed),
+            (Some(BACKTEST_CONFIGURATION_SCHEMA), None)
+        ) && !matches!((raw["schema"].as_str(),typed),(Some(BACKTEST_CONFIGURATION_SCHEMA_V2),Some(value)) if value.is_object())
+        {
+            return Err(serde::de::Error::custom(
+                "backtest_config_version_binding_mismatch",
+            ));
+        }
+        let wire: BacktestConfigurationWire =
+            serde_json::from_value(raw).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            schema: wire.schema,
+            typed_evaluation: wire.typed_evaluation,
+            strategy: wire.strategy,
+            dataset: wire.dataset,
+            capability_graph: wire.capability_graph,
+            capital: wire.capital,
+            execution: wire.execution,
+            costs: wire.costs,
+            liquidity: wire.liquidity,
+            instruments: wire.instruments,
+            risk: wire.risk,
+            end_of_data: wire.end_of_data,
+            evaluator_version: wire.evaluator_version,
+            compiler_version: wire.compiler_version,
+            plugin_fingerprints: wire.plugin_fingerprints,
+            variable_overrides: wire.variable_overrides,
+        })
+    }
+}
 
 impl BacktestConfiguration {
     pub fn validate(&self) -> BacktestValidationReport {
@@ -203,8 +392,23 @@ impl BacktestConfiguration {
                 detail,
             });
         };
-        if self.schema != BACKTEST_CONFIGURATION_SCHEMA {
-            push_error("/schema".to_string(), "unsupported schema".to_string());
+        match (&self.typed_evaluation, self.schema.as_str()) {
+            (None, BACKTEST_CONFIGURATION_SCHEMA) => {}
+            (Some(binding), BACKTEST_CONFIGURATION_SCHEMA_V2)
+                if binding.validate()
+                    && self.evaluator_version == TYPED_BACKTEST_ENGINE
+                    && self.compiler_version == TYPED_BACKTEST_ENGINE => {}
+            _ => push_error(
+                "/schema".to_string(),
+                "schema and evaluator binding must match".to_string(),
+            ),
+        }
+        if !self.variable_overrides.is_empty() {
+            push_error(
+                "/variableOverrides".into(),
+                "parameter overrides require an implemented immutable typed parameter binding"
+                    .into(),
+            );
         }
         for (field, value) in [
             ("/strategy/strategyId", self.strategy.strategy_id.as_str()),
@@ -369,7 +573,12 @@ pub struct BacktestRunManifest {
 
 impl BacktestRunManifest {
     pub fn build(content: BacktestRunManifestContent, created_at_ms: i64) -> Result<Self, String> {
-        if content.schema != BACKTEST_MANIFEST_SCHEMA
+        let expected_schema = if content.configuration.typed_evaluation.is_some() {
+            BACKTEST_MANIFEST_SCHEMA_V2
+        } else {
+            BACKTEST_MANIFEST_SCHEMA
+        };
+        if content.schema != expected_schema
             || content.run_id.trim().is_empty()
             || content.request_hash.trim().is_empty()
             || content.idempotency_key.trim().is_empty()
@@ -473,10 +682,16 @@ pub struct BacktestLifecycleEvent {
     pub detail: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BacktestResultContent {
     pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_typed_value"
+    )]
+    pub typed_evaluation: Option<TypedBacktestEvidence>,
     pub run_id: String,
     pub manifest_hash: String,
     pub evaluator_version: String,
@@ -489,6 +704,61 @@ pub struct BacktestResultContent {
     pub accounting: serde_json::Value,
     #[serde(default)]
     pub diagnostics: Vec<BacktestDiagnostic>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BacktestResultContentWire {
+    pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_typed_value"
+    )]
+    pub typed_evaluation: Option<TypedBacktestEvidence>,
+    pub run_id: String,
+    pub manifest_hash: String,
+    pub evaluator_version: String,
+    pub compiler_version: String,
+    pub decisions: Vec<serde_json::Value>,
+    pub orders: Vec<serde_json::Value>,
+    pub fills: Vec<serde_json::Value>,
+    pub positions: Vec<serde_json::Value>,
+    pub ledger: Vec<serde_json::Value>,
+    pub accounting: serde_json::Value,
+    #[serde(default)]
+    pub diagnostics: Vec<BacktestDiagnostic>,
+}
+impl<'de> Deserialize<'de> for BacktestResultContent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let typed = raw.get("typedEvaluation");
+        if !matches!(
+            (raw["schema"].as_str(), typed),
+            (Some(BACKTEST_RESULT_SCHEMA), None)
+        ) && !matches!((raw["schema"].as_str(),typed),(Some(BACKTEST_RESULT_SCHEMA_V2),Some(value)) if value.is_object())
+        {
+            return Err(serde::de::Error::custom(
+                "backtest_result_version_binding_mismatch",
+            ));
+        }
+        let wire: BacktestResultContentWire =
+            serde_json::from_value(raw).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            schema: wire.schema,
+            typed_evaluation: wire.typed_evaluation,
+            run_id: wire.run_id,
+            manifest_hash: wire.manifest_hash,
+            evaluator_version: wire.evaluator_version,
+            compiler_version: wire.compiler_version,
+            decisions: wire.decisions,
+            orders: wire.orders,
+            fills: wire.fills,
+            positions: wire.positions,
+            ledger: wire.ledger,
+            accounting: wire.accounting,
+            diagnostics: wire.diagnostics,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,7 +773,24 @@ pub struct BacktestResult {
 
 impl BacktestResult {
     pub fn build(content: BacktestResultContent, created_at_ms: i64) -> Result<Self, String> {
-        if content.schema != BACKTEST_RESULT_SCHEMA
+        let expected_schema = if content.typed_evaluation.is_some() {
+            BACKTEST_RESULT_SCHEMA_V2
+        } else {
+            BACKTEST_RESULT_SCHEMA
+        };
+        if content.schema != expected_schema
+            || content.typed_evaluation.as_ref().is_some_and(|v| {
+                v.schema_version != "tradeassembly.typed-backtest-evidence.v1"
+                    || v.point_in_time_qualified
+                    || v.knowledge_policy != "retrospective_capture_cutoff"
+                    || !digest(&v.semantic_sha256)
+                    || v.evaluation_receipts.is_empty()
+                    || v.evaluation_receipts.len() > 256
+                    || v.evaluation_receipts.iter().any(|s| !digest(s))
+                    || v.equity.len() > 256
+                    || v.signals.len() > 256
+                    || !digest(&v.final_checkpoint_sha256)
+            })
             || content.run_id.trim().is_empty()
             || content.manifest_hash.trim().is_empty()
             || content.evaluator_version.trim().is_empty()

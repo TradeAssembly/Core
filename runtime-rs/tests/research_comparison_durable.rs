@@ -127,6 +127,7 @@ fn manifest(
     currency: &str,
 ) -> BacktestRunManifest {
     let configuration = BacktestConfiguration {
+        typed_evaluation: None,
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),
         strategy: StrategyVersionBinding {
             strategy_id: "strategy-1".to_string(),

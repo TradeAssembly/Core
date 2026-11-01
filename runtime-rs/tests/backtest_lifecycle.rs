@@ -15,6 +15,7 @@ use tradeassembly_runtime::service::{backtest_lifecycle, TradeAssemblyService};
 
 fn config(snapshot: &DatasetSnapshot, spec_hash: &str) -> BacktestConfiguration {
     BacktestConfiguration {
+        typed_evaluation: None,
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),
         strategy: StrategyVersionBinding {
             strategy_id: "strategy-1".to_string(),
@@ -214,6 +215,7 @@ fn result(manifest: &BacktestRunManifest) -> BacktestResult {
 fn result_at(manifest: &BacktestRunManifest, created_at_ms: i64) -> BacktestResult {
     BacktestResult::build(
         BacktestResultContent {
+            typed_evaluation: None,
             schema: BACKTEST_RESULT_SCHEMA.to_string(),
             run_id: manifest.content.run_id.clone(),
             manifest_hash: manifest.manifest_hash.clone(),
@@ -681,4 +683,65 @@ fn tampered_embedded_result_is_rejected_on_run_reads() {
     );
     let response = backtest_lifecycle::get(&service, &run_id);
     assert_eq!(response.status, 500, "{:#}", response.body);
+}
+
+#[test]
+fn expired_executor_without_result_does_not_retry_or_release_a_newer_fence() {
+    let (_file, path) = service_path();
+    let (service, clock) = service_with_clock(&path, 1_000);
+    let created = backtest_lifecycle::create(&service, prepare(&service, "late-defer"));
+    let run_id = created.body["runId"].as_str().unwrap().to_string();
+    let late = backtest_lifecycle::process_with(&service, "worker-old", &|_, _| {
+        clock.advance(30_001);
+        let current = service
+            .runtime()
+            .queue
+            .claim_partition(
+                "backtest_runs_v1",
+                &run_id,
+                "worker-new",
+                clock.now_ms(),
+                30_000,
+            )
+            .unwrap();
+        assert_eq!(current.len(), 1);
+        // The current delivery remains leased after the late old executor exits.
+        assert_eq!(current[0].fencing_token, 2);
+        Ok(None)
+    });
+    assert_eq!(late.status, 409, "{}", late.body);
+    assert_eq!(late.body["detail"], "backtest_worker_lease_lost");
+    assert!(service
+        .runtime()
+        .queue
+        .claim_partition(
+            "backtest_runs_v1",
+            &run_id,
+            "worker-third",
+            clock.now_ms(),
+            30_000,
+        )
+        .unwrap()
+        .is_empty());
+    clock.advance(30_001);
+    let new_delivery = service
+        .runtime()
+        .queue
+        .claim_partition(
+            "backtest_runs_v1",
+            &run_id,
+            "worker-restart",
+            clock.now_ms(),
+            30_000,
+        )
+        .unwrap()
+        .into_iter()
+        .next();
+    assert_eq!(new_delivery.unwrap().fencing_token, 3);
+    assert!(service
+        .runtime()
+        .backtests
+        .get_result(&run_id)
+        .unwrap()
+        .is_none());
 }

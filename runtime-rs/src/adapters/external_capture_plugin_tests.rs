@@ -2316,3 +2316,5 @@ fn data_capture_v2_real_process_witness_recreation_and_no_version_retrofit() {
         1
     );
 }
+
+include!("external_typed_backtest_tests.rs");

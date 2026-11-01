@@ -77,6 +77,7 @@ pub mod session_dispatch;
 pub mod session_schedules;
 mod sightline;
 mod strategy;
+pub(crate) mod typed_backtest;
 mod workers;
 mod workspace;
 
@@ -1123,7 +1124,8 @@ impl TradeAssemblyService {
         // order. Do not silently rewrite a requested Live config to Paper.
         let preserve_config_mode = method.eq_ignore_ascii_case("POST")
             && normalize_path(path) == "/product/strategy-execution-configs/save";
-        let body = self
+        let backtest_context = readonly_backtest_path(method, path, &body);
+        let mut body = self
             .invocation_principal
             .as_ref()
             .map_or(body.clone(), |principal| {
@@ -1136,6 +1138,11 @@ impl TradeAssemblyService {
                     None,
                 )
             });
+        if backtest_context {
+            // Evaluation context is not financial account authority. All
+            // authenticated actor/account/authority fields remain bound above.
+            body["mode"] = json!("backtest");
+        }
         let normalized_method = method.to_ascii_uppercase();
         let normalized_path = normalize_path(path);
         if let Some(response) =
@@ -3567,6 +3574,8 @@ impl TradeAssemblyService {
                 .map(str::to_owned)
         })
         .flatten();
+        let backtest_plan_context =
+            name == "tradeassembly.strategy.data_plan.prepare" && arguments["mode"] == "backtest";
         let trusted_runner_mode = self
             .agent_mcp_execution_context
             .as_ref()
@@ -3635,6 +3644,9 @@ impl TradeAssemblyService {
         }
         if let Some(mode) = capability_query_mode {
             arguments["mode"] = json!(mode);
+        }
+        if backtest_plan_context {
+            arguments["mode"] = json!("backtest");
         }
         if broker_onboarding_call {
             if let Some(code) = broker_onboarding::validate_mcp_arguments(name, &arguments) {
@@ -6047,10 +6059,26 @@ fn map_string(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
         .map(str::to_string)
 }
 
+fn readonly_backtest_path(method: &str, path: &str, body: &Value) -> bool {
+    method.eq_ignore_ascii_case("POST")
+        && body["mode"] == "backtest"
+        && matches!(
+            normalize_path(path).as_str(),
+            "/product/strategies/data-plans/prepare"
+                | "/capability-graph-revisions"
+                | "/capabilities/graph/resolve"
+                | "/strategy/contracts/capability:resolve"
+        )
+}
+
 fn bind_authenticated_studio_request(
     mut request: Value,
     session: &auth::SessionValidationResult,
 ) -> Value {
+    let computation = matches!(
+        graphql_operation_name(&request).as_str(),
+        "ResolveCapability" | "ResolveCapabilityGraph" | "SaveCapabilityGraphRevision"
+    );
     let Some(principal) = session.principal.as_ref().filter(|_| session.authenticated) else {
         return request;
     };
@@ -6058,9 +6086,17 @@ fn bind_authenticated_studio_request(
         return request;
     };
     variables.remove("_studioSession");
+    let backtest = computation && variables.get("mode").is_some_and(|mode| mode == "backtest");
     bind_authenticated_studio_variables(variables, principal);
+    if backtest {
+        variables.insert("mode".into(), json!("backtest"));
+    }
     if let Some(nested) = variables.get_mut("request").and_then(Value::as_object_mut) {
+        let backtest = computation && nested.get("mode").is_some_and(|mode| mode == "backtest");
         bind_authenticated_studio_variables(nested, principal);
+        if backtest {
+            nested.insert("mode".into(), json!("backtest"));
+        }
     }
     request
 }
@@ -7018,6 +7054,97 @@ mod finance_authority_diagnostic_tests {
         assert!(!rendered.contains("remote_failure"));
         assert!(!rendered.contains("unknown_code"));
         assert!(!rendered.contains("secret-token-fragment"));
+    }
+}
+
+#[cfg(test)]
+mod backtest_computation_context_tests {
+    use super::*;
+
+    fn principal() -> auth::SessionPrincipal {
+        auth::SessionPrincipal {
+            provider: "fixture".into(),
+            issuer: "fixture".into(),
+            subject: "actual-owner".into(),
+            email: None,
+            email_verified: None,
+            name: None,
+            picture: None,
+        }
+    }
+    #[test]
+    fn finite_backtest_context_keeps_authenticated_financial_authority_and_actor() {
+        let body = json!({"mode":"backtest","actor":{"id":"forged"},"accountMode":"live",
+            "authorityContext":{"actor":"forged","accountMode":"live"},"idempotencyKey":"context-only"});
+        let path = "/product/strategies/data-plans/prepare";
+        assert!(readonly_backtest_path("POST", path, &body));
+        for forbidden in [
+            "/product/strategies/order-plans/submit",
+            "/product/strategy-execution-activations/activate",
+            "/scheduler/run",
+        ] {
+            assert!(!readonly_backtest_path("POST", forbidden, &body));
+        }
+        assert!(!readonly_backtest_path("GET", path, &body));
+        assert!(!readonly_backtest_path(
+            "POST",
+            path,
+            &json!({"mode":"live"})
+        ));
+        let mut bound =
+            bind_authenticated_invocation_value(body, &principal(), "http", "user", false, None);
+        let original = bound.clone();
+        bound["mode"] = json!("backtest");
+        for key in [
+            "actor",
+            "actorKind",
+            "principalUser",
+            "accountMode",
+            "account_mode",
+            "authorityContext",
+            "authority_context",
+        ] {
+            assert_eq!(bound[key], original[key], "{key}");
+        }
+        assert_eq!(bound["accountMode"], "paper");
+        assert_eq!(bound["actor"]["id"], "actual-owner");
+        let envelope = control_plane::http_envelope("http", "POST", path, &bound).unwrap();
+        assert_eq!(envelope.authority.account_mode, "paper");
+        assert_eq!(envelope.authority.actor, "actual-owner");
+    }
+    #[test]
+    fn studio_graph_backtest_selector_changes_no_other_bound_authority_fields() {
+        let session = auth::SessionValidationResult {
+            authenticated: true,
+            reason: "fixture".into(),
+            principal: Some(principal()),
+        };
+        let input = json!({"operationName":"SaveCapabilityGraphRevision","variables":{
+            "mode":"backtest","actor":{"id":"forged"},"authorityContext":{"actor":"forged","accountMode":"paper"},
+            "request":{"mode":"backtest"}}});
+        let mut expected = input.clone();
+        let variables = expected["variables"].as_object_mut().unwrap();
+        bind_authenticated_studio_variables(variables, session.principal.as_ref().unwrap());
+        bind_authenticated_studio_variables(
+            variables["request"].as_object_mut().unwrap(),
+            session.principal.as_ref().unwrap(),
+        );
+        let bound = bind_authenticated_studio_request(input, &session);
+        assert_eq!(bound["variables"]["mode"], "backtest");
+        assert_eq!(bound["variables"]["request"]["mode"], "backtest");
+        for key in [
+            "accountMode",
+            "account_mode",
+            "authorityContext",
+            "actor",
+            "principalUser",
+        ] {
+            assert_eq!(bound["variables"][key], expected["variables"][key], "{key}");
+        }
+        assert_eq!(
+            bound["variables"]["authorityContext"]["accountMode"],
+            "paper"
+        );
     }
 }
 

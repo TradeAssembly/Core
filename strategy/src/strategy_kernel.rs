@@ -333,6 +333,72 @@ pub fn run(
     config: SimulationConfig,
 ) -> Result<KernelResult, KernelError> {
     validate_config(strategy, config)?;
+    simulate_decisions(observations, config, |observation, position| {
+        evaluate_observation(strategy, observation, position, config.timing)
+    })
+}
+
+/// Publisher-produced booleans, not a formula or an inferred unavailable value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BooleanSignal {
+    pub entry: Option<bool>,
+    pub exit: Option<bool>,
+}
+/// The typed evaluator supplies signals; the exact existing simulator supplies
+/// fills, adverse execution prices, fees, cash and liquidity/risk rejection.
+pub fn run_with_signals(
+    observations: &[MarketObservation],
+    signals: &[BooleanSignal],
+    quantity: Quantity,
+    config: SimulationConfig,
+) -> Result<KernelResult, KernelError> {
+    validate_simulation_config(config)?;
+    if observations.len() != signals.len()
+        || observations
+            .iter()
+            .enumerate()
+            .any(|(index, bar)| bar.bar_index != index)
+        || quantity <= 0
+        || config.timing != ExecutionTiming::NextBarOpen
+    {
+        return Err(KernelError::UnsupportedSemantics(
+            "typed signals require explicit next-bar-open cash simulation",
+        ));
+    }
+    simulate_decisions(observations, config, |bar, position| {
+        let signal = signals[bar.bar_index];
+        if signal.entry.is_none() || signal.exit.is_none() {
+            return Decision::NoSignal {
+                bar_index: bar.bar_index,
+            };
+        }
+        let side = if position > 0 && signal.exit == Some(true) {
+            Some((OrderSide::Sell, position))
+        } else if position == 0 && signal.entry == Some(true) {
+            Some((OrderSide::Buy, quantity))
+        } else {
+            None
+        };
+        match side {
+            Some((side, quantity)) => Decision::OrderIntent(OrderIntent {
+                decision_bar_index: bar.bar_index,
+                symbol: bar.symbol.clone(),
+                side,
+                quantity,
+                notional_micros: None,
+                timing: config.timing,
+            }),
+            None => Decision::NoSignal {
+                bar_index: bar.bar_index,
+            },
+        }
+    })
+}
+fn simulate_decisions(
+    observations: &[MarketObservation],
+    config: SimulationConfig,
+    mut decide: impl FnMut(&MarketObservation, Quantity) -> Decision,
+) -> Result<KernelResult, KernelError> {
     let mut result = KernelResult {
         decisions: Vec::new(),
         orders: Vec::new(),
@@ -343,9 +409,7 @@ pub fn run(
     let mut positions = BTreeMap::<String, Quantity>::new();
     for observation in observations {
         let position = positions.get(&observation.symbol).copied().unwrap_or(0);
-        let Decision::OrderIntent(intent) =
-            evaluate_observation(strategy, observation, position, config.timing)
-        else {
+        let Decision::OrderIntent(intent) = decide(observation, position) else {
             result.decisions.push(Decision::NoSignal {
                 bar_index: observation.bar_index,
             });
@@ -489,6 +553,21 @@ fn validate_config(
     strategy: &CompiledStrategy,
     config: SimulationConfig,
 ) -> Result<(), KernelError> {
+    validate_simulation_config(config)?;
+    if config.timing == ExecutionTiming::SameBarOpen
+        && (strategy.entry.field != SignalField::Open
+            || strategy
+                .exit
+                .is_some_and(|expression| expression.field != SignalField::Open))
+    {
+        return Err(KernelError::UnsupportedSemantics(
+            "same-bar open requires a bar.open signal",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_simulation_config(config: SimulationConfig) -> Result<(), KernelError> {
     if config.fee_per_order_micros < 0
         || config.fee_per_unit_micros < 0
         || config.notional_fee_bps < 0
@@ -500,16 +579,6 @@ fn validate_config(
         || config.maximum_position_notional_micros <= 0
     {
         return Err(KernelError::InvalidSimulationConfig);
-    }
-    if config.timing == ExecutionTiming::SameBarOpen
-        && (strategy.entry.field != SignalField::Open
-            || strategy
-                .exit
-                .is_some_and(|expression| expression.field != SignalField::Open))
-    {
-        return Err(KernelError::UnsupportedSemantics(
-            "same-bar open requires a bar.open signal",
-        ));
     }
     Ok(())
 }
@@ -577,3 +646,6 @@ fn scaled_notional(
     i64::try_from(numerator / i128::from(QUANTITY_SCALE))
         .map_err(|_| KernelError::ArithmeticOverflow)
 }
+
+#[cfg(test)]
+mod typed_signals_tests;

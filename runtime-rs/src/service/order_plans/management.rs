@@ -38,6 +38,10 @@ struct Position {
     entry_plan_id: String,
     activation_id: String,
     entry_settlement_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry_observation_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry_cash_reconciled: Option<bool>,
     policy: ExitPolicy,
     quantity: Decimal,
     closed_quantity: Decimal,
@@ -50,8 +54,16 @@ struct Position {
     reversal_watermark: Option<ReversalWatermark>,
     last_quote_receipt: Option<String>,
     reservations: BTreeMap<String, Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provisional_closes: Option<BTreeMap<String, AppliedClose>>,
     generation: u64,
     state_sha256: String,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AppliedClose {
+    quantity: Decimal,
+    receipt_sha256: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -89,7 +101,13 @@ fn seal(p: &mut Position) -> Result<(), String> {
     Ok(())
 }
 fn journal(p: &Position, event: &str, receipt: &str) -> Value {
-    json!({"schemaVersion":"tradeassembly.position_journal.v1","positionId":p.position_id,"entryPlanId":p.entry_plan_id,"event":event,"receiptSha256":receipt,"quantity":p.quantity,"closedQuantity":p.closed_quantity,"highWater":p.high_water,"generation":p.generation,"historicalOutcome":true,"executionAuthorityGranted":false})
+    let mut event = json!({"schemaVersion":"tradeassembly.position_journal.v1","positionId":p.position_id,"entryPlanId":p.entry_plan_id,"event":event,"receiptSha256":receipt,"quantity":p.quantity,"closedQuantity":p.closed_quantity,"highWater":p.high_water,"generation":p.generation,"historicalOutcome":true,"executionAuthorityGranted":false});
+    if p.entry_observation_sha256.is_some() {
+        event["entryObservationSha256"] = json!(p.entry_observation_sha256);
+        event["entryCashReconciled"] = json!(false);
+        event["entryBasis"] = json!(p.policy.entry_basis);
+    }
+    event
 }
 fn load(s: &TradeAssemblyService, id: &str) -> Result<(Value, Position), String> {
     let raw = s
@@ -101,7 +119,20 @@ fn load(s: &TradeAssemblyService, id: &str) -> Result<(Value, Position), String>
         serde_json::from_value(raw.clone()).map_err(|_| "managed_position_invalid")?;
     let mut check = p.clone();
     seal(&mut check)?;
-    if p.schema_version != "tradeassembly.managed_position.v1"
+    let observed = p.policy.entry_basis == "provider_reported_average_fill";
+    let entry_type_valid = if observed {
+        p.schema_version == "tradeassembly.managed_position.v2"
+            && p.entry_settlement_sha256.is_empty()
+            && p.entry_observation_sha256
+                .as_ref()
+                .is_some_and(|v| v.len() == 64)
+            && p.entry_cash_reconciled == Some(false)
+    } else {
+        p.schema_version == "tradeassembly.managed_position.v1"
+            && p.entry_observation_sha256.is_none()
+            && p.entry_cash_reconciled.is_none()
+    };
+    if !entry_type_valid
         || p.position_id != id
         || p.owner_sha256 != owner(s)?
         || check != p
@@ -110,6 +141,11 @@ fn load(s: &TradeAssemblyService, id: &str) -> Result<(Value, Position), String>
         || p.closed_quantity.compare(p.quantity)?.is_gt()
         || !p.basis.positive()
         || p.reservations.len() > 256
+        || p.provisional_closes.as_ref().is_some_and(|m| {
+            m.len() > 256
+                || m.values()
+                    .any(|q| q.quantity.negative() || q.receipt_sha256.len() != 64)
+        })
     {
         return Err("managed_position_invalid".into());
     }
@@ -142,8 +178,10 @@ pub(crate) fn policy(
     let p: ExitPolicy =
         serde_json::from_value(config.clone()).map_err(|_| "managed_exit_policy_invalid")?;
     p.rules.validate()?;
-    if p.entry_basis != "provider_final_gross_excluding_fees"
-        || v["spec"]["stages"]["exit_policy"]["enabled"] != true
+    if !matches!(
+        p.entry_basis.as_str(),
+        "provider_final_gross_excluding_fees" | "provider_reported_average_fill"
+    ) || v["spec"]["stages"]["exit_policy"]["enabled"] != true
         || v["spec"]["stages"]["exit_policy"]["policy"]["monitoring"] != json!(["synthetic"])
         || !p.fee_cash_cap.positive()
         || p.max_limit_slippage_ratio.negative()
@@ -204,6 +242,33 @@ pub(crate) fn policy(
         return Err("managed_exit_declaration_mismatch".into());
     }
     Ok(Some(p))
+}
+pub(crate) fn validate_unsettled_provider(
+    s: &TradeAssemblyService,
+    scope: &data_plans::PlanScope,
+    manifest: &Value,
+) -> Result<(), String> {
+    if let Some(p) = policy(s, scope)? {
+        let entry = super::provisional::selected_manifest(
+            manifest,
+            crate::broker_submission::v2::SUBMIT_OPERATION,
+            tradeassembly_plugin_sdk::settlement_observation_v2::Role::Entry,
+        )?;
+        if p.entry_basis == "provider_reported_average_fill" {
+            if !entry
+                || !super::provisional::selected_manifest(
+                    manifest,
+                    crate::broker_submission::v2::SUBMIT_OPERATION,
+                    tradeassembly_plugin_sdk::settlement_observation_v2::Role::Close,
+                )?
+            {
+                return Err("managed_unsettled_provider_contract_required".into());
+            }
+        } else if entry {
+            return Err("managed_unsettled_basis_opt_in_required".into());
+        }
+    }
+    Ok(())
 }
 pub(crate) fn validate_automatic_policy(policy: &ExitPolicy) -> Result<(), String> {
     if policy.rules.reversal_signal.is_some() {
@@ -285,18 +350,30 @@ pub fn register(
         return Err("managed_activation_scope_mismatch".into());
     }
     let policy = policy(s, &entry.command.scope)?.ok_or("managed_exit_policy_required")?;
-    let (quantity, basis, receipt, entry_time) = settlement::entry_basis(s, &entry)?;
+    let (quantity, basis, receipt, entry_time) = entry_basis(s, &entry, &policy, None)?;
     let id = format!("position_{}", hash(&(owner(s)?, &entry.plan_id))?);
     if s.runtime().storage.get_json(POSITIONS, &id)?.is_some() {
         return inspect(s, &id);
     }
+    let observed = policy.entry_basis == "provider_reported_average_fill";
     let mut p = Position {
-        schema_version: "tradeassembly.managed_position.v1".into(),
+        schema_version: if observed {
+            "tradeassembly.managed_position.v2"
+        } else {
+            "tradeassembly.managed_position.v1"
+        }
+        .into(),
         position_id: id.clone(),
         owner_sha256: owner(s)?,
         entry_plan_id: entry.plan_id.clone(),
         activation_id: c.activation_id,
-        entry_settlement_sha256: receipt.clone(),
+        entry_settlement_sha256: if observed {
+            String::new()
+        } else {
+            receipt.clone()
+        },
+        entry_observation_sha256: observed.then(|| receipt.clone()),
+        entry_cash_reconciled: observed.then_some(false),
         policy,
         quantity,
         closed_quantity: Decimal::ZERO,
@@ -309,6 +386,7 @@ pub fn register(
         reversal_watermark: None,
         last_quote_receipt: None,
         reservations: BTreeMap::new(),
+        provisional_closes: None,
         generation: 0,
         state_sha256: String::new(),
     };
@@ -369,8 +447,8 @@ pub(in crate::service) fn exit_plan_subject(
     if original.intent["originalRequest"]["activationId"] != pos.activation_id {
         return Err("managed_plan_activation_invalid".into());
     }
-    settlement::verify_historical_entry(s, &entry, &pos.entry_settlement_sha256)?;
-    let (quantity, basis, _, _) = settlement::entry_basis(s, &entry)?;
+    verify_entry(s, &entry, &pos)?;
+    let (quantity, basis, _, _) = entry_basis(s, &entry, &pos.policy, Some(entry_evidence(&pos)))?;
     if quantity != pos.quantity || basis != pos.basis {
         return Err("managed_plan_entry_basis_changed".into());
     }
@@ -382,12 +460,20 @@ pub(in crate::service) fn exit_plan_subject(
     };
     // High water, closed quantity, reservations and leases are mutable checks,
     // not source identity. Settled entry, account, policy and source are pinned.
-    let proof = hash(
-        &json!({"schemaVersion":"tradeassembly.managed_exit_plan_source.v1",
+    let mut source_proof = json!({"schemaVersion":"tradeassembly.managed_exit_plan_source.v1",
         "owner":owner(s)?,"positionId":pos.position_id,"entryPlanSha256":hash(&entry)?,
         "entrySettlementSha256":pos.entry_settlement_sha256,"activationId":pos.activation_id,
-        "policySha256":hash(&pos.policy)?,"configSha256":hash(&config)?,"source":source}),
-    )?;
+        "policySha256":hash(&pos.policy)?,"configSha256":hash(&config)?,"source":source});
+    if let Some(observation) = &pos.entry_observation_sha256 {
+        source_proof
+            .as_object_mut()
+            .unwrap()
+            .remove("entrySettlementSha256");
+        source_proof["schemaVersion"] = json!("tradeassembly.managed_exit_plan_source.v2");
+        source_proof["entryObservationSha256"] = json!(observation);
+        source_proof["entryBasis"] = json!(pos.policy.entry_basis);
+    }
+    let proof = hash(&source_proof)?;
     Ok((instrument, entry.command.capability_graph_revision, proof))
 }
 /// Resolve the immutable entry computation only after proving current ownership
@@ -445,11 +531,12 @@ pub(in crate::service) fn window_lineage(
     if original.intent["originalRequest"]["activationId"] != pos.activation_id {
         return Err("management_window_activation_mismatch".into());
     }
-    settlement::verify_historical_entry(s, &entry, &pos.entry_settlement_sha256)?;
-    let (quantity, basis, _, _) = settlement::entry_basis(s, &entry)?;
+    verify_entry(s, &entry, &pos)?;
+    let (quantity, basis, _, _) = entry_basis(s, &entry, &pos.policy, Some(entry_evidence(&pos)))?;
     if quantity != pos.quantity || basis != pos.basis {
         return Err("management_window_entry_basis_changed".into());
     }
+    let entry_evidence_sha256 = entry_evidence(&pos).to_owned();
     Ok(crate::service::management_windows::Lineage {
         owner_sha256: owner(s)?,
         position_id: pos.position_id,
@@ -458,7 +545,7 @@ pub(in crate::service) fn window_lineage(
         scope: entry.command.scope,
         capability_graph_revision: entry.command.capability_graph_revision,
         exit_policy_sha256: hash(&pos.policy)?,
-        entry_settlement_sha256: pos.entry_settlement_sha256,
+        entry_settlement_sha256: entry_evidence_sha256,
     })
 }
 /// Fresh owner/activation/config/source witness for new management windows.
@@ -867,7 +954,9 @@ pub fn advance(
         return Err("managed_paper_required".into());
     }
     let (old, mut pos) = load(s, &c.position_id)?;
+    assert_provisional_close_evidence(s, &pos)?;
     let entry = read_owned(s, &pos.entry_plan_id)?;
+    verify_entry(s, &entry, &pos)?;
     let (_, config) = management_run(s, &pos.activation_id)?;
     if policy(s, &entry.command.scope)?.as_ref() != Some(&pos.policy) {
         return Err("managed_policy_changed".into());
@@ -1276,7 +1365,9 @@ pub(crate) fn snapshot(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderP
 fn snapshot_in_round(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPlan, String> {
     let b = p.management.as_ref().ok_or("managed_close_required")?;
     let (_, pos) = load(s, &b.position_id)?;
+    assert_provisional_close_evidence(s, &pos)?;
     let entry = read_owned(s, &b.original_entry_plan_id)?;
+    verify_entry(s, &entry, &pos)?;
     let (_, execution_close) = measured("management.snapshot.window", || {
         execution_window(s, &entry, &b.execution_occurrence_id)
     })?;
@@ -1555,6 +1646,203 @@ pub(super) fn capital_time(
         .account
         .time)
 }
+fn assert_provisional_close_evidence(
+    s: &TradeAssemblyService,
+    pos: &Position,
+) -> Result<(), String> {
+    if let Some(applied) = &pos.provisional_closes {
+        for (id, close) in applied {
+            let plan = read_owned(s, id)?;
+            let (_, record) =
+                submission::record(s, &plan)?.ok_or("managed_close_submission_missing")?;
+            if let Some(receipt_id) = &record.settlement_receipt_sha256 {
+                // The immutable final receipt supersedes the provisional read
+                // head as quantity evidence. Keep AppliedClose: commit_close
+                // uses it to avoid applying the same fill a second time.
+                let receipt = read_close(s, receipt_id)?;
+                verify_final_applied_close(s, pos, close, &plan, &record, &receipt)?;
+                continue;
+            }
+            super::provisional::verify_applied_close(
+                s,
+                id,
+                &pos.position_id,
+                close.quantity,
+                &close.receipt_sha256,
+            )?;
+        }
+    }
+    Ok(())
+}
+// Historical host-committed evidence only: this does not reauthorize an
+// order, make an old account checkpoint current, or accept provider V2 finality.
+fn verify_final_applied_close(
+    s: &TradeAssemblyService,
+    pos: &Position,
+    applied: &AppliedClose,
+    plan: &OrderPlan,
+    record: &submission::SubmissionRecord,
+    receipt: &CloseReceipt,
+) -> Result<(), String> {
+    let binding = plan.management.as_ref().ok_or("managed_close_required")?;
+    let prepared: crate::ports::broker_submission::BrokerPreparedBinding =
+        serde_json::from_value(record.intent["preparedBinding"].clone())
+            .map_err(|_| "close_settlement_record_invalid")?;
+    let posting = hash(&(
+        &plan.account_key,
+        &receipt.observation.checkpoint.ledger_epoch,
+        &receipt.observation.posting_id,
+    ))?;
+    if binding.position_id != pos.position_id
+        || binding.original_entry_plan_id != pos.entry_plan_id
+        || receipt.position_id != pos.position_id
+        || receipt.plan_id != plan.plan_id
+        || receipt.account_key != plan.account_key
+        || receipt.source_binding != prepared
+        || plan.order.position_action != PositionAction::SellToClose
+        || receipt.observation.order.order != plan.order
+        || Some(receipt.observation.canonical_account_sha256.as_str())
+            != plan
+                .canonical_account
+                .as_ref()
+                .map(|a| a.identity_sha256.as_str())
+        || receipt.observation.order.filled_quantity
+            != (Observed::Available {
+                value: applied.quantity,
+            })
+        || record.filled_quantity != applied.quantity
+        || record.observation.as_ref() != Some(&receipt.observation.order)
+        || record.provider_order_id != receipt.observation.order.provider_order_id
+        || record.retained_cash != Decimal::ZERO
+        || !matches!(
+            record.phase,
+            submission::Phase::Consumed
+                | submission::Phase::Cancelled
+                | submission::Phase::Rejected
+        )
+        || s.runtime()
+            .storage
+            .get_json("execution_close_postings_v1", &posting)?
+            != Some(json!(plan.plan_id))
+    {
+        return Err("managed_final_close_evidence_invalid".into());
+    }
+    Ok(())
+}
+
+fn entry_evidence(p: &Position) -> &str {
+    p.entry_observation_sha256
+        .as_deref()
+        .unwrap_or(&p.entry_settlement_sha256)
+}
+fn entry_basis(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    policy: &ExitPolicy,
+    pinned: Option<&str>,
+) -> Result<(Decimal, Decimal, String, ObservationTime), String> {
+    if policy.entry_basis == "provider_reported_average_fill" {
+        super::provisional::entry_basis(s, p, pinned)
+    } else {
+        settlement::entry_basis(s, p)
+    }
+}
+fn verify_entry(s: &TradeAssemblyService, entry: &OrderPlan, pos: &Position) -> Result<(), String> {
+    if pos.policy.entry_basis == "provider_reported_average_fill" {
+        let (q, b, _, _) = entry_basis(s, entry, &pos.policy, Some(entry_evidence(&pos)))?;
+        if q != pos.quantity || b != pos.basis {
+            return Err("managed_entry_basis_changed".into());
+        }
+        Ok(())
+    } else {
+        settlement::verify_historical_entry(s, entry, &pos.entry_settlement_sha256)
+    }
+}
+pub(super) fn provisional_close_writes(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    o: &tradeassembly_plugin_sdk::settlement_observation_v2::Observation,
+    receipt: &str,
+    ctx: &SideEffectContext,
+    writes: &mut Vec<StorageWrite>,
+    expects: &mut Vec<StorageExpectation>,
+) -> Result<(), String> {
+    use tradeassembly_plugin_sdk::broker_v2::OrderStatus;
+    if !matches!(
+        o.order.status,
+        OrderStatus::Filled | OrderStatus::Cancelled | OrderStatus::Expired | OrderStatus::Rejected
+    ) {
+        return Ok(());
+    }
+    let binding = p.management.as_ref().ok_or("managed_close_required")?;
+    let (raw, mut pos) = load(s, &binding.position_id)?;
+    if binding.original_entry_plan_id != pos.entry_plan_id || o.order.order != p.order {
+        return Err("managed_provisional_close_binding_invalid".into());
+    }
+    let filled = *o.order.filled_quantity.required()?;
+    if filled.negative()
+        || filled.compare(p.order.quantity)?.is_gt()
+        || o.order.status == OrderStatus::Filled && filled != p.order.quantity
+    {
+        return Err("managed_provisional_close_quantity_invalid".into());
+    }
+    let previous = pos
+        .provisional_closes
+        .as_ref()
+        .and_then(|m| m.get(&p.plan_id))
+        .map(|x| x.quantity);
+    if let Some(prior) = previous {
+        if prior != filled {
+            return Err("managed_provisional_close_revision_requires_reconciliation".into());
+        }
+        return Ok(());
+    }
+    if pos.reservations.get(&p.plan_id) != Some(&p.order.quantity) {
+        return Err("managed_provisional_close_reservation_missing".into());
+    }
+    let next = pos.closed_quantity.checked_add(filled)?;
+    if next.compare(pos.quantity)?.is_gt() {
+        return Err("managed_provisional_close_exceeds_owned".into());
+    }
+    let applied = pos.provisional_closes.get_or_insert_with(BTreeMap::new);
+    if applied.len() >= 256 {
+        return Err("managed_provisional_close_capacity".into());
+    }
+    applied.insert(
+        p.plan_id.clone(),
+        AppliedClose {
+            quantity: filled,
+            receipt_sha256: receipt.into(),
+        },
+    );
+    pos.closed_quantity = next;
+    pos.reservations.remove(&p.plan_id);
+    pos.generation = pos
+        .generation
+        .checked_add(1)
+        .filter(|g| *g <= 10000)
+        .ok_or("managed_generation_exhausted")?;
+    seal(&mut pos)?;
+    writes.push(StorageWrite::new(
+        POSITIONS,
+        &pos.position_id,
+        value(&pos)?,
+        ctx.clone(),
+    ));
+    writes.push(StorageWrite::new(
+        JOURNAL,
+        format!("{}:{}", pos.position_id, pos.generation),
+        journal(&pos, "close_fill_observed_cash_unreconciled", receipt),
+        ctx.clone(),
+    ));
+    expects.push(StorageExpectation::new(
+        POSITIONS,
+        &pos.position_id,
+        Some(raw),
+    ));
+    Ok(())
+}
+
 fn close_summary(r: &CloseReceipt) -> Value {
     json!({"schemaVersion":r.schema_version,"planId":r.plan_id,"positionId":r.position_id,"receiptSha256":r.receipt_sha256,"grossProceeds":r.observation.gross_proceeds,"feeCash":r.observation.fee_cash,"filledQuantity":r.observation.order.filled_quantity,"releasedHold":r.released_hold,"checkpointEpoch":r.observation.checkpoint.ledger_epoch,"checkpointSequence":r.observation.checkpoint.sequence,"accountCheckpointSha256":hash(&r.observation.checkpoint).ok(),"availableCashCeiling":funding_capacity(&r.observation.checkpoint.account).ok(),"historicalOutcome":true,"executionAuthorityGranted":false})
 }
@@ -1690,7 +1978,22 @@ fn commit_close(
     let mut ledger = ledger_owned(s, old_cash.clone())?;
     let a = &o.checkpoint.account;
     let filled = *o.order.filled_quantity.required()?;
-    if pos.reservations.get(&p.plan_id) != Some(&p.order.quantity)
+    let prior_applied = pos
+        .provisional_closes
+        .as_ref()
+        .and_then(|m| m.get(&p.plan_id))
+        .map(|x| x.quantity);
+    let applied = prior_applied.unwrap_or(Decimal::ZERO);
+    if prior_applied.is_some_and(|q| q != filled) {
+        return Err("close_settlement_provisional_fill_changed".into());
+    }
+    let additional = filled.checked_subtract(applied)?;
+
+    if (pos
+        .provisional_closes
+        .as_ref()
+        .is_none_or(|m| !m.contains_key(&p.plan_id))
+        && pos.reservations.get(&p.plan_id) != Some(&p.order.quantity))
         || ledger.reservations.get(&p.plan_id) != Some(&p.purchase_cash)
         || state.retained_cash != p.purchase_cash
         || o.fee_cash.compare(p.purchase_cash)?.is_gt()
@@ -1750,7 +2053,7 @@ fn commit_close(
     let remaining = pos
         .quantity
         .checked_subtract(pos.closed_quantity)?
-        .checked_subtract(filled)?;
+        .checked_subtract(additional)?;
     let mut total_owned = remaining;
     for (_, raw) in s.runtime().storage.list_json(POSITIONS)? {
         let other: Position =
@@ -1790,7 +2093,7 @@ fn commit_close(
         receipt_sha256: String::new(),
     };
     receipt.receipt_sha256 = close_hash(&receipt)?;
-    pos.closed_quantity = pos.closed_quantity.checked_add(filled)?;
+    pos.closed_quantity = pos.closed_quantity.checked_add(additional)?;
     pos.reservations.remove(&p.plan_id);
     pos.generation = pos
         .generation
@@ -2314,3 +2617,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "management/final_close_evidence_tests.rs"]
+mod final_close_evidence_tests;

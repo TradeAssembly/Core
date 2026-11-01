@@ -289,6 +289,11 @@ pub(crate) fn settle(
     if c.scope != p.command.scope {
         return Err("cash_settlement_scope_mismatch".into());
     }
+    if let Some((_, record)) = submission::record(s, &p)? {
+        if super::provisional::selected(s, &p, &record)? {
+            return super::provisional::observe(s, &p, ctx);
+        }
+    }
     if p.management.is_some() {
         return super::management::settle(s, &p, ctx);
     }
@@ -647,6 +652,9 @@ pub(super) fn projection(
 }
 pub(super) fn preflight(s: &TradeAssemblyService, p: &OrderPlan) -> Result<(), String> {
     let (_, record) = submission::record(s, p)?.ok_or("broker_v2_state_missing")?;
+    if super::provisional::selected(s, p, &record)? {
+        return Err("financial_observation_transport_version_required".into());
+    }
     if p.account_currency.is_none() {
         return Err("cash_settlement_currency_pin_required".into());
     }
@@ -661,6 +669,25 @@ fn require_read_capability(
     binding: &BrokerPreparedBinding,
     account_ref: &Value,
 ) -> Result<(), String> {
+    require_read_operation(
+        s,
+        p,
+        binding,
+        account_ref,
+        wire::OPERATION,
+        wire::CAPABILITY,
+        "settlement",
+    )
+}
+pub(super) fn require_read_operation(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    binding: &BrokerPreparedBinding,
+    account_ref: &Value,
+    operation_id: &str,
+    capability: &str,
+    purpose: &str,
+) -> Result<(), String> {
     let manifest = s
         .runtime()
         .plugins
@@ -668,24 +695,24 @@ fn require_read_capability(
         .ok_or("cash_settlement_operation_unavailable")?;
     let operation = manifest["manifest"]["operations"]
         .as_array()
-        .and_then(|ops| ops.iter().find(|op| op["id"] == wire::OPERATION))
+        .and_then(|ops| ops.iter().find(|op| op["id"] == operation_id))
         .ok_or("cash_settlement_operation_unavailable")?;
-    if operation["capability"] != wire::CAPABILITY
+    if operation["capability"] != capability
         || operation["effect"] != "read"
-        || operation["purpose"] != "settlement"
+        || operation["purpose"] != purpose
     {
         return Err("cash_settlement_operation_invalid".into());
     }
     let resolution = super::super::providers::resolve_capability(
         s,
         super::super::providers::requirement_from_body(
-            &json!({"capability":wire::CAPABILITY,"pluginRef":binding.plugin_ref,"pluginInstanceRef":binding.plugin_instance_ref,"operation":wire::OPERATION,"mode":"paper","purpose":"settlement","accountRef":account_ref,"assetClass":p.order.instrument.asset_class,"instrumentFamily":p.order.instrument.instrument_family}),
+            &json!({"capability":capability,"pluginRef":binding.plugin_ref,"pluginInstanceRef":binding.plugin_instance_ref,"operation":operation_id,"mode":"paper","purpose":purpose,"accountRef":account_ref,"assetClass":p.order.instrument.asset_class,"instrumentFamily":p.order.instrument.instrument_family}),
         ),
     );
     if !resolution["candidates"].as_array().is_some_and(|xs| {
         xs.iter().any(|x| {
             x["pluginInstanceRef"] == binding.plugin_instance_ref
-                && x["operation"]["id"] == wire::OPERATION
+                && x["operation"]["id"] == operation_id
                 && x["blockers"].as_array().is_some_and(Vec::is_empty)
         })
     }) {

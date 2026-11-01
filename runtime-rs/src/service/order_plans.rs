@@ -13,6 +13,7 @@ use tradeassembly_plugin_sdk::{
 };
 pub mod decision;
 pub mod management;
+pub(crate) mod provisional;
 pub mod remote;
 pub mod settlement;
 pub mod submission;
@@ -520,6 +521,12 @@ impl VerifiedSignal {
     }
 }
 pub(crate) fn verify_signal(
+    s: &TradeAssemblyService,
+    c: &PrepareCommand,
+) -> Result<VerifiedSignal, String> {
+    super::package_validation::with_round(s, |s| verify_signal_in_round(s, c))
+}
+fn verify_signal_in_round(
     s: &TradeAssemblyService,
     c: &PrepareCommand,
 ) -> Result<VerifiedSignal, String> {
@@ -1336,6 +1343,13 @@ fn current_record(s: &TradeAssemblyService, r: &OrderPlan) -> Result<Policy, Str
     Ok(p)
 }
 fn checked_current_with_signal(
+    s: &TradeAssemblyService,
+    id: &str,
+    signal: &VerifiedSignal,
+) -> Result<(OrderPlan, Facts), String> {
+    super::package_validation::with_round(s, |s| checked_current_signal_in_round(s, id, signal))
+}
+fn checked_current_signal_in_round(
     s: &TradeAssemblyService,
     id: &str,
     signal: &VerifiedSignal,

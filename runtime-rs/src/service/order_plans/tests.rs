@@ -5,7 +5,7 @@ fn av<T>(value: T) -> Observed<T> {
 fn number(v: &str) -> Decimal {
     v.parse().unwrap()
 }
-fn fixture() -> (tempfile::TempDir, TradeAssemblyService, Facts, Policy) {
+pub(super) fn fixture() -> (tempfile::TempDir, TradeAssemblyService, Facts, Policy) {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("cash.db").to_string_lossy().into_owned();
     let service =
@@ -112,13 +112,13 @@ fn fixture() -> (tempfile::TempDir, TradeAssemblyService, Facts, Policy) {
     };
     (dir, service, facts, policy)
 }
-fn context(id: &str) -> SideEffectContext {
+pub(super) fn context(id: &str) -> SideEffectContext {
     SideEffectContext::new(
         AuthorityContext::local_cli(),
         IdempotencyKey::new(id).unwrap(),
     )
 }
-fn plan(s: &TradeAssemblyService, f: &Facts, p: &Policy, id: &str) -> OrderPlan {
+pub(super) fn plan(s: &TradeAssemblyService, f: &Facts, p: &Policy, id: &str) -> OrderPlan {
     let order = BrokerOrderV2 {
         schema_version: OrderVersion::V2,
         instrument: InstrumentIdentity {

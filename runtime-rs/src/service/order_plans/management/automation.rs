@@ -1019,6 +1019,35 @@ fn next_child(
         {
             return Err("management_automation_entry_binding_invalid".into());
         }
+        if matches!(
+            record.phase,
+            submission::Phase::Sending
+                | submission::Phase::Unknown
+                | submission::Phase::Open
+                | submission::Phase::PartiallyFilled
+                | submission::Phase::Consumed
+        ) && super::super::provisional::selected(s, &plan, &record)?
+        {
+            if super::super::provisional::ready(s, &plan)? {
+                let p = policy(s, &plan.command.scope)?.ok_or("managed_exit_policy_required")?;
+                if p.entry_basis != "provider_reported_average_fill" {
+                    return Err("managed_unsettled_basis_opt_in_required".into());
+                }
+                if s.runtime()
+                    .storage
+                    .get_json(POSITIONS, &registered_id(s, &plan)?)?
+                    .is_none()
+                {
+                    return child(state,REGISTER,json!({"scope":plan.command.scope,"register":{"entryPlanId":plan.plan_id,"activationId":b.activation}}),Action::Register{}).map(PlannedChild::Child);
+                }
+                return Ok(PlannedChild::Complete);
+            }
+            return if work.reconciled {
+                Ok(PlannedChild::Complete)
+            } else {
+                plan_child(state, &plan, SETTLE, Action::Settle {}).map(PlannedChild::Child)
+            };
+        }
         if record.phase == submission::Phase::Consumed && record.filled_quantity.positive() {
             if record.settlement_receipt_sha256.is_none() {
                 return plan_child(state, &plan, SETTLE, Action::Settle {})
@@ -1083,6 +1112,19 @@ fn next_child(
         if let Some((_, record)) = submission::record(s, &plan)? {
             if record.intent["originalRequest"]["activationId"] != b.activation {
                 return Err("management_automation_close_activation_invalid".into());
+            }
+            if !matches!(
+                record.phase,
+                submission::Phase::Admitting
+                    | submission::Phase::Admitted
+                    | submission::Phase::Denied
+            ) && super::super::provisional::selected(s, &plan, &record)?
+            {
+                return if work.reconciled {
+                    Ok(PlannedChild::Complete)
+                } else {
+                    plan_child(state, &plan, SETTLE, Action::Settle {}).map(PlannedChild::Child)
+                };
             }
             match record.phase {
                 submission::Phase::Consumed
@@ -1404,6 +1446,9 @@ fn apply_response(
             work.submission = None;
         }
         Action::Settle {} => {
+            if response.body["schemaVersion"] == "tradeassembly.provider_observation_receipt.v2" {
+                work.reconciled = true;
+            }
             if work.kind == Kind::Position {
                 complete_work(state);
             }

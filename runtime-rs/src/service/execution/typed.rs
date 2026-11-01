@@ -177,6 +177,7 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
         crate::broker_submission::v2::SUBMIT_OPERATION,
     )
     .map_err(|_| "typed_execution_lookup_required")?;
+    order_plans::management::validate_unsettled_provider(s, &c.scope, &package.manifest)?;
     let health_pins = super::automatic_health::bootstrap(s, c, &rev)?;
     let id = config_id(
         s,

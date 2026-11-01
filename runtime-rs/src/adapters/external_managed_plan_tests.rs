@@ -91,6 +91,7 @@ fn exercise_native_managed_plan(
     use crate::service::{
         data_collections as collections, order_plans as plans, session_schedules as schedules,
     };
+    let provisional=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap()["configuration"]["nonAtomicSettlement"]==true;
     let math_pack_sha = actual_math.then(|| s.runtime().plugins.get_instance("managed-real-calculation").unwrap().unwrap()["activePackageSha256"].as_str().unwrap().to_owned());
     let minute_math = math_pack_sha.as_deref() == Some(MANAGED_MINUTE_PACK_SHA);
     let post = |path: &str, body: Value| {
@@ -109,10 +110,18 @@ fn exercise_native_managed_plan(
         "/product/strategies/order-plans/reconcile",
         json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-plan-entry-lookup"}),
     );
+    let entry_cash_before=s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
     let settled = post(
         "/product/strategies/order-plans/settle",
         json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-plan-entry-final"}),
     );
+    if provisional {
+        assert_eq!(settled["cashReconciled"],false,"{settled}");assert_eq!(settled["releasedHold"],"0");
+        assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),entry_cash_before);
+        let original=plans::submission::source(s,entry).unwrap().state().unwrap().unwrap();assert_eq!(original.phase,plans::submission::Phase::Unknown);assert_eq!(original.retained_cash.to_string(),"41");
+        let foreign=s.for_authenticated_invocation("fixture","foreign",None,None);let count=fs::read_to_string(root.join("synthetic-broker/observation.log")).unwrap();
+        let denied=foreign.call_mcp_tool("tradeassembly.strategy.order_plan.settle",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"foreign-provisional-observation"}));assert_eq!(denied["isError"],true,"{denied}");assert_eq!(fs::read_to_string(root.join("synthetic-broker/observation.log")).unwrap(),count);
+    }
     let registered = post(
         plans::management::REGISTER,
         json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-plan-register"}),
@@ -211,7 +220,8 @@ fn exercise_native_managed_plan(
     } else {
         (scheduled_at - 2) & !1
     };
-    let count = if actual_math { 4 } else { 2 };
+    let count = if actual_math { 4 } else if provisional { 3 } else { 2 };
+    let mut provisional_fresh_end = None;
     let interval = if minute_math { 60000 } else if actual_math { 86400000 } else { 1 };
     let grid_label = if minute_math { "synthetic-minute-grid" } else { "synthetic-daily-grid" };
     let mut math_final_value = 100;
@@ -248,7 +258,17 @@ fn exercise_native_managed_plan(
                     None,
                     None,
                 );
-        let t = if actual_math {
+        if provisional && index == 1 {
+            refresh_managed_math_account_health(s,root,"before-final");
+            execution_schedule=Some(prepare_execution_schedule());
+            // Start a new, contiguous bounded run after the negative preflight.
+            // No gap is forward-filled and no old receipt is redated.
+            checkpoint = Value::Null;
+            provisional_fresh_end = Some((s.runtime().clock.trusted_now_ms().unwrap() - 2) & !1);
+        }
+        let t = if provisional && index > 0 {
+            provisional_fresh_end.unwrap() + index - 1
+        } else if actual_math {
             end - (3 - index) * interval
         } else {
             end + index
@@ -294,7 +314,8 @@ fn exercise_native_managed_plan(
         let requested_at=restored.runtime().clock.trusted_now_ms().unwrap();
         assert!(t<=requested_at,"fixture cannot request a future event window");
         if actual_math {eprintln!("synthetic declared-interval math frame {index} completed window {}..{t}; actual request at {requested_at}",t-interval);}
-        let r=restored.handle_http("POST","/product/strategies/data-runs/step",json!({"step":{"runId":"managed-position-reversal","planRevisionId":plan,"window":{"eventStartMs":t-interval,"eventEndMs":t,"asOfMs":requested_at},"expectedCheckpointSha256":checkpoint},"idempotencyKey":format!("managed-plan-frame-{index}")}));
+        let run_id = if provisional && index > 0 { "managed-position-reversal-fresh" } else { "managed-position-reversal" };
+        let r=restored.handle_http("POST","/product/strategies/data-runs/step",json!({"step":{"runId":run_id,"planRevisionId":plan,"window":{"eventStartMs":t-interval,"eventEndMs":t,"asOfMs":requested_at},"expectedCheckpointSha256":checkpoint},"idempotencyKey":format!("managed-plan-frame-{index}")}));
         let processed_at=restored.runtime().clock.trusted_now_ms().unwrap();
         if actual_math {
             frame_timing.push(json!({"frame":index,"eventStartMs":t-interval,"eventEndMs":t,"requestedAtMs":requested_at,"processedAtMs":processed_at,"responseStatus":r.status,"waits":waits}));
@@ -309,7 +330,7 @@ fn exercise_native_managed_plan(
         );
         assert_eq!(
             r.body["receipt"]["signals"][0]["exit"],
-            if if actual_math { index < 3 } else { index == 0 } {
+            if if actual_math { index < 3 } else { index == 0 || provisional && index == 1 } {
                 json!({"status":"warming_up"})
             } else {
                 json!({"status":"ready","value":true})
@@ -320,7 +341,7 @@ fn exercise_native_managed_plan(
             assert_managed_math_frame(&r.body["receipt"], index, math_final_value);
         }
         receipts.push(r.body["receipt"].clone());
-        if actual_math && index == 0 {
+        if (actual_math||provisional) && index == 0 {
             refresh_managed_math_account_health(s, root, "before-entry-refusal");
             entry_refusals = Some(check_entry_refusals_and_pause(receipts.last().unwrap()));
         }
@@ -334,8 +355,8 @@ fn exercise_native_managed_plan(
         assert_eq!(graph.body["current"],true,"{}",graph.body);
     }
     if !actual_math {
-        entry_refusals = Some(check_entry_refusals_and_pause(receipts.last().unwrap()));
-        execution_schedule = Some(prepare_execution_schedule());
+        if entry_refusals.is_none(){entry_refusals=Some(check_entry_refusals_and_pause(receipts.last().unwrap()));}
+        if execution_schedule.is_none(){execution_schedule=Some(prepare_execution_schedule());}
     }
     let (noentry, select) = entry_refusals.expect("entry refusals and entry pause completed");
     let schedule = execution_schedule.expect("fresh execution calendar prepared before close");
@@ -344,7 +365,7 @@ fn exercise_native_managed_plan(
         s.handle_http("POST",plans::management::ADVANCE,json!({"scope":scope,"advance":{"executionOccurrenceId":schedule["schedule"]["occurrence"]["occurrenceId"],"positionId":id,"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"],"reversalSignalReceiptSha256":receipt["receiptSha256"]},"accountMode":"paper","idempotencyKey":key}))
     };
     let submits = fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
-    let unready = if actual_math {
+    let unready = if actual_math || provisional {
         None
     } else {
         Some(advance(&receipts[0], "managed-plan-unready"))
@@ -396,24 +417,50 @@ fn exercise_native_managed_plan(
         "/product/strategies/order-plans/reconcile",
         json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-plan-close-lookup"}),
     );
+    let close_cash_before=s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
+    let close_state_before=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();
     let final_posting = post(
         "/product/strategies/order-plans/settle",
         json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-plan-close-final"}),
     );
+    if provisional {
+        assert_eq!(final_posting["cashReconciled"],false);assert_eq!(final_posting["releasedHold"],"0");
+        assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),close_cash_before);
+        assert_eq!(s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap(),close_state_before);
+        let owner=s.invocation_owner().unwrap();let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&owner.issuer,&owner.subject,None,None);
+        let calls_before=fs::read_to_string(root.join("synthetic-broker/observation.log")).unwrap();
+        let assert_replay = |status: u16, response: &Value| {
+            assert_eq!(status, 200, "{}", response);
+            assert_eq!(response["duplicate"], true);
+            assert!(response["commandId"].is_string());
+            let mut domain = response.clone();
+            domain.as_object_mut().unwrap().remove("duplicate");
+            domain.as_object_mut().unwrap().remove("commandId");
+            assert_eq!(domain, final_posting, "original domain receipt remains immutable");
+        };
+        let retry=restored.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-plan-close-final"}));assert_replay(retry.status, &retry.body);assert_eq!(fs::read_to_string(root.join("synthetic-broker/observation.log")).unwrap(),calls_before);
+        let repeated=restored.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-plan-close-new-read"}));assert_eq!(repeated.status,200,"{}",repeated.body);assert_eq!(repeated.body["releasedHold"],"0");
+        assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),close_cash_before);
+        let replay=restored.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-plan-close-final"}));assert_replay(replay.status, &replay.body);
+        write_screen_interface_evidence("provisional","cash-holds-and-recovery.json",&json!({"entryObservation":settled,"closeObservation":final_posting,"newRead":repeated.body,"originalReplay":replay.body,"cashLedgerUnchangedByObservations":true,"submissionStateUnchangedByObservations":true,"actualCoreOsRestartQualified":false,"serviceRecreationQualified":true,"cashReconciled":false,"realProviderCalls":0}));
+    }
     let inspected = s.handle_http(
         "GET",
         &format!("/product/strategies/positions/{id}"),
         json!({}),
     );
     assert_eq!(inspected.status, 200, "{}", inspected.body);
-    assert_eq!(inspected.body["position"]["closedQuantity"], "0.4");
+    let partial=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap()["configuration"]["partialClose"]==true;
+    assert_eq!(inspected.body["position"]["closedQuantity"],if partial{"0.2"}else{"0.4"});
+    if provisional{assert!(inspected.body["position"]["reservations"].as_object().unwrap().is_empty());}
+
     let calls = fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
     assert_eq!(calls.lines().filter(|v| *v == "submit").count(), 2);
     assert_eq!(calls.lines().filter(|v| *v == "lookup").count(), 2);
     write_screen_interface_evidence(
         "managed_plan",
         "generic-reversal-owned-removed-member.json",
-        &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"declaredIntervalMs":interval,"syntheticFrameTiming":frame_timing,"exchangeCalendarAlignmentQualified":false,"userDailyBtcStrategyQualified":false,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":math_pack_sha,"qualification":if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture at declared interval, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/OS-process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
+        &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"nonAtomicObservationOnly":provisional,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"declaredIntervalMs":interval,"syntheticFrameTiming":frame_timing,"exchangeCalendarAlignmentQualified":false,"userDailyBtcStrategyQualified":false,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":math_pack_sha,"qualification":if provisional{"native synthetic C5 entry/close with V3 recovery and non-atomic V2 observations; unsettled owned-position management; cash holds preserved, service recreation, original receipt replay and no duplicate close; no coherent cash reconciliation, automatic/OS restart or real provider claim"}else if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture at declared interval, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/OS-process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
     );
 }
 #[test]

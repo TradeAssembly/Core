@@ -240,9 +240,12 @@ pub(crate) fn binding(
         let pos = position
             .as_ref()
             .ok_or("management_runner_position_missing")?;
+        if pos.entry_observation_sha256.is_some() {
+            return Err("management_observation_transport_version_required".into());
+        }
         let (_, original) =
             submission::record(s, &entry)?.ok_or("management_runner_original_entry_missing")?;
-        settlement::verify_historical_entry(s, &entry, &pos.entry_settlement_sha256)?;
+        verify_entry(s, &entry, pos)?;
         if pos.entry_plan_id != entry.plan_id
             || original.intent["originalRequest"]["activationId"] != activation
         {
@@ -279,6 +282,10 @@ pub(crate) fn binding(
     if original.intent["originalRequest"]["activationId"] != activation {
         return Err("management_runner_entry_activation_invalid".into());
     }
+    let selected_policy = policy(s, op.scope())?.ok_or("management_runner_policy_required")?;
+    if selected_policy.entry_basis == "provider_reported_average_fill" {
+        return Err("management_observation_transport_version_required".into());
+    }
     settlement::entry_basis(s, &entry)?;
     let source = settlement::current_source(s, &entry, &original)?;
     let policy = policy(s, op.scope())?.ok_or("management_runner_policy_required")?;
@@ -289,6 +296,10 @@ pub(crate) fn binding(
         "entrySettlementSha256":original.settlement_receipt_sha256,"activationId":activation,
         "exitPolicySha256":hash(&policy)?,"configSha256":hash(&config)?,"sourceBindingSha256":hash(&source)?});
     if let Some(pos) = &position {
+        if pos.entry_observation_sha256.is_some() {
+            return Err("management_observation_transport_version_required".into());
+        }
+
         proof["positionId"] = json!(pos.position_id);
         proof["entrySettlementSha256"] = json!(pos.entry_settlement_sha256);
     }
@@ -377,6 +388,12 @@ pub(crate) fn binding(
                 return Err("management_runner_close_activation_invalid".into());
             }
             let source = settlement::current_source(s, close, &record)?;
+            if matches!(op, ManagementOperation::SettleClose { .. })
+                && super::super::provisional::selected(s, close, &record)?
+            {
+                return Err("management_observation_transport_version_required".into());
+            }
+
             let (operation, capability, purpose) =
                 if matches!(op, ManagementOperation::SettleClose { .. }) {
                     (

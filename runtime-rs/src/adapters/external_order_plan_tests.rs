@@ -54,12 +54,13 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let forward=Arc::new(ForwardNative::default());let (mut dir,base,_,_)=data_plans::tests::fixture_service(Some(forward.clone()));
  if v2_case.is_some_and(|c|c.starts_with("financial_screen_auto")||c.starts_with("financial_screen_managed_plan")){dir.disable_cleanup(true);eprintln!("retained automatic fixture root {}",dir.path().display());}
  let automatic_health=v2_case==Some("financial_screen_auto_health");let automatic_stream=v2_case==Some(AUTOMATIC_STREAM_CASE);
+ let provisional=v2_case.is_some_and(|c|c.starts_with("financial_screen_managed_plan_provisional"));
  let managed_plan=v2_case.is_some_and(|c|c.starts_with("financial_screen_managed_plan"));let minute_math=v2_case==Some(MANAGED_MINUTE_MATH_CASE);let actual_math=v2_case.is_some_and(actual_managed_math_case);let signal_interval=if minute_math{60000}else if actual_math{86400000}else if automatic_stream{1000}else if managed_plan{1}else{60000};
  let automatic=v2_case.is_some_and(|c|c.starts_with("financial_screen_auto"));let managed=matches!(v2_case,Some("financial_screen_auto_managed"|"financial_screen_auto_worker"));let background=v2_case==Some("financial_screen_auto_worker");
  let dynamic=v2_case.is_some_and(|c|c.starts_with("financial_screen_"));
  let replay=install_fixture_variant_number_series(&base,dir.path(),false,signal_interval,false,dynamic,true,actual_math);
  let actual_pack=(actual_math&&!minute_math).then(||install_managed_math_pack(&base));let stream_package=automatic_stream.then(||install_automatic_stream_package(&base,dir.path()));
- let facts=install_execution_package_with_health(&base,dir.path(),false,actual_math||automatic_health||automatic_stream);let sizing=install_execution_package(&base,dir.path(),true);
+ let facts=install_execution_package_with_health(&base,dir.path(),false,actual_math||automatic_health||automatic_stream||provisional);let sizing=install_execution_package(&base,dir.path(),true);
  let broker=v2_case.map(|case|install_v2_broker_fixture(&base,dir.path(),case));
  let warden=v2_case.map(|_|crate::finance_authority::tests::spawn_mock_warden(crate::finance_authority::tests::MockBehavior::Allow));
 
@@ -76,7 +77,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let mut native=crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(runtime.storage.clone(),runtime.plugins.clone(),runtime.credentials.clone(),runtime.plugin_packages.clone(),runtime.clock.clone(),Arc::new(TracedFixtureSandbox));
  if let Some(warden)=&warden {native=native.with_broker_boundary(Arc::new(crate::broker_submission::LocalBrokerSubmissionBoundary::new(crate::broker_submission::BrokerSubmissionDependencies{storage:runtime.storage.clone(),plugins:runtime.plugins.clone(),plugin_packages:runtime.plugin_packages.clone(),credentials:runtime.credentials.clone(),capability_resolver:runtime.capability_resolver.clone(),clock:runtime.clock.clone(),leases:runtime.leases.clone(),owner:owner.clone()},Arc::new(crate::finance_authority::WardenSidecarAuthority::new(&warden.base_url,"test-warden-token-with-at-least-32-bytes",crate::finance_authority::REQUIRED_WARDEN_SERVICE_VERSION).unwrap()))));}
  *forward.0.lock().unwrap()=Some(native);
- if actual_math||automatic_health||automatic_stream{refresh_managed_math_account_health(&service,dir.path(),"bootstrap");}
+ if actual_math||automatic_health||automatic_stream||provisional{refresh_managed_math_account_health(&service,dir.path(),"bootstrap");}
  if v2_case==Some("financial_settlement_joint"){let health=service.handle_http("POST","/plugins/instances/fixture.broker.v2/health:refresh",json!({"idempotencyKey":"bootstrap-genuine-health-read"}));assert_eq!(health.status,200,"{}",health.body);assert_eq!(health.body["instance"]["health"]["connectivityChecked"],true,"{}",health.body);assert_eq!(health.body["instance"]["health"]["account"]["id"],"fixture.paper.provider","{}",health.body);}
  for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
 
@@ -103,6 +104,12 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  if automatic{spec["stages"]["exit_policy"]["enabled"]=json!(false);configure_dispatch_calendar_fixture(&service,&mut spec);spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["offset_ms"]=json!(if automatic_health{600000}else{0});spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]["max_lateness_ms"]=json!(600000);bindings["calendar"]=json!({"pluginInstanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"operationId":"calendar"});}
 
  if managed_plan{configure_managed_plan_native_spec(&service,&mut spec,&mut bindings,&replay);}
+ if v2_case.is_some_and(|c|c.starts_with("financial_screen_managed_plan_provisional")){
+  spec["stages"]["exit_policy"]["config"]["tradeassembly.managed_exit.v1"]["entryBasis"]=json!("provider_reported_average_fill");
+  let broker=broker.as_ref().unwrap();
+  for (dep,op) in [("broker.lookup",tradeassembly_plugin_sdk::broker_lookup_v3::OPERATION_ID),("broker.cash_settlement",tradeassembly_plugin_sdk::settlement_observation_v2::CASH_OPERATION),("broker.close_settlement",tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_OPERATION)]{bindings[format!("exec_broker::{dep}")]=json!({"pluginInstanceRef":broker.plugin_ref,"pluginRef":broker.plugin_ref,"operationId":op,"accountRef":format!("account://{}/fixture.paper.provider",broker.plugin_ref)});}
+ }
+
  if let Some(stream)=&stream_package{configure_automatic_stream_spec(&service,&mut spec,&mut bindings,&replay,stream);}
  if let Some(pack)=&actual_pack{configure_managed_math_native_spec(&service,&mut spec,&mut bindings,pack);}
  if managed {spec["stages"]["exit_policy"]["enabled"]=json!(true);spec["stages"]["exit_policy"]["policy"]=json!({"monitoring":["synthetic"],"triggers":[{"id":"stop_loss","kind":"price","scope":"full_position"},{"id":"trailing","kind":"price","scope":"full_position"}],"composition":"priority","precedence":["stop_loss","trailing"],"end_of_data":"preserve_open_positions"});spec["stages"]["exit_policy"]["config"]["tradeassembly.managed_exit.v1"]=json!({"rules":{"schemaVersion":"tradeassembly.position_exit_rules.v1","priceBasis":"bid","stopLossRatio":"0.1","trailingRatio":"0.2","trailingStart":{"kind":"immediate"},"reversalSignal":null,"precedence":["stop_loss","trailing"],"maxQuoteAgeMs":30000},"entryBasis":"provider_final_gross_excluding_fees","feeCashCap":"1","maxLimitSlippageRatio":"0.01","timeInForce":"day","maxReversalAgeMs":30000});}

@@ -1,4 +1,4 @@
-//! Immutable package-byte reuse inside one pure management validation round.
+//! Immutable package-byte reuse inside one pure financial validation round.
 //! The original runtime's operation port is deliberately never wrapped. Every
 //! independent approval, C5 admission/revalidation and dispatch starts fresh.
 use super::TradeAssemblyService;
@@ -17,7 +17,7 @@ use tradeassembly_plugin_sdk::{data_history::VersionedOperationData, data_recipe
 const MAX_CACHED_PACKAGES: usize = 32;
 const MAX_CACHED_METADATA_BYTES: usize = 64 * 1_048_576;
 
-/// This callback is used only by the two pure management validators. It clones
+/// This callback is used only by pure entry/management validators. It clones
 /// the existing service (including invocation identity) without bootstrap,
 /// reauthentication, storage mutation, or replacement of any authority port.
 /// Nested validators receive this same scoped service, without opening another

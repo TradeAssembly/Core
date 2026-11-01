@@ -256,6 +256,20 @@ async fn documented_http_routes_are_served_by_rust_axum_api() {
             assert!(body.get("snapshot").is_none());
             continue;
         }
+        if matches!(
+            route,
+            "POST /dataset-projections" | "POST /dataset-projections/{projection_id}/advance"
+        ) {
+            assert_eq!(status.as_u16(), 409);
+            assert_eq!(
+                body["error"]["code"],
+                "dataset_projection_outer_key_required"
+            );
+            assert_eq!(body["error"]["retryable"], false);
+            assert!(body.get("projection").is_none());
+            assert!(body.get("projectionReceipt").is_none());
+            continue;
+        }
         if route == "POST /product/strategies/selection-plans/prepare" {
             assert_eq!(status.as_u16(), 409);
             assert_eq!(body["error"]["code"], "selection_plan_command_invalid");

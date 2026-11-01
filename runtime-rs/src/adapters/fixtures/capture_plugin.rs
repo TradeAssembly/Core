@@ -13,6 +13,12 @@ fn digest(v: &Value) -> String {
         .collect()
 }
 
+// Provider-visible fields only: no host instrument ID, family, multiplier,
+// canonical hash or plan label is stored by the V3 recovery fixture.
+fn provider_order_projection(original:&Value)->Value {
+ json!({"accountId":"fixture.paper.provider","environment":"paper","namespace":"fixture.execution.facts","clientOrderId":original["order"]["clientOrderId"],"symbol":original["order"]["instrument"]["providerSymbol"],"assetClass":original["order"]["instrument"]["assetClass"],"positionAction":original["order"]["positionAction"],"quantity":original["order"]["quantity"],"pricing":original["order"]["pricing"],"timeInForce":original["order"]["timeInForce"]})
+}
+
 // Test-only HTTP broker: the plugin has no filesystem state/permissions.
 fn synthetic_broker_http(request: &Value, payload: &Value) -> Value {
     let port = payload["config"]["dataApiUrl"].as_str().unwrap()
@@ -259,7 +265,7 @@ fn main() {
             (document,tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA)
             }
         }
-        "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" => {
+        "broker.paper_order_submit_v2" | "broker.order_lookup.paper_v2" | "broker.order_lookup.paper_v3" => {
             if payload["config"]["dataApiUrl"].is_string() {
                 assert_eq!(request["context"]["mode"],"paper");assert!(!request["ephemeralCredentialGrant"].is_null());
                 (synthetic_broker_http(&request,payload),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
@@ -271,7 +277,20 @@ fn main() {
             let mut counts=OpenOptions::new().create(true).append(true).open(root.join("calls.log")).unwrap();writeln!(counts,"{}",if submit{"submit"}else{"lookup"}).unwrap();
             let mut clean=payload.clone();clean.as_object_mut().unwrap().remove("config");
             let closing=clean["order"]["positionAction"]=="sell_to_close"||clean["clientOrderId"].as_str().is_some_and(|s|s.starts_with("ta-close-"));let accepted=root.join(if closing{"close-accepted-request.json"}else{"accepted-request.json"});
-            let original=if submit{tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&clean).unwrap()).unwrap();let bytes=serde_json::to_vec(&clean).unwrap();let mut file=OpenOptions::new().create_new(true).write(true).open(&accepted).unwrap();file.write_all(&bytes).unwrap();file.sync_all().unwrap();clean}else{let original:Value=serde_json::from_slice(&fs::read(&accepted).unwrap()).unwrap();assert_eq!(clean["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(clean["canonicalAccountSha256"],original["canonicalAccountSha256"]);original};
+            let original=if config["lookupVersion3"]==true {
+                let provider_file=root.join("provider-order.json");
+                if submit {
+                    tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&clean).unwrap()).unwrap();
+                    let mut file=OpenOptions::new().create_new(true).write(true).open(provider_file).unwrap();file.write_all(&serde_json::to_vec(&provider_order_projection(&clean)).unwrap()).unwrap();file.sync_all().unwrap();clean
+                }else{
+                    assert_eq!(request["metadata"]["operationId"],"broker.order_lookup.paper_v3");
+                    let lookup=tradeassembly_plugin_sdk::broker_lookup_v3::decode_lookup_json(&serde_json::to_vec(&clean).unwrap()).unwrap();
+                    assert_eq!(lookup.expected_account.provider_account_id,"fixture.paper.provider");assert_eq!(lookup.expected_account.broker_namespace,"fixture.execution.facts");
+                    let original=serde_json::to_value(&lookup.original_submit).unwrap();
+                    let observed:Value=serde_json::from_slice(&fs::read(provider_file).unwrap()).unwrap();
+                    assert_eq!(observed,provider_order_projection(&original),"fresh process independently compares provider-visible facts before echoing original host identity");original
+                }
+            }else{if submit{tradeassembly_plugin_sdk::broker_v2::decode_submit_json(&serde_json::to_vec(&clean).unwrap()).unwrap();let bytes=serde_json::to_vec(&clean).unwrap();let mut file=OpenOptions::new().create_new(true).write(true).open(&accepted).unwrap();file.write_all(&bytes).unwrap();file.sync_all().unwrap();clean}else{let original:Value=serde_json::from_slice(&fs::read(&accepted).unwrap()).unwrap();assert_eq!(clean["clientOrderId"],original["order"]["clientOrderId"]);assert_eq!(clean["canonicalAccountSha256"],original["canonicalAccountSha256"]);original}};
             if closing&&config["scenario"].as_str().is_some_and(|v|v.starts_with("managed_plan_close_")){
                 (native_close_outcome_observation(root,config["scenario"].as_str().unwrap(),&original,submit),tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA)
             }else{

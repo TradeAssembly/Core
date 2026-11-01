@@ -53,7 +53,12 @@ A submit operation opts in through its declared, required dependency:
 This belongs in the existing operation `dependencies` array. The host must
 validate and bind that declaration to the original provider/package/instance
 and current read permission before dispatch. Declaring a dependency does not
-grant access. No V3 selection based on availability, probing or silent fallback
+grant access. Core graph authors must supply an explicit binding for the child
+node `<submitRequirementId>::broker.lookup`, including the same verified
+plugin instance, package and account reference; dependency expansion does not
+inherit account authority. A missing child account binding correctly blocks
+graph preparation before provider acquisition. No V3 selection based on
+availability, probing or silent fallback
 is permitted. Without that explicit V3 dependency, existing V2 lookup behavior
 and wire bytes remain unchanged. A present but invalid or unavailable V3 binding
 must refuse rather than downgrade.

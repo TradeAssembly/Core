@@ -858,10 +858,16 @@ fn validated_stored_response(
 fn validate_request(request: &PluginOperationRequest) -> Result<(), String> {
     if matches!(
         request.operation_id.as_str(),
-        "broker.order_lookup" | "broker.order_lookup.paper" | "broker.order_lookup.paper_v2"
+        "broker.order_lookup"
+            | "broker.order_lookup.paper"
+            | "broker.order_lookup.paper_v2"
+            | "broker.order_lookup.paper_v3"
     ) || matches!(
         request.capability.as_str(),
-        "broker.order_lookup.live" | "broker.order_lookup.paper" | "broker.order_lookup.paper@2"
+        "broker.order_lookup.live"
+            | "broker.order_lookup.paper"
+            | "broker.order_lookup.paper@2"
+            | "broker.order_lookup.paper@3"
     ) {
         return Err("broker_order_recovery_plan_required".into());
     }
@@ -1362,6 +1368,25 @@ mod tests {
             fencing_token: Some(1),
             input: json!({}),
             evidence_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn lookup_v3_cannot_bypass_owned_recovery_through_generic_invocation() {
+        for (operation, capability) in [
+            ("broker.order_lookup.paper_v3", "renamed.read"),
+            ("renamed.read", "broker.order_lookup.paper@3"),
+            (
+                "broker.order_lookup.paper_v3",
+                "broker.order_lookup.paper@3",
+            ),
+        ] {
+            let mut r = request(operation);
+            r.capability = capability.into();
+            assert_eq!(
+                validate_request(&r).unwrap_err(),
+                "broker_order_recovery_plan_required"
+            );
         }
     }
 

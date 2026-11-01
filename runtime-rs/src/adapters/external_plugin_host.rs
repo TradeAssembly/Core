@@ -180,6 +180,11 @@ impl ExternalPluginHost {
                     "paper"
                 )
                 | (
+                    "broker.order_lookup.paper_v3",
+                    "broker.order_lookup.paper@3",
+                    "paper"
+                )
+                | (
                     "broker.order_lookup.paper",
                     "broker.order_lookup.paper",
                     "paper"

@@ -385,11 +385,17 @@ pub(crate) fn binding(
                         "settlement",
                     )
                 } else {
-                    (
-                        crate::broker_submission::v2::LOOKUP_OPERATION,
-                        crate::broker_submission::v2::LOOKUP_CAPABILITY,
-                        "recovery",
-                    )
+                    let package = s
+                        .runtime()
+                        .plugin_packages
+                        .get(&source.package_sha256)?
+                        .ok_or("management_runner_broker_package_missing")?;
+                    let (operation, capability) =
+                        crate::broker_submission::v2::recovery_lookup_binding(
+                            &package.manifest,
+                            crate::broker_submission::v2::SUBMIT_OPERATION,
+                        )?;
+                    (operation, capability, "recovery")
                 };
             require_read_capability(
                 s,

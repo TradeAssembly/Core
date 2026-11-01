@@ -86,6 +86,13 @@ fn recovery_lookup(manifest: &Value, submit_operation: &str) -> Result<RecoveryL
     }
     Ok(selected)
 }
+pub(crate) fn recovery_lookup_binding(
+    manifest: &Value,
+    submit_operation: &str,
+) -> Result<(&'static str, &'static str), String> {
+    let selected = recovery_lookup(manifest, submit_operation)?;
+    Ok((selected.operation(), selected.capability()))
+}
 fn recovery_input(
     contract: RecoveryLookup,
     original: &wire::SubmitRequest,

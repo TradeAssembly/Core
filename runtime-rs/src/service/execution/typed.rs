@@ -172,18 +172,11 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
             "activePackageSha256",
         )?)?
         .ok_or("typed_execution_package_missing")?;
-    if !package.manifest["operations"]
-        .as_array()
-        .is_some_and(|ops| {
-            ops.iter().any(|o| {
-                o["id"] == crate::broker_submission::v2::LOOKUP_OPERATION
-                    && o["capability"] == crate::broker_submission::v2::LOOKUP_CAPABILITY
-                    && o["effect"] == "read"
-            })
-        })
-    {
-        return Err("typed_execution_lookup_required".into());
-    }
+    crate::broker_submission::v2::recovery_lookup_binding(
+        &package.manifest,
+        crate::broker_submission::v2::SUBMIT_OPERATION,
+    )
+    .map_err(|_| "typed_execution_lookup_required")?;
     let health_pins = super::automatic_health::bootstrap(s, c, &rev)?;
     let id = config_id(
         s,

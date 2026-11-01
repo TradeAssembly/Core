@@ -606,6 +606,15 @@ pub fn project_with_strategy_spec(
             metric.reason = "return-sampling and annualization policies are not qualified for this typed research version".into();
         }
         report.costs_and_risk.unavailable.push(unavailable("benchmark","no explicit verified benchmark series/model is supported by this typed research version"));
+        if manifest
+            .content
+            .configuration
+            .instruments
+            .first()
+            .is_some_and(|instrument| instrument.instrument_family == "crypto_spot")
+        {
+            report.metadata.warnings.push("Crypto spot cash profile: unit multiplier, base_asset quantity, exact six-decimal price/quantity/volume and cash-representable costs only. Finer volume or fractional cash products refuse; no production-provider, venue precision, entitlement or historical coverage qualification is implied.".into());
+        }
         report.metadata.warnings.push("Fixed-quantity typed signal simulation with a separately bound fill/mark series; this is not full published sizing, risk, stop or screened-selection parity. Retrospective captured-data replay leaves historical point-in-time availability unqualified. Fills and equity are simulated, not broker observations.".into());
         report.provenance.strategy_execution_summary = json!({"status":"available","engine":crate::backtest_contracts::TYPED_BACKTEST_ENGINE,
             "planRevisionId":typed.plan_revision_id,"planRevisionSha256":typed.plan_revision_sha256,"semanticSha256":typed.semantic_sha256,

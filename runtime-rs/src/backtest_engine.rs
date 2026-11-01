@@ -141,6 +141,7 @@ pub(crate) fn execute_typed(
         .as_ref()
         .ok_or("typed_backtest_binding_required")?;
     validate_typed_model(c)?;
+    validate_typed_crypto_precision(c, snapshot)?;
     let observations = normalized_typed_bars(snapshot, c.liquidity.minimum_volume_micros)?;
     let kernel = crate::strategy_kernel::run_with_signals(
         &observations,
@@ -172,12 +173,13 @@ pub(crate) fn validate_typed_model(
         || c.instruments[0].quantity_scale != 6
         || c.instruments[0].price_scale != 6
         || c.instruments[0].settlement != "cash"
-        || !matches!(c.instruments[0].quantity_unit.as_str(), "shares" | "units")
-        || c.execution.time_in_force != "day"
-        || !matches!(
-            c.instruments[0].instrument_family.as_str(),
-            "equity" | "etf" | "fund"
+        || !typed_family_unit_supported(
+            &c.instruments[0].instrument_family,
+            &c.instruments[0].quantity_unit,
         )
+        || c.execution.time_in_force != "day"
+        || (c.instruments[0].instrument_family == "crypto_spot"
+            && c.execution.fill_policy != FillPolicy::Full)
         || c.risk.maximum_loss_micros < c.capital.starting_cash_micros
         || !c.execution.reject_on_insufficient_capital
         || !c.execution.reject_on_insufficient_liquidity
@@ -188,6 +190,86 @@ pub(crate) fn validate_typed_model(
         || c.dataset.benchmark.is_some()
     {
         return Err("typed_backtest_model_unsupported".into());
+    }
+    Ok(())
+}
+
+fn typed_family_unit_supported(family: &str, unit: &str) -> bool {
+    matches!(
+        (family, unit),
+        ("equity" | "etf" | "fund", "shares" | "units") | ("crypto_spot", "base_asset")
+    )
+}
+/// This initial cash-micro crypto profile refuses rounding rather than changing
+/// the established shared kernel arithmetic or silently accepting finer units.
+pub(crate) fn validate_typed_crypto_precision(
+    c: &crate::backtest_contracts::BacktestConfiguration,
+    snapshot: &DatasetSnapshot,
+) -> Result<(), String> {
+    if c.instruments
+        .first()
+        .is_none_or(|i| i.instrument_family != "crypto_spot")
+    {
+        return Ok(());
+    }
+    if snapshot.content.asset_classes != [crate::historical_data::AssetClass::CryptoSpot] {
+        return Err("typed_backtest_crypto_asset_class_mismatch".into());
+    }
+    let binding = c
+        .typed_evaluation
+        .as_ref()
+        .ok_or("typed_backtest_binding_required")?;
+    let adverse = i64::from(c.costs.spread_bps) + i64::from(c.costs.slippage_bps);
+    for row in &snapshot.content.observations {
+        let HistoricalObservationData::Bar(bar) = &row.data else {
+            return Err("typed_backtest_data_kind_unsupported".into());
+        };
+        exact_typed_micros(bar.volume)
+            .map_err(|_| "typed_backtest_crypto_volume_precision_unsupported")?;
+        for price in [bar.open, bar.close] {
+            exact_crypto_cash_values(
+                binding.quantity_micros,
+                exact_typed_micros(price)?,
+                adverse,
+                c.costs.per_unit_fee_micros,
+                i64::from(c.costs.notional_fee_bps),
+            )?;
+        }
+    }
+    Ok(())
+}
+fn exact_crypto_cash_values(
+    quantity: i64,
+    base: i64,
+    adverse_bps: i64,
+    unit_fee: i64,
+    notional_bps: i64,
+) -> Result<(), String> {
+    let bad = || "typed_backtest_crypto_cash_precision_unsupported".to_string();
+    if base <= 0 {
+        return Err("typed_backtest_crypto_price_nonpositive".into());
+    }
+    if quantity <= 0 || !(0..=10000).contains(&adverse_bps) || unit_fee < 0 || notional_bps < 0 {
+        return Err(bad());
+    }
+    let unit = i128::from(UNIT);
+    if i128::from(quantity) * i128::from(unit_fee) % unit != 0 {
+        return Err(bad());
+    }
+    for factor in [10000, 10000 + adverse_bps, 10000 - adverse_bps] {
+        let numerator = base.checked_mul(factor).ok_or_else(bad)?;
+        if numerator % 10000 != 0 {
+            return Err(bad());
+        }
+        let price = numerator / 10000;
+        let notional = i128::from(quantity) * i128::from(price);
+        if notional % unit != 0 {
+            return Err(bad());
+        }
+        let gross = i64::try_from(notional / unit).map_err(|_| bad())?;
+        if i128::from(gross) * i128::from(notional_bps) % 10000 != 0 {
+            return Err(bad());
+        }
     }
     Ok(())
 }
@@ -856,6 +938,37 @@ fn accounting_error(error: crate::backtest_accounting::AccountingError) -> Strin
 
 #[cfg(test)]
 mod typed_precision_tests {
+    #[test]
+    fn typed_crypto_profile_has_exact_units_and_no_implicit_cash_or_cost_rounding() {
+        assert!(super::typed_family_unit_supported(
+            "crypto_spot",
+            "base_asset"
+        ));
+        for (family, unit) in [
+            ("crypto_spot", "shares"),
+            ("crypto_spot", "units"),
+            ("crypto_perpetual", "base_asset"),
+            ("equity", "base_asset"),
+        ] {
+            assert!(!super::typed_family_unit_supported(family, unit));
+        }
+        super::exact_crypto_cash_values(1000, 90_000_000_000, 30, 0, 10).unwrap();
+        assert_eq!(
+            super::exact_crypto_cash_values(1000, 0, 0, 0, 0).unwrap_err(),
+            "typed_backtest_crypto_price_nonpositive"
+        );
+        for args in [
+            (1, 90_123_123_456, 0, 0, 0),
+            (1_000_000, 1_000_001, 1, 0, 0),
+            (1, 90_000_000_000, 0, 1, 0),
+            (1000, 90_000_001_000, 0, 0, 1),
+        ] {
+            assert!(
+                super::exact_crypto_cash_values(args.0, args.1, args.2, args.3, args.4).is_err(),
+                "{args:?}"
+            );
+        }
+    }
     #[test]
     fn typed_fill_precision_is_exact_and_does_not_relabel_finer_prices_or_quantities() {
         assert_eq!(super::exact_typed_micros(90.27).unwrap(), 90270000);

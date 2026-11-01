@@ -29,7 +29,11 @@ fn main() {
     let payload = &request["payload"]["payload"];
     let operation = request["metadata"]["operationId"].as_str().unwrap();
     let (result, schema) = if operation == "research_acquire" {
-        assert_eq!(payload["feed"], "synthetic_typed_research_v1");
+        let feed = payload["feed"].as_str().unwrap();
+        assert!(matches!(
+            feed,
+            "synthetic_typed_research_v1" | "synthetic_typed_crypto_spot_v1"
+        ));
         let start = payload["start"].as_i64().unwrap();
         let end = payload["end"].as_i64().unwrap();
         let origin = payload["origin"].as_i64().unwrap();
@@ -41,13 +45,17 @@ fn main() {
         assert_eq!((end - start) % 1000, 0);
         assert!(end <= cutoff && cutoff <= now());
         let instrument = payload["instrument"].as_str().unwrap();
-        assert!(matches!(instrument, "SPY" | "B"));
+        assert!(matches!(
+            (instrument, feed),
+            ("SPY" | "B", "synthetic_typed_research_v1")
+                | ("BTC/USD", "synthetic_typed_crypto_spot_v1")
+        ));
         // Actual host acquisition time stays separate from historical event time.
         let values = (0..((end - start) / 1000))
             .map(|index| 100 + (start - origin) / 1000 + index)
             .collect::<Vec<_>>();
         let snapshot = json!({"instrument":instrument,"start":start,"origin":origin,"interval":1000,
-            "observedAtMs":now(),"values":values,"feed":"synthetic_typed_research_v1"});
+            "observedAtMs":now(),"values":values,"feed":feed});
         (
             json!({"snapshot":snapshot,"digest":hash(&snapshot)}),
             "schema://fixture-typed-research/acquisition@1",
@@ -60,7 +68,12 @@ fn main() {
             assert!(evaluation.inputs.is_empty() && evaluation.prior_state.is_empty());
             let snapshot = &evaluation.parameters["snapshot"];
             assert_eq!(hash(snapshot), evaluation.parameters["digest"]);
-            assert_eq!(snapshot["feed"], "synthetic_typed_research_v1");
+            let feed = snapshot["feed"].as_str().unwrap();
+            assert!(matches!(
+                (snapshot["instrument"].as_str().unwrap(), feed),
+                ("SPY" | "B", "synthetic_typed_research_v1")
+                    | ("BTC/USD", "synthetic_typed_crypto_spot_v1")
+            ));
             assert_eq!(snapshot["interval"], 1000);
             let start = snapshot["start"].as_i64().unwrap();
             let values = snapshot["values"].as_array().unwrap();
@@ -81,10 +94,7 @@ fn main() {
                     let end = event_start + 1000;
                     let mut point = DataPoint {
                         instrument_id: evaluation.instruments[0].clone(),
-                        source_event_id: format!(
-                            "synthetic_typed_research_v1:{}:{end}",
-                            evaluation.instruments[0]
-                        ),
+                        source_event_id: format!("{feed}:{}:{end}", evaluation.instruments[0]),
                         result: PointValue::Ready(
                             values[((event_start - start) / 1000) as usize].clone(),
                         ),

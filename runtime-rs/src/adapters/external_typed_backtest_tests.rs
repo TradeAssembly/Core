@@ -1,6 +1,69 @@
 // Canonical typed-backtest native process fixture: declared synthetic source,
 // diagnostic sandbox/test principal, no SRT, real provider or broker claim.
 const TYPED_RESEARCH_PLUGIN: &str = "fixture.typed_research";
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TypedResearchAsset {
+    Equity,
+    CryptoSpot,
+}
+impl TypedResearchAsset {
+    fn instrument(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "BTC/USD"
+        } else {
+            "SPY"
+        }
+    }
+    fn family(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "crypto_spot"
+        } else {
+            "equity"
+        }
+    }
+    fn asset_class(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "crypto"
+        } else {
+            "equity"
+        }
+    }
+    fn plugin(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "fixture.typed_research_crypto"
+        } else {
+            TYPED_RESEARCH_PLUGIN
+        }
+    }
+    fn feed(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "synthetic_typed_crypto_spot_v1"
+        } else {
+            "synthetic_typed_research_v1"
+        }
+    }
+    fn calendar(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "SYNTHETIC_CRYPTO_UTC_EXPLICIT_24H"
+        } else {
+            "SYNTHETIC_RESEARCH"
+        }
+    }
+    fn quantity(self) -> i64 {
+        if self == Self::CryptoSpot {
+            1000
+        } else {
+            1000000
+        }
+    }
+    fn unit(self) -> &'static str {
+        if self == Self::CryptoSpot {
+            "base_asset"
+        } else {
+            "shares"
+        }
+    }
+}
 fn typed_research_executable() -> &'static [u8] {
     static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
@@ -40,19 +103,20 @@ fn typed_research_executable() -> &'static [u8] {
 fn install_typed_research_package(
     s: &crate::service::TradeAssemblyService,
     root: &std::path::Path,
+    asset: TypedResearchAsset,
 ) -> InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, contract, series_bytes, _) = materials();
     let mut source: Value = serde_json::from_slice(&contract).unwrap();
     source["schemaVersion"] = json!("tradeassembly.operation_data.v2");
     source["operationId"] = json!("research_replay");
-    source["semanticsVersion"] = json!("synthetic_typed_research_v1");
+    source["semanticsVersion"] = json!(asset.feed());
     source["outputs"]["value"]["time"] = json!({"intervalMs":1000,"completedOnly":true});
     source["inputs"] = json!({});
     source["state"] = Value::Null;
     source["warmup"] =
         json!({"minimumObservations":1,"observationsParameter":null,"additionalObservations":0});
-    source["applicability"] = json!({"assetClasses":["equity"],"instrumentFamilies":["equity"],"modes":["paper","backtest"]});
+    source["applicability"] = json!({"assetClasses":[asset.asset_class()],"instrumentFamilies":[asset.family()],"modes":["paper","backtest"]});
     source["parameterSchema"] = json!({"type":"object","properties":{"snapshot":{"type":"object"},"digest":{"type":"string"}},"required":["snapshot","digest"],"additionalProperties":false});
     let state_schema = json!({"type":"object","properties":{"seen":{"type":"integer","minimum":0}},"required":["seen"],"additionalProperties":false});
     let mut counter = source.clone();
@@ -99,18 +163,18 @@ fn install_typed_research_package(
         op["dependencies"] = json!([]);
         op["credentialGrantRequired"] = json!(false);
         op["accountBindingRequired"] = json!(false);
-        op["traits"] = json!({"modes":["paper","backtest"],"instrumentFamilies":["equity"],"inputSchemaRefs":if id=="research_counter"{vec!["schema://test/series@1"]}else{vec![]},
+        op["traits"] = json!({"modes":["paper","backtest"],"instrumentFamilies":[asset.family()],"inputSchemaRefs":if id=="research_counter"{vec!["schema://test/series@1"]}else{vec![]},
             "outputSchemaRefs":schemas,"deterministic":pure,"replayable":pure});
         operations.push(op);
     }
-    let manifest = json!({"metadata":{"id":TYPED_RESEARCH_PLUGIN,"version":"1","provider":{"id":TYPED_RESEARCH_PLUGIN,"name":"Synthetic typed research state counter"}},
+    let manifest = json!({"metadata":{"id":asset.plugin(),"version":"1","provider":{"id":asset.plugin(),"name":"Synthetic typed research state counter"}},
         "capabilities":operations.iter().map(|op|json!({"id":op["capability"]})).collect::<Vec<_>>(),"operations":operations,"permissions":[],
         "configuration":{"fields":[]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let binary = typed_research_executable();
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     descriptor["packageContractVersion"] = json!("3");
     descriptor["recipes"] = json!([]);
-    descriptor["package"]["plugin"]["id"] = json!(TYPED_RESEARCH_PLUGIN);
+    descriptor["package"]["plugin"]["id"] = json!(asset.plugin());
     descriptor["package"]["plugin"]["version"] = json!("1");
     descriptor["package"]["manifest"]["sha256"] = json!(sha256(&manifest_bytes));
     descriptor["package"]["targets"][0]["binary"]["sha256"] = json!(sha256(binary));
@@ -174,26 +238,27 @@ fn install_typed_research_package(
             offline: true,
         })
         .unwrap();
-    s.runtime().plugins.install_manifest(TYPED_RESEARCH_PLUGIN,json!({"pluginRef":TYPED_RESEARCH_PLUGIN,"manifest":manifest,"manifestDigest":package.manifest_sha256,"package":{"packageSha256":package.package_sha256},"trust":{"level":"test"}}),&ctx("stream-fixture-install")).unwrap();
-    s.runtime().plugins.put_instance(TYPED_RESEARCH_PLUGIN,json!({"instanceRef":TYPED_RESEARCH_PLUGIN,"pluginRef":TYPED_RESEARCH_PLUGIN,"providerRef":TYPED_RESEARCH_PLUGIN,"enabled":true,"activePackageSha256":package.package_sha256,"configuration":{}}),&ctx("stream-fixture-instance")).unwrap();
+    s.runtime().plugins.install_manifest(asset.plugin(),json!({"pluginRef":asset.plugin(),"manifest":manifest,"manifestDigest":package.manifest_sha256,"package":{"packageSha256":package.package_sha256},"trust":{"level":"test"}}),&ctx("stream-fixture-install")).unwrap();
+    s.runtime().plugins.put_instance(asset.plugin(),json!({"instanceRef":asset.plugin(),"pluginRef":asset.plugin(),"providerRef":asset.plugin(),"enabled":true,"activePackageSha256":package.package_sha256,"configuration":{}}),&ctx("stream-fixture-instance")).unwrap();
     package
 }
 fn typed_research_scope(
     s: &crate::service::TradeAssemblyService,
     p: &InstalledPluginPackage,
+    asset: TypedResearchAsset,
 ) -> (data_plans::PlanScope, Value) {
     let context = DataContext {
         instruments: vec![InstrumentContext {
-            instrument_id: "SPY".into(),
-            asset_class: "equity".into(),
-            instrument_family: "equity".into(),
+            instrument_id: asset.instrument().into(),
+            asset_class: asset.asset_class().into(),
+            instrument_family: asset.family().into(),
         }],
         interval_ms: Some(1000),
     };
     let value = crate::data_strategy::Operand::Output {
         node: "research_counter".into(),
         port: "value".into(),
-        instrument: "SPY".into(),
+        instrument: asset.instrument().into(),
         sample: crate::data_strategy::Sample::Current,
     };
     let program = crate::data_strategy::DataStrategy {
@@ -235,13 +300,35 @@ fn typed_research_scope(
     ))
     .unwrap();
     spec["strategy_id"] = json!("synthetic-typed-research");
+    if asset == TypedResearchAsset::CryptoSpot {
+        spec["strategy_id"] = json!("synthetic-typed-crypto-spot-research");
+        for requirement in spec["capability_requirements"]["required"]
+            .as_array_mut()
+            .unwrap()
+        {
+            requirement["constraints"]["instrument_families"] = json!([asset.family()]);
+        }
+        let signal = &mut spec["signal_market_requirements"][0];
+        signal["asset_class"] = json!(asset.asset_class());
+        signal["instrument_family"] = json!(asset.family());
+        signal["selectors"][0]["normalized_id"] = json!(asset.instrument());
+        signal["calendar_refs"] = json!([asset.calendar()]);
+        signal["timeframes"] = json!(["1s"]);
+        signal["lookback"] = json!("2 bars");
+        signal["quality"]["minimum_history"] = json!("2 bars");
+        let trade = &mut spec["trade_market_requirements"][0];
+        trade["asset_classes"] = json!([asset.asset_class()]);
+        trade["instrument_families"] = json!([asset.family()]);
+        trade["quantity_units"] = json!([asset.unit()]);
+    }
+
     spec["stages"]["evaluate"]["substeps"][0]["config"] =
         json!({(crate::data_strategy::CONFIG_KEY):program});
     spec["stages"]["exit_policy"]["policy"] = json!({"monitoring":["synthetic"],"triggers":[{"id":"typed_exit","kind":"indicator","scope":"full_position"}],"composition":"any","precedence":[],"end_of_data":"preserve_open_positions"});
     spec["stages"]["order_strategy"]["policy"]["allowed_order_types"] = json!(["market"]);
     spec["stages"]["price_policy"]["policy"]["tick_size"] = Value::Null;
     spec["stages"]["market_clock"]["policy"]["timezone"] = json!("Etc/UTC");
-    spec["stages"]["market_clock"]["policy"]["calendar_refs"] = json!(["SYNTHETIC_RESEARCH"]);
+    spec["stages"]["market_clock"]["policy"]["calendar_refs"] = json!([asset.calendar()]);
     spec["stages"]["market_clock"]["policy"]["windows"] = json!([{"start":"00:00","end":"24:00"}]);
     spec["stages"]["market_clock"]["policy"]["days"] = json!([
         "monday",
@@ -285,7 +372,7 @@ fn typed_research_scope(
         bindings[node] = json!({"pluginInstanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"operationId":operation});
         s.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("typed-research-entitlement")).unwrap();
     }
-    let created=s.handle_http("POST","/product/strategies/create",json!({"id":"synthetic-typed-research","name":"Synthetic typed research","spec":spec,"idempotencyKey":"typed-research-create"}));
+    let created=s.handle_http("POST","/product/strategies/create",json!({"id":spec["strategy_id"],"name":"Synthetic typed research","spec":spec,"idempotencyKey":"typed-research-create"}));
     assert_eq!(created.status, 201, "{}", created.body);
     let strategy = created.body["body"]["strategy"]["id"].as_str().unwrap();
     let published=s.handle_http("POST","/product/strategies/publish",json!({"strategyId":strategy,"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"idempotencyKey":"typed-research-publish"}));
@@ -317,6 +404,7 @@ fn typed_research_capture_plan(
     mode: &str,
     start: i64,
     end: i64,
+    asset: TypedResearchAsset,
 ) -> (
     data_plans::StoredDataPlan,
     crate::service::data_captures::CaptureReceipt,
@@ -349,7 +437,7 @@ fn typed_research_capture_plan(
         "normal graph ID must match the published typed program"
     );
     assert_eq!(resolved_node("research_counter"), "research_counter");
-    let captured=s.handle_http("POST","/product/strategies/data-captures/create",json!({"capture":{"receiptVersion":"tradeassembly.data_capture_receipt.v2","policy":{"scope":scope,"capabilityGraphRevision":revision,"mode":mode,"acquisitionNode":acquisition_node,"replayNode":source_node,"parameterExtracts":{"snapshot":"/snapshot","digest":"/digest"},"context":{"instruments":[{"instrumentId":"SPY","assetClass":"equity","instrumentFamily":"equity"}],"intervalMs":1000},"eventStartMs":start,"eventEndMs":end,"gapPolicy":"strict_fixed_interval"},"input":{"instrument":"SPY","start":start,"end":end,"origin":start,"cutoff":s.runtime().clock.trusted_now_ms().unwrap(),"interval":1000,"feed":"synthetic_typed_research_v1"}},"accountMode":"paper","idempotencyKey":format!("typed-capture-{mode}")}));
+    let captured=s.handle_http("POST","/product/strategies/data-captures/create",json!({"capture":{"receiptVersion":"tradeassembly.data_capture_receipt.v2","policy":{"scope":scope,"capabilityGraphRevision":revision,"mode":mode,"acquisitionNode":acquisition_node,"replayNode":source_node,"parameterExtracts":{"snapshot":"/snapshot","digest":"/digest"},"context":{"instruments":[{"instrumentId":asset.instrument(),"assetClass":asset.asset_class(),"instrumentFamily":asset.family()}],"intervalMs":1000},"eventStartMs":start,"eventEndMs":end,"gapPolicy":"strict_fixed_interval"},"input":{"instrument":asset.instrument(),"start":start,"end":end,"origin":start,"cutoff":s.runtime().clock.trusted_now_ms().unwrap(),"interval":1000,"feed":asset.feed()}},"accountMode":"paper","idempotencyKey":format!("typed-capture-{mode}")}));
     assert_eq!(captured.status, 200, "{}", captured.body);
     let capture = crate::service::data_captures::current(
         s,
@@ -371,6 +459,7 @@ fn typed_research_fill_series(
     plan: &data_plans::StoredDataPlan,
     start: i64,
     end: i64,
+    asset: TypedResearchAsset,
 ) -> crate::historical_data::DatasetSnapshot {
     use crate::historical_data::*;
     let stamp = |time| {
@@ -382,17 +471,37 @@ fn typed_research_fill_series(
         .into_iter()
         .enumerate()
         .map(|(index, price)| HistoricalObservation {
-            instrument_id: "SPY".into(),
+            instrument_id: asset.instrument().into(),
             timestamp: stamp(start + (index as i64 + 1) * 1000),
             data: HistoricalObservationData::Bar(BarObservation {
-                open: price,
-                high: price,
-                low: price,
-                close: price,
+                open: price
+                    * if asset == TypedResearchAsset::CryptoSpot {
+                        1000.0
+                    } else {
+                        1.0
+                    },
+                high: price
+                    * if asset == TypedResearchAsset::CryptoSpot {
+                        1000.0
+                    } else {
+                        1.0
+                    },
+                low: price
+                    * if asset == TypedResearchAsset::CryptoSpot {
+                        1000.0
+                    } else {
+                        1.0
+                    },
+                close: price
+                    * if asset == TypedResearchAsset::CryptoSpot {
+                        1000.0
+                    } else {
+                        1.0
+                    },
                 volume: 100.,
                 vwap: None,
                 session: Some(BarSession {
-                    calendar: "SYNTHETIC_RESEARCH".into(),
+                    calendar: asset.calendar().into(),
                     start: stamp(start - 1000),
                     end: stamp(end + 1000),
                     source_ref: "fixture:explicit-synthetic-session".into(),
@@ -419,15 +528,19 @@ fn typed_research_fill_series(
             strategy_id: scope.strategy_id.clone(),
             strategy_version_id: Some(scope.strategy_version_id.clone()),
             source,
-            asset_classes: vec![AssetClass::Equity],
-            instruments: vec!["SPY".into()],
+            asset_classes: vec![if asset == TypedResearchAsset::CryptoSpot {
+                AssetClass::CryptoSpot
+            } else {
+                AssetClass::Equity
+            }],
+            instruments: vec![asset.instrument().into()],
             data_kind: HistoricalDataKind::Bars,
             granularity: "1s".into(),
             time_slice: DatasetTimeSlice {
                 start: stamp(start + 1000),
                 end: stamp(end),
             },
-            calendar: "SYNTHETIC_RESEARCH".into(),
+            calendar: asset.calendar().into(),
             timezone: "Etc/UTC".into(),
             normalization_policy: DatasetNormalizationPolicy {
                 timestamp_unit: "rfc3339".into(),
@@ -469,18 +582,27 @@ fn typed_research_configuration(
     plan: &data_plans::StoredDataPlan,
     capture: &crate::service::data_captures::CaptureReceipt,
     snapshot: &crate::historical_data::DatasetSnapshot,
+    asset: TypedResearchAsset,
 ) -> crate::backtest_contracts::BacktestConfiguration {
     let source = &snapshot.content.source;
-    serde_json::from_value(json!({"schema":"tradeassembly.backtest-configuration.v2","typedEvaluation":{"schemaVersion":"tradeassembly.typed-backtest-binding.v1","planRevisionId":plan.revision_id,"planRevisionSha256":plan.revision_sha256,"sourceCaptures":{"research_source":{"captureId":capture.capture_id,"receiptSha256":capture.receipt_sha256}},"eventStartMs":capture.policy.event_start_ms,"eventEndMs":capture.policy.event_end_ms,"asOfMs":s.runtime().clock.trusted_now_ms().unwrap(),"intervalMs":1000,"maxFramesPerStep":2,"maximumFrames":6,"quantityMicros":1000000,"initialPosition":"flat","knowledgePolicy":"retrospective_capture_cutoff","fillTimestampBasis":"event_end"},"strategy":{"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash},"dataset":{"datasetId":snapshot.dataset_id,"snapshotRef":snapshot.snapshot_ref,"contentHash":snapshot.content_hash,"schema":snapshot.content.schema,"sourcePluginRef":source.plugin_ref,"sourcePluginInstanceRef":source.plugin_instance_ref,"sourceOperationId":source.operation_id,"sourceManifestFingerprint":source.plugin_manifest_fingerprint,"sourceClass":"test","capabilityGraphRevisionId":source.capability_graph_revision_id,"capabilityGraphFingerprint":source.capability_graph_fingerprint,"instruments":["SPY"],"selectedTimeSlice":snapshot.content.time_slice,"granularity":"1s","calendar":"SYNTHETIC_RESEARCH","timezone":"Etc/UTC","corporateActionPolicy":"none","benchmark":null},"capabilityGraph":{"revisionId":plan.content.plan.request.capability_graph_revision,"graphFingerprint":plan.content.plan.capability_graph_fingerprint},"capital":{"startingCashMicros":1000000000,"reportingCurrency":"USD","accountModel":"cash","maximumLeverageMicros":1000000,"marginPolicy":"none"},"execution":{"evaluationTiming":"bar_close","fillTiming":"next_bar","fillPriceSource":"open","orderType":"market","timeInForce":"day","fillPolicy":"full","rejectOnInsufficientCapital":true,"rejectOnInsufficientLiquidity":true,"staleDataPolicy":"reject","missingDataPolicy":"reject"},"costs":{"fixedFeeMicros":10000,"perUnitFeeMicros":0,"notionalFeeBps":0,"spreadBps":10,"slippageBps":20},"liquidity":{"maximumParticipationBps":10000,"minimumVolumeMicros":0},"instruments":[{"instrumentId":"SPY","instrumentFamily":"equity","quantityUnit":"shares","quantityScale":6,"priceScale":6,"contractMultiplierMicros":1000000,"settlement":"cash","metadata":{}}],"risk":{"maximumPositionNotionalMicros":1000000000,"maximumOrderQuantityMicros":10000000,"maximumLossMicros":1000000000,"maximumOpenPositions":1},"endOfData":"mark_to_market","evaluatorVersion":"tradeassembly.typed-backtest.v1","compilerVersion":"tradeassembly.typed-backtest.v1","pluginFingerprints":{},"variableOverrides":{}})).unwrap()
+    serde_json::from_value(json!({"schema":"tradeassembly.backtest-configuration.v2","typedEvaluation":{"schemaVersion":"tradeassembly.typed-backtest-binding.v1","planRevisionId":plan.revision_id,"planRevisionSha256":plan.revision_sha256,"sourceCaptures":{"research_source":{"captureId":capture.capture_id,"receiptSha256":capture.receipt_sha256}},"eventStartMs":capture.policy.event_start_ms,"eventEndMs":capture.policy.event_end_ms,"asOfMs":s.runtime().clock.trusted_now_ms().unwrap(),"intervalMs":1000,"maxFramesPerStep":2,"maximumFrames":6,"quantityMicros":asset.quantity(),"initialPosition":"flat","knowledgePolicy":"retrospective_capture_cutoff","fillTimestampBasis":"event_end"},"strategy":{"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash},"dataset":{"datasetId":snapshot.dataset_id,"snapshotRef":snapshot.snapshot_ref,"contentHash":snapshot.content_hash,"schema":snapshot.content.schema,"sourcePluginRef":source.plugin_ref,"sourcePluginInstanceRef":source.plugin_instance_ref,"sourceOperationId":source.operation_id,"sourceManifestFingerprint":source.plugin_manifest_fingerprint,"sourceClass":"test","capabilityGraphRevisionId":source.capability_graph_revision_id,"capabilityGraphFingerprint":source.capability_graph_fingerprint,"instruments":[asset.instrument()],"selectedTimeSlice":snapshot.content.time_slice,"granularity":"1s","calendar":asset.calendar(),"timezone":"Etc/UTC","corporateActionPolicy":"none","benchmark":null},"capabilityGraph":{"revisionId":plan.content.plan.request.capability_graph_revision,"graphFingerprint":plan.content.plan.capability_graph_fingerprint},"capital":{"startingCashMicros":1000000000,"reportingCurrency":"USD","accountModel":"cash","maximumLeverageMicros":1000000,"marginPolicy":"none"},"execution":{"evaluationTiming":"bar_close","fillTiming":"next_bar","fillPriceSource":"open","orderType":"market","timeInForce":"day","fillPolicy":"full","rejectOnInsufficientCapital":true,"rejectOnInsufficientLiquidity":true,"staleDataPolicy":"reject","missingDataPolicy":"reject"},"costs":{"fixedFeeMicros":10000,"perUnitFeeMicros":0,"notionalFeeBps":0,"spreadBps":10,"slippageBps":20},"liquidity":{"maximumParticipationBps":10000,"minimumVolumeMicros":0},"instruments":[{"instrumentId":asset.instrument(),"instrumentFamily":asset.family(),"quantityUnit":asset.unit(),"quantityScale":6,"priceScale":6,"contractMultiplierMicros":1000000,"settlement":"cash","metadata":{}}],"risk":{"maximumPositionNotionalMicros":1000000000,"maximumOrderQuantityMicros":10000000,"maximumLossMicros":1000000000,"maximumOpenPositions":1},"endOfData":"mark_to_market","evaluatorVersion":"tradeassembly.typed-backtest.v1","compilerVersion":"tradeassembly.typed-backtest.v1","pluginFingerprints":{},"variableOverrides":{}})).unwrap()
 }
 #[test]
 #[ignore = "explicit generic native pure-plugin capture/typed backtest/queue/restart/recompute fixture; diagnostic sandbox/test principal, not SRT"]
 fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_restart() {
+    exercise_native_typed_research(TypedResearchAsset::Equity);
+}
+#[test]
+#[ignore = "explicit synthetic BTC spot/cash/exact-six native publisher/evaluator fixture; diagnostic sandbox/test identity, not provider or SRT qualification"]
+fn native_typed_crypto_spot_backtest_uses_exact_base_units_and_explicit_calendar() {
+    exercise_native_typed_research(TypedResearchAsset::CryptoSpot);
+}
+fn exercise_native_typed_research(asset: TypedResearchAsset) {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     let operations = Arc::new(ForwardNative::default());
     let (dir, base, _, _) = data_plans::tests::fixture_service(Some(operations.clone()));
     let service = base.for_authenticated_invocation("fixture", "typed-research-owner", None, None);
-    let package = install_typed_research_package(&service, dir.path());
+    let package = install_typed_research_package(&service, dir.path(), asset);
     for instance in service.runtime().plugins.list_instances().unwrap() {
         service
             .bind_owned_object("plugin_instance", instance["instanceRef"].as_str().unwrap())
@@ -496,14 +618,57 @@ fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_r
             Arc::new(TracedFixtureSandbox),
         ),
     );
-    let (scope, bindings) = typed_research_scope(&service, &package);
+    let (scope, bindings) = typed_research_scope(&service, &package, asset);
     let end = service.runtime().clock.trusted_now_ms().unwrap();
     let start = end - 6000;
     let (plan, capture) =
-        typed_research_capture_plan(&service, &scope, &bindings, "backtest", start, end);
-    let snapshot = typed_research_fill_series(&service, &scope, &plan, start, end);
-    let config = typed_research_configuration(&service, &scope, &plan, &capture, &snapshot);
+        typed_research_capture_plan(&service, &scope, &bindings, "backtest", start, end, asset);
+    let snapshot = typed_research_fill_series(&service, &scope, &plan, start, end, asset);
+    let config = typed_research_configuration(&service, &scope, &plan, &capture, &snapshot, asset);
     assert!(config.validate().ready);
+    if asset == TypedResearchAsset::CryptoSpot {
+        assert_eq!(config.instruments[0].quantity_unit, "base_asset");
+        assert_eq!(
+            config.typed_evaluation.as_ref().unwrap().quantity_micros,
+            1000
+        );
+        for (field, value) in [
+            ("quantityUnit", json!("shares")),
+            ("quantityScale", json!(8)),
+            ("priceScale", json!(8)),
+            ("instrumentFamily", json!("crypto_perpetual")),
+            ("contractMultiplierMicros", json!(10_000_000)),
+            ("settlement", json!("physical")),
+        ] {
+            let mut raw = serde_json::to_value(&config).unwrap();
+            raw["instruments"][0][field] = value;
+            let bad: crate::backtest_contracts::BacktestConfiguration =
+                serde_json::from_value(raw).unwrap();
+            assert!(
+                crate::backtest_engine::validate_typed_model(&bad).is_err(),
+                "{field}"
+            );
+        }
+        let mut content = snapshot.content.clone();
+        let crate::historical_data::HistoricalObservationData::Bar(bar) =
+            &mut content.observations[0].data
+        else {
+            panic!("declared bar expected")
+        };
+        bar.volume = 0.00000001;
+        let finer = crate::historical_data::DatasetSnapshot::build(content, snapshot.created_at_ms)
+            .unwrap();
+        assert_eq!(
+            crate::backtest_engine::validate_typed_crypto_precision(&config, &finer).unwrap_err(),
+            "typed_backtest_crypto_volume_precision_unsupported"
+        );
+        let mut wrong = config.clone();
+        wrong.dataset.calendar = "unpublished-calendar".into();
+        assert!(
+            crate::service::typed_backtest::validate_dataset(&service, &wrong, &snapshot).is_err()
+        );
+    }
+
     let created = service.handle_http(
         "POST",
         "/backtests",
@@ -564,6 +729,11 @@ fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_r
     assert_eq!(evidence.evaluation_receipts.len(), 3);
     assert_eq!(evidence.equity.len(), 6);
     assert_eq!(result.content.fills.len(), 2);
+    for fill in &result.content.fills {
+        assert_eq!(fill["quantityMicros"], asset.quantity());
+        assert_eq!(fill["symbol"], asset.instrument());
+    }
+
     assert_eq!(
         result.content.accounting["endingEquityMicros"],
         1004425000_i64
@@ -611,7 +781,7 @@ fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_r
     )
     .unwrap();
     let mut start_config =
-        typed_research_configuration(&restored, &scope, &plan, &capture, &start_snapshot);
+        typed_research_configuration(&restored, &scope, &plan, &capture, &start_snapshot, asset);
     assert!(crate::service::typed_backtest::validate_dataset(
         &restored,
         &start_config,
@@ -687,7 +857,7 @@ fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_r
         result
     );
     let (paper_plan, paper_capture) =
-        typed_research_capture_plan(&restored, &scope, &bindings, "paper", start, end);
+        typed_research_capture_plan(&restored, &scope, &bindings, "paper", start, end, asset);
     let cutoff = restored.runtime().clock.trusted_now_ms().unwrap();
     assert!(paper_capture.acquisition_response.observed_at_ms <= cutoff);
     let mut checkpoint = None;
@@ -748,17 +918,25 @@ fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_r
         .list_json("execution_order_plan_submissions_v2")
         .unwrap()
         .is_empty());
-    let consumers = typed_research_consumers(
-        &restored,
-        &scope,
-        &plan,
-        &capture,
-        &snapshot,
-        id,
-        &report.body["report"],
-    );
+    let consumers = if asset == TypedResearchAsset::Equity {
+        typed_research_consumers(
+            &restored,
+            &scope,
+            &plan,
+            &capture,
+            &snapshot,
+            id,
+            &report.body["report"],
+        )
+    } else {
+        json!({"profile":"crypto_spot_cash_exact_six","quantityMicros":asset.quantity(),"calendar":asset.calendar(),"consumerExtension":"separately qualified equity-profile study path; not rerun in BTC slice"})
+    };
     write_screen_interface_evidence(
-        "typed_research",
+        if asset == TypedResearchAsset::CryptoSpot {
+            "typed_crypto_research"
+        } else {
+            "typed_research"
+        },
         "canonical-native-parity.json",
         &json!({"configuration":config,"backtest":completed,"report":report.body,"replay":replay.body,"paperSignals":paper_signals,"consumers":consumers,"qualification":"actual native synthetic pure plugin subprocesses and canonical typed research queue/state/replay with service recreation in the same Core process; diagnostic sandbox/test identity; no Core OS-process restart, SRT, normal local-owner bootstrap, live provider/history entitlement, full sizing/risk/stop/screen parity or actual pack formula qualification"}),
     );
@@ -776,7 +954,14 @@ fn typed_research_consumers(
     primary_id: &str,
     primary_report: &Value,
 ) -> Value {
-    let mut config = typed_research_configuration(s, scope, plan, capture, snapshot);
+    let mut config = typed_research_configuration(
+        s,
+        scope,
+        plan,
+        capture,
+        snapshot,
+        TypedResearchAsset::Equity,
+    );
     config.costs.notional_fee_bps = 10;
     let created = s.handle_http(
         "POST",

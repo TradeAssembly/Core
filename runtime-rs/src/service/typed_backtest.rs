@@ -330,6 +330,8 @@ pub(crate) fn validate_configuration(
             != c.instruments[0].instrument_id
         || plan.content.plan.request.trade_instruments[0].instrument_family
             != c.instruments[0].instrument_family
+        || (c.instruments[0].instrument_family == "crypto_spot"
+            && plan.content.plan.request.trade_instruments[0].asset_class != "crypto")
     {
         return Err("typed_backtest_trade_subject_mismatch".into());
     }
@@ -396,6 +398,7 @@ pub(crate) fn validate_dataset(
         .ok_or("typed_backtest_binding_required")?;
     snapshot.verify()?;
     crate::backtest_engine::verify_dataset_configuration(snapshot, c)?;
+    crate::backtest_engine::validate_typed_crypto_precision(c, snapshot)?;
     crate::backtest_engine::validate_typed_precision(snapshot)?;
     validate_calendar(c, snapshot, &validate_strategy(service, c)?)?;
     if c.instruments.len() != 1

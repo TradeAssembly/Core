@@ -3,7 +3,7 @@ use crate::data_pipeline::{canonical_sha256, local_schema_refs, validate_contrac
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs,
     io::Read,
     path::{Component, Path},
@@ -74,18 +74,59 @@ fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result
     Ok(value)
 }
 
-/// One bounded immutable metadata entry per package-store instance. No ownership,
+/// Bounded immutable metadata per package-store instance. No ownership,
 /// credentials, graph, registry or acquisition state is cached here. Every hit
 /// rereads all declared documents with the same path/byte/aggregate bounds.
-#[derive(Default)]
+const MAX_VERIFIED_CACHE_ENTRIES: usize = 8;
 pub(crate) struct VerificationCache {
-    entry: Mutex<Option<(String, Arc<VerifiedMetadata>)>>,
+    entries: Mutex<MetadataEntries>,
+    max_retained_bytes: usize,
 }
-#[derive(Clone, Default)]
+impl Default for VerificationCache {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::default(),
+            max_retained_bytes: MAX_METADATA_TOTAL_BYTES,
+        }
+    }
+}
+#[derive(Default)]
+struct MetadataEntries {
+    values: VecDeque<(String, Arc<VerifiedMetadata>, usize)>,
+    bytes: usize,
+}
+#[derive(Clone, Default, serde::Serialize)]
 pub(crate) struct VerifiedMetadata {
     pub contracts: BTreeMap<String, VersionedOperationData>,
     pub schemas: BTreeMap<String, Value>,
     pub recipes: BTreeMap<String, tradeassembly_plugin_sdk::data_recipe::DataRecipe>,
+}
+
+// Count encoded retained metadata without allocating another whole copy. A
+// valid package larger than this cache budget still works through the verified
+// uncached path. The existing document and package limits remain unchanged.
+fn retained_metadata_bytes(metadata: &VerifiedMetadata, limit: usize) -> Option<usize> {
+    struct Counter {
+        bytes: usize,
+        limit: usize,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let next = self
+                .bytes
+                .checked_add(bytes.len())
+                .filter(|n| *n <= self.limit)
+                .ok_or_else(|| std::io::Error::other("metadata cache budget"))?;
+            self.bytes = next;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter { bytes: 0, limit };
+    serde_json::to_writer(&mut counter, metadata).ok()?;
+    Some(counter.bytes)
 }
 impl VerificationCache {
     pub fn get(
@@ -102,12 +143,13 @@ impl VerificationCache {
         }))
         .map_err(|_| "plugin_data_cache_identity_invalid")?;
         let cached = self
-            .entry
+            .entries
             .lock()
             .map_err(|_| "plugin_data_cache_unavailable")?
-            .as_ref()
-            .filter(|(key, _)| key == &identity)
-            .map(|(_, value)| Arc::clone(value));
+            .values
+            .iter()
+            .find(|(key, _, _)| key == &identity)
+            .map(|(_, value, _)| Arc::clone(value));
         if let Some(cached) = cached {
             // Identity includes every expected digest. Recheck the entire artifact
             // closure, including unrelated operations, rather than trusting mtime.
@@ -123,14 +165,45 @@ impl VerificationCache {
             {
                 document_bytes(root, document, &mut total)?;
             }
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| "plugin_data_cache_unavailable")?;
+            if let Some(index) = entries
+                .values
+                .iter()
+                .position(|(key, _, _)| key == &identity)
+            {
+                let value = entries.values.remove(index).unwrap();
+                entries.values.push_back(value);
+            }
             return Ok(cached);
         }
         let verified = Arc::new(load_metadata(envelope, root, manifest)?);
-        *self
-            .entry
-            .lock()
-            .map_err(|_| "plugin_data_cache_unavailable")? =
-            Some((identity, Arc::clone(&verified)));
+        if let Some(bytes) = retained_metadata_bytes(&verified, self.max_retained_bytes) {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| "plugin_data_cache_unavailable")?;
+            if let Some(index) = entries
+                .values
+                .iter()
+                .position(|(key, _, _)| key == &identity)
+            {
+                let previous = entries.values.remove(index).unwrap();
+                entries.bytes -= previous.2;
+            }
+            while entries.values.len() >= MAX_VERIFIED_CACHE_ENTRIES
+                || entries.bytes > self.max_retained_bytes - bytes
+            {
+                let previous = entries.values.pop_front().unwrap();
+                entries.bytes -= previous.2;
+            }
+            entries.bytes += bytes;
+            entries
+                .values
+                .push_back((identity, Arc::clone(&verified), bytes));
+        }
         Ok(verified)
     }
 }
@@ -416,7 +489,7 @@ mod cache_tests {
         );
     }
     #[test]
-    fn cache_identity_covers_manifest_root_and_single_entry_eviction() {
+    fn cache_identity_covers_manifest_and_keeps_distinct_package_roots() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         let (descriptor, manifest) = fixture(a.path());
@@ -433,8 +506,109 @@ mod cache_tests {
         assert!(!Arc::ptr_eq(&first, &other));
         let again = cache.get(&descriptor, a.path(), &manifest).unwrap();
         assert!(
-            !Arc::ptr_eq(&first, &again),
-            "only one retained cache entry"
+            Arc::ptr_eq(&first, &again),
+            "alternating packages must not discard verified metadata"
+        );
+    }
+    #[test]
+    fn cache_evicts_least_recent_package_at_the_entry_bound() {
+        let roots = (0..=MAX_VERIFIED_CACHE_ENTRIES)
+            .map(|_| tempfile::tempdir().unwrap())
+            .collect::<Vec<_>>();
+        let materials = roots
+            .iter()
+            .map(|root| fixture(root.path()))
+            .collect::<Vec<_>>();
+        let cache = VerificationCache::default();
+        let get = |index: usize| {
+            cache
+                .get(
+                    &materials[index].0,
+                    roots[index].path(),
+                    &materials[index].1,
+                )
+                .unwrap()
+        };
+        let first = get(0);
+        let second = get(1);
+        for index in 2..MAX_VERIFIED_CACHE_ENTRIES {
+            get(index);
+        }
+        assert!(Arc::ptr_eq(&first, &get(0)));
+        get(MAX_VERIFIED_CACHE_ENTRIES);
+        assert!(Arc::ptr_eq(&first, &get(0)));
+        assert!(!Arc::ptr_eq(&second, &get(1)));
+        let entries = cache.entries.lock().unwrap();
+        assert_eq!(entries.values.len(), MAX_VERIFIED_CACHE_ENTRIES);
+        assert!(entries.bytes <= MAX_METADATA_TOTAL_BYTES);
+    }
+    #[test]
+    fn retained_metadata_budget_counts_exact_bytes_without_a_second_buffer() {
+        let metadata = VerifiedMetadata::default();
+        let exact = serde_json::to_vec(&metadata).unwrap().len();
+        assert_eq!(retained_metadata_bytes(&metadata, exact), Some(exact));
+        assert_eq!(retained_metadata_bytes(&metadata, exact - 1), None);
+    }
+    #[test]
+    fn byte_budget_evicts_before_entry_bound_and_preserves_recent_package() {
+        let roots = (0..3)
+            .map(|_| tempfile::tempdir().unwrap())
+            .collect::<Vec<_>>();
+        let materials = roots
+            .iter()
+            .map(|root| fixture(root.path()))
+            .collect::<Vec<_>>();
+        let bytes = retained_metadata_bytes(
+            &load_metadata(&materials[0].0, roots[0].path(), &materials[0].1).unwrap(),
+            MAX_METADATA_TOTAL_BYTES,
+        )
+        .unwrap();
+        let cache = VerificationCache {
+            entries: Mutex::default(),
+            max_retained_bytes: 2 * bytes,
+        };
+        let get = |index: usize| {
+            cache
+                .get(
+                    &materials[index].0,
+                    roots[index].path(),
+                    &materials[index].1,
+                )
+                .unwrap()
+        };
+        let first = get(0);
+        let second = get(1);
+        get(2);
+        assert!(Arc::ptr_eq(&second, &get(1)));
+        assert!(!Arc::ptr_eq(&first, &get(0)));
+        let entries = cache.entries.lock().unwrap();
+        assert_eq!(entries.values.len(), 2);
+        assert_eq!(entries.bytes, 2 * bytes);
+    }
+    #[test]
+    fn valid_metadata_over_retention_budget_works_uncached_and_rejects_tampering() {
+        let root = tempfile::tempdir().unwrap();
+        let (descriptor, manifest) = fixture(root.path());
+        let bytes = retained_metadata_bytes(
+            &load_metadata(&descriptor, root.path(), &manifest).unwrap(),
+            MAX_METADATA_TOTAL_BYTES,
+        )
+        .unwrap();
+        let cache = VerificationCache {
+            entries: Mutex::default(),
+            max_retained_bytes: bytes - 1,
+        };
+        let first = cache.get(&descriptor, root.path(), &manifest).unwrap();
+        let second = cache.get(&descriptor, root.path(), &manifest).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(cache.entries.lock().unwrap().values.is_empty());
+        fs::write(root.path().join("unrelated.json"), b"{}").unwrap();
+        assert_eq!(
+            cache
+                .get(&descriptor, root.path(), &manifest)
+                .err()
+                .unwrap(),
+            "plugin_data_artifact_digest_mismatch"
         );
     }
     #[cfg(unix)]

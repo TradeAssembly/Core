@@ -143,11 +143,12 @@ pub(crate) fn execute_typed(
     validate_typed_model(c)?;
     validate_typed_crypto_precision(c, snapshot)?;
     let observations = normalized_typed_bars(snapshot, c.liquidity.minimum_volume_micros)?;
-    let kernel = crate::strategy_kernel::run_with_signals(
+    let kernel = crate::strategy_kernel::run_with_signals_after_warmup(
         &observations,
         signals,
         binding.quantity_micros,
         simulation_config(manifest)?,
+        binding.no_trade_warmup_observations(),
     )
     .map_err(kernel_error)?;
     finish(

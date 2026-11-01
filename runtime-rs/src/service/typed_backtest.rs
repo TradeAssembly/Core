@@ -210,20 +210,160 @@ fn validate_calendar(
     snapshot: &DatasetSnapshot,
     spec: &crate::spec::StrategySpec,
 ) -> Result<(), String> {
+    let binding = c
+        .typed_evaluation
+        .as_ref()
+        .ok_or("typed_backtest_binding_required")?;
+    validate_calendar_evidence(
+        binding,
+        &c.dataset,
+        &snapshot.content,
+        &spec.stages.market_clock.policy,
+        if c.instruments.len() == 1 {
+            c.instruments[0].instrument_family.as_str()
+        } else {
+            ""
+        },
+    )
+}
+fn validate_calendar_evidence(
+    binding: &TypedBacktestBinding,
+    dataset: &DatasetBinding,
+    content: &crate::historical_data::DatasetSnapshotContent,
+    clock: &crate::spec::ClockPolicy,
+    instrument_family: &str,
+) -> Result<(), String> {
+    if binding.schema_version == "tradeassembly.typed-backtest-binding.v2"
+        && binding.calendar_evidence.is_none()
+    {
+        return Err("typed_backtest_calendar_evidence_binding_invalid".into());
+    }
+    if let Some(evidence) = &binding.calendar_evidence {
+        if !binding.validate()
+            || !evidence.validate()
+            || evidence.calendar != dataset.calendar
+            || evidence.timezone != dataset.timezone
+            || evidence.calendar != content.calendar
+            || evidence.timezone != content.timezone
+        {
+            return Err("typed_backtest_calendar_evidence_binding_invalid".into());
+        }
+        if evidence.kind == TypedCalendarEvidenceKind::DeclaredDatasetCalendar {
+            if instrument_family != "crypto_spot" {
+                return Err("typed_backtest_declared_calendar_profile_unsupported".into());
+            }
+            return validate_declared_calendar(binding, dataset, content, clock);
+        }
+    }
+    // Existing V1 and explicit provider mode retain the original session checks.
+    validate_provider_calendar(binding, dataset, content, clock)
+}
+fn validate_declared_calendar(
+    binding: &TypedBacktestBinding,
+    dataset: &DatasetBinding,
+    content: &crate::historical_data::DatasetSnapshotContent,
+    clock: &crate::spec::ClockPolicy,
+) -> Result<(), String> {
+    use crate::historical_data::{AssetClass, HistoricalDataKind};
+    let days = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ];
+    if content.asset_classes != [AssetClass::CryptoSpot]
+        || content.data_kind != HistoricalDataKind::Bars
+        || content.calendar != "crypto_24x7"
+        || content.timezone != "UTC"
+        || content.normalization_policy.timezone != "UTC"
+        || content.normalization_policy.timestamp_unit != "rfc3339"
+        || content.granularity != "1d"
+        || dataset.granularity != content.granularity
+        || dataset.selected_time_slice != content.time_slice
+        || dataset.instruments != content.instruments
+        || content.instruments.len() != 1
+        || binding.interval_ms != 86400000
+        || clock.timezone != "UTC"
+        || clock.calendar_refs != [dataset.calendar.clone()]
+        || clock.days.len() != 7
+        || !days.iter().all(|day| {
+            clock
+                .days
+                .iter()
+                .any(|published| published.as_str() == *day)
+        })
+        || clock.windows.len() != 1
+        || clock.windows[0].start != "00:00"
+        || clock.windows[0].end != "24:00"
+        || clock.holiday_behavior != crate::spec::HolidayBehavior::FollowCalendar
+        || clock.early_close_behavior != crate::spec::EarlyCloseBehavior::FollowCalendar
+        || !clock.session_triggers.is_empty()
+        || clock.schedule_capability_requirement_ref.is_some()
+        || clock.eligibility_expression.is_some()
+    {
+        return Err("typed_backtest_declared_calendar_profile_unsupported".into());
+    }
+    let parse = |value: &str| {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .map(|at| at.timestamp_millis())
+            .map_err(|_| "typed_backtest_declared_calendar_time_invalid")
+    };
+    let count = (binding.event_end_ms - binding.event_start_ms) as u64 / binding.interval_ms;
+    if binding.event_start_ms % 86400000 != 0
+        || parse(&content.time_slice.start)? != binding.event_start_ms
+        || parse(&content.time_slice.end)? != binding.event_end_ms
+        || content.observations.len() as u64 != count
+    {
+        return Err("typed_backtest_declared_calendar_coverage_invalid".into());
+    }
+    for (index, row) in content.observations.iter().enumerate() {
+        let expected_start = binding.event_start_ms + index as i64 * binding.interval_ms as i64;
+        let expected_end = expected_start + binding.interval_ms as i64;
+        if row.instrument_id != content.instruments[0]
+            || binding.fill_bounds(parse(&row.timestamp)?)? != (expected_start, expected_end)
+            || expected_end > binding.as_of_ms
+        {
+            return Err("typed_backtest_declared_calendar_coverage_invalid".into());
+        }
+        let HistoricalObservationData::Bar(bar) = &row.data else {
+            return Err("typed_backtest_fill_kind_invalid".into());
+        };
+        // Missing sessions are accepted only in this explicit research-model
+        // branch. Existing contradictory provider evidence is never ignored.
+        if let Some(session) = &bar.session {
+            if session.calendar != content.calendar
+                || session.source_ref.is_empty()
+                || parse(&session.start)? > expected_start
+                || parse(&session.end)? < expected_end
+            {
+                return Err("typed_backtest_declared_calendar_session_conflict".into());
+            }
+        }
+    }
+    Ok(())
+}
+fn validate_provider_calendar(
+    binding: &TypedBacktestBinding,
+    dataset: &DatasetBinding,
+    content: &crate::historical_data::DatasetSnapshotContent,
+    clock: &crate::spec::ClockPolicy,
+) -> Result<(), String> {
     use chrono::{Datelike, Timelike};
-    let clock = &spec.stages.market_clock.policy;
     let zone: chrono_tz::Tz = clock
         .timezone
         .parse()
         .map_err(|_| "typed_backtest_timezone_unsupported")?;
-    if c.dataset.timezone != clock.timezone
-        || clock.calendar_refs != [c.dataset.calendar.clone()]
+    if dataset.timezone != clock.timezone
+        || clock.calendar_refs != [dataset.calendar.clone()]
         || clock.holiday_behavior != crate::spec::HolidayBehavior::FollowCalendar
         || clock.early_close_behavior != crate::spec::EarlyCloseBehavior::FollowCalendar
     {
         return Err("typed_backtest_calendar_policy_unsupported".into());
     }
-    for row in &snapshot.content.observations {
+    for row in &content.observations {
         let HistoricalObservationData::Bar(bar) = &row.data else {
             return Err("typed_backtest_fill_kind_invalid".into());
         };
@@ -236,15 +376,11 @@ fn validate_calendar(
                 .map_err(|_| "typed_backtest_session_invalid")
         };
         let raw = parse(&row.timestamp)?.timestamp_millis();
-        let binding = c
-            .typed_evaluation
-            .as_ref()
-            .ok_or("typed_backtest_binding_required")?;
         let (start, end) = binding.fill_bounds(raw)?;
         let at = chrono::DateTime::from_timestamp_millis(start)
             .ok_or("typed_backtest_fill_time_invalid")?;
         if session.source_ref.is_empty()
-            || session.calendar != c.dataset.calendar
+            || session.calendar != dataset.calendar
             || start < parse(&session.start)?.timestamp_millis()
             || end > parse(&session.end)?.timestamp_millis()
         {
@@ -923,3 +1059,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "typed_backtest_calendar_tests.rs"]
+mod calendar_tests;

@@ -22,9 +22,43 @@ pub struct TypedCaptureBinding {
     pub receipt_sha256: String,
 }
 
+/// Explicit evidence policy for research simulation only. This declaration
+/// neither synthesizes provider sessions nor authorizes paper/live trading.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TypedCalendarEvidenceKind {
+    ProviderBarSessions,
+    DeclaredDatasetCalendar,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TypedCalendarPurpose {
+    ResearchSimulationOnly,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TypedCalendarEvidence {
+    pub kind: TypedCalendarEvidenceKind,
+    pub calendar: String,
+    pub timezone: String,
+    pub purpose: TypedCalendarPurpose,
+    pub acknowledge_research_assumption: bool,
+}
+impl TypedCalendarEvidence {
+    pub fn validate(&self) -> bool {
+        [&self.calendar, &self.timezone].into_iter().all(|value| {
+            !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_graphic())
+        }) && self.acknowledge_research_assumption
+            == matches!(
+                self.kind,
+                TypedCalendarEvidenceKind::DeclaredDatasetCalendar
+            )
+    }
+}
+
 /// Explicit retrospective research. Arrival/publication clocks remain genuine;
 /// this declaration never qualifies historical point-in-time availability.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TypedBacktestBinding {
     pub schema_version: String,
@@ -41,8 +75,85 @@ pub struct TypedBacktestBinding {
     pub initial_position: String,
     pub knowledge_policy: String,
     pub fill_timestamp_basis: String,
+    /// V2 only: evaluated observations that cannot generate simulated orders.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_typed_value"
+    )]
+    pub warmup_observations: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_typed_value"
+    )]
+    pub calendar_evidence: Option<TypedCalendarEvidence>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TypedBacktestBindingWire {
+    schema_version: String,
+    plan_revision_id: String,
+    plan_revision_sha256: String,
+    source_captures: BTreeMap<String, TypedCaptureBinding>,
+    event_start_ms: i64,
+    event_end_ms: i64,
+    as_of_ms: i64,
+    interval_ms: u64,
+    max_frames_per_step: u64,
+    maximum_frames: u64,
+    quantity_micros: i64,
+    initial_position: String,
+    knowledge_policy: String,
+    fill_timestamp_basis: String,
+    #[serde(default, deserialize_with = "present_typed_value")]
+    warmup_observations: Option<u64>,
+    #[serde(default, deserialize_with = "present_typed_value")]
+    calendar_evidence: Option<TypedCalendarEvidence>,
+}
+impl<'de> Deserialize<'de> for TypedBacktestBinding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(TypedBacktestBindingWire::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+impl TryFrom<TypedBacktestBindingWire> for TypedBacktestBinding {
+    type Error = String;
+    fn try_from(w: TypedBacktestBindingWire) -> Result<Self, Self::Error> {
+        match (
+            w.schema_version.as_str(),
+            w.warmup_observations,
+            &w.calendar_evidence,
+        ) {
+            ("tradeassembly.typed-backtest-binding.v1", None, None)
+            | ("tradeassembly.typed-backtest-binding.v2", Some(_), Some(_)) => {}
+            _ => return Err("typed_backtest_binding_version_fields_invalid".into()),
+        }
+        Ok(Self {
+            schema_version: w.schema_version,
+            plan_revision_id: w.plan_revision_id,
+            plan_revision_sha256: w.plan_revision_sha256,
+            source_captures: w.source_captures,
+            event_start_ms: w.event_start_ms,
+            event_end_ms: w.event_end_ms,
+            as_of_ms: w.as_of_ms,
+            interval_ms: w.interval_ms,
+            max_frames_per_step: w.max_frames_per_step,
+            maximum_frames: w.maximum_frames,
+            quantity_micros: w.quantity_micros,
+            initial_position: w.initial_position,
+            knowledge_policy: w.knowledge_policy,
+            fill_timestamp_basis: w.fill_timestamp_basis,
+            warmup_observations: w.warmup_observations,
+            calendar_evidence: w.calendar_evidence,
+        })
+    }
 }
 impl TypedBacktestBinding {
+    pub fn no_trade_warmup_observations(&self) -> u64 {
+        self.warmup_observations.unwrap_or(0)
+    }
+
     /// The immutable source timestamp is retained. Only an explicitly declared
     /// bar basis determines the decision/end and next-open boundaries.
     pub(crate) fn fill_bounds(&self, raw_ms: i64) -> Result<(i64, i64), String> {
@@ -57,7 +168,26 @@ impl TypedBacktestBinding {
     }
     pub fn validate(&self) -> bool {
         let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
-        self.schema_version == "tradeassembly.typed-backtest-binding.v1"
+        let warmup_version_valid = match (
+            self.schema_version.as_str(),
+            self.warmup_observations,
+            &self.calendar_evidence,
+        ) {
+            ("tradeassembly.typed-backtest-binding.v1", None, None) => true,
+            ("tradeassembly.typed-backtest-binding.v2", Some(warmup), Some(calendar)) => {
+                calendar.validate()
+                    && warmup <= 255
+                    && self.interval_ms > 0
+                    && self.event_end_ms > self.event_start_ms
+                    && self
+                        .event_end_ms
+                        .checked_sub(self.event_start_ms)
+                        .and_then(|duration| u64::try_from(duration).ok())
+                        .is_some_and(|duration| warmup < duration / self.interval_ms)
+            }
+            _ => false,
+        };
+        warmup_version_valid
             && self.initial_position == "flat"
             && self.knowledge_policy == "retrospective_capture_cutoff"
             && matches!(
@@ -830,3 +960,7 @@ pub fn canonical_hash<T: Serialize>(value: &T, error: &str) -> Result<String, St
 fn canonical_bytes<T: Serialize>(value: &T, error: &str) -> Result<Vec<u8>, String> {
     serde_json_canonicalizer::to_vec(value).map_err(|_| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "typed_backtest_binding_tests.rs"]
+mod typed_backtest_binding_tests;

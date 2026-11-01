@@ -619,6 +619,33 @@ pub fn project_with_strategy_spec(
         report.provenance.strategy_execution_summary = json!({"status":"available","engine":crate::backtest_contracts::TYPED_BACKTEST_ENGINE,
             "planRevisionId":typed.plan_revision_id,"planRevisionSha256":typed.plan_revision_sha256,"semanticSha256":typed.semantic_sha256,
             "evaluationReceiptSha256":typed.evaluation_receipts,"initialPosition":"flat","knowledgePolicy":typed.knowledge_policy,"pointInTimeQualified":false});
+        if let Some(calendar) = &binding.calendar_evidence {
+            let declared = calendar.kind
+                == crate::backtest_contracts::TypedCalendarEvidenceKind::DeclaredDatasetCalendar;
+            report.provenance.strategy_execution_summary["calendarEvidence"] = json!({
+                "binding":calendar,
+                "eligibilityBasis":if declared { "explicit_research_model" } else { "provider_bar_sessions" },
+                "tradingEligibilityGranted":false,
+                "providerBarSessionsUsed":!declared,
+                "venueEligibilityQualified":false
+            });
+            if declared {
+                report.metadata.warnings.push("Explicit declared-dataset research calendar assumption (crypto_24x7/UTC daily); source bars are unchanged and no provider sessions are synthesized. This is not venue availability, trading eligibility or historical point-in-time qualification.".into());
+            }
+        }
+        if let Some(warmup) = binding.warmup_observations {
+            report.provenance.strategy_execution_summary["noTradeWarmup"] = json!({
+                "bindingSchemaVersion":binding.schema_version,
+                "observations":warmup,
+                "firstEligibleDecisionBarIndex":warmup,
+                "firstPossibleExecutionBarIndex":warmup + 1,
+                "publisherSignalsRetained":true,
+                "allFramesEvaluatedAndCheckpointed":true,
+                "eligibilityBasis":"explicit_research_model",
+                "tradingEligibilityGranted":false
+            });
+            report.metadata.warnings.push(format!("Explicit research no-trade warmup: first {warmup} observations are evaluated and checkpointed but cannot generate simulated orders; publisher warmingFrames remains a separate count."));
+        }
     } else if manifest.content.configuration.typed_evaluation.is_some() {
         return Err("backtest_report_typed_evidence_required".into());
     }

@@ -352,8 +352,22 @@ pub fn run_with_signals(
     quantity: Quantity,
     config: SimulationConfig,
 ) -> Result<KernelResult, KernelError> {
+    run_with_signals_after_warmup(observations, signals, quantity, config, 0)
+}
+/// Explicit research-only admission boundary. Every supplied publisher signal
+/// remains unchanged; warmup observations cannot create an order or a pending
+/// next-bar intent. It does not qualify any trading calendar or live authority.
+pub fn run_with_signals_after_warmup(
+    observations: &[MarketObservation],
+    signals: &[BooleanSignal],
+    quantity: Quantity,
+    config: SimulationConfig,
+    warmup_observations: u64,
+) -> Result<KernelResult, KernelError> {
     validate_simulation_config(config)?;
-    if observations.len() != signals.len()
+    if warmup_observations > 255
+        || (warmup_observations > 0 && warmup_observations >= observations.len() as u64)
+        || observations.len() != signals.len()
         || observations
             .iter()
             .enumerate()
@@ -366,6 +380,11 @@ pub fn run_with_signals(
         ));
     }
     simulate_decisions(observations, config, |bar, position| {
+        if (bar.bar_index as u64) < warmup_observations {
+            return Decision::NoSignal {
+                bar_index: bar.bar_index,
+            };
+        }
         let signal = signals[bar.bar_index];
         if signal.entry.is_none() || signal.exit.is_none() {
             return Decision::NoSignal {

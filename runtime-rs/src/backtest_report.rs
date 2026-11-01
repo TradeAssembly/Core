@@ -109,6 +109,84 @@ impl<'de> Deserialize<'de> for BacktestReport {
     }
 }
 
+impl BacktestReport {
+    /// Validates the bounded V3 evidence series without acquiring data or
+    /// claiming ownership. Durable consumers additionally bind the whole report
+    /// to the verified original manifest/result and current object owner.
+    pub fn verified_typed_series(
+        &self,
+    ) -> Result<Option<&crate::backtest_contracts::TypedBacktestEvidence>, String> {
+        let bad = || "backtest_report_typed_series_invalid".to_string();
+        let Some(evidence) = self.typed_evaluation.as_ref() else {
+            return if self.schema == BACKTEST_REPORT_SCHEMA {
+                Ok(None)
+            } else {
+                Err(bad())
+            };
+        };
+        let digest = |v: &str| {
+            v.len() == 64
+                && v.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        };
+        if self.schema != BACKTEST_REPORT_SCHEMA_V3
+            || evidence.schema_version != "tradeassembly.typed-backtest-evidence.v1"
+            || evidence.point_in_time_qualified
+            || evidence.knowledge_policy != "retrospective_capture_cutoff"
+            || evidence.plan_revision_id.is_empty()
+            || !digest(&evidence.plan_revision_sha256)
+            || !digest(&evidence.semantic_sha256)
+            || !digest(&evidence.final_checkpoint_sha256)
+            || evidence.evaluation_receipts.is_empty()
+            || evidence.evaluation_receipts.len() > 256
+            || evidence.evaluation_receipts.iter().any(|v| !digest(v))
+            || evidence.frames_processed == 0
+            || evidence.frames_processed > 256
+            || evidence.equity.len() as u64 != evidence.frames_processed
+            || evidence.signals.len() != evidence.equity.len()
+            || evidence.warming_frames > evidence.frames_processed
+            || self.overview.starting_equity_micros <= 0
+            || evidence.equity.last().map(|p| p.equity_micros)
+                != Some(self.overview.ending_equity_micros)
+        {
+            return Err(bad());
+        }
+        let mut previous = None;
+        let mut peak = self.overview.starting_equity_micros;
+        let mut max_drawdown = 0;
+        for (point, signal) in evidence.equity.iter().zip(&evidence.signals) {
+            if point.event_end_ms <= 0
+                || previous.is_some_and(|time| point.event_end_ms <= time)
+                || point.cash_micros < 0
+                || point.position_quantity_micros < 0
+                || point.mark_micros < 0
+                || point.equity_micros < 0
+                || signal["eventEndMs"].as_i64() != Some(point.event_end_ms)
+                || i128::from(point.cash_micros)
+                    + i128::from(point.position_quantity_micros) * i128::from(point.mark_micros)
+                        / 1_000_000
+                    != i128::from(point.equity_micros)
+            {
+                return Err(bad());
+            }
+            peak = peak.max(point.equity_micros);
+            max_drawdown = max_drawdown.max(
+                i64::try_from(i128::from(peak - point.equity_micros) * 10_000 / i128::from(peak))
+                    .map_err(|_| bad())?,
+            );
+            previous = Some(point.event_end_ms);
+        }
+        let first = &evidence.equity[0];
+        if first.position_quantity_micros != 0
+            || first.cash_micros != self.overview.starting_equity_micros
+            || evidence.max_drawdown_bps != max_drawdown
+        {
+            return Err(bad());
+        }
+        Ok(Some(evidence))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BacktestReportProvenance {
@@ -519,6 +597,14 @@ pub fn project_with_strategy_spec(
             .costs_and_risk
             .unavailable
             .retain(|metric| metric.metric != "max_drawdown_bps");
+        if let Some(metric) = report
+            .costs_and_risk
+            .unavailable
+            .iter_mut()
+            .find(|metric| metric.metric == "sharpe_ratio")
+        {
+            metric.reason = "return-sampling and annualization policies are not qualified for this typed research version".into();
+        }
         report.costs_and_risk.unavailable.push(unavailable("benchmark","no explicit verified benchmark series/model is supported by this typed research version"));
         report.metadata.warnings.push("Fixed-quantity typed signal simulation with a separately bound fill/mark series; this is not full published sizing, risk, stop or screened-selection parity. Retrospective captured-data replay leaves historical point-in-time availability unqualified. Fills and equity are simulated, not broker observations.".into());
         report.provenance.strategy_execution_summary = json!({"status":"available","engine":crate::backtest_contracts::TYPED_BACKTEST_ENGINE,
@@ -527,6 +613,7 @@ pub fn project_with_strategy_spec(
     } else if manifest.content.configuration.typed_evaluation.is_some() {
         return Err("backtest_report_typed_evidence_required".into());
     }
+    report.verified_typed_series()?;
     report.report_hash =
         canonical_hash(&report_without_hash(&report), "backtest_report_hash_failed")?;
     Ok(report)

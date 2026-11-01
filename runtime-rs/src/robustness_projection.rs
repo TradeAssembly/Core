@@ -1,7 +1,7 @@
 //! Integrity-bound projection from a completed backtest into a robustness result.
 
 use crate::backtest_contracts::{canonical_hash, BacktestResult, BacktestRunManifest};
-use crate::backtest_report::{BacktestReport, BACKTEST_REPORT_SCHEMA};
+use crate::backtest_report::BacktestReport;
 use crate::domain::BacktestRunState;
 use crate::historical_data::{DatasetSnapshot, HistoricalObservationData};
 use crate::robustness_contracts::{
@@ -82,6 +82,14 @@ pub fn public_evidence(
             Vec::new(),
         ),
     };
+    if result
+        .content
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "typed_retrospective_signal_simulation")
+    {
+        limitations.push("Source backtests use retrospective captured data and fixed-quantity long/flat signal simulation; historical point-in-time availability and full sizing, risk, stop or screened-selection parity are not qualified");
+    }
     limitations.push(
         "No unavailable holdout, optimizer, or out-of-sample proof is claimed by this report",
     );
@@ -150,12 +158,18 @@ pub fn execute_with_sources(
         .map_err(|error| format!("robustness_engine_{}", error.code))?;
     let output = serde_json::to_value(&engine_result)
         .map_err(|_| "robustness_projection_output_serialization_failed".to_string())?;
-    let diagnostics = engine_result
+    let mut diagnostics = engine_result
         .diagnostics
         .iter()
         .map(serde_json::to_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| "robustness_projection_diagnostics_serialization_failed".to_string())?;
+    if sources
+        .iter()
+        .any(|source| source.report.typed_evaluation.is_some())
+    {
+        diagnostics.push(serde_json::json!({"code":"typed_retrospective_signal_simulation","detail":"Verified source report V3 preserves retrospective capture clocks and fixed-quantity simulation scope","missingEvidence":["historical_point_in_time_availability","full_published_financial_stage_parity"]}));
+    }
     RobustnessResult::build(
         RobustnessResultContent {
             schema: ROBUSTNESS_RESULT_SCHEMA.to_string(),
@@ -170,7 +184,7 @@ pub fn execute_with_sources(
     )
 }
 
-fn verify_and_map_sources(
+pub(crate) fn verify_and_map_sources(
     manifest: &RobustnessRunManifest,
     sources: &[RobustnessSourceArtifacts],
 ) -> Result<Vec<VerifiedBacktest>, String> {
@@ -256,6 +270,27 @@ fn verify_artifacts(
     {
         return Err("robustness_source_binding_mismatch".to_string());
     }
+    if source_report.typed_evaluation != source_result.content.typed_evaluation {
+        return Err("robustness_source_typed_evidence_mismatch".into());
+    }
+    if let Some(binding) = &source_manifest.content.configuration.typed_evaluation {
+        let evidence = source_report
+            .verified_typed_series()?
+            .ok_or("robustness_source_typed_evidence_missing")?;
+        if evidence.plan_revision_id != binding.plan_revision_id
+            || evidence.plan_revision_sha256 != binding.plan_revision_sha256
+            || evidence.frames_processed
+                != (binding.event_end_ms - binding.event_start_ms) as u64 / binding.interval_ms
+            || evidence.equity.iter().enumerate().any(|(index, point)| {
+                point.event_end_ms
+                    != binding.event_start_ms + (index as i64 + 1) * binding.interval_ms as i64
+            })
+        {
+            return Err("robustness_source_typed_evidence_mismatch".into());
+        }
+    } else if source_report.typed_evaluation.is_some() {
+        return Err("robustness_source_typed_evidence_mismatch".into());
+    }
     let configured_dataset = &source_manifest.content.configuration.dataset;
     let configured_strategy = &source_manifest.content.configuration.strategy;
     let strategy_spec = strategy_version
@@ -287,7 +322,7 @@ fn verify_report(report: &BacktestReport) -> Result<(), String> {
     let mut value = serde_json::to_value(report)
         .map_err(|_| "robustness_source_report_serialization_failed".to_string())?;
     value["reportHash"] = Value::String(String::new());
-    if report.schema != BACKTEST_REPORT_SCHEMA
+    if report.verified_typed_series().is_err()
         || report.report_hash != canonical_hash(&value, "robustness_source_report_hash_failed")?
     {
         return Err("robustness_source_report_integrity_failed".to_string());
@@ -615,6 +650,9 @@ fn map_source(
         .iter()
         .enumerate()
         .map(|(index, trade)| {
+            if report.typed_evaluation.is_some() && !trade.realized {
+                return Err("robustness_typed_open_trade_returns_unsupported".to_string());
+            }
             let pnl = trade
                 .pnl_micros
                 .ok_or_else(|| "robustness_source_trade_pnl_unavailable".to_string())?;
@@ -663,18 +701,38 @@ fn map_source(
         },
         starting_equity_micros: starting_equity,
         trades,
-        equity: vec![
-            ObservedEquityPoint {
+        equity: if let Some(evidence) = report.verified_typed_series()? {
+            std::iter::once(ObservedEquityPoint {
                 sequence: 1,
                 equity_micros: starting_equity,
                 evidence_refs: refs.clone(),
-            },
-            ObservedEquityPoint {
-                sequence: 2,
-                equity_micros: report.overview.ending_equity_micros,
-                evidence_refs: refs,
-            },
-        ],
+            })
+            .chain(
+                evidence
+                    .equity
+                    .iter()
+                    .enumerate()
+                    .map(|(index, point)| ObservedEquityPoint {
+                        sequence: index as u64 + 2,
+                        equity_micros: point.equity_micros,
+                        evidence_refs: refs.clone(),
+                    }),
+            )
+            .collect()
+        } else {
+            vec![
+                ObservedEquityPoint {
+                    sequence: 1,
+                    equity_micros: starting_equity,
+                    evidence_refs: refs.clone(),
+                },
+                ObservedEquityPoint {
+                    sequence: 2,
+                    equity_micros: report.overview.ending_equity_micros,
+                    evidence_refs: refs,
+                },
+            ]
+        },
     })
 }
 
@@ -688,6 +746,11 @@ fn source_evidence_refs(manifest: &BacktestRunManifest, report: &BacktestReport)
             .iter()
             .map(|event| event.evidence_hash.clone()),
     );
+    if let Some(evidence) = &report.typed_evaluation {
+        refs.extend(evidence.evaluation_receipts.iter().cloned());
+        refs.insert(evidence.final_checkpoint_sha256.clone());
+        refs.insert(evidence.semantic_sha256.clone());
+    }
     refs.into_iter()
         .filter(|value| !value.trim().is_empty())
         .collect()

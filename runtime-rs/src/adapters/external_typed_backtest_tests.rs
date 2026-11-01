@@ -748,9 +748,262 @@ fn native_typed_backtest_uses_real_publisher_state_and_shared_simulation_after_r
         .list_json("execution_order_plan_submissions_v2")
         .unwrap()
         .is_empty());
+    let consumers = typed_research_consumers(
+        &restored,
+        &scope,
+        &plan,
+        &capture,
+        &snapshot,
+        id,
+        &report.body["report"],
+    );
     write_screen_interface_evidence(
         "typed_research",
         "canonical-native-parity.json",
-        &json!({"configuration":config,"backtest":completed,"report":report.body,"replay":replay.body,"paperSignals":paper_signals,"qualification":"actual native synthetic pure plugin subprocesses and canonical typed research queue/state/replay with service recreation in the same Core process; diagnostic sandbox/test identity; no Core OS-process restart, SRT, normal local-owner bootstrap, live provider/history entitlement, full sizing/risk/stop/screen parity or actual pack formula qualification"}),
+        &json!({"configuration":config,"backtest":completed,"report":report.body,"replay":replay.body,"paperSignals":paper_signals,"consumers":consumers,"qualification":"actual native synthetic pure plugin subprocesses and canonical typed research queue/state/replay with service recreation in the same Core process; diagnostic sandbox/test identity; no Core OS-process restart, SRT, normal local-owner bootstrap, live provider/history entitlement, full sizing/risk/stop/screen parity or actual pack formula qualification"}),
     );
+}
+
+// This extension creates both backtests with ordinary typed processing. Only
+// the already-existing pure report worker is system-scoped; it invokes no
+// plugin, acquires no data and does not impersonate an admitted owner.
+fn typed_research_consumers(
+    s: &crate::service::TradeAssemblyService,
+    scope: &data_plans::PlanScope,
+    plan: &data_plans::StoredDataPlan,
+    capture: &crate::service::data_captures::CaptureReceipt,
+    snapshot: &crate::historical_data::DatasetSnapshot,
+    primary_id: &str,
+    primary_report: &Value,
+) -> Value {
+    let mut config = typed_research_configuration(s, scope, plan, capture, snapshot);
+    config.costs.notional_fee_bps = 10;
+    let created = s.handle_http(
+        "POST",
+        "/backtests",
+        json!({"configuration":config,"idempotencyKey":"typed-cost-case"}),
+    );
+    assert_eq!(created.status, 202, "{}", created.body);
+    let second_id = created.body["runId"].as_str().unwrap().to_string();
+    let mut done = Value::Null;
+    for index in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let step = s.handle_http("POST", "/backtests:process", json!({"runId":second_id,"worker":"typed-owner-cost-case","idempotencyKey":format!("typed-cost-{index}")}));
+        assert!(matches!(step.status, 200 | 202), "{}", step.body);
+        if step.body["status"] == "completed" {
+            done = step.body;
+            break;
+        }
+    }
+    assert_eq!(done["status"], "completed", "{done}");
+    let second = s.handle_http("GET", &format!("/backtests/{second_id}/report"), json!({}));
+    assert_eq!(second.status, 200, "{}", second.body);
+    let primary: crate::backtest_report::BacktestReport =
+        serde_json::from_value(primary_report.clone()).unwrap();
+    let second_report: crate::backtest_report::BacktestReport =
+        serde_json::from_value(second.body["report"].clone()).unwrap();
+    assert!(second_report.overview.net_pnl_micros < primary.overview.net_pnl_micros);
+    assert_eq!(
+        primary
+            .verified_typed_series()
+            .unwrap()
+            .unwrap()
+            .equity
+            .len(),
+        6
+    );
+    for mutation in 0..5 {
+        let mut bad = primary.clone();
+        let typed = bad.typed_evaluation.as_mut().unwrap();
+        match mutation {
+            0 => {
+                typed.equity.pop();
+            }
+            1 => {
+                typed.equity[2].event_end_ms = typed.equity[1].event_end_ms;
+            }
+            2 => {
+                typed.equity[2].cash_micros += 1;
+            }
+            3 => {
+                typed.max_drawdown_bps += 1;
+            }
+            4 => {
+                typed.signals[2]["eventEndMs"] = json!(0);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            bad.verified_typed_series().is_err(),
+            "corrupt series {mutation}"
+        );
+    }
+    let policy = crate::research_comparison::CompatibilityPolicy {
+        cost: crate::research_comparison::ComparisonPolicy::Warn,
+        ..Default::default()
+    };
+    let comparison = s.handle_http("POST","/research-comparisons",json!({"sourceRunIds":[primary_id,second_id],"scope":{"strategyId":scope.strategy_id,"allowCrossVersion":false,"compatibleStrategyIds":[]},"policy":policy,"idempotencyKey":"typed-real-cost-comparison"}));
+    assert_eq!(comparison.status, 201, "{}", comparison.body);
+    let artifact = &comparison.body["artifact"]["artifact"];
+    assert_eq!(artifact["blocked"], false, "{artifact}");
+    for field in ["absoluteEquity", "normalizedEquityBps", "drawdown"] {
+        let series = artifact[field]["valuesByRun"].as_object().unwrap();
+        assert_eq!(series.len(), 2);
+        assert!(series
+            .values()
+            .all(|points| points.as_array().unwrap().len() == 6));
+    }
+    for report in [&primary, &second_report] {
+        let run_hash =
+            crate::backtest_contracts::canonical_hash(&report.run, "fixture_hash").unwrap();
+        let actual = artifact["absoluteEquity"]["valuesByRun"][&run_hash]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            actual
+                .iter()
+                .map(|p| p["absoluteMicros"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            report
+                .typed_evaluation
+                .as_ref()
+                .unwrap()
+                .equity
+                .iter()
+                .map(|p| p.equity_micros)
+                .collect::<Vec<_>>()
+        );
+    }
+    let assumptions = json!({"study":"fee_sensitivity","input":{"baselineLabel":"baseline","cases":[
+        {"sourceRunId":primary_id,"label":"baseline","feeBps":999,"slippageBps":999,"executionModel":"caller values must not replace original config","tradeReturns":[-0.99],"evidenceRefs":["caller-untrusted"]},
+        {"sourceRunId":second_id,"label":"actual-10bps","feeBps":999,"slippageBps":999,"executionModel":"caller values must not replace original config","tradeReturns":[-0.99],"evidenceRefs":["caller-untrusted"]}
+    ]}});
+    let robust = s.handle_http("POST","/robustness-runs",json!({"sourceRunId":primary_id,"sourceRunIds":[second_id],"studyKind":"fee_sensitivity","assumptions":assumptions,"deterministicSeed":7,"budget":{"maximumSamples":32,"maximumGridPoints":8,"maximumWindows":8,"maximumScenarios":8,"maximumOutputBytes":1000000,"maximumAttempts":1},"idempotencyKey":"typed-real-fee-study"}));
+    assert_eq!(robust.status, 202, "{}", robust.body);
+    let robust_id = robust.body["runId"].as_str().unwrap().to_string();
+    let manifest = s
+        .runtime()
+        .robustness
+        .get_manifest(&robust_id)
+        .unwrap()
+        .unwrap();
+    let version = s
+        .runtime()
+        .storage
+        .list_json("strategy_versions")
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| v)
+        .find(|v| v["id"] == scope.strategy_version_id)
+        .unwrap();
+    let artifacts = [&primary, &second_report]
+        .iter()
+        .map(|report| {
+            let id = &report.run.run_id;
+            let binding = std::iter::once(&manifest.content.source)
+                .chain(&manifest.content.supporting_sources)
+                .find(|binding| binding.source_run_id == *id)
+                .unwrap()
+                .clone();
+            crate::robustness_projection::RobustnessSourceArtifacts {
+                binding,
+                manifest: s.runtime().backtests.get_manifest(id).unwrap().unwrap(),
+                result: s.runtime().backtests.get_result(id).unwrap().unwrap(),
+                report: (*report).clone(),
+                dataset: snapshot.clone(),
+                strategy_version: version.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let prepared =
+        crate::robustness_projection::verify_and_map_sources(&manifest, &artifacts).unwrap();
+    assert_eq!(prepared.len(), 2);
+    for source in &prepared {
+        let original = artifacts
+            .iter()
+            .find(|a| a.binding.source_run_id == source.bindings.run_id)
+            .unwrap();
+        assert_eq!(
+            source.equity.len(),
+            7,
+            "explicit capital baseline plus every actual frame"
+        );
+        assert_eq!(
+            source.equity[0].equity_micros,
+            original.report.overview.starting_equity_micros
+        );
+        assert_eq!(
+            source.equity[1..]
+                .iter()
+                .map(|p| p.equity_micros)
+                .collect::<Vec<_>>(),
+            original
+                .report
+                .typed_evaluation
+                .as_ref()
+                .unwrap()
+                .equity
+                .iter()
+                .map(|p| p.equity_micros)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(source.trades.len(), 1);
+        assert_eq!(
+            source.trades[0].pnl_micros,
+            original.report.trades[0].pnl_micros.unwrap()
+        );
+        assert!(source.bindings.evidence_refs.contains(
+            &original
+                .report
+                .typed_evaluation
+                .as_ref()
+                .unwrap()
+                .final_checkpoint_sha256
+        ));
+    }
+    let mut wrong = artifacts.clone();
+    wrong[1].result = wrong[0].result.clone();
+    assert!(crate::robustness_projection::verify_and_map_sources(&manifest, &wrong).is_err());
+    let calls_before = s
+        .runtime()
+        .storage
+        .list_json("plugin_operation_receipts")
+        .unwrap()
+        .len();
+    let worker = crate::service::TradeAssemblyService::from_runtime(s.db(), (*s.runtime()).clone());
+    let processed = worker.handle_http("POST","/robustness-runs:process",json!({"worker":"typed-report-only-system-worker","idempotencyKey":"typed-report-only-study-process"}));
+    assert_eq!(processed.status, 200, "{}", processed.body);
+    assert_eq!(
+        s.runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap()
+            .len(),
+        calls_before,
+        "pure report worker must not invoke typed/plugin operations"
+    );
+    let robust_report = s.handle_http(
+        "GET",
+        &format!("/robustness-runs/{robust_id}/report"),
+        json!({}),
+    );
+    assert_eq!(robust_report.status, 200, "{}", robust_report.body);
+    let cases = robust_report.body["result"]["content"]["output"]["output"]["result"]["cases"]
+        .as_array()
+        .unwrap();
+    assert_eq!(cases.len(), 2);
+    for (label, original, fee_bps) in [
+        ("baseline", &primary, 0.0),
+        ("actual-10bps", &second_report, 10.0),
+    ] {
+        let row = cases.iter().find(|case| case["label"] == label).unwrap();
+        assert_eq!(row["feeBps"]["value"].as_f64().unwrap(), fee_bps);
+        let expected = original.overview.net_pnl_micros as f64
+            / original.overview.starting_equity_micros as f64;
+        assert!(
+            (row["returnRatio"]["value"].as_f64().unwrap() - expected).abs() < 1e-12,
+            "{row}"
+        );
+    }
+    json!({"secondBacktest":done,"comparison":comparison.body,"robustness":robust_report.body,"workerBoundary":"existing bare system worker consumed verified admitted immutable reports only; no typed/plugin calls, no stored-owner impersonation; owner-scoped/delegated processing is not qualified"})
 }

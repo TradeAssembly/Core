@@ -92,6 +92,26 @@ fn resolve(
 ) -> Result<SelectionPlanSource, String> {
     resolve_inner(service, c, prepared_at_ms, None)
 }
+// Only the traded subject is replaced by the settled owned-position witness.
+// Independently selected context still executes its normal freshness checks.
+fn selection_members(
+    alias: &str,
+    trade_alias: &str,
+    managed: Option<&(InstrumentContext, String)>,
+    used_as_context: bool,
+    current_selection: impl FnOnce() -> Result<Vec<InstrumentContext>, String>,
+) -> Result<Vec<InstrumentContext>, String> {
+    if alias == trade_alias && !used_as_context {
+        if let Some((subject, _)) = managed {
+            return Ok(vec![subject.clone()]);
+        }
+    }
+    current_selection()
+}
+fn selection_is_context(template: &SelectionStrategy, alias: &str) -> bool {
+    template.nodes.iter().flat_map(|n| std::iter::once(&n.context).chain(n.input_contexts.values()))
+        .any(|c| matches!(c, ContextTemplate::Selected { selection_ref, .. } if selection_ref == alias))
+}
 fn resolve_inner(
     service: &TradeAssemblyService,
     c: &SelectionPlanCommand,
@@ -150,70 +170,92 @@ fn resolve_inner(
             return Err("selection_plan_selector_missing".into());
         }
         let selector = selectors[0];
-        let members = match selector.selector_type {
-            SelectorType::Screened => {
-                let id = c
-                    .selection_receipts
-                    .get(name)
-                    .ok_or("selection_plan_screen_required")?;
-                let r = instrument_screens::current(service, id)?;
-                if r.command.scope != c.scope
-                    || r.command.mode != c.mode
-                    || r.command.capability_graph_revision != c.capability_graph_revision
-                    || r.command.signal_requirement_ref != binding.market_requirement_ref
-                    || r.command.selector_ref != binding.selector_ref
-                {
-                    return Err("selection_plan_screen_binding_mismatch".into());
-                }
-                match r.instrument_set.status {
-                    SelectionStatus::CompleteNonempty => {}
-                    SelectionStatus::CompleteEmpty
-                        if managed.is_some() && name == &template.trade_selection_ref => {}
-                    SelectionStatus::CompleteEmpty => {
-                        return Err("selection_plan_no_eligible_instrument".into())
+        let used_as_context = selection_is_context(&template, name);
+        if name == &template.trade_selection_ref && !used_as_context {
+            if let Some((subject, proof)) = &managed {
+                evidence.insert(
+                    name.clone(),
+                    canonical_sha256(&json!({
+                        "schemaVersion":"tradeassembly.managed_trade_selection.v1",
+                        "subject":subject,"managedPositionSha256":proof,
+                    }))
+                    .map_err(|_| "selection_plan_encoding_invalid")?,
+                );
+            }
+        }
+        let members = selection_members(
+            name,
+            &template.trade_selection_ref,
+            managed.as_ref(),
+            used_as_context,
+            || {
+                let members = match selector.selector_type {
+                    SelectorType::Screened => {
+                        let id = c
+                            .selection_receipts
+                            .get(name)
+                            .ok_or("selection_plan_screen_required")?;
+                        let r = instrument_screens::current(service, id)?;
+                        if r.command.scope != c.scope
+                            || r.command.mode != c.mode
+                            || r.command.capability_graph_revision != c.capability_graph_revision
+                            || r.command.signal_requirement_ref != binding.market_requirement_ref
+                            || r.command.selector_ref != binding.selector_ref
+                        {
+                            return Err("selection_plan_screen_binding_mismatch".into());
+                        }
+                        match r.instrument_set.status {
+                            SelectionStatus::CompleteNonempty => {}
+                            SelectionStatus::CompleteEmpty
+                                if managed.is_some() && name == &template.trade_selection_ref => {}
+                            SelectionStatus::CompleteEmpty => {
+                                return Err("selection_plan_no_eligible_instrument".into())
+                            }
+                            _ => return Err("selection_plan_incomplete".into()),
+                        }
+                        known = known.max(r.instrument_set.known_at_ms);
+                        evidence.insert(name.clone(), r.receipt_sha256);
+                        r.instrument_set
+                            .members
+                            .into_iter()
+                            .map(|i| InstrumentContext {
+                                instrument_id: i.instrument_id,
+                                asset_class: i.asset_class,
+                                instrument_family: i.instrument_family,
+                            })
+                            .collect()
                     }
-                    _ => return Err("selection_plan_incomplete".into()),
-                }
-                known = known.max(r.instrument_set.known_at_ms);
-                evidence.insert(name.clone(), r.receipt_sha256);
-                r.instrument_set
-                    .members
-                    .into_iter()
-                    .map(|i| InstrumentContext {
-                        instrument_id: i.instrument_id,
-                        asset_class: i.asset_class,
-                        instrument_family: i.instrument_family,
-                    })
-                    .collect()
-            }
-            SelectorType::NormalizedInstrument => {
-                if c.selection_receipts.contains_key(name) {
-                    return Err("selection_plan_static_receipt_rejected".into());
-                }
-                let id = selector
-                    .normalized_id
-                    .clone()
-                    .filter(|i| !i.is_empty())
-                    .ok_or("selection_plan_static_invalid")?;
-                let asset_class = serde_json::to_value(&market.asset_class)
-                    .map_err(|_| "selection_plan_static_invalid")?
-                    .as_str()
-                    .ok_or("selection_plan_static_invalid")?
-                    .to_owned();
-                let instrument_family = serde_json::to_value(&market.instrument_family)
-                    .map_err(|_| "selection_plan_static_invalid")?
-                    .as_str()
-                    .ok_or("selection_plan_static_invalid")?
-                    .to_owned();
-                evidence.insert(name.clone(),canonical_sha256(&json!({"scope":c.scope,"selector":selector,"assetClass":asset_class,"instrumentFamily":instrument_family})).map_err(|_|"selection_plan_encoding_invalid")?);
-                vec![InstrumentContext {
-                    instrument_id: id,
-                    asset_class,
-                    instrument_family,
-                }]
-            }
-            _ => return Err("selection_plan_selector_producer_unavailable".into()),
-        };
+                    SelectorType::NormalizedInstrument => {
+                        if c.selection_receipts.contains_key(name) {
+                            return Err("selection_plan_static_receipt_rejected".into());
+                        }
+                        let id = selector
+                            .normalized_id
+                            .clone()
+                            .filter(|i| !i.is_empty())
+                            .ok_or("selection_plan_static_invalid")?;
+                        let asset_class = serde_json::to_value(&market.asset_class)
+                            .map_err(|_| "selection_plan_static_invalid")?
+                            .as_str()
+                            .ok_or("selection_plan_static_invalid")?
+                            .to_owned();
+                        let instrument_family = serde_json::to_value(&market.instrument_family)
+                            .map_err(|_| "selection_plan_static_invalid")?
+                            .as_str()
+                            .ok_or("selection_plan_static_invalid")?
+                            .to_owned();
+                        evidence.insert(name.clone(),canonical_sha256(&json!({"scope":c.scope,"selector":selector,"assetClass":asset_class,"instrumentFamily":instrument_family})).map_err(|_|"selection_plan_encoding_invalid")?);
+                        vec![InstrumentContext {
+                            instrument_id: id,
+                            asset_class,
+                            instrument_family,
+                        }]
+                    }
+                    _ => return Err("selection_plan_selector_producer_unavailable".into()),
+                };
+                Ok(members)
+            },
+        )?;
         selected.insert(name.clone(), members);
     }
     let resolved_program = if let Some((subject, _)) = &managed {
@@ -506,6 +548,88 @@ mod managed_wire_tests {
         legacy["managedPositionId"] = json!("position_owned");
         assert!(serde_json::from_value::<SelectionPlanCommand>(legacy).is_err());
     }
+    #[test]
+    fn managed_trade_binding_bypasses_expired_entry_selection_but_context_still_checks() {
+        use std::cell::Cell;
+        let owned = (
+            InstrumentContext {
+                instrument_id: "OWNED".into(),
+                asset_class: "equity".into(),
+                instrument_family: "equity".into(),
+            },
+            "settled-owned-position-proof".into(),
+        );
+        let called = Cell::new(false);
+        let traded = selection_members("traded", "traded", Some(&owned), false, || {
+            called.set(true);
+            Err("instrument_screen_stale".into())
+        })
+        .unwrap();
+        assert_eq!(traded, vec![owned.0.clone()]);
+        assert!(
+            !called.get(),
+            "entry membership expiry must not orphan the owned lot"
+        );
+        let context = selection_members("context", "traded", Some(&owned), true, || {
+            called.set(true);
+            Err("instrument_screen_stale".into())
+        });
+        assert_eq!(context.unwrap_err(), "instrument_screen_stale");
+        assert!(called.get());
+        called.set(false);
+        let entry = selection_members("traded", "traded", None, false, || {
+            called.set(true);
+            Err("instrument_screen_stale".into())
+        });
+        assert_eq!(entry.unwrap_err(), "instrument_screen_stale");
+        assert!(called.get(), "normal entry still requires fresh membership");
+        let same_alias_context = selection_members("traded", "traded", Some(&owned), true, || {
+            Err("current_context_screen_expired".into())
+        });
+        assert_eq!(
+            same_alias_context.unwrap_err(),
+            "current_context_screen_expired"
+        );
+    }
+
+    #[test]
+    fn traded_selector_used_by_node_or_input_context_requires_current_members() {
+        let rule = RuleTemplate::IsTrue {
+            value: OperandTemplate::Boolean { value: true },
+        };
+        let mut template = SelectionStrategy {
+            schema_version: "tradeassembly.selection_strategy.v1".into(),
+            selections: BTreeMap::new(),
+            trade_selection_ref: "traded".into(),
+            bindings: vec![],
+            nodes: vec![NodeTemplate {
+                graph_node_id: "signal".into(),
+                parameters: json!({}),
+                context: ContextTemplate::Subject {
+                    interval_ms: Some(1000),
+                },
+                input_contexts: BTreeMap::from([(
+                    "benchmark".into(),
+                    ContextTemplate::Selected {
+                        selection_ref: "traded".into(),
+                        interval_ms: Some(1000),
+                    },
+                )]),
+            }],
+            entry: rule.clone(),
+            exit: rule,
+        };
+        assert!(selection_is_context(&template, "traded"));
+        template.nodes[0].input_contexts.clear();
+        assert!(!selection_is_context(&template, "traded"));
+        template.nodes[0].context = ContextTemplate::Selected {
+            selection_ref: "traded".into(),
+            interval_ms: Some(1000),
+        };
+        assert!(selection_is_context(&template, "traded"));
+        assert!(!selection_is_context(&template, "other"));
+    }
+
     #[test]
     fn unmanaged_selection_source_serialization_omits_both_new_fields() {
         let legacy = json!({"command":{"scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},"capabilityGraphRevision":"g","mode":"paper","subjectInstrumentId":"subject","selectionReceipts":{},"sourceCaptures":{}},"preparedAtMs":1,"knownAtMs":1,"selectionSha256":{},"resolvedProgram":{"version":1,"nodes":[],"bindings":[],"tradeInstruments":[],"entry":{"kind":"is_true","value":{"kind":"boolean","value":false}},"exit":{"kind":"is_true","value":{"kind":"boolean","value":true}}}});

@@ -415,6 +415,9 @@ fn timing_phase(stage: &'static str) -> bool {
             | "prepare.validate_before"
             | "prepare.calculation"
             | "prepare.validate_after"
+            | "approval.preflight"
+            | "approval.validate"
+            | "approval.revalidate"
             | "broker.invoke"
             | "c5.prepare"
             | "c5.admit"
@@ -1659,6 +1662,9 @@ mod financial_timing_tests {
             "prepare.validate_before",
             "prepare.calculation",
             "prepare.validate_after",
+            "approval.preflight",
+            "approval.validate",
+            "approval.revalidate",
         ] {
             assert!(timing_phase(phase));
         }

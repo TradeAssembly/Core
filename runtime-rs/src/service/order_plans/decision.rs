@@ -17,6 +17,13 @@ pub(in crate::service) fn run(
     s: &TradeAssemblyService,
     id: &str,
 ) -> Result<(Value, Value), String> {
+    super::super::package_validation::with_round(s, |s| run_in_round(s, id))
+}
+/// The caller already owns one pure, call-local metadata validation round.
+pub(in crate::service) fn run_in_round(
+    s: &TradeAssemblyService,
+    id: &str,
+) -> Result<(Value, Value), String> {
     s.require_object("execution_activation", id)
         .map_err(|_| "typed_entry_activation_not_available")?;
     let r = s
@@ -63,6 +70,27 @@ pub(in crate::service) fn run(
         }
     }
     Ok((r, c))
+}
+/// Reuse immutable metadata and a single signal witness only inside this pure
+/// round. Preflight, actual approval and post-lease validation each call this
+/// independently; no witness or scoped runtime escapes into an effect.
+pub(crate) fn entry_inputs(
+    s: &TradeAssemblyService,
+    plan_id: &str,
+    activation_id: &str,
+    require_unsubmitted: bool,
+) -> Result<(OrderPlan, Value, Value, String), String> {
+    super::super::package_validation::with_round(s, |s| {
+        let source = submission::source(s, plan_id)?;
+        let signal = source.verified_signal_in_round()?;
+        let p = source.snapshot_with_signal_in_round(&signal)?;
+        if require_unsubmitted && source.state()?.is_some() {
+            return Err("order_plan_already_submitted".into());
+        }
+        let (r, c) = run_in_round(s, activation_id)?;
+        let selection = check_plan_with_signal(s, &p, &r, &c, &signal)?;
+        Ok((p, r, c, selection))
+    })
 }
 fn plan_scope(c: &Value) -> Result<data_plans::PlanScope, String> {
     Ok(data_plans::PlanScope {
@@ -227,15 +255,10 @@ pub(crate) fn decide(
     c: DecisionCommand,
     ctx: &SideEffectContext,
 ) -> Result<Value, String> {
-    let source = submission::source(s, &c.plan_id)?;
-    let signal = source.verified_signal()?;
-    let p = source.snapshot_with_signal(&signal)?;
-    if source.state()?.is_some() {
-        return Err("order_plan_already_submitted".into());
-    }
-    let (mut r, config) = run(s, &c.activation_id)?;
+    let (p, mut r, config, selection) = measured("approval.validate", || {
+        entry_inputs(s, &c.plan_id, &c.activation_id, true)
+    })?;
     let old = r.clone();
-    let selection = check_plan_with_signal(s, &p, &r, &config, &signal)?;
     let attempt = format!(
         "attempt_typed_{}",
         hash(&(c.activation_id.clone(), p.entry_id.clone()))?
@@ -295,9 +318,10 @@ pub(crate) fn decide(
         r["orderPlanApprovals"][&p.plan_id] = approval;
         r["managedEntries"][&p.entry_id] = json!({"planId":p.plan_id,"instrument":p.order.instrument,"state":"reserved","selectionBindingSha256":selection});
         let attempt_record = json!({"attemptId":attempt,"activationId":c.activation_id,"state":"running","owner":worker,"leaseResource":resource,"fencingToken":lease.fencing_token,"executionContractVersion":typed::VERSION});
-        source.snapshot()?;
-        let (fresh_run, fresh_config) = run(s, &c.activation_id)?;
-        if fresh_run != old || fresh_config != config {
+        let (fresh_plan, fresh_run, fresh_config, _) = measured("approval.revalidate", || {
+            entry_inputs(s, &c.plan_id, &c.activation_id, false)
+        })?;
+        if fresh_plan != p || fresh_run != old || fresh_config != config {
             return Err("typed_entry_state_changed".into());
         }
         let state_key = format!("run_{}", c.activation_id);

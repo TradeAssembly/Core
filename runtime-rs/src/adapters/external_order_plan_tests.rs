@@ -134,6 +134,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  if matches!(v2_case,Some("financial_token_revoke"|"financial_token_expire")){exercise_financial_witness_refusal(&service,command,financial_clock_offset);return;}
  let proposal=if v2_case.is_some_and(|c|c.starts_with("financial_")){financial_native_call(&service,crate::service::order_plans::remote::FinancialOperation::Prepare{order_plan:command.clone()},"execution-proposal")}else{service.handle_http("POST","/product/strategies/order-plans/prepare",json!({"orderPlan":command,"accountMode":"paper","idempotencyKey":"execution-proposal"}))};assert_eq!(proposal.status,200,"{}",proposal.body);assert_eq!(proposal.body["purchaseCash"],"41");assert_eq!(proposal.body["order"]["quantity"],"0.4");assert_eq!(proposal.body["brokerDispatchAllowed"],false);assert_eq!(proposal.body["cashReservedAtPreparation"],true);
  let plan_id=proposal.body["planId"].as_str().unwrap();
+ if v2_case==Some("financial_validation_rounds"){exercise_native_entry_validation_rounds(&service,plan_id);return;}
  let reserved=if !dynamic {
  let repeat=service.handle_http("POST","/product/strategies/order-plans/prepare",json!({"orderPlan":command,"accountMode":"paper","idempotencyKey":"execution-proposal-new-transport"}));assert_eq!(repeat.status,200,"{}",repeat.body);assert_eq!(repeat.body["planId"],proposal.body["planId"],"new transport keys must not create another entry");
 let reserved=if v2_case.is_some_and(|c|c.starts_with("financial_")){financial_native_call(&service,crate::service::order_plans::remote::FinancialOperation::Reserve{scope:scope.clone(),plan_id:plan_id.into()},"execution-reserve")}else{service.handle_http("POST","/product/strategies/order-plans/reserve",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"execution-reserve"}))};assert_eq!(reserved.status,200,"{}",reserved.body);assert_eq!(reserved.body["cashReserved"],"41");assert_eq!(reserved.body["brokerDispatchAllowed"],false);
@@ -149,4 +150,44 @@ let reserved=if v2_case.is_some_and(|c|c.starts_with("financial_")){financial_na
  write_screen_interface_evidence("execution_plan","release.json",&released.body);
  assert_eq!(service.runtime().storage.list_json("orders").unwrap(),orders);assert_eq!(service.runtime().storage.list_json("positions").unwrap(),positions);
  write_screen_interface_evidence("execution_plan","proposal.json",&proposal.body);write_screen_interface_evidence("execution_plan","reservation.json",&reserved.body);
+}
+
+fn exercise_native_entry_validation_rounds(
+    s: &crate::service::TradeAssemblyService,
+    plan_id: &str,
+) {
+    use crate::service::order_plans::decision;
+    let activation = "fixture-v2-activation";
+    let (plan, run, _, _) = decision::entry_inputs(s, plan_id, activation, true).unwrap();
+    let operations = s.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+    let cash = s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
+    let attempts = s.runtime().storage.list_json("execution_attempts").unwrap();
+    let index = s.runtime().storage.get_json("data_evaluation_receipt_hash_index_v1", &plan.command.signal_receipt_sha256).unwrap().unwrap();
+    let receipt_key = index["receiptKey"].as_str().unwrap();
+    for (namespace, key, field, changed) in [
+        ("execution_configs", run["configId"].as_str().unwrap(), "strategySpecHash", json!("tampered-configuration")),
+        ("execution_controls", activation, "paused", json!(true)),
+        ("data_evaluation_receipts_v1", receipt_key, "receiptSha256", json!("0".repeat(64))),
+    ] {
+        let original = s.runtime().storage.get_json(namespace, key).unwrap().unwrap();
+        let mut invalid = original.clone();
+        invalid[field] = changed;
+        s.runtime().storage.put_json(namespace, key, invalid, &ctx("entry-round-mutation")).unwrap();
+        assert!(decision::entry_inputs(s, plan_id, activation, true).is_err(), "fresh round accepted {namespace} drift");
+        s.runtime().storage.put_json(namespace, key, original, &ctx("entry-round-restore")).unwrap();
+    }
+    let foreign = s.for_authenticated_invocation("fixture", "foreign-entry-round", None, None);
+    assert!(decision::entry_inputs(&foreign, plan_id, activation, true).is_err());
+    decision::entry_inputs(s, plan_id, activation, true).unwrap();
+    assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(), operations);
+    assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(), cash);
+    assert_eq!(s.runtime().storage.list_json("execution_attempts").unwrap(), attempts);
+    assert!(s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap().is_empty());
+    write_screen_interface_evidence("entry_validation", "round-boundaries.json", &json!({"status":"PASS","configurationDriftRefused":true,"pausedAuthorityRefused":true,"tamperedSignalRefused":true,"foreignOwnerRefused":true,"restoredContextAccepted":true,"newProviderInvocations":0,"newAttempts":0,"newSubmissions":0,"cashUnchanged":true}));
+}
+#[test]
+#[ignore="focused native entry validation round freshness and evidence invalidation"]
+fn native_entry_validation_rounds_reject_configuration_authority_and_tampered_signal() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_validation_rounds"));
 }

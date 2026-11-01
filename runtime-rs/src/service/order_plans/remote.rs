@@ -253,11 +253,12 @@ pub(crate) fn binding(
                         submission::release_guard(s, &p)?;
                     }
                     FinancialOperation::Decide { decision, .. } => {
-                        let source = submission::source(s, &p.plan_id)?;
-                        let signal = source.verified_signal()?;
-                        source.snapshot_with_signal(&signal)?;
-                        let (r, c) = decision::run(s, &decision.activation_id)?;
-                        decision::check_plan_with_signal(s, &p, &r, &c, &signal)?;
+                        let (current, _, _, _) = measured("approval.preflight", || {
+                            decision::entry_inputs(s, &p.plan_id, &decision.activation_id, false)
+                        })?;
+                        if current != p {
+                            return Err("order_plan_sources_changed".into());
+                        }
                     }
                     FinancialOperation::Submit { submission: c, .. } => {
                         let (source, _, _) = transport::request(s, c)?;

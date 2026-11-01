@@ -273,7 +273,7 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
     let (config, automatic, plan, receipt, occurrence) =
         crate::service::package_validation::with_round(s, |s| {
             let (_run, config) = order_plans::measured("cycle.run", || {
-                order_plans::decision::run(s, &c.activation_id)
+                order_plans::decision::run_in_round(s, &c.activation_id)
             })?;
             let automatic = automatic(&config)?;
             let (plan, receipt) = order_plans::measured("cycle.signal", || {

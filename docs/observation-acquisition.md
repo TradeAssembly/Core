@@ -36,3 +36,13 @@ expire during a partial turn refuse normally; their timestamps are never renewed
 This mode acquires new inputs before any plan exists. It never reprices or mutates
 an approved plan, replaces a reservation, or retries a denied/unknown broker order.
 Synthetic fixture qualification and real provider coverage are separate gates.
+
+Worker health validation shares immutable verified package metadata only within
+one pure binding read, one provider-selection read, or one post-effect
+readiness/due-time read. These are separate rounds: a provider call, next turn,
+or independent admission cannot inherit their package snapshots. Registry,
+credential, ownership, health and clock reads remain current in every round.
+For a persisted, unattempted, due-now execution successor the worker returns to
+its normal top-of-loop health gate directly, without first repeating an advisory
+health probe. Future wakes, attempted-child backoff and management scheduling
+retain their existing checks.

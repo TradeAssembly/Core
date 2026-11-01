@@ -329,6 +329,14 @@ struct Binding {
     pins: Pins,
 }
 fn read_binding(s: &TradeAssemblyService, activation: &str) -> Result<Option<Binding>, String> {
+    // Immutable metadata is shared only within this pure read. The returned
+    // binding carries no cached service into provider effects or later turns.
+    crate::service::package_validation::with_round(s, |s| read_binding_round(s, activation))
+}
+fn read_binding_round(
+    s: &TradeAssemblyService,
+    activation: &str,
+) -> Result<Option<Binding>, String> {
     let _timing = crate::service::order_plans::financial_timing("health.binding");
     s.require_object("execution_activation", activation)
         .map_err(|_| "automatic_health_activation_not_available")?;
@@ -1096,26 +1104,29 @@ fn advance(
                 state_sha256: String::new(),
             },
         ));
-        let mut selected_index = None;
-        for offset in 0..state.targets.len() {
-            let index = (state.cursor + offset) % state.targets.len();
-            let target = &state.targets[index];
-            let mut at = i64::MAX;
-            for pin in b
-                .pins
-                .providers
-                .iter()
-                .filter(|p| p.source.plugin_instance_ref == target.instance_ref)
-            {
-                at = at.min(fresh_at(s, &b, pin, now)?);
+        let selected_index = crate::service::package_validation::with_round(s, |s| {
+            let mut selected_index = None;
+            for offset in 0..state.targets.len() {
+                let index = (state.cursor + offset) % state.targets.len();
+                let target = &state.targets[index];
+                let mut at = i64::MAX;
+                for pin in b
+                    .pins
+                    .providers
+                    .iter()
+                    .filter(|p| p.source.plugin_instance_ref == target.instance_ref)
+                {
+                    at = at.min(fresh_at(s, &b, pin, now)?);
+                }
+                if (target.pending.is_some() || target.error.is_some() || at <= now)
+                    && now >= target.next_attempt_at_ms
+                {
+                    selected_index = Some(index);
+                    break;
+                }
             }
-            if (target.pending.is_some() || target.error.is_some() || at <= now)
-                && now >= target.next_attempt_at_ms
-            {
-                selected_index = Some(index);
-                break;
-            }
-        }
+            Ok(selected_index)
+        })?;
         if let Some(index) = selected_index {
             // A not-yet-started periodic read must not spend the final freshness
             // budget of an existing approved plan or original lookup/settlement.
@@ -1228,10 +1239,14 @@ fn advance(
             )?;
         }
         let now = s.runtime().clock.trusted_now_ms()?;
-        let next = due(s, &b, Some(&state), now)?;
-        // due() can be in backoff while health remains stale; neither a backoff
-        // deadline nor an unknown response is permission to proceed.
-        let ready = ready(s, &b, Some(&state), now)?;
+        // Fresh metadata round after any provider effect; no pre-effect
+        // snapshot survives the call. Mutable registry/custody/health reads
+        // remain live in both calculations.
+        let (next, ready) = crate::service::package_validation::with_round(s, |s| {
+            let next = due(s, &b, Some(&state), now)?;
+            // Backoff is never permission to proceed with stale health.
+            Ok((next, ready(s, &b, Some(&state), now)?))
+        })?;
         Ok(Gate {
             ready,
             next_attempt_at_ms: next,
@@ -1828,6 +1843,26 @@ mod tests {
             std::fs::write(package.install_root.join("health-response.json"), b"{}").unwrap();
             assert!(operation(&s, &pin).is_err());
         }
+    }
+
+    #[test]
+    fn health_metadata_round_is_discarded_before_next_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, package) = packaged_health(dir.path(), 2, true, true);
+        let (s, pin) = health_service(store, &package);
+        crate::service::package_validation::with_round(&s, |scoped| {
+            assert_eq!(operation(scoped, &pin)?["id"], "account.health");
+            assert_eq!(operation(scoped, &pin)?["id"], "account.health");
+            Ok(())
+        })
+        .unwrap();
+        std::fs::write(package.install_root.join("health-response.json"), b"{}").unwrap();
+        assert!(
+            crate::service::package_validation::with_round(&s, |scoped| {
+                operation(scoped, &pin)
+            })
+            .is_err()
+        );
     }
 
     struct Authority {

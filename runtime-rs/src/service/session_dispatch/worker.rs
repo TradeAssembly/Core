@@ -423,11 +423,6 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         if j.paused {
             return Ok(());
         }
-        // A long computation may cross the health TTL. Return to the read gate
-        // before asking management's normal currentness checks about more work.
-        if automatic_health::needs_job_turn(s, &j)? {
-            continue;
-        }
         // A successful phase has already persisted its unattempted successor.
         // Return to the normal owner/intent/health/management checks at the top
         // of the loop immediately. There is no future wake to plan here and no
@@ -441,6 +436,12 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
             && j.next_attempt_at_ms <= s.runtime().clock.trusted_now_ms()?
         {
             wake.wait(observed, 1);
+            continue;
+        }
+        // A due execution successor already loops through advance_worker_job
+        // above, which refreshes/rechecks health before any next child. Other
+        // scheduling paths still need this probe before management currentness.
+        if automatic_health::needs_job_turn(s, &j)? {
             continue;
         }
         let health_work = j.status.terminal() && automatic_health::needs_job_turn(s, &j)?;

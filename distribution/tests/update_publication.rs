@@ -154,3 +154,56 @@ fn uncertain_proof_never_reaches_the_key_loader() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("publication_native_proof_unaccepted"));
     assert!(!f.output.exists());
 }
+
+#[test]
+fn renewal_cli_is_keyless_and_only_prepares_the_same_release() {
+    let f = Fixture::new();
+    let mut original: Value = serde_json::from_slice(&fs::read(&f.payload).unwrap()).unwrap();
+    original["issued_at"] = json!(original["issued_at"].as_u64().unwrap() - 2);
+    fs::write(&f.payload, serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(f.command(true, true).status.success());
+    let prior = fs::read(&f.output).unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let run = |digest: &str, extra: bool| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tradeassembly-distribution"));
+        c.arg("update-renewal-plan")
+            .arg("--proof")
+            .arg(&f.proof)
+            .arg("--expected-proof-sha256")
+            .arg(&f.digest)
+            .arg("--previous-manifest")
+            .arg(&f.output)
+            .arg("--expected-previous-sha256")
+            .arg(digest)
+            .arg("--public-key")
+            .arg(STANDARD.encode(key.verifying_key().to_bytes()))
+            .arg("--sequence")
+            .arg("2")
+            .env(
+                "TRADEASSEMBLY_BINARY_UPDATE_SIGNING_KEY",
+                "must-not-be-read",
+            );
+        if extra {
+            c.arg("--unexpected");
+        }
+        c.output().unwrap()
+    };
+    let result = run(&sha(&prior), false);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let plan: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(plan["payload"]["sequence"], 2);
+    assert_eq!(plan["payload"]["components"], original["components"]);
+    assert_eq!(
+        plan["payload"]["archive_sha256"],
+        original["archive_sha256"]
+    );
+    assert_eq!(plan["signed"], false);
+    assert_eq!(plan["published"], false);
+    assert!(!run(&"a".repeat(64), false).status.success());
+    assert!(!run(&sha(&prior), true).status.success());
+    assert_eq!(fs::read(&f.output).unwrap(), prior);
+}

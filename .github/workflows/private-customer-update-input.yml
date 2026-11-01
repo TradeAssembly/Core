@@ -2,7 +2,7 @@
 name: Sign private customer updater candidate metadata
 on:
   push:
-    tags: ['update-input-v*']
+    tags: ['update-input-v*', 'update-renewal-v*']
 permissions:
   contents: write
   actions: read
@@ -32,12 +32,14 @@ jobs:
           test "$GITHUB_REPOSITORY" = TradeAssembly/Core
           test "$EVENT_CREATED" = true
           test "$GITHUB_RUN_ATTEMPT" = 1
-          [[ "$GITHUB_REF" =~ ^refs/tags/update-input-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$GITHUB_REF" == refs/tags/* ]]
           git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"
           test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA"
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/linux-ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" | jq -e --arg s "$GITHUB_SHA" 'any(.workflow_runs[]; .head_sha == $s and .status == "completed" and .conclusion == "success" and (.event == "pull_request" or .event == "push"))'
           record="packaging/update-candidates/$GITHUB_REF_NAME.json"
-          version=${GITHUB_REF_NAME#update-input-v}
+          scripts/release/update-input-identity "$GITHUB_REF_NAME" "$record" > "$RUNNER_TEMP/update-input-identity.json"
+          version=$(jq -er .version "$RUNNER_TEMP/update-input-identity.json")
+          echo "UPDATE_INPUT_VERSION=$version" >> "$GITHUB_ENV"
           jq -e --arg v "$version" '.schema == "tradeassembly.private-update-candidate/v1" and .version == $v and .target == "aarch64-apple-darwin" and .publicFeedEnabled == false and (.sequence | type == "number" and . > 0 and floor == .) and ([.archiveSha256,.diskImageSha256,.notarizationBindingSha256] | all(.[]; type == "string" and test("^[0-9a-f]{64}$")))' "$record"
           ready=false
           for attempt in $(seq 1 60); do
@@ -60,16 +62,30 @@ jobs:
         with:
           tool: just@1.54.0
       - name: Build and verify the approved offline signing input before key access
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           rustup toolchain install 1.98.0 --profile minimal --no-self-update
           just build-target tradeassembly-distribution tradeassembly-distribution
-          version=${GITHUB_REF_NAME#update-input-v}
+          version=$UPDATE_INPUT_VERSION
           record="packaging/update-candidates/$GITHUB_REF_NAME.json"
           proof="$RUNNER_TEMP/update-candidate/TradeAssembly-$version-notarization-proof.json"
           now=$(date +%s)
           jq --argjson now "$now" --argjson sequence "$(jq -er .sequence "$record")" '.identity + {sequence:$sequence,issued_at:$now,expires_at:($now+604800)}' "$proof" > "$RUNNER_TEMP/update-candidate/payload.json"
           jq -e --arg a "$(jq -er .archiveSha256 "$record")" --arg d "$(jq -er .diskImageSha256 "$record")" --arg v "$version" '.identity.archive_sha256 == $a and .stapledContainerSha256 == $d and .identity.version == $v' "$proof"
+          if jq -e '.renewal == true' "$RUNNER_TEMP/update-input-identity.json" >/dev/null; then
+            # Renewal is an explicit new release tag, never a timer, PR, ordinary
+            # push, or silent replacement. Authenticate the current public feed.
+            previous_tag=$(jq -er .renewalOf.releaseTag "$record")
+            previous_digest=$(jq -er .renewalOf.metadataSha256 "$record")
+            test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$previous_tag"
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag" | jq -e '.draft == false and .prerelease == false'
+            mkdir "$RUNNER_TEMP/previous-update"
+            gh release download "$previous_tag" --repo "$GITHUB_REPOSITORY" --pattern tradeassembly-customer-update-aarch64-apple-darwin.json --dir "$RUNNER_TEMP/previous-update"
+            target/debug/tradeassembly-distribution update-renewal-plan --proof "$proof" --expected-proof-sha256 "$(jq -er .notarizationBindingSha256 "$record")" --previous-manifest "$RUNNER_TEMP/previous-update/tradeassembly-customer-update-aarch64-apple-darwin.json" --expected-previous-sha256 "$previous_digest" --public-key '+eLR1VtNBt9g9RWYfo4aRRADltCnO5OiQ4izAMCLwZg=' --sequence "$(jq -er .sequence "$record")" > "$RUNNER_TEMP/update-candidate/renewal-plan.json"
+            jq .payload "$RUNNER_TEMP/update-candidate/renewal-plan.json" > "$RUNNER_TEMP/update-candidate/payload.json"
+          fi
           target/debug/tradeassembly-distribution update-publication-verify --proof "$proof" --expected-proof-sha256 "$(jq -er .notarizationBindingSha256 "$record")" --payload "$RUNNER_TEMP/update-candidate/payload.json"
       - name: Sign only the sealed candidate identity with the existing metadata key
         env:
@@ -78,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          version=${GITHUB_REF_NAME#update-input-v}
+          version=$UPDATE_INPUT_VERSION
           record="packaging/update-candidates/$GITHUB_REF_NAME.json"
           root="$RUNNER_TEMP/update-candidate"
           feed=tradeassembly-customer-update-aarch64-apple-darwin.json

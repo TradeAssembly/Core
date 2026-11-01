@@ -214,6 +214,10 @@ struct Work {
     collections: BTreeMap<String, String>,
     submission: Option<Value>,
     reconciled: bool,
+    // One completed calendar preparation may serve this observation round even
+    // after its periodic poll is due. This is not a calendar freshness permit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_id: Option<String>,
 }
 impl Work {
     fn new(kind: Kind, id: String) -> Self {
@@ -223,7 +227,19 @@ impl Work {
             collections: BTreeMap::new(),
             submission: None,
             reconciled: false,
+            window_id: None,
         }
+    }
+    fn admitted_window_matches(&self, heads: &BTreeMap<String, WindowHead>) -> bool {
+        self.kind == Kind::Position
+            && self.window_id.as_ref().is_some_and(|id| {
+                id.strip_prefix("management_window_").is_some_and(|digest| {
+                    digest.len() == 64
+                        && digest
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }) && heads.get(&self.id).and_then(|head| head.window_id.as_ref()) == Some(id)
+            })
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -434,6 +450,9 @@ fn load_state(s: &TradeAssemblyService, b: &Binding) -> Result<Option<(Value, St
                 || head.deferred_children.iter().any(|child| {
                     !calendar_action(&child.action) && !observation_action(&child.action)
                 })
+        })
+        || state.work.iter().any(|work| {
+            work.window_id.is_some() && !work.admitted_window_matches(&state.window_heads)
         })
         || state.cursor > state.work.len()
         || state.work.len() > MAX_ENTRIES + 32
@@ -782,6 +801,25 @@ fn effect_window(
         Err(error) => Err(error),
     }
 }
+// A successful PrepareWindow is useful evidence for this bounded Work round;
+// do not let its next periodic poll starve the first account/metadata/quote read.
+// Both paths retain the same current source, provider TTL and session checks.
+fn work_window_current(
+    s: &TradeAssemblyService,
+    state: &State,
+    work: &Work,
+    now: i64,
+) -> Result<Option<crate::service::management_windows::Current>, String> {
+    let observation_started = work.admitted_window_matches(&state.window_heads)
+        || ROLES
+            .iter()
+            .any(|role| work.collections.contains_key(*role));
+    if observation_started {
+        effect_window(s, state, &work.id)
+    } else {
+        head_current(s, state, &work.id, now)
+    }
+}
 fn refresh_deadline(now: i64, interval: i64, fresh_until: i64, close: Option<i64>) -> i64 {
     now.saturating_add(interval)
         .min(fresh_until)
@@ -864,14 +902,7 @@ fn rollover_child(
             "scope":entry.command.scope,"positionId":position.position_id,"triggerRef":rollover.trigger_ref,
             "executionCalendarCollectionId":collection}}), Action::PrepareWindow {}).map(WindowStep::Child);
     }
-    let observation_started = ROLES
-        .iter()
-        .any(|role| work.collections.contains_key(*role));
-    let current = if observation_started {
-        effect_window(s, state, &position.position_id)?
-    } else {
-        head_current(s, state, &position.position_id, now)?
-    };
+    let current = work_window_current(s, state, work, now)?;
     if let Some(current) = current {
         if current.status != crate::service::management_windows::Status::Active {
             return Ok(WindowStep::Wait);
@@ -1236,6 +1267,7 @@ fn apply_response(
                     deferred_children,
                 },
             );
+            work.window_id = Some(receipt.window_id.clone());
             work.collections.remove("execution_calendar");
         }
         Action::Collect { role } => {
@@ -1970,5 +2002,150 @@ mod tests {
         );
         assert_eq!(restored.key, retained.key);
         assert_eq!(restored.body, retained.body);
+    }
+
+    #[test]
+    fn absent_round_window_preserves_legacy_work_bytes_and_state_hash() {
+        let old = json!({"kind":"position","id":"position_owned","collections":{},
+            "submission":null,"reconciled":false});
+        let decoded: Work = serde_json::from_value(old.clone()).unwrap();
+        assert!(decoded.window_id.is_none());
+        assert_eq!(value(&decoded).unwrap(), old);
+        assert_eq!(hash(&decoded).unwrap(), hash(&old).unwrap());
+        let mut state = legacy_state();
+        state.work.push(decoded);
+        let mut original = value(&state).unwrap();
+        original["stateSha256"] = json!("");
+        assert!(original["work"][0].get("windowId").is_none());
+        assert_eq!(state_hash(&state).unwrap(), hash(&original).unwrap());
+    }
+    fn admitted_round_state() -> State {
+        let mut state = legacy_state();
+        let id = format!("management_window_{}", "a".repeat(64));
+        let mut work = Work::new(Kind::Position, "position_owned".into());
+        work.window_id = Some(id.clone());
+        state.work.push(work);
+        state.window_heads.insert(
+            "position_owned".into(),
+            WindowHead {
+                window_id: Some(id),
+                refresh_at_ms: 1001,
+                deferred_children: Vec::new(),
+            },
+        );
+        state
+    }
+    #[test]
+    fn prepared_round_survives_restart_and_due_poll_still_runs_actual_window_currentness() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("round-window.sqlite");
+        let db = db.to_str().unwrap();
+        let service = TradeAssemblyService::test_local(db);
+        let binding = Binding {
+            activation: "activation".into(),
+            config: config(),
+            config_hash: "config".into(),
+            owner: "owner".into(),
+            revision: "revision".into(),
+        };
+        let mut state = admitted_round_state();
+        let retained = child(
+            &mut state,
+            "/product/strategies/data-collections/create",
+            json!({"collection":{"input":{"symbol":"OWNED"}}}),
+            Action::Collect {
+                role: "account_data".into(),
+            },
+        )
+        .unwrap();
+        state.pending = Some(retained.clone());
+        save(&service, &binding, None, &mut state, None).unwrap();
+        let restarted = TradeAssemblyService::test_local(db);
+        let (_, mut loaded) = load_state(&restarted, &binding).unwrap().unwrap();
+        assert_eq!(loaded.pending.as_ref(), Some(&retained));
+        assert!(loaded.work[0].collections.is_empty());
+        assert!(loaded.work[0].admitted_window_matches(&loaded.window_heads));
+        // The periodic poll expired during preparation. The admitted round must
+        // still call the actual window validator; an unbacked receipt cannot pass.
+        assert!(head_current(&restarted, &loaded, "position_owned", 2000)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            work_window_current(&restarted, &loaded, &loaded.work[0], 2000).unwrap_err(),
+            "management_window_not_available"
+        );
+        let next = Work::new(Kind::Position, "position_owned".into());
+        assert!(next.window_id.is_none());
+        assert!(work_window_current(&restarted, &loaded, &next, 2000)
+            .unwrap()
+            .is_none());
+        // Unknown/deferred observation bytes survive this admission; they are
+        // still replayed through the original effect-window checks.
+        defer_pending(&mut loaded, "position_owned").unwrap();
+        assert_eq!(
+            loaded.window_heads["position_owned"].deferred_children,
+            vec![retained]
+        );
+        assert!(loaded.work[0].admitted_window_matches(&loaded.window_heads));
+        assert_eq!(
+            work_window_current(&restarted, &loaded, &loaded.work[0], 2000).unwrap_err(),
+            "management_window_not_available"
+        );
+    }
+    #[test]
+    fn persisted_round_window_rejects_entry_wrong_head_and_invalid_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("round-window-invalid.sqlite");
+        let service = TradeAssemblyService::test_local(db.to_str().unwrap());
+        let binding = Binding {
+            activation: "activation".into(),
+            config: config(),
+            config_hash: "config".into(),
+            owner: "owner".into(),
+            revision: "revision".into(),
+        };
+        let mut state = admitted_round_state();
+        save(&service, &binding, None, &mut state, None).unwrap();
+        let (mut old, _) = load_state(&service, &binding).unwrap().unwrap();
+        for (index, changed) in [
+            "entry",
+            "mismatch",
+            "invalid",
+            "missing_head",
+            "wrong_position",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut invalid = state.clone();
+            invalid.generation += index as u64;
+            match changed {
+                "entry" => invalid.work[0].kind = Kind::Entry,
+                "mismatch" => {
+                    invalid.work[0].window_id =
+                        Some(format!("management_window_{}", "b".repeat(64)))
+                }
+                "invalid" => {
+                    let id = format!("management_window_{}", "!".repeat(64));
+                    invalid.work[0].window_id = Some(id.clone());
+                    invalid
+                        .window_heads
+                        .get_mut("position_owned")
+                        .unwrap()
+                        .window_id = Some(id);
+                }
+                "missing_head" => {
+                    invalid.window_heads.clear();
+                }
+                _ => invalid.work[0].id = "position_other".into(),
+            }
+            save(&service, &binding, Some(old), &mut invalid, None).unwrap();
+            old = value(&invalid).unwrap();
+            assert_eq!(
+                load_state(&service, &binding).err().unwrap(),
+                "management_automation_state_invalid",
+                "{changed}"
+            );
+        }
     }
 }

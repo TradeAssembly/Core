@@ -855,6 +855,149 @@ fn guarded_call<T>(
     check()?;
     Ok(call())
 }
+// Bound the optional scheduling hint. Oversized historical approval maps fall
+// back to ordinary refresh; they never disable health or grant a deferral.
+const MAX_PRIORITY_APPROVALS: usize = 128;
+fn unresolved_financial_phase(
+    phase: Option<&order_plans::submission::Phase>,
+    finalized: bool,
+    retained_cash: bool,
+    filled: bool,
+    managed: bool,
+    live_approval: bool,
+) -> bool {
+    use order_plans::submission::Phase;
+    if finalized {
+        return false;
+    }
+    match phase {
+        None => live_approval,
+        Some(
+            Phase::Admitting
+            | Phase::Admitted
+            | Phase::Sending
+            | Phase::Unknown
+            | Phase::Open
+            | Phase::PartiallyFilled,
+        ) => true,
+        Some(Phase::Consumed) => retained_cash || filled,
+        // A terminal close can still need authoritative final posting for an
+        // actual retained hold/fill. Historical approvals alone do not count.
+        Some(Phase::Rejected | Phase::Cancelled) => managed && (retained_cash || filled),
+        Some(Phase::Denied) => false,
+    }
+}
+// A C5 admission denial can precede Source.begin and therefore have no
+// submission lifecycle row. Presence under the original fixed V2 key only
+// removes this scheduling hint; even an unqualified record grants no deferral.
+fn pre_admission_denial_present(s: &TradeAssemblyService, plan_id: &str) -> Result<bool, String> {
+    Ok(s.runtime()
+        .storage
+        .get_json(
+            "plugin_broker_submission_denials",
+            &format!("broker-v2:{plan_id}"),
+        )?
+        .is_some())
+}
+/// Metadata-only scheduling witness, never an order permit or a new submit.
+fn protected_financial_approval(
+    s: &TradeAssemblyService,
+    b: &Binding,
+    now: i64,
+) -> Result<bool, String> {
+    let run = s
+        .runtime()
+        .storage
+        .get_json("execution_runs", &format!("run_{}", b.activation))?
+        .ok_or("automatic_health_run_missing")?;
+    if run["activationId"] != b.activation
+        || run["configId"] != b.config["configId"]
+        || run["state"] != "active"
+        || run["strategyId"] != b.command.scope.strategy_id
+        || run["strategyVersionId"] != b.command.scope.strategy_version_id
+        || run["strategySpecHash"] != b.command.scope.strategy_spec_hash
+        || run["capabilityGraphRevisionId"] != b.command.capability_graph_revision
+    {
+        return Err("automatic_health_financial_binding_changed".into());
+    }
+    let Some(approvals) = run["orderPlanApprovals"].as_object() else {
+        return Ok(false);
+    };
+    if approvals.len() > MAX_PRIORITY_APPROVALS {
+        return Ok(false);
+    }
+    for (id, approval) in approvals {
+        if approval["planId"] != *id {
+            return Ok(false);
+        }
+        let source = order_plans::submission::source(s, id)?;
+        let plan = source.historical()?;
+        if plan.owner_sha256 != b.owner
+            || plan.command.scope != b.command.scope
+            || plan.command.mode != "paper"
+            || plan.command.capability_graph_revision != b.command.capability_graph_revision
+            || plan.canonical_account.as_ref() != Some(&b.pins.providers[0].identity)
+            || plan.account_binding_sha256.as_ref()
+                != Some(&b.pins.providers[1].account_binding_sha256)
+            || approval["entryId"] != plan.entry_id
+            || approval["signalReceiptSha256"] != plan.command.signal_receipt_sha256
+            || approval["canonicalAccountSha256"] != b.pins.providers[0].identity.identity_sha256
+        {
+            return Err("automatic_health_financial_binding_changed".into());
+        }
+        if let Some(record) = source.state()? {
+            if record.intent["originalRequest"]["activationId"] != b.activation {
+                return Err("automatic_health_financial_binding_changed".into());
+            }
+            if unresolved_financial_phase(
+                Some(&record.phase),
+                record.settlement_receipt_sha256.is_some(),
+                record.retained_cash.positive(),
+                record.filled_quantity.positive(),
+                plan.management.is_some(),
+                false,
+            ) {
+                return Ok(true);
+            }
+        } else if plan.valid_until_ms > now && !pre_admission_denial_present(s, id)? {
+            // Use the ordinary owned status reader for a release fence. A
+            // retained approval cannot revive a released, unsubmitted plan.
+            if !order_plans::transport::status(s, id)?["release"].is_null() {
+                continue;
+            }
+            let Some(resource) = approval["leaseResource"].as_str() else {
+                return Ok(false);
+            };
+            let lease = s.runtime().leases.current(resource)?;
+            let live = lease.is_some_and(|lease| {
+                lease.expires_at_ms > now
+                    && approval["leaseOwner"] == lease.owner
+                    && approval["leaseFence"] == lease.fencing_token
+            });
+            if live {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+fn periodic_refresh_may_defer(
+    state: &State,
+    protected: impl FnOnce() -> Result<bool, String>,
+    current: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    if state
+        .targets
+        .iter()
+        .any(|target| target.pending.is_some() || target.error.is_some())
+    {
+        return Ok(false);
+    }
+    if !protected()? {
+        return Ok(false);
+    }
+    current()
+}
 fn advance(
     s: &TradeAssemblyService,
     b: Binding,
@@ -919,6 +1062,23 @@ fn advance(
             }
         }
         if let Some(index) = selected_index {
+            // A not-yet-started periodic read must not spend the final freshness
+            // budget of an existing approved plan or original lookup/settlement.
+            // No pending/error health child is skipped, and exact normal account
+            // currentness remains mandatory. The financial child still performs
+            // its own ordinary config/source/account/C3/C5 checks afterward.
+            if periodic_refresh_may_defer(
+                &state,
+                || protected_financial_approval(s, &b, s.runtime().clock.trusted_now_ms()?),
+                || ready(s, &b, Some(&state), s.runtime().clock.trusted_now_ms()?),
+            )? {
+                let next = s.runtime().clock.trusted_now_ms()?;
+                return Ok(Gate {
+                    ready: true,
+                    next_attempt_at_ms: next,
+                    projection: projection(&b, Some(&state), true, next),
+                });
+            }
             if state.targets[index].pending.is_none() {
                 state.sequence = checked_increment(state.sequence)?;
                 state.targets[index].pending = Some(child(
@@ -1452,8 +1612,7 @@ mod tests {
         health.traits.modes = vec!["paper".into()];
         health.traits.input_schema_refs = vec![request_ref.into()];
         health.traits.output_schema_refs = vec![response_ref.into()];
-        let mut manifest =
-            json!({"metadata":{"id":"fixture.plugin","version":"1"},"operations":[health]});
+        let mut manifest = json!({"metadata":{"id":"fixture.plugin","version":"1","provider":{"id":"synthetic"}},"operations":[health]});
         let mut schemas = vec![(response_ref, "health-response.json", response)];
         if include_request {
             schemas.push((request_ref, "health-request.json", request));
@@ -1738,5 +1897,332 @@ mod tests {
         assert!(recovered.duplicate);
         assert_eq!(recovered.response_status, Some(200));
         assert_eq!(recovered.response_body, Some(actual));
+    }
+    fn priority_current_fixture(
+        directory: &std::path::Path,
+    ) -> (TradeAssemblyService, Binding, Vec<Value>, i64) {
+        let directory = directory.canonicalize().unwrap();
+        let (store, package) = packaged_health(&directory, 1, true, false);
+        let db = directory.join("priority.sqlite");
+        let mut runtime = crate::adapters::local::test_runtime(db.to_str().unwrap());
+        runtime.plugin_packages = std::sync::Arc::new(store);
+        let identity = crate::local_owner_identity::LocalOwnerIdentity::for_database(&db).unwrap();
+        runtime.identity = std::sync::Arc::new(
+            crate::adapters::local::system::LocalOwnerIdentityPort::new(db.to_str().unwrap())
+                .unwrap(),
+        );
+        let s = TradeAssemblyService::from_runtime(db.to_str().unwrap(), runtime)
+            .for_authenticated_invocation(
+                &identity.issuer,
+                &identity.stable_identity_id,
+                None,
+                None,
+            );
+        let ctx = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("priority-fixture").unwrap(),
+        );
+        s.runtime().plugins.install_manifest(&package.plugin_ref,json!({"pluginRef":package.plugin_ref,"manifest":package.manifest,
+            "manifestDigest":package.manifest_sha256,"package":{"packageSha256":package.package_sha256}}),&ctx).unwrap();
+        s.runtime()
+            .credentials
+            .store(
+                "priority-fixture-only",
+                &std::collections::BTreeMap::from([
+                    ("api_key".into(), "synthetic-unit-key".into()),
+                    ("api_secret".into(), "synthetic-unit-secret".into()),
+                ]),
+            )
+            .unwrap();
+        let now = s.runtime().clock.trusted_now_ms().unwrap();
+        let mut b = binding();
+        b.owner = owner(&s).unwrap();
+        b.pins.providers.clear();
+        let mut records = Vec::new();
+        for (instance, role) in [("fixture", "broker"), ("facts", "account_data")] {
+            let mut record = json!({"instanceRef":instance,"pluginRef":package.plugin_ref,"providerRef":"synthetic",
+                "enabled":true,"activePackageSha256":package.package_sha256,"configuration":{},
+                "credentialRef":"priority-fixture-only","credentialRevision":1,"credentialStatus":{"configured":true,"revisionRef":"credential-generation:1"},
+                "accountRef":format!("account://{instance}/owned-account"),"accountMode":"paper",
+                "health":{"state":"ready","checkedAtMs":now-60001,"connectivityChecked":true,"evidenceCurrent":true,
+                    "account":{"id":"owned-account","mode":"paper","status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false}}});
+            record["health"]["binding"] =
+                crate::live_execution_checks::live_health_evidence_binding(&record);
+            s.runtime()
+                .plugins
+                .put_instance(instance, record.clone(), &ctx)
+                .unwrap();
+            s.bind_owned_object("plugin_instance", instance).unwrap();
+            records.push(record);
+            let mut selected = chosen();
+            selected.plugin_instance_ref = instance.into();
+            selected.plugin_ref = package.plugin_ref.clone();
+            selected.account_ref = Some(format!("account://{instance}/owned-account"));
+            selected.manifest_fingerprint = package.manifest_sha256.clone();
+            selected.operation_id = "account.health".into();
+            selected.operation =
+                serde_json::from_value(package.manifest["operations"][0].clone()).unwrap();
+            let source = data_binding::pin(&s, &selected).unwrap();
+            let witness = account_identity::current(
+                s.runtime().plugins.as_ref(),
+                s.runtime().plugin_packages.as_ref(),
+                s.runtime().credentials.as_ref(),
+                &val(&selected).unwrap(),
+                now,
+                "paper",
+            )
+            .unwrap();
+            b.pins.providers.push(ProviderPin {
+                role: role.into(),
+                selected,
+                source: source.clone(),
+                identity: witness.identity,
+                account_binding_sha256: witness.binding_sha256,
+                health_operation_sha256: hash(&operation(&s, &source).unwrap()).unwrap(),
+            });
+        }
+        (s, b, records, now)
+    }
+    #[test]
+    fn financial_priority_defers_only_periodic_reads_with_two_exact_current_pins() {
+        let directory = tempfile::tempdir().unwrap();
+        let (s, b, records, now) = priority_current_fixture(directory.path());
+        let state = initial(&b);
+        assert_eq!(b.pins.providers.len(), 2);
+        assert_eq!(state.targets.len(), 2);
+        assert!(
+            due(&s, &b, Some(&state), now).unwrap() <= now,
+            "60s periodic refresh is due"
+        );
+        assert!(
+            ready(&s, &b, Some(&state), now).unwrap(),
+            "actual120s account evidence is still current"
+        );
+        assert!(periodic_refresh_may_defer(
+            &state,
+            || Ok(true),
+            || ready(&s, &b, Some(&state), now)
+        )
+        .unwrap());
+        assert!(!periodic_refresh_may_defer(
+            &state,
+            || Ok(false),
+            || panic!("no financial work cannot defer")
+        )
+        .unwrap());
+        let endpoint = records[0]["health"]["checkedAtMs"].as_i64().unwrap()
+            + crate::live_execution_checks::LIVE_ACCOUNT_OBSERVATION_MAX_AGE_MS;
+        assert!(periodic_refresh_may_defer(
+            &state,
+            || Ok(true),
+            || ready(&s, &b, Some(&state), endpoint)
+        )
+        .unwrap());
+        assert!(
+            !periodic_refresh_may_defer(
+                &state,
+                || Ok(true),
+                || ready(&s, &b, Some(&state), endpoint + 1)
+            )
+            .unwrap(),
+            "actual TTL expiry cannot be deferred"
+        );
+        let ctx = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("priority-stale-facts").unwrap(),
+        );
+        let mut facts = records[1].clone();
+        facts["health"]["checkedAtMs"] = json!(now + 1);
+        s.runtime()
+            .plugins
+            .put_instance("facts", facts, &ctx)
+            .unwrap();
+        assert!(
+            !periodic_refresh_may_defer(&state, || Ok(true), || ready(&s, &b, Some(&state), now))
+                .unwrap(),
+            "future evidence for one exact pin is not current"
+        );
+        let mut facts = records[1].clone();
+        facts["health"] = json!({"state":"degraded","account":null});
+        s.runtime()
+            .plugins
+            .put_instance("facts", facts, &ctx)
+            .unwrap();
+        assert!(
+            !periodic_refresh_may_defer(&state, || Ok(true), || ready(&s, &b, Some(&state), now))
+                .unwrap(),
+            "a failed read with null account must recover through normal health rather than defer"
+        );
+    }
+    #[test]
+    fn financial_priority_never_skips_pending_unknown_or_failed_health_child() {
+        let b = binding();
+        let mut state = initial(&b);
+        let retained = child(&b, 1, "fixture").unwrap();
+        state.targets[0].pending = Some(retained.clone());
+        let before = state.clone();
+        assert!(!periodic_refresh_may_defer(
+            &state,
+            || panic!("pending original health must drain"),
+            || panic!("pending health cannot become ready")
+        )
+        .unwrap());
+        assert_eq!(state, before);
+        assert_eq!(state.targets[0].pending.as_ref(), Some(&retained));
+        state.targets[0].pending = None;
+        state.targets[0].error = Some("automatic_health_refresh_not_current".into());
+        assert!(!periodic_refresh_may_defer(
+            &state,
+            || panic!("failed health must recover"),
+            || panic!("failed health cannot defer")
+        )
+        .unwrap());
+    }
+    #[test]
+    fn financial_priority_refuses_changed_credentials_account_and_package_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let (s, b, records, now) = priority_current_fixture(directory.path());
+        let state = initial(&b);
+        let ctx = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("priority-source-drift").unwrap(),
+        );
+        for change in ["credentials", "account", "package", "configuration"] {
+            let mut facts = records[1].clone();
+            match change {
+                "credentials" => facts["credentialRevision"] = json!(2),
+                "account" => facts["health"]["account"]["id"] = json!("other-observed-account"),
+                "package" => facts["activePackageSha256"] = json!("e".repeat(64)),
+                _ => facts["configuration"] = json!({"changed":true}),
+            }
+            s.runtime()
+                .plugins
+                .put_instance("facts", facts, &ctx)
+                .unwrap();
+            assert!(
+                periodic_refresh_may_defer(
+                    &state,
+                    || Ok(true),
+                    || ready(&s, &b, Some(&state), now)
+                )
+                .is_err(),
+                "{change} must not grant deferral"
+            );
+            s.runtime()
+                .plugins
+                .put_instance("facts", records[1].clone(), &ctx)
+                .unwrap();
+        }
+        s.runtime()
+            .credentials
+            .revoke("priority-fixture-only")
+            .unwrap();
+        assert!(
+            periodic_refresh_may_defer(&state, || Ok(true), || ready(&s, &b, Some(&state), now))
+                .is_err(),
+            "revoked actual credential posture cannot defer"
+        );
+    }
+    #[test]
+    fn pre_source_terminal_denial_never_qualifies_historical_approval_for_deferral() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("terminal-denial.sqlite");
+        let s = service(db.to_str().unwrap());
+        let id = "orderplan_original";
+        assert!(!pre_admission_denial_present(&s, id).unwrap());
+        let ctx = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("denied-original").unwrap(),
+        );
+        s.runtime().storage.put_json_if_absent("plugin_broker_submission_denials", &format!("broker-v2:{id}"),
+            json!({"state":"denied","requestHash":"original","correlationId":"original","reason":"admission_denied"}), &ctx).unwrap();
+        assert!(pre_admission_denial_present(&s, id).unwrap());
+        let recreated = service(db.to_str().unwrap());
+        assert!(
+            pre_admission_denial_present(&recreated, id).unwrap(),
+            "original denial survives service recreation"
+        );
+        assert!(!pre_admission_denial_present(&recreated, "orderplan_other").unwrap());
+        // Malformed/unqualified metadata also cannot grant a scheduling hint.
+        recreated
+            .runtime()
+            .storage
+            .put_json_if_absent(
+                "plugin_broker_submission_denials",
+                "broker-v2:orderplan_unqualified",
+                json!({}),
+                &ctx,
+            )
+            .unwrap();
+        assert!(pre_admission_denial_present(&recreated, "orderplan_unqualified").unwrap());
+    }
+    #[test]
+    fn only_unresolved_financial_lifecycle_or_live_approval_retains_priority() {
+        use order_plans::submission::Phase;
+        assert!(unresolved_financial_phase(
+            None, false, false, false, false, true
+        ));
+        assert!(!unresolved_financial_phase(
+            None, false, false, false, false, false
+        ));
+        for phase in [
+            Phase::Admitting,
+            Phase::Admitted,
+            Phase::Sending,
+            Phase::Unknown,
+            Phase::Open,
+            Phase::PartiallyFilled,
+        ] {
+            assert!(
+                unresolved_financial_phase(Some(&phase), false, false, false, false, false),
+                "original lifecycle must drain even after plan expiry"
+            );
+            assert!(
+                !unresolved_financial_phase(Some(&phase), true, true, true, true, true),
+                "final posting resumes periodic reads"
+            );
+        }
+        for phase in [Phase::Denied, Phase::Rejected, Phase::Cancelled] {
+            assert!(
+                !unresolved_financial_phase(Some(&phase), false, false, false, false, true),
+                "historical terminal approval is not pending work"
+            );
+        }
+        assert!(unresolved_financial_phase(
+            Some(&Phase::Consumed),
+            false,
+            false,
+            true,
+            false,
+            false
+        ));
+        assert!(!unresolved_financial_phase(
+            Some(&Phase::Consumed),
+            true,
+            true,
+            true,
+            true,
+            true
+        ));
+        assert!(
+            unresolved_financial_phase(Some(&Phase::Cancelled), false, true, true, true, false),
+            "unposted actual close hold/fill may settle"
+        );
+        assert!(!unresolved_financial_phase(
+            Some(&Phase::Cancelled),
+            true,
+            true,
+            true,
+            true,
+            false
+        ));
+        assert!(!unresolved_financial_phase(
+            Some(&Phase::Denied),
+            false,
+            true,
+            true,
+            true,
+            true
+        ));
     }
 }

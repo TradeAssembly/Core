@@ -26,15 +26,38 @@ fn profiled_admission_denial(error: &str) {
     if std::env::var_os("FINANCIAL_PROFILE").is_none() {
         return;
     }
-    let code = match error {
+    let code = profiled_admission_denial_code(error);
+    eprintln!("FIN_PROFILE broker.admission_denied code={code}");
+}
+#[cfg(test)]
+fn profiled_admission_denial_code(error: &str) -> &'static str {
+    match error {
+        "order_plan_observation_stale" => "order_plan_observation_stale",
         "managed_close_stale" => "managed_close_stale",
         "managed_reversal_not_current" => "managed_reversal_not_current",
         "managed_execution_window_closed" => "managed_execution_window_closed",
         "broker_v2_authority_or_data_expired" => "broker_v2_authority_or_data_expired",
         "broker_v2_state_changed" => "broker_v2_state_changed",
         _ => "unclassified_admission_denial",
-    };
-    eprintln!("FIN_PROFILE broker.admission_denied code={code}");
+    }
+}
+#[cfg(test)]
+#[test]
+fn financial_profile_denial_mapping_is_closed_and_includes_observation_stale() {
+    assert_eq!(
+        profiled_admission_denial_code("order_plan_observation_stale"),
+        "order_plan_observation_stale"
+    );
+    for arbitrary in [
+        "sensitive unknown context",
+        "order_plan_observation_stale:extra",
+        " order_plan_observation_stale",
+    ] {
+        assert_eq!(
+            profiled_admission_denial_code(arbitrary),
+            "unclassified_admission_denial"
+        );
+    }
 }
 const RECOVERY_REQUESTS_NS: &str = "plugin_broker_recovery_requests";
 const RECOVERY_OUTCOMES_NS: &str = "plugin_broker_recovery_outcomes";

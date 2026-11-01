@@ -15,7 +15,7 @@ const MAX_RECORD_BYTES: usize = 131_072;
 pub(crate) const CREATE: &str = "/product/strategies/managed-data-streams/create";
 pub(crate) const APPEND: &str = "/product/strategies/managed-data-streams/append";
 
-use super::order_plans::management::automation::reversal::{self, Input, Origin, WindowInput};
+use super::order_plans::management::automation::reversal::{self, Input, Origin};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Source {
@@ -355,23 +355,12 @@ pub(crate) fn validate_capture_input(
     if hash(&witness.input)? != capture.input_sha256 {
         return Err("managed_stream_input_witness_invalid".into());
     }
-    let mut as_of = None;
-    for (field, input) in &source.input_template {
-        if matches!(input, Input::Window(WindowInput::AsOf {})) {
-            let actual = witness
-                .input
-                .get(field)
-                .and_then(Value::as_i64)
-                .ok_or("managed_stream_query_time_invalid")?;
-            if actual < capture.policy.event_end_ms
-                || actual > capture.acquisition_response.observed_at_ms
-                || as_of.is_some_and(|prior| prior != actual)
-            {
-                return Err("managed_stream_query_time_invalid".into());
-            }
-            as_of = Some(actual);
-        }
-    }
+    let as_of = reversal::witness_as_of(
+        &source.input_template,
+        &witness.input,
+        capture.policy.event_end_ms,
+        capture.acquisition_response.observed_at_ms,
+    )?;
     let window = tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow {
         event_start_ms: capture.policy.event_start_ms,
         event_end_ms: capture.policy.event_end_ms,
@@ -1381,6 +1370,84 @@ mod tests {
             validate_capture_input(&source, &legacy, 1000, "BTC/USD").unwrap_err(),
             "managed_stream_input_witness_required"
         );
+    }
+    #[test]
+    fn nested_formatted_witness_binds_exact_query_and_all_as_of_leaves() {
+        let mut source = source();
+        source.input_template=serde_json::from_value(json!({
+            "symbol":{"kind":"trade_instrument_id"},"feed":{"kind":"literal","value":"feed-a"},
+            "query":{"kind":"object","fields":{
+                "start":{"kind":"window_timestamp","basis":"event_start","format":"rfc3339_utc_millis"},
+                "end":{"kind":"window_timestamp","basis":"event_end","format":"rfc3339_utc_millis"},
+                "asOf":{"kind":"window_timestamp","basis":"as_of","format":"rfc3339_utc_millis"}}},
+            "cutoff":{"kind":"as_of_ms"}})).unwrap();
+        let mut original = capture(0, 1000);
+        let input = reversal::materialize_input(
+            &source.input_template,
+            1000,
+            "BTC/USD",
+            &EvaluationWindow {
+                event_start_ms: 1000,
+                event_end_ms: 2000,
+                as_of_ms: 2100,
+            },
+            1000,
+        )
+        .unwrap();
+        original.input_sha256 = hash(&input).unwrap();
+        original.input_witness.as_mut().unwrap().input = input;
+        validate_capture_input(&source, &original, 1000, "BTC/USD").unwrap();
+        for (field, value, error) in [
+            (
+                "feed",
+                json!("feed-b"),
+                "managed_stream_query_configuration_changed",
+            ),
+            (
+                "symbol",
+                json!("OTHER"),
+                "managed_stream_query_configuration_changed",
+            ),
+            ("cutoff", json!(2101), "managed_stream_query_time_invalid"),
+        ] {
+            let mut changed = original.clone();
+            changed.input_witness.as_mut().unwrap().input[field] = value;
+            changed.input_sha256 = hash(&changed.input_witness.as_ref().unwrap().input).unwrap();
+            assert_eq!(
+                validate_capture_input(&source, &changed, 1000, "BTC/USD").unwrap_err(),
+                error
+            );
+        }
+        for (field, value, error) in [
+            (
+                "start",
+                json!("1970-01-01T00:00:01.001Z"),
+                "managed_stream_query_configuration_changed",
+            ),
+            (
+                "asOf",
+                json!("1970-01-01T00:00:02.100+00:00"),
+                "managed_stream_query_time_invalid",
+            ),
+            (
+                "asOf",
+                json!("1970-01-01T00:00:02.101Z"),
+                "managed_stream_query_time_invalid",
+            ),
+            (
+                "apiSecret",
+                json!("never-retained"),
+                "data_capture_input_credential_material_forbidden",
+            ),
+        ] {
+            let mut changed = original.clone();
+            changed.input_witness.as_mut().unwrap().input["query"][field] = value;
+            changed.input_sha256 = hash(&changed.input_witness.as_ref().unwrap().input).unwrap();
+            assert_eq!(
+                validate_capture_input(&source, &changed, 1000, "BTC/USD").unwrap_err(),
+                error
+            );
+        }
     }
     #[test]
     fn heads_bind_contiguous_segments_and_actual_availability() {

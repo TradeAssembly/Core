@@ -170,7 +170,7 @@ fn check_v2_input(input: &Value) -> Result<(), String> {
 // V2 retains the actual query, unlike V1's input hash. Refuse credential fields
 // recursively before acquisition or durable command admission. Keep the legacy
 // payload validator unchanged for existing V1 requests and receipts.
-fn nonsecret_witness_input(value: &Value) -> Result<(), String> {
+pub(crate) fn nonsecret_witness_input(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(fields) => {
             for (key, child) in fields {

@@ -7,6 +7,8 @@ const VERSION: &str = "tradeassembly.management_reversal_evaluation.v1";
 const MAX_SOURCES: usize = 8;
 const MAX_FIELDS: usize = 32;
 const MAX_CONFIG_BYTES: usize = 32_768;
+const MAX_INPUT_DEPTH: usize = 8;
+const MAX_INPUT_NODES: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,6 +57,8 @@ pub(crate) enum AdmittedOrigin {
 pub(crate) enum Input {
     Existing(typed_cycle::InputValue),
     Window(WindowInput),
+    Composite(CompositeInput),
+    Time(TimeInput),
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -69,6 +73,35 @@ pub(crate) enum WindowInput {
     Interval {},
     #[serde(rename = "origin_start_ms")]
     OriginStart {},
+}
+
+/// Explicit data shape only; no expressions, pointer evaluation or I/O.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum CompositeInput {
+    Object { fields: BTreeMap<String, Input> },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum TimeInput {
+    WindowTimestamp {
+        basis: TimeBasis,
+        format: TimeFormat,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TimeBasis {
+    EventStart,
+    EventEnd,
+    AsOf,
+    OriginStart,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TimeFormat {
+    #[serde(rename = "rfc3339_utc_millis")]
+    Rfc3339UtcMillis,
 }
 
 fn name(value: &str) -> bool {
@@ -159,20 +192,172 @@ impl Config {
         Ok(())
     }
 }
-pub(crate) fn validate_input_template(template: &BTreeMap<String, Input>) -> Result<(), String> {
-    if template.len() > MAX_FIELDS {
-        return Err("management_reversal_input_invalid".into());
-    }
-    for (key, input) in template {
-        if !name(key) {
+fn validate_input_fields(
+    fields: &BTreeMap<String, Input>,
+    depth: usize,
+    nodes: &mut usize,
+    composite: &mut bool,
+) -> Result<(), String> {
+    for (key, input) in fields {
+        *nodes = nodes
+            .checked_add(1)
+            .ok_or("management_reversal_input_invalid")?;
+        if !name(key) || depth > MAX_INPUT_DEPTH || *nodes > MAX_INPUT_NODES {
             return Err("management_reversal_input_invalid".into());
         }
-        if let Input::Existing(typed_cycle::InputValue::Literal { value }) = input {
-            crate::service::data_captures::capturable_payload(value)?;
-            tradeassembly_plugin_sdk::data_package::metadata_budget(value)?;
+        match input {
+            Input::Existing(typed_cycle::InputValue::Literal { value }) => {
+                crate::service::data_captures::capturable_payload(value)?;
+                tradeassembly_plugin_sdk::data_package::metadata_budget(value)?;
+            }
+            Input::Composite(CompositeInput::Object { fields }) => {
+                *composite = true;
+                validate_input_fields(fields, depth + 1, nodes, composite)?;
+            }
+            _ => {}
         }
     }
     Ok(())
+}
+pub(crate) fn validate_input_template(template: &BTreeMap<String, Input>) -> Result<(), String> {
+    if template.len() > MAX_FIELDS
+        || serde_json::to_vec(template)
+            .map_err(|_| "management_reversal_input_invalid")?
+            .len()
+            > MAX_CONFIG_BYTES
+    {
+        return Err("management_reversal_input_invalid".into());
+    }
+    let mut composite = false;
+    validate_input_fields(template, 1, &mut 0, &mut composite)?;
+    if composite {
+        // Reuse the actual retained-query guard, rather than a second list.
+        // Legacy scalar/literal-only configuration keeps its prior validator.
+        crate::service::data_captures::nonsecret_witness_input(
+            &serde_json::to_value(template).map_err(|_| "management_reversal_input_invalid")?,
+        )?;
+    }
+    Ok(())
+}
+fn timestamp_utc_millis(value: i64) -> Result<String, String> {
+    let instant = chrono::DateTime::from_timestamp_millis(value)
+        .filter(|instant| value > 0 && chrono::Datelike::year(instant) <= 9999)
+        .ok_or("management_reversal_timestamp_invalid")?;
+    Ok(instant.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+fn witnessed_timestamp(value: &Value, format: TimeFormat) -> Result<i64, String> {
+    match format {
+        TimeFormat::Rfc3339UtcMillis => {
+            let text = value.as_str().ok_or("managed_stream_query_time_invalid")?;
+            let instant = chrono::DateTime::parse_from_rfc3339(text)
+                .map_err(|_| "managed_stream_query_time_invalid")?;
+            let millis = instant.timestamp_millis();
+            if timestamp_utc_millis(millis)? != text {
+                return Err("managed_stream_query_time_invalid".into());
+            }
+            Ok(millis)
+        }
+    }
+}
+struct InputMaterialization<'a> {
+    interval_ms: u64,
+    instrument: &'a str,
+    window: &'a tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow,
+    origin_start_ms: i64,
+}
+impl InputMaterialization<'_> {
+    fn fields(&self, fields: &BTreeMap<String, Input>) -> Result<Value, String> {
+        fields
+            .iter()
+            .map(|(key, input)| Ok((key.clone(), self.input(input)?)))
+            .collect::<Result<serde_json::Map<String, Value>, String>>()
+            .map(Value::Object)
+    }
+    fn input(&self, input: &Input) -> Result<Value, String> {
+        Ok(match input {
+            Input::Existing(typed_cycle::InputValue::Literal { value }) => value.clone(),
+            Input::Existing(typed_cycle::InputValue::TradeInstrumentId {}) => {
+                json!(self.instrument)
+            }
+            Input::Window(WindowInput::EventStart {}) => json!(self.window.event_start_ms),
+            Input::Window(WindowInput::EventEnd {}) => json!(self.window.event_end_ms),
+            Input::Window(WindowInput::AsOf {}) => json!(self.window.as_of_ms),
+            Input::Window(WindowInput::Interval {}) => json!(self.interval_ms),
+            Input::Window(WindowInput::OriginStart {}) => json!(self.origin_start_ms),
+            Input::Composite(CompositeInput::Object { fields }) => self.fields(fields)?,
+            Input::Time(TimeInput::WindowTimestamp { basis, format }) => {
+                let millis = match basis {
+                    TimeBasis::EventStart => self.window.event_start_ms,
+                    TimeBasis::EventEnd => self.window.event_end_ms,
+                    TimeBasis::AsOf => self.window.as_of_ms,
+                    TimeBasis::OriginStart => self.origin_start_ms,
+                };
+                match format {
+                    TimeFormat::Rfc3339UtcMillis => json!(timestamp_utc_millis(millis)?),
+                }
+            }
+        })
+    }
+}
+/// Extract only declared AsOf leaves from actual retained input. Event/origin
+/// instants are derived independently; the producer still compares full input.
+pub(crate) fn witness_as_of(
+    template: &BTreeMap<String, Input>,
+    actual: &Value,
+    event_end_ms: i64,
+    observed_at_ms: i64,
+) -> Result<Option<i64>, String> {
+    fn visit(
+        fields: &BTreeMap<String, Input>,
+        actual: &Value,
+        end: i64,
+        observed: i64,
+        agreed: &mut Option<i64>,
+    ) -> Result<(), String> {
+        for (key, input) in fields {
+            let leaf = match input {
+                Input::Window(WindowInput::AsOf {}) => Some(
+                    actual
+                        .get(key)
+                        .and_then(Value::as_i64)
+                        .ok_or("managed_stream_query_time_invalid")?,
+                ),
+                Input::Time(TimeInput::WindowTimestamp {
+                    basis: TimeBasis::AsOf,
+                    format,
+                }) => Some(witnessed_timestamp(
+                    actual.get(key).ok_or("managed_stream_query_time_invalid")?,
+                    *format,
+                )?),
+                Input::Composite(CompositeInput::Object { fields }) => {
+                    visit(
+                        fields,
+                        actual
+                            .get(key)
+                            .filter(|v| v.is_object())
+                            .ok_or("managed_stream_query_time_invalid")?,
+                        end,
+                        observed,
+                        agreed,
+                    )?;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(millis) = leaf {
+                if millis < end || millis > observed || agreed.is_some_and(|prior| prior != millis)
+                {
+                    return Err("managed_stream_query_time_invalid".into());
+                }
+                *agreed = Some(millis);
+            }
+        }
+        Ok(())
+    }
+    validate_input_template(template)?;
+    let mut agreed = None;
+    visit(template, actual, event_end_ms, observed_at_ms, &mut agreed)?;
+    Ok(agreed)
 }
 pub(crate) fn materialize_input(
     template: &BTreeMap<String, Input>,
@@ -198,25 +383,15 @@ pub(crate) fn materialize_input(
     {
         return Err("management_reversal_window_invalid".into());
     }
-    Ok(Value::Object(
-        template
-            .iter()
-            .map(|(key, input)| {
-                let value = match input {
-                    Input::Existing(typed_cycle::InputValue::Literal { value }) => value.clone(),
-                    Input::Existing(typed_cycle::InputValue::TradeInstrumentId {}) => {
-                        json!(instrument)
-                    }
-                    Input::Window(WindowInput::EventStart {}) => json!(window.event_start_ms),
-                    Input::Window(WindowInput::EventEnd {}) => json!(window.event_end_ms),
-                    Input::Window(WindowInput::AsOf {}) => json!(window.as_of_ms),
-                    Input::Window(WindowInput::Interval {}) => json!(interval_ms),
-                    Input::Window(WindowInput::OriginStart {}) => json!(origin_start_ms),
-                };
-                (key.clone(), value)
-            })
-            .collect(),
-    ))
+    let result = InputMaterialization {
+        interval_ms,
+        instrument,
+        window,
+        origin_start_ms,
+    }
+    .fields(template)?;
+    tradeassembly_plugin_sdk::data_package::metadata_budget(&result)?;
+    Ok(result)
 }
 impl Source {
     pub(crate) fn materialize_input(
@@ -1294,4 +1469,222 @@ pub(super) fn unknown_response(response: &ServiceResponse) -> bool {
             || code.contains("uncertain")
             || code.contains("reconciliation_required")
     })
+}
+
+#[cfg(test)]
+mod query_binding_tests {
+    use super::*;
+    fn template() -> BTreeMap<String, Input> {
+        serde_json::from_value(json!({
+            "symbol":{"kind":"trade_instrument_id"},
+            "bounds":{"kind":"object","fields":{
+                "start":{"kind":"window_timestamp","basis":"event_start","format":"rfc3339_utc_millis"},
+                "end":{"kind":"window_timestamp","basis":"event_end","format":"rfc3339_utc_millis"},
+                "cutoff":{"kind":"object","fields":{
+                    "instant":{"kind":"window_timestamp","basis":"as_of","format":"rfc3339_utc_millis"},
+                    "millis":{"kind":"as_of_ms"}}}}},
+            "origin":{"kind":"window_timestamp","basis":"origin_start","format":"rfc3339_utc_millis"},
+            "feed":{"kind":"literal","value":"example-fixed-feed"},
+            "options":{"kind":"literal","value":{"array":[1,2],"mode":"unchanged"}}
+        })).unwrap()
+    }
+    fn window() -> tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow {
+        tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow {
+            event_start_ms: 1_700_000_000_123,
+            event_end_ms: 1_700_000_060_123,
+            as_of_ms: 1_700_000_060_223,
+        }
+    }
+    #[test]
+    fn legacy_input_kind_json_bytes_and_materialized_bytes_are_unchanged() {
+        for wire in [
+            r#"{"kind":"literal","value":{"sample":[1,2]}}"#,
+            r#"{"kind":"trade_instrument_id"}"#,
+            r#"{"kind":"event_start_ms"}"#,
+            r#"{"kind":"event_end_ms"}"#,
+            r#"{"kind":"as_of_ms"}"#,
+            r#"{"kind":"interval_ms"}"#,
+            r#"{"kind":"origin_start_ms"}"#,
+        ] {
+            let input: Input = serde_json::from_str(wire).unwrap();
+            assert_eq!(serde_json::to_string(&input).unwrap(), wire);
+        }
+        let template: BTreeMap<String, Input> = serde_json::from_value(json!({
+            "a":{"kind":"event_start_ms"},"b":{"kind":"event_end_ms"},"c":{"kind":"as_of_ms"},
+            "d":{"kind":"interval_ms"},"e":{"kind":"origin_start_ms"},
+            "f":{"kind":"trade_instrument_id"},"g":{"kind":"literal","value":{"items":[1,2]}}
+        }))
+        .unwrap();
+        let actual = materialize_input(
+            &template,
+            1000,
+            "OWNED",
+            &tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow {
+                event_start_ms: 1000,
+                event_end_ms: 2000,
+                as_of_ms: 2100,
+            },
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&actual).unwrap(),
+            r#"{"a":1000,"b":2000,"c":2100,"d":1000,"e":1000,"f":"OWNED","g":{"items":[1,2]}}"#
+        );
+    }
+    #[test]
+    fn nested_generic_query_formats_only_trusted_instants_and_keeps_literals() {
+        let query = materialize_input(
+            &template(),
+            60000,
+            "OWNED",
+            &window(),
+            window().event_start_ms,
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            json!({"symbol":"OWNED","bounds":{"start":"2023-11-14T22:13:20.123Z","end":"2023-11-14T22:14:20.123Z",
+            "cutoff":{"instant":"2023-11-14T22:14:20.223Z","millis":1_700_000_060_223_i64}},
+            "origin":"2023-11-14T22:13:20.123Z","feed":"example-fixed-feed","options":{"array":[1,2],"mode":"unchanged"}})
+        );
+        assert_eq!(
+            witness_as_of(
+                &template(),
+                &query,
+                window().event_end_ms,
+                window().as_of_ms
+            )
+            .unwrap(),
+            Some(window().as_of_ms)
+        );
+    }
+    #[test]
+    fn recursive_input_bounds_are_eight_levels_and_one_hundred_twenty_eight_nodes() {
+        let literal = || Input::Existing(typed_cycle::InputValue::Literal { value: json!(1) });
+        let mut input = literal();
+        for _ in 0..7 {
+            input = Input::Composite(CompositeInput::Object {
+                fields: BTreeMap::from([("child".into(), input)]),
+            });
+        }
+        let fields = BTreeMap::from([("root".into(), input.clone())]);
+        validate_input_template(&fields).unwrap();
+        let too_deep = BTreeMap::from([(
+            "root".into(),
+            Input::Composite(CompositeInput::Object {
+                fields: BTreeMap::from([("child".into(), input)]),
+            }),
+        )]);
+        assert_eq!(
+            validate_input_template(&too_deep).unwrap_err(),
+            "management_reversal_input_invalid"
+        );
+        let mut fields = (0..4)
+            .map(|object| {
+                (
+                    format!("object_{object}"),
+                    Input::Composite(CompositeInput::Object {
+                        fields: (0..31)
+                            .map(|leaf| (format!("leaf_{leaf}"), literal()))
+                            .collect(),
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        validate_input_template(&fields).unwrap(); // four objects + 124 leaves
+        if let Input::Composite(CompositeInput::Object { fields }) =
+            fields.get_mut("object_0").unwrap()
+        {
+            fields.insert("extra".into(), literal());
+        }
+        assert_eq!(
+            validate_input_template(&fields).unwrap_err(),
+            "management_reversal_input_invalid"
+        );
+        let top = (0..33).map(|i| (format!("leaf_{i}"), literal())).collect();
+        assert!(validate_input_template(&top).is_err());
+        let large = (0..32)
+            .map(|i| {
+                (
+                    format!("leaf_{i}"),
+                    Input::Existing(typed_cycle::InputValue::Literal {
+                        value: json!("x".repeat(1200)),
+                    }),
+                )
+            })
+            .collect();
+        assert!(validate_input_template(&large).is_err());
+    }
+    #[test]
+    fn nested_templates_reuse_retained_query_credential_guard_and_remain_closed() {
+        for forbidden in ["api_key", "apiSecret", "accessToken", "privateKey"] {
+            let mut fields = serde_json::Map::new();
+            fields.insert(
+                forbidden.into(),
+                json!({"kind":"literal","value":"nonsecret-test-value"}),
+            );
+            let template: BTreeMap<String, Input> =
+                serde_json::from_value(json!({"query":{"kind":"object","fields":fields}})).unwrap();
+            assert_eq!(
+                validate_input_template(&template).unwrap_err(),
+                "data_capture_input_credential_material_forbidden"
+            );
+        }
+        let literal:BTreeMap<String,Input>=serde_json::from_value(json!({"query":{"kind":"object","fields":{"options":{"kind":"literal","value":{"nested":{"api_key":"not-stored"}}}}}})).unwrap();
+        assert!(validate_input_template(&literal).is_err());
+        for invalid in [
+            json!({"kind":"object","fields":{},"expression":"forbidden"}),
+            json!({"kind":"window_timestamp","basis":"interval","format":"rfc3339_utc_millis"}),
+            json!({"kind":"window_timestamp","basis":"event_end","format":"local_time"}),
+            json!({"kind":"window_timestamp","basis":"event_end","format":"rfc3339_utc_millis","timeZone":"caller"}),
+        ] {
+            assert!(serde_json::from_value::<Input>(invalid).is_err());
+        }
+    }
+    #[test]
+    fn malformed_noncanonical_or_mixed_future_as_of_leaves_refuse() {
+        let template = template();
+        let window = window();
+        let valid =
+            materialize_input(&template, 60000, "OWNED", &window, window.event_start_ms).unwrap();
+        for bad in [
+            "2023-02-30T00:00:00.000Z",
+            "2023-11-14T22:14:20.223+00:00",
+            "2023-11-14T22:14:20.223000Z",
+            "2023-11-14T22:14:20Z",
+            "not-a-date",
+        ] {
+            let mut query = valid.clone();
+            query["bounds"]["cutoff"]["instant"] = json!(bad);
+            assert!(
+                witness_as_of(&template, &query, window.event_end_ms, window.as_of_ms).is_err(),
+                "{bad}"
+            );
+        }
+        let mut future = valid.clone();
+        future["bounds"]["cutoff"]["instant"] = json!("2023-11-14T22:14:20.224Z");
+        assert!(witness_as_of(&template, &future, window.event_end_ms, window.as_of_ms).is_err());
+        // Individually within the observed range, but the two leaves disagree.
+        assert!(witness_as_of(
+            &template,
+            &future,
+            window.event_end_ms,
+            window.as_of_ms + 100
+        )
+        .is_err());
+        let mut old = valid;
+        old["bounds"]["cutoff"]["millis"] = json!(window.event_end_ms - 1);
+        assert!(witness_as_of(&template, &old, window.event_end_ms, window.as_of_ms).is_err());
+        let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
+        let far = tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow {
+            event_start_ms: max - 60000,
+            event_end_ms: max,
+            as_of_ms: max,
+        };
+        assert_eq!(
+            materialize_input(&template, 60000, "OWNED", &far, far.event_start_ms).unwrap_err(),
+            "management_reversal_timestamp_invalid"
+        );
+    }
 }

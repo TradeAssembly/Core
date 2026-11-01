@@ -1022,3 +1022,79 @@ fn settlement_generation_bound_refuses_before_any_capital_commit() {
         ledger
     );
 }
+
+#[test]
+fn prepared_health_hint_refuses_original_plan_expiry_and_real_release_fence() {
+    let (_dir, s, f, policy) = fixture();
+    let p = plan(&s, &f, &policy, "prepared-health-expiry");
+    let (old, ledger, _) = cash(&s, &f).unwrap();
+    persist_prepared(
+        &s,
+        &p,
+        "prepared-health-expiry",
+        old,
+        ledger,
+        &context("prepare-health-hint"),
+    )
+    .unwrap();
+    let command = crate::service::execution::typed_cycle::Command {
+        scope: p.command.scope.clone(),
+        activation_id: "hint-activation".into(),
+        occurrence_id: "hint-occurrence".into(),
+        plan_revision_id: "hint-plan".into(),
+        signal_receipt_sha256: p.command.signal_receipt_sha256.clone(),
+    };
+    let mut state = json!({"schemaVersion":"tradeassembly.typed_execution_cycle.v1","ownerSha256":owner(&s).unwrap(),"command":command,
+        "configSha256":"hint-config","phase":5,"status":"running","collections":{},"planId":p.plan_id,"submission":null,"error":null,"stateSha256":""});
+    state["stateSha256"] = json!(hash(&state).unwrap());
+    s.runtime()
+        .storage
+        .put_json(
+            "typed_execution_cycles_v1",
+            &hash(&command).unwrap(),
+            state,
+            &context("persist-health-hint"),
+        )
+        .unwrap();
+    let mut runtime = (*s.runtime()).clone();
+    runtime.clock = std::sync::Arc::new(FixedClock(p.valid_until_ms));
+    let later = TradeAssemblyService::from_runtime(s.db(), runtime).for_authenticated_invocation(
+        "fixture",
+        "cash-owner",
+        None,
+        None,
+    );
+    assert!(
+        crate::service::execution::typed_cycle::prepared_plan_for_health(
+            &later,
+            &command,
+            "hint-config"
+        )
+        .unwrap()
+        .is_none(),
+        "original exclusive plan expiry must not create a hint"
+    );
+    release(&s, &p.plan_id, &context("release-health-hint")).unwrap();
+    assert!(
+        crate::service::execution::typed_cycle::prepared_plan_for_health(
+            &s,
+            &command,
+            "hint-config"
+        )
+        .unwrap()
+        .is_none(),
+        "an actual durable unsent-plan release must refuse before source work"
+    );
+    assert!(s
+        .runtime()
+        .storage
+        .list_json("plugin_operation_requests")
+        .unwrap()
+        .is_empty());
+    assert!(s
+        .runtime()
+        .storage
+        .list_json(submission::STATE)
+        .unwrap()
+        .is_empty());
+}

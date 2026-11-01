@@ -145,6 +145,62 @@ fn load(s: &TradeAssemblyService, id: &str) -> Result<Option<(Value, State)>, St
     }
     Ok(Some((raw, state)))
 }
+// Private scheduling witness only. It never approves a plan or replaces C5.
+fn prepared_state(
+    s: &TradeAssemblyService,
+    c: &Command,
+    config_sha256: &str,
+) -> Result<Option<State>, String> {
+    let Some((_, state)) = load(s, &digest(c)?)? else {
+        return Ok(None);
+    };
+    if state.command != *c
+        || state.config_sha256 != config_sha256
+        || state.phase != 5
+        || state.status != "running"
+        || state.error.is_some()
+        || state.submission.is_some()
+        || state.plan_id.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(state))
+}
+pub(crate) fn prepared_plan_for_health(
+    s: &TradeAssemblyService,
+    c: &Command,
+    config_sha256: &str,
+) -> Result<Option<order_plans::OrderPlan>, String> {
+    let Some(state) = prepared_state(s, c, config_sha256)? else {
+        return Ok(None);
+    };
+    let source = order_plans::submission::source(s, state.plan_id.as_deref().unwrap())?;
+    let original = source.historical()?;
+    if original.valid_until_ms <= s.runtime().clock.trusted_now_ms()?
+        || !order_plans::transport::status(s, &original.plan_id)?["release"].is_null()
+        || source.state()?.is_some()
+    {
+        return Ok(None);
+    }
+    let signal = source.verified_signal()?;
+    if signal.plan_revision_id() != c.plan_revision_id {
+        return Ok(None);
+    }
+    // Normal current source, signal, reservation, release, expiry and risk checks.
+    let plan = source.snapshot_with_signal(&signal)?;
+    if plan.management.is_some()
+        || plan.command.scope != c.scope
+        || plan.command.signal_receipt_sha256 != c.signal_receipt_sha256
+        || state.collections.get("account_data") != Some(&plan.command.account_collection_id)
+        || state.collections.get("instrument_metadata")
+            != Some(&plan.command.metadata_collection_id)
+        || state.collections.get("pricing_quote") != Some(&plan.command.quote_collection_id)
+        || plan.valid_until_ms <= s.runtime().clock.trusted_now_ms()?
+    {
+        return Ok(None);
+    }
+    Ok(Some(plan))
+}
 fn summary(id: &str, state: &State, next: Option<i64>) -> Value {
     json!({"cycleId":id,"status":state.status,"phase":state.phase,"planId":state.plan_id,"error":state.error,"nextAttemptAtMs":next,"executionAuthorityGranted":false})
 }
@@ -197,7 +253,8 @@ pub(crate) fn advance(s: &TradeAssemblyService, c: Command) -> Result<Value, Str
             return Ok(summary(&id, &old, None));
         }
     }
-    let health = super::automatic_health::advance_activation(s, &c.activation_id, &c.scope)?;
+    let health =
+        super::automatic_health::advance_activation(s, &c.activation_id, &c.scope, Some(&c))?;
     if !health.ready {
         // No financial phase has advanced. The scheduler retains this same child
         // until this future deadline rather than recording a synthetic result.
@@ -493,5 +550,114 @@ mod tests {
         let value = json!({"scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},"capabilityGraphRevision":"g","brokerRequirementRef":"b"});
         let config: typed::ConfigCommand = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(config).unwrap(), value);
+    }
+
+    #[test]
+    fn prepared_health_hint_uses_exact_sealed_phase_five_owner_command_and_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("prepared-hint.sqlite");
+        let db = db.to_str().unwrap();
+        let service =
+            TradeAssemblyService::from_runtime(db, crate::adapters::local::test_runtime(db))
+                .for_authenticated_invocation("fixture", "prepared-owner", None, None);
+        let command = Command {
+            scope: data_plans::PlanScope {
+                strategy_id: "s".into(),
+                strategy_version_id: "v".into(),
+                strategy_spec_hash: "h".into(),
+            },
+            activation_id: "a".into(),
+            occurrence_id: "o".into(),
+            plan_revision_id: "p".into(),
+            signal_receipt_sha256: "r".into(),
+        };
+        let id = digest(&command).unwrap();
+        let mut state = State {
+            schema_version: "tradeassembly.typed_execution_cycle.v1".into(),
+            owner_sha256: owner(&service).unwrap(),
+            command: command.clone(),
+            config_sha256: "config".into(),
+            phase: 5,
+            status: "running".into(),
+            collections: BTreeMap::new(),
+            plan_id: Some("reserved-plan".into()),
+            submission: None,
+            error: None,
+            state_sha256: String::new(),
+        };
+        seal(&mut state).unwrap();
+        let context = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("prepared-hint-test").unwrap(),
+        );
+        service
+            .runtime()
+            .storage
+            .put_json(NS, &id, serde_json::to_value(&state).unwrap(), &context)
+            .unwrap();
+        assert!(prepared_state(&service, &command, "config")
+            .unwrap()
+            .is_some());
+        assert!(prepared_state(&service, &command, "changed")
+            .unwrap()
+            .is_none());
+        let mut other_command = command.clone();
+        other_command.occurrence_id = "other".into();
+        assert!(prepared_state(&service, &other_command, "config")
+            .unwrap()
+            .is_none());
+        for fault in [
+            "phase",
+            "terminal",
+            "error",
+            "submission",
+            "missing_plan",
+            "command",
+            "owner",
+            "seal",
+        ] {
+            let mut changed = state.clone();
+            match fault {
+                "phase" => changed.phase = 6,
+                "terminal" => changed.status = "blocked".into(),
+                "error" => changed.error = Some("refused".into()),
+                "submission" => changed.submission = Some(json!({})),
+                "missing_plan" => changed.plan_id = None,
+                "command" => changed.command.occurrence_id = "other".into(),
+                "owner" => changed.owner_sha256 = "other".into(),
+                _ => {}
+            }
+            seal(&mut changed).unwrap();
+            if fault == "seal" {
+                changed.state_sha256 = "bad".into();
+            }
+            service
+                .runtime()
+                .storage
+                .put_json(NS, &id, serde_json::to_value(changed).unwrap(), &context)
+                .unwrap();
+            let result = prepared_state(&service, &command, "config");
+            assert!(result.is_err() || result.unwrap().is_none(), "{fault}");
+        }
+        service
+            .runtime()
+            .storage
+            .put_json(NS, &id, serde_json::to_value(&state).unwrap(), &context)
+            .unwrap();
+        let restarted =
+            TradeAssemblyService::from_runtime(db, crate::adapters::local::test_runtime(db))
+                .for_authenticated_invocation("fixture", "prepared-owner", None, None);
+        assert!(prepared_state(&restarted, &command, "config")
+            .unwrap()
+            .is_some());
+        // A sealed pending cycle alone is never enough: the actual plan/source
+        // reader must still reject this unbacked plan rather than granting a hint.
+        assert!(prepared_plan_for_health(&restarted, &command, "config").is_err());
+        assert!(restarted
+            .runtime()
+            .storage
+            .list_json("execution_order_plan_submissions_v2")
+            .unwrap()
+            .is_empty());
     }
 }

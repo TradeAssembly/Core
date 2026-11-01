@@ -410,6 +410,9 @@ pub(crate) struct VerifiedSignal {
     receipt: data_evaluation::EvaluationReceipt,
 }
 impl VerifiedSignal {
+    pub(crate) fn plan_revision_id(&self) -> &str {
+        &self.plan.revision_id
+    }
     pub(crate) fn matches(
         &self,
         s: &TradeAssemblyService,

@@ -793,6 +793,74 @@ fn projection(c: &Child, body: &Value) -> Result<Value, String> {
         json!({"receiptSha256":body["receipt"]["receiptSha256"].as_str().ok_or("session_dispatch_evaluation_result_invalid")?,"checkpointSha256":body["receipt"]["checkpoint"]["checkpointSha256"].as_str().ok_or("session_dispatch_evaluation_result_invalid")?,"status":body["receipt"]["status"],"framesProcessed":body["receipt"]["framesProcessed"]}),
     )
 }
+/// Bounded current-job result projection; never scans historical cycle records.
+/// Returned commands are merely candidates: the cycle reader rechecks its seal,
+/// owner, exact command/config, phase and normal current reserved plan.
+pub(crate) fn prepared_cycle_commands(
+    s: &TradeAssemblyService,
+    job: &Job,
+) -> Result<Vec<super::execution::typed_cycle::Command>, String> {
+    let (current, _) = read(s, &job.job_id)?;
+    if current.record_sha256 != job.record_sha256 || current.paused || current.status.terminal() {
+        return Ok(Vec::new());
+    }
+    let Some(activation) = current.request.execution_activation_id.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let Some(subjects) = current.subjects.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if subjects.len() > 32 {
+        return Err("typed_cycle_subject_limit".into());
+    }
+    let r = &current.request;
+    let span = r
+        .interval_ms
+        .checked_mul(r.max_frames_per_step)
+        .and_then(|n| i64::try_from(n).ok())
+        .filter(|n| *n > 0)
+        .ok_or("session_dispatch_time_invalid")?;
+    let duration = r
+        .event_end_ms
+        .checked_sub(r.event_start_ms)
+        .filter(|n| *n > 0)
+        .ok_or("session_dispatch_time_invalid")?;
+    let last = (duration - 1) / span;
+    let mut commands = Vec::new();
+    for subject in subjects {
+        let Some(plan) = current
+            .results
+            .get(&format!("plan:{subject}"))
+            .and_then(|v| v["revisionId"].as_str())
+        else {
+            continue;
+        };
+        let Some(signal) = current
+            .results
+            .get(&format!("evaluate:{subject}:{last}"))
+            .and_then(|v| v["receiptSha256"].as_str())
+        else {
+            continue;
+        };
+        let command = super::execution::typed_cycle::Command {
+            scope: r.scope.clone(),
+            activation_id: activation.clone(),
+            occurrence_id: r.occurrence_id.clone(),
+            plan_revision_id: plan.into(),
+            signal_receipt_sha256: signal.into(),
+        };
+        let id = hash(&command)?;
+        if (0..8).any(|phase| {
+            current
+                .results
+                .get(&format!("execute:{subject}:{phase}"))
+                .is_some_and(|v| v["status"] == "running" && v["phase"] == 5 && v["cycleId"] == id)
+        }) {
+            commands.push(command);
+        }
+    }
+    Ok(commands)
+}
 pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
     let who = owner(s)?;
     let (mut j, _) = read(s, id)?;
@@ -1099,4 +1167,85 @@ pub(crate) fn health_worker_intent_current(
         return Err("automatic_health_worker_intent_disabled".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prepared_health_hint_tests {
+    use super::*;
+    #[test]
+    fn prepared_job_hint_requires_current_owned_job_and_exact_final_result_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("prepared-job.sqlite");
+        let db = db.to_str().unwrap();
+        let s = TradeAssemblyService::from_runtime(db, crate::adapters::local::test_runtime(db))
+            .for_authenticated_invocation("fixture", "job-owner", None, None);
+        s.bind_owned_object("strategy", "owned").unwrap();
+        let request = DispatchRequest {
+            occurrence_id: "o".into(),
+            scope: data_plans::PlanScope {
+                strategy_id: "owned".into(),
+                strategy_version_id: "v".into(),
+                strategy_spec_hash: "h".into(),
+            },
+            capability_graph_revision: "g".into(),
+            mode: "paper".into(),
+            subjects: SubjectPolicy::AllSelected { max_members: 1 },
+            event_start_ms: 1000,
+            event_end_ms: 6000,
+            interval_ms: 1000,
+            max_frames_per_step: 2,
+            source_captures_by_subject: BTreeMap::new(),
+            execution_activation_id: Some("a".into()),
+        };
+        let command = super::super::execution::typed_cycle::Command {
+            scope: request.scope.clone(),
+            activation_id: "a".into(),
+            occurrence_id: "o".into(),
+            plan_revision_id: "p".into(),
+            signal_receipt_sha256: "r".into(),
+        };
+        let owner = hash(&s.invocation_owner().unwrap()).unwrap();
+        let mut job: Job = serde_json::from_value(json!({"schemaVersion":"tradeassembly.session_dispatch.v1","jobId":job_id(&request,&owner).unwrap(),"request":request,
+            "coreRevision":"revision","ownerSha256":owner,"scheduleSha256":"schedule","createdAtMs":1,"startedAtMs":1,"status":"running","paused":false,
+            "generation":1,"attempts":0,"nextAttemptAtMs":1,"error":null,"recordSha256":"","fencingToken":1,"queueMessageId":null,"pending":null,
+            "results":{"plan:SPY":{"revisionId":"p"},"evaluate:SPY:2":{"receiptSha256":"r"},"execute:SPY:4":{"cycleId":hash(&command).unwrap(),"status":"running","phase":5,"planId":"reserved"}},"subjects":["SPY"]})).unwrap();
+        job.record_sha256 = record_hash(&job).unwrap();
+        let context = context("prepared-job-test").unwrap();
+        s.runtime()
+            .storage
+            .put_json(JOBS, &job.job_id, value(&job).unwrap(), &context)
+            .unwrap();
+        assert_eq!(prepared_cycle_commands(&s, &job).unwrap(), vec![command]);
+        let mut stale = job.clone();
+        stale.record_sha256 = "old".into();
+        assert!(prepared_cycle_commands(&s, &stale).unwrap().is_empty());
+        for fault in [
+            "paused", "terminal", "phase", "hash", "plan", "signal", "owner",
+        ] {
+            let mut changed = job.clone();
+            match fault {
+                "paused" => changed.paused = true,
+                "terminal" => changed.status = Status::Complete,
+                "phase" => changed.results.get_mut("execute:SPY:4").unwrap()["phase"] = json!(6),
+                "hash" => {
+                    changed.results.get_mut("execute:SPY:4").unwrap()["cycleId"] = json!("wrong")
+                }
+                "plan" => {
+                    changed.results.get_mut("plan:SPY").unwrap()["revisionId"] = json!("wrong")
+                }
+                "signal" => {
+                    changed.results.get_mut("evaluate:SPY:2").unwrap()["receiptSha256"] =
+                        json!("wrong")
+                }
+                _ => changed.owner_sha256 = "other".into(),
+            }
+            changed.record_sha256 = record_hash(&changed).unwrap();
+            s.runtime()
+                .storage
+                .put_json(JOBS, &job.job_id, value(&changed).unwrap(), &context)
+                .unwrap();
+            let result = prepared_cycle_commands(&s, &changed);
+            assert!(result.is_err() || result.unwrap().is_empty(), "{fault}");
+        }
+    }
 }

@@ -981,6 +981,55 @@ fn protected_financial_approval(
     }
     Ok(false)
 }
+fn protected_cycle_plan(
+    s: &TradeAssemblyService,
+    b: &Binding,
+    c: &super::typed_cycle::Command,
+) -> Result<bool, String> {
+    if c.activation_id != b.activation || c.scope != b.command.scope {
+        return Ok(false);
+    }
+    let Some(plan) = super::typed_cycle::prepared_plan_for_health(s, c, &b.config_sha256)? else {
+        return Ok(false);
+    };
+    // Once approval exists, only the existing approved-plan/live-lease path may
+    // grant this scheduling hint, including a crash before cycle phase sealing.
+    let run = s
+        .runtime()
+        .storage
+        .get_json("execution_runs", &format!("run_{}", b.activation))?
+        .ok_or("automatic_health_run_missing")?;
+    let Some(approvals) = run["orderPlanApprovals"].as_object() else {
+        return Ok(false);
+    };
+    if run["activationId"] != b.activation
+        || run["configId"] != b.config["configId"]
+        || run["state"] != "active"
+        || approvals.contains_key(&plan.plan_id)
+    {
+        return Ok(false);
+    }
+    Ok(plan.owner_sha256 == b.owner
+        && plan.command.mode == "paper"
+        && plan.command.capability_graph_revision == b.command.capability_graph_revision
+        && plan.canonical_account.as_ref() == Some(&b.pins.providers[0].identity)
+        && plan.account_binding_sha256.as_ref()
+            == Some(&b.pins.providers[1].account_binding_sha256)
+        && !pre_admission_denial_present(s, &plan.plan_id)?
+        && plan.valid_until_ms > s.runtime().clock.trusted_now_ms()?)
+}
+fn protected_job_cycle(
+    s: &TradeAssemblyService,
+    b: &Binding,
+    job: &session_dispatch::Job,
+) -> Result<bool, String> {
+    for command in session_dispatch::prepared_cycle_commands(s, job)? {
+        if protected_cycle_plan(s, b, &command)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 fn periodic_refresh_may_defer(
     state: &State,
     protected: impl FnOnce() -> Result<bool, String>,
@@ -1002,6 +1051,7 @@ fn advance(
     s: &TradeAssemblyService,
     b: Binding,
     before_effect: impl Fn() -> Result<(), String>,
+    prepared_cycle: impl Fn(&Binding) -> Result<bool, String>,
 ) -> Result<Gate, String> {
     let now = s.runtime().clock.trusted_now_ms()?;
     let resource = format!("automatic-health:{}", state_id(&b)?);
@@ -1069,7 +1119,12 @@ fn advance(
             // its own ordinary config/source/account/C3/C5 checks afterward.
             if periodic_refresh_may_defer(
                 &state,
-                || protected_financial_approval(s, &b, s.runtime().clock.trusted_now_ms()?),
+                || {
+                    Ok(
+                        protected_financial_approval(s, &b, s.runtime().clock.trusted_now_ms()?)?
+                            || prepared_cycle(&b)?,
+                    )
+                },
                 || ready(s, &b, Some(&state), s.runtime().clock.trusted_now_ms()?),
             )? {
                 let next = s.runtime().clock.trusted_now_ms()?;
@@ -1220,9 +1275,12 @@ pub(crate) fn advance_job(
     let Some(binding) = job_binding(s, job)? else {
         return Ok(no_gate(s.runtime().clock.now_ms()));
     };
-    advance(s, binding, || {
-        session_dispatch::health_job_current(s, &job.job_id)
-    })
+    advance(
+        s,
+        binding,
+        || session_dispatch::health_job_current(s, &job.job_id),
+        |binding| protected_job_cycle(s, binding, job),
+    )
 }
 pub(crate) fn advance_worker_job(
     s: &TradeAssemblyService,
@@ -1231,14 +1289,18 @@ pub(crate) fn advance_worker_job(
     let Some(binding) = job_binding(s, job)? else {
         return Ok(no_gate(s.runtime().clock.now_ms()));
     };
-    advance(s, binding, || {
-        session_dispatch::health_worker_intent_current(s, &job.job_id)
-    })
+    advance(
+        s,
+        binding,
+        || session_dispatch::health_worker_intent_current(s, &job.job_id),
+        |binding| protected_job_cycle(s, binding, job),
+    )
 }
 pub(crate) fn advance_activation(
     s: &TradeAssemblyService,
     activation: &str,
     scope: &data_plans::PlanScope,
+    prepared_cycle: Option<&super::typed_cycle::Command>,
 ) -> Result<Gate, String> {
     let Some(binding) = read_binding(s, activation)? else {
         return Ok(no_gate(s.runtime().clock.now_ms()));
@@ -1246,7 +1308,16 @@ pub(crate) fn advance_activation(
     if binding.command.scope != *scope {
         return Err("automatic_health_scope_changed".into());
     }
-    advance(s, binding, || Ok(()))
+    advance(
+        s,
+        binding,
+        || Ok(()),
+        |binding| {
+            prepared_cycle.map_or(Ok(false), |command| {
+                protected_cycle_plan(s, binding, command)
+            })
+        },
+    )
 }
 
 #[cfg(test)]

@@ -580,7 +580,11 @@ fn configure_managed_math_native_spec(
             .unwrap()
             .push(r);
         bindings[node] = json!({"pluginInstanceRef":"managed-real-calculation","pluginRef":pack.plugin_ref,"operationId":operation});
-        s.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("managed-real-math-grants")).unwrap();
+        // The current free pack must resolve through the host-owned, verified
+        // package policy. The historical daily fixture keeps its explicit grant.
+        if !minute {
+            s.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("managed-real-math-grants")).unwrap();
+        }
     }
 }
 fn assert_managed_math_frame(receipt: &Value, index: i64, final_value: i64) {

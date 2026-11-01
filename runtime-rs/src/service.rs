@@ -34,6 +34,7 @@ pub mod data_recipes;
 pub mod data_runner;
 pub mod data_strategy;
 mod dataset_ingestion;
+mod default_free_plugins;
 mod derivatives;
 mod execution;
 mod external_agent_session;

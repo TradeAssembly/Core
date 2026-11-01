@@ -5,8 +5,8 @@ use crate::ports::{
     CapabilityGraphEdge, CapabilityGraphNode, CapabilityGraphRequest, CapabilityGraphResolution,
     CapabilityReadiness, CapabilityRequirement, CapabilityRequirementConstraints,
     CapabilityResolution, CapabilityResolverCatalog, CapabilityResolverPort, CapabilitySelection,
-    EntitlementDecision, EntitlementGrant, EntitlementProfile, PluginOperationContract,
-    PluginOperationDependency, PluginOperationTraits,
+    EntitlementDecision, EntitlementGrant, EntitlementProfile, PluginCatalogEntry,
+    PluginOperationContract, PluginOperationDependency, PluginOperationTraits,
 };
 use crate::ports::{PortDescriptor, PortKind, VersionedPort};
 use serde_json::{json, Value};
@@ -83,16 +83,9 @@ fn resolve_requirement(
     evaluation_epoch: Option<&str>,
 ) -> CapabilityResolution {
     let mut candidates = Vec::new();
-    let entitlement_decision =
+    let unbound_entitlement_decision =
         entitlement_decision(&requirement, &catalog.entitlements, evaluation_epoch);
     let mut top_blockers = Vec::new();
-    if entitlement_decision.decision == "deny" {
-        top_blockers.push(blocker(
-            entitlement_blocker_code(&entitlement_decision, graph_contract),
-            entitlement_blocker_message(&entitlement_decision),
-            Some(requirement.capability.clone()),
-        ));
-    }
 
     for plugin in &catalog.plugins {
         if let Some(preferred_instance) = requirement.plugin_instance_ref.as_deref() {
@@ -110,6 +103,12 @@ fn resolve_requirement(
         for operation in plugin.operations.iter().filter(|operation| {
             operation_matches_requirement(operation, &requirement, graph_contract)
         }) {
+            let entitlement_decision = entitlement_decision_for_candidate(
+                &requirement,
+                &catalog.entitlements,
+                evaluation_epoch,
+                Some((plugin, operation)),
+            );
             let mut blockers = Vec::new();
             if !plugin.enabled {
                 blockers.push(blocker(
@@ -164,19 +163,25 @@ fn resolve_requirement(
                     Some(plugin.plugin_ref.clone()),
                 ));
             }
-            if graph_contract {
+            let source_bound_default = entitlement_decision.grant_id.as_ref().is_some_and(|id| {
+                catalog.entitlements.iter().any(|grant| {
+                    grant.grant_id == *id
+                        && grant.source_type == crate::default_free_plugin_policy::SOURCE_TYPE
+                })
+            });
+            if graph_contract || source_bound_default {
                 if let Some(limit_blocker) =
                     entitlement_limit_blocker(&requirement, &entitlement_decision)
                 {
                     blockers.push(limit_blocker);
                 }
-                if !authority_metadata_complete(operation) {
-                    blockers.push(blocker(
-                        "authority_metadata_missing",
-                        "Plugin operation is missing required authority metadata.",
-                        Some(plugin.plugin_ref.clone()),
-                    ));
-                }
+            }
+            if graph_contract && !authority_metadata_complete(operation) {
+                blockers.push(blocker(
+                    "authority_metadata_missing",
+                    "Plugin operation is missing required authority metadata.",
+                    Some(plugin.plugin_ref.clone()),
+                ));
             }
             candidates.push(CapabilityCandidate {
                 plugin_instance_ref: plugin.instance_ref.clone(),
@@ -204,6 +209,19 @@ fn resolve_requirement(
         }
     }
 
+    // Source-bound eligibility belongs to the actual candidate. Preserve the
+    // prior unbound decision shape only when every candidate shares it.
+    if unbound_entitlement_decision.decision == "deny"
+        && candidates
+            .iter()
+            .all(|candidate| candidate.entitlement_decision == unbound_entitlement_decision)
+    {
+        top_blockers.push(blocker(
+            entitlement_blocker_code(&unbound_entitlement_decision, graph_contract),
+            entitlement_blocker_message(&unbound_entitlement_decision),
+            Some(requirement.capability.clone()),
+        ));
+    }
     if candidates.is_empty() {
         let missing_code = if requirement.operation_id.is_some()
             && catalog_has_capability_with_different_operation(&requirement, &catalog)
@@ -250,6 +268,15 @@ fn resolve_requirement(
         }
     }
 
+    let mut entitlement_decisions = Vec::new();
+    for candidate in &candidates {
+        if !entitlement_decisions.contains(&candidate.entitlement_decision) {
+            entitlement_decisions.push(candidate.entitlement_decision.clone());
+        }
+    }
+    if entitlement_decisions.is_empty() {
+        entitlement_decisions.push(unbound_entitlement_decision);
+    }
     CapabilityResolution {
         schema_version: CAPABILITY_RESOLUTION_SCHEMA_VERSION.to_string(),
         ok: has_usable_candidate,
@@ -266,7 +293,7 @@ fn resolve_requirement(
         },
         candidates,
         blockers: top_blockers,
-        entitlement_decisions: vec![entitlement_decision],
+        entitlement_decisions,
         no_silent_fallback: true,
         no_advice: true,
     }
@@ -870,9 +897,26 @@ fn entitlement_decision(
     grants: &[EntitlementGrant],
     evaluation_epoch: Option<&str>,
 ) -> EntitlementDecision {
+    entitlement_decision_for_candidate(requirement, grants, evaluation_epoch, None)
+}
+
+fn entitlement_decision_for_candidate(
+    requirement: &CapabilityRequirement,
+    grants: &[EntitlementGrant],
+    evaluation_epoch: Option<&str>,
+    candidate: Option<(&PluginCatalogEntry, &PluginOperationContract)>,
+) -> EntitlementDecision {
     let mut matching = grants
         .iter()
         .filter(|grant| grant.capability == requirement.capability)
+        .filter(|grant| {
+            grant.source_type != crate::default_free_plugin_policy::SOURCE_TYPE
+                || candidate.is_some_and(|(plugin, operation)| {
+                    crate::default_free_plugin_policy::grant_matches_candidate(
+                        grant, plugin, operation,
+                    )
+                })
+        })
         .filter(|grant| grant.revoked_at.is_none())
         .filter(|grant| !grant_is_expired(grant, evaluation_epoch))
         .collect::<Vec<_>>();

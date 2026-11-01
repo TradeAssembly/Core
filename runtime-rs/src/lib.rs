@@ -31,6 +31,7 @@ pub mod control_plane;
 mod control_plane_redaction;
 pub mod data_pipeline;
 pub mod data_strategy;
+pub(crate) mod default_free_plugin_policy;
 pub mod demos;
 pub mod derivatives_analysis;
 pub mod domain;

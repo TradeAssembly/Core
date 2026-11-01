@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "tradeassembly.local_default_free_plugin_policy.v1",
+  "policyId": "tradeassembly.default-calculations.local-free.v1",
+  "sourceType": "local_default_free_plugin_v1",
+  "profile": "local_full",
+  "packages": [
+    {
+      "pluginRef": "tradeassembly.default-indicators",
+      "version": "0.74.1",
+      "packageSha256": "a9c3ee822e5072f2890b33be47db50ff5269bda93882f856e393ffed57a1deb3",
+      "manifestSha256": "b6fe45003d80c87604e1acb98568b35791a76556a67cb67f58d40a73386bdcf8",
+      "modes": [
+        "paper",
+        "research",
+        "backtest"
+      ]
+    }
+  ]
+}

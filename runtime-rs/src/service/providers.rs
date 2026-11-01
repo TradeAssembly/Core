@@ -222,9 +222,10 @@ pub(crate) fn resolve_capability(
             "noAdvice": true,
         });
     }
+    let eligibility = entitlements_for(service, Some(&requirement.capability));
     let catalog = CapabilityResolverCatalog {
         plugins: plugin_catalog(service),
-        entitlements: entitlements(service),
+        entitlements: eligibility,
     };
     serde_json::to_value(
         service
@@ -447,14 +448,60 @@ fn persist_entitlement(service: &TradeAssemblyService, grant: EntitlementGrant) 
 }
 
 pub(crate) fn entitlements(service: &TradeAssemblyService) -> Vec<EntitlementGrant> {
+    entitlements_for(service, None)
+}
+
+fn entitlements_for(
+    service: &TradeAssemblyService,
+    capability: Option<&str>,
+) -> Vec<EntitlementGrant> {
     let mut grants = local_full_entitlements();
-    if let Ok(stored) = service.runtime().storage.list_json(ENTITLEMENT_NS) {
+    let Ok(records) = service.runtime().storage.list_json(ENTITLEMENT_NS) else {
+        // Preserve existing defaults, but never regenerate new policy grants
+        // when a host-owned revocation/expiry record cannot be checked.
+        return grants;
+    };
+    let mut complete = true;
+    let stored = records
+        .into_iter()
+        .filter_map(
+            |(_, value)| match serde_json::from_value::<EntitlementGrant>(value) {
+                Ok(grant) => Some(grant),
+                Err(_) => {
+                    complete = false;
+                    None
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    let eligible = if complete {
+        super::default_free_plugins::grants(service, capability)
+    } else {
+        Vec::new()
+    };
+    if complete {
+        // The existing host record is authoritative even when revoked or
+        // expired. Reading eligibility does not persist an allow grant.
         grants.extend(
-            stored
-                .into_iter()
-                .filter_map(|(_, value)| serde_json::from_value::<EntitlementGrant>(value).ok()),
+            eligible
+                .iter()
+                .filter(|generated| {
+                    !stored
+                        .iter()
+                        .any(|entry| entry.grant_id == generated.grant_id)
+                })
+                .cloned(),
         );
     }
+    grants.extend(stored.into_iter().filter(|entry| {
+        entry.source_type != crate::default_free_plugin_policy::SOURCE_TYPE
+            || eligible.iter().any(|current| {
+                entry.grant_id == current.grant_id
+                    && entry.capability == current.capability
+                    && entry.source_ref == current.source_ref
+                    && entry.limits.get("sourceBinding") == current.limits.get("sourceBinding")
+            })
+    }));
     grants
 }
 

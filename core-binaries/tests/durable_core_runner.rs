@@ -193,6 +193,7 @@ fn configuration(snapshot: &DatasetSnapshot, spec_hash: &str) -> BacktestConfigu
         compiler_version: "compiler-1".to_string(),
         plugin_fingerprints: BTreeMap::new(),
         variable_overrides: BTreeMap::new(),
+        typed_evaluation: None,
     }
 }
 

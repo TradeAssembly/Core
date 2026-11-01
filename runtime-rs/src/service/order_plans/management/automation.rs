@@ -373,6 +373,12 @@ fn binding(
     job: &session_dispatch::Job,
 ) -> Result<Option<Binding>, String> {
     let _timing = crate::service::order_plans::financial_timing("manager.binding");
+    crate::service::package_validation::with_round(s, |s| binding_round(s, job))
+}
+fn binding_round(
+    s: &TradeAssemblyService,
+    job: &session_dispatch::Job,
+) -> Result<Option<Binding>, String> {
     let Some(activation) = job.request.execution_activation_id.as_deref() else {
         return Ok(None);
     };
@@ -1352,7 +1358,11 @@ fn apply_response(
     response: &ServiceResponse,
 ) -> Result<(), String> {
     if let Action::Reversal { step } = &child.action {
-        reversal::apply_response(s, b, state, child, step, response)?;
+        measured("manager.reversal.response_validation", || {
+            crate::service::package_validation::with_round(s, |s| {
+                reversal::apply_response(s, b, state, child, step, response)
+            })
+        })?;
         state.pending = None;
         return Ok(());
     }
@@ -1629,7 +1639,14 @@ pub(crate) fn advance(
             }
         }
         if state.pending.is_none() {
-            let planned = measured("manager.next_child", || next_child(s, &b, job, &mut state));
+            let planned = measured("manager.next_child", || {
+                // Planning returns finite command bytes only. The normal fresh
+                // binding/lease/window checks and sole child dispatch follow
+                // using the original service, outside this metadata round.
+                crate::service::package_validation::with_round(s, |s| {
+                    next_child(s, &b, job, &mut state)
+                })
+            });
             apply_planned_child(&mut state, now, b.config.cadence_ms, planned);
             save(s, &b, old, &mut state, None)?;
             old = Some(value(&state)?);
@@ -1642,6 +1659,7 @@ pub(crate) fn advance(
             .clone()
             .ok_or("management_automation_child_missing")?;
         // All materialized body bytes/key are durable before this sole child.
+        let before_child_checks = financial_timing("manager.before_child_checks");
         let fresh = binding(s, job)?.ok_or("management_automation_disabled")?;
         if fresh.config_hash != b.config_hash
             || current_owner(s)? != b.owner
@@ -1700,6 +1718,7 @@ pub(crate) fn advance(
                 &state.occurrence_id,
             )?;
         }
+        drop(before_child_checks);
         let phase = match &pending.action {
             Action::Advance {} => "manager.child.advance",
             Action::Submit { .. } => "manager.child.submit",

@@ -356,6 +356,13 @@ pub(super) fn rebuild(
     service: &TradeAssemblyService,
     source: &SelectionPlanSource,
 ) -> Result<data_plans::DataPlanContent, String> {
+    let _timing = super::order_plans::financial_timing("selected_plan.rebuild");
+    super::package_validation::with_round(service, |service| rebuild_round(service, source))
+}
+fn rebuild_round(
+    service: &TradeAssemblyService,
+    source: &SelectionPlanSource,
+) -> Result<data_plans::DataPlanContent, String> {
     let fresh = resolve_bound(
         service,
         &source.command,
@@ -408,7 +415,11 @@ pub(super) fn preflight(
     body: &Value,
 ) -> Option<ServiceResponse> {
     if path == MANAGED_PATH {
-        let result = managed_content(service, body).map(|_| ());
+        let result = super::order_plans::measured("managed_plan.preflight", || {
+            super::package_validation::with_round(service, |service| {
+                managed_content(service, body).map(|_| ())
+            })
+        });
         return result.err().map(|code| ServiceResponse::conflict(&code));
     }
     if path != PATH {
@@ -580,47 +591,72 @@ fn managed_content(
     service: &TradeAssemblyService,
     body: &Value,
 ) -> Result<data_plans::DataPlanContent, String> {
-    let (c, internal, streams) = managed_command(service, body)?;
-    build(
-        service,
+    let (c, internal, streams) =
+        super::order_plans::measured("managed_plan.command", || managed_command(service, body))?;
+    let source = super::order_plans::measured("managed_plan.resolve", || {
         resolve_bound(
             service,
             &internal,
             service.runtime().clock.trusted_now_ms()?,
             Some(&c.managed_position_id),
             &streams,
-        )?,
-    )
+        )
+    })?;
+    super::order_plans::measured("managed_plan.build", || build(service, source))
+}
+enum ManagedPreparation {
+    Existing(data_plans::StoredDataPlan),
+    New(data_plans::DataPlanContent),
 }
 pub(super) fn prepare_managed_response(
     service: &TradeAssemblyService,
     body: Value,
 ) -> ServiceResponse {
+    let _timing = super::order_plans::financial_timing("managed_plan.prepare");
     let result = (|| {
-        let (c, internal, streams) = managed_command(service, &body)?;
-        let authority =
-            crate::control_plane::http_envelope("http", "POST", MANAGED_PATH, &body)?.authority;
-        let context = SideEffectContext::new(
-            authority,
-            IdempotencyKey::new(
-                body["idempotencyKey"]
-                    .as_str()
-                    .ok_or("managed_plan_idempotency_required")?,
-            )?,
-        )
-        .with_agent_execution(service.agent_mcp_execution_context());
-        if let Some(plan) = data_plans::previous(service, &c.scope, &context)? {
-            if plan.content.selection_source.as_ref().is_none_or(|source| {
-                source.command != internal
-                    || source.source_streams != streams
-                    || source.managed_position_id.as_deref() != Some(c.managed_position_id.as_str())
-            }) {
-                return Err("managed_plan_idempotency_conflict".into());
+        // A fresh pure round, independent of preflight, replay and each later
+        // currentness check. Mutable ownership/position/source checks still run
+        // in their original order. No scoped service escapes into persistence.
+        let (context, prepared) = super::order_plans::measured("managed_plan.validate", || {
+            super::package_validation::with_round(service, |service| {
+                let (c, internal, streams) = managed_command(service, &body)?;
+                let authority =
+                    crate::control_plane::http_envelope("http", "POST", MANAGED_PATH, &body)?
+                        .authority;
+                let context = SideEffectContext::new(
+                    authority,
+                    IdempotencyKey::new(
+                        body["idempotencyKey"]
+                            .as_str()
+                            .ok_or("managed_plan_idempotency_required")?,
+                    )?,
+                )
+                .with_agent_execution(service.agent_mcp_execution_context());
+                if let Some(plan) = data_plans::previous(service, &c.scope, &context)? {
+                    if plan.content.selection_source.as_ref().is_none_or(|source| {
+                        source.command != internal
+                            || source.source_streams != streams
+                            || source.managed_position_id.as_deref()
+                                != Some(c.managed_position_id.as_str())
+                    }) {
+                        return Err("managed_plan_idempotency_conflict".into());
+                    }
+                    return Ok((context, ManagedPreparation::Existing(plan)));
+                }
+                // Keep this independent managed-command/source read; immutable
+                // metadata sharing does not cache its position or permissions.
+                let content = managed_content(service, &body)?;
+                Ok((context, ManagedPreparation::New(content)))
+            })
+        })?;
+        match prepared {
+            ManagedPreparation::Existing(plan) => Ok(plan),
+            ManagedPreparation::New(content) => {
+                super::order_plans::measured("managed_plan.persist", || {
+                    data_plans::persist(service.runtime().storage.as_ref(), content, &context)
+                })
             }
-            return Ok(plan);
         }
-        let content = managed_content(service, &body)?;
-        data_plans::persist(service.runtime().storage.as_ref(), content, &context)
     })();
     match result {
         Ok(plan) => ServiceResponse::ok(

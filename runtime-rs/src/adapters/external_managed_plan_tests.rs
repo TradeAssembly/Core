@@ -86,8 +86,9 @@ fn exercise_native_managed_plan(
     entry: &str,
     root: &std::path::Path,
     stale: bool,
-    actual_math: bool,
+    plan_lane: (bool, bool),
 ) {
+    let (actual_math, metadata_round_only) = plan_lane;
     use crate::service::{
         data_collections as collections, order_plans as plans, session_schedules as schedules,
     };
@@ -160,6 +161,33 @@ fn exercise_native_managed_plan(
         prepared["plan"]["content"]["selectionSource"]["managedPositionId"],
         id
     );
+    if metadata_round_only {
+        assert!(!actual_math && !stale && !provisional);
+        // A prior successful plan is not a grant for another validation round.
+        let replay_body = json!({"managedPositionPlan":command,"accountMode":"paper","idempotencyKey":"managed-plan-prepare"});
+        let replay = post("/product/strategies/managed-position-plans/prepare", replay_body.clone());
+        assert_eq!(replay["plan"], prepared["plan"]);
+        let graph = s.runtime().storage.get_json("capability_graph_revisions", revision).unwrap().unwrap();
+        let instance = graph["graph"]["nodes"].as_array().unwrap().iter()
+            .find(|n| n["nodeId"]=="exec_signal").unwrap()["selected"]["pluginInstanceRef"]
+            .as_str().unwrap().to_owned();
+        let original = s.runtime().plugins.get_instance(&instance).unwrap().unwrap();
+        let before = s.runtime().storage.list_json("compiled_data_plan_revisions_v1").unwrap();
+        let mut revoked = original.clone();
+        revoked["enabled"] = json!(false);
+        s.runtime().plugins.put_instance(&instance, revoked, &ctx("managed-round-revoke")).unwrap();
+        let refused = s.handle_http("POST", "/product/strategies/managed-position-plans/prepare", replay_body.clone());
+        assert!(refused.status>=400, "revoked source replay was accepted: {}", refused.body);
+        assert_eq!(s.runtime().storage.list_json("compiled_data_plan_revisions_v1").unwrap(), before);
+        s.runtime().plugins.put_instance(&instance, original, &ctx("managed-round-restore-fixture")).unwrap();
+        let restored = post("/product/strategies/managed-position-plans/prepare", replay_body);
+        assert_eq!(restored["plan"], prepared["plan"]);
+        write_screen_interface_evidence("managed_plan", "metadata-round-replay-revocation.json",
+            &json!({"original":prepared["plan"],"replay":replay["plan"],"revokedRefusalStatus":refused.status,
+                "revokedRefusal":refused.body,"restored":restored["plan"],"compiledPlanRowsUnchangedOnRefusal":true,
+                "scope":"native authored generic fixture; no real provider or account"}));
+        return; // This dedicated regression does not qualify a close lifecycle.
+    }
     let plan = prepared["plan"]["revisionId"].as_str().unwrap();
     // Preserve the normal finite routes and exact refusal bodies. Only the
     // actual-math lane moves these nonfinancial checks out of the final budget.
@@ -739,3 +767,10 @@ fn exercise_native_provider_management_v7(s:&crate::service::TradeAssemblyServic
 #[test]
 #[ignore="explicit native V7 observation/register/lookup/inspect and immutable recovery; no real broker"]
 fn native_provider_management_v7_preserves_receipts_and_cash_holds(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_managed_plan_provisional_v7"));}
+
+#[test]
+#[ignore = "explicit native managed-plan replay/revocation only; stops before reversal/close"]
+fn native_managed_plan_metadata_round_replay_and_revocation() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_managed_plan_metadata_round"));
+}

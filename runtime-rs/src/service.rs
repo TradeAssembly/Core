@@ -1131,6 +1131,11 @@ impl TradeAssemblyService {
         {
             return response;
         }
+        if let Some(response) =
+            backtest::preflight(self, &normalized_method, &normalized_path, &body)
+        {
+            return response;
+        }
         if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
             return response;
         }
@@ -2027,7 +2032,7 @@ impl TradeAssemblyService {
                 ServiceResponse::ok(json!(research::list_universes(self)))
             }
             ("POST", "/research/jobs") | ("POST", "/product/strategies/research/jobs/create") => {
-                ServiceResponse::ok(api_result(research::create_job(self, body)))
+                research::create_job(self, body)
             }
             ("GET", "/research/jobs") => ServiceResponse::ok(json!(research::list_jobs(self))),
             ("POST", "/product/strategies/research/jobs/status") => {
@@ -2331,15 +2336,18 @@ impl TradeAssemblyService {
                         self.lifecycle_calendar(lifecycle_calendar_body_from(&body)),
                     )
                 } else {
-                    ServiceResponse::ok(report_envelope::report_envelope(
-                        kind,
-                        &strategy_id_from(&body),
-                        body.get("backtestId")
-                            .or_else(|| body.get("backtest_id"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("backtest-local"),
-                        "http://127.0.0.1:3001",
-                    ))
+                    ServiceResponse {
+                        status: 501,
+                        body: report_envelope::report_envelope(
+                            kind,
+                            &strategy_id_from(&body),
+                            body.get("backtestId")
+                                .or_else(|| body.get("backtest_id"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("backtest-local"),
+                            "http://127.0.0.1:3001",
+                        ),
+                    }
                 }
             }
             ("POST", "/product/strategies/scenario-valuation") => derivatives::create(self, body),
@@ -2397,6 +2405,29 @@ impl TradeAssemblyService {
                 &authorization_body,
             ) {
                 return response.body;
+            }
+        }
+        // Retired constructed research cannot replay an old completed C3 body.
+        // Ownership above still applies; this path grants no execution effect.
+        if matches!(
+            op.as_str(),
+            "QueueStrategyResearchJob" | "StrategyResearchJobStatus"
+        ) {
+            let path = if op == "QueueStrategyResearchJob" {
+                "/product/strategies/research/jobs/create"
+            } else {
+                "/product/strategies/research/jobs/status"
+            };
+            let variables = request
+                .get("variables")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            if let Some(response) = backtest::preflight(self, "POST", path, &variables) {
+                if response.status >= 400 {
+                    return json!({"errors":[{"message":graphql_error_code(&response.body)}]});
+                }
+                let field = graphql_field(&op);
+                return json!({"data":{field:response.body}});
             }
         }
         let command_envelope = match control_plane::graphql_envelope(&request)
@@ -3704,6 +3735,29 @@ impl TradeAssemblyService {
                     None,
                 );
             }
+        }
+        if name == "tradeassembly.report.envelope"
+            && report_envelope::requires_verified_report(
+                arguments["kind"].as_str().unwrap_or("backtest"),
+            )
+        {
+            // The ordinary MCP invocation/agent and object guards above still
+            // run. An old cached generic placeholder is never a current report.
+            return mcp::tool_error(
+                name,
+                "durable_backtest_report_required",
+                "Read an integrity-verified canonical backtest report.",
+                Some(report_envelope::report_envelope(
+                    arguments["kind"].as_str().unwrap_or("backtest"),
+                    &strategy_id_from(&arguments),
+                    arguments["backtest_id"]
+                        .as_str()
+                        .unwrap_or("backtest-local"),
+                    arguments["studio_base_url"]
+                        .as_str()
+                        .unwrap_or(mcp::DEFAULT_STUDIO_BASE_URL),
+                )),
+            );
         }
         // Export remains a protected action, but an implicit retry must observe
         // a newly completed run instead of replaying a cached pre-completion error.

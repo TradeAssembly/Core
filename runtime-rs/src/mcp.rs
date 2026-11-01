@@ -140,6 +140,19 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
             Some(redact_sensitive_payload(arguments)),
         );
     }
+    if matches!(
+        name,
+        "tradeassembly.backtest.report"
+            | "tradeassembly.backtest.export"
+            | "tradeassembly.report.envelope"
+    ) {
+        return tool_error(
+            name,
+            "service_required",
+            "Use a service-backed integrity-verified backtest report or export.",
+            None,
+        );
+    }
     let payload = match name {
         "tradeassembly.health" => health_tool(&arguments),
         "tradeassembly.setup.status" => setup_status(&arguments),
@@ -326,6 +339,8 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
         }),
         "tradeassembly.backtest.run"
         | "tradeassembly.backtest.get"
+        | "tradeassembly.backtest.report"
+        | "tradeassembly.backtest.export"
         | "tradeassembly.backtest.list"
         | "tradeassembly.backtest.cancel"
         | "tradeassembly.backtest.retry"
@@ -336,13 +351,6 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
                 "code": "service_required",
                 "message": "Use TradeAssemblyService-backed MCP execution for durable backtest lifecycle operations."
             }
-        }),
-        "tradeassembly.backtest.export" => json!({
-            "schemaVersion": "tradeassembly.mcp.backtest_export.v1",
-            "ok": true,
-            "db": string_arg(&arguments, "db", DEFAULT_DB),
-            "backtestId": string_arg(&arguments, "backtest_id", ""),
-            "exportKind": string_arg(&arguments, "export_kind", "reportJson")
         }),
         "tradeassembly.dataset_ingestion.create"
         | "tradeassembly.dataset_ingestion.list"
@@ -358,11 +366,8 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
         }),
         "tradeassembly.report.envelope" => json!({
             "schemaVersion": "tradeassembly.mcp.report_envelope.v1",
-            "ok": true,
-            "db": string_arg(&arguments, "db", DEFAULT_DB),
-            "kind": string_arg(&arguments, "kind", "backtest"),
-            "studioBaseUrl": string_arg(&arguments, "studio_base_url", DEFAULT_STUDIO_BASE_URL),
-            "noAdviceNotice": NO_ADVICE_NOTICE
+            "ok": false,
+            "error":{"code":"service_required","message":"Use a service-backed integrity-verified report; generic report placeholders are disabled."}
         }),
         "tradeassembly.scenario.valuation" => json!({
             "ok": false,
@@ -2197,6 +2202,28 @@ fn bool_arg(arguments: &Value, key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
+
+    #[test]
+    fn standalone_backtest_report_and_export_require_the_real_service() {
+        for tool in [
+            "tradeassembly.backtest.report",
+            "tradeassembly.backtest.export",
+            "tradeassembly.report.envelope",
+        ] {
+            let response = super::call_tool(
+                tool,
+                json!({"backtest_id":"legacy-or-missing","export_kind":"reportJson"}),
+            );
+            assert_eq!(response["structuredContent"]["ok"], false, "{response}");
+            assert_eq!(response["isError"], true, "{response}");
+            assert_eq!(
+                response["structuredContent"]["error"]["code"],
+                "service_required"
+            );
+            assert!(response["structuredContent"].get("artifact").is_none());
+            assert_ne!(response["structuredContent"]["status"], "completed");
+        }
+    }
 
     const REQUIRED_TOOLS: &[&str] = &[
         "tradeassembly.health",

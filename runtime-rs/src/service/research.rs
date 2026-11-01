@@ -135,52 +135,16 @@ pub(crate) fn create_universe(service: &TradeAssemblyService, body: Value) -> Va
     universe
 }
 
-pub(crate) fn create_job(service: &TradeAssemblyService, body: Value) -> Value {
-    let strategy_id = strategy_id_from(&body);
-    if service.require_object("strategy", &strategy_id).is_err() {
-        return unavailable();
+pub(crate) fn create_job(service: &TradeAssemblyService, body: Value) -> super::ServiceResponse {
+    let mut blocked = backtest::run_backtest(service, body);
+    if blocked["status"] == "not_found" {
+        return super::ServiceResponse::object_unavailable();
     }
-    let id = next_id(service, JOBS_NS, "research_job", &strategy_id);
-    let backtest = backtest::run_backtest(service, body.clone());
-    if backtest["status"].as_str() == Some("blocked") {
-        return json!({
-            "id": id,
-            "status": "blocked",
-            "strategy_id": strategy_id,
-            "strategyId": strategy_id,
-            "blockedBacktest": backtest,
-            "artifacts": [],
-            "noAdvice": super::LEGAL_BOUNDARY,
-        });
+    blocked["kind"] = json!("ResearchJob");
+    super::ServiceResponse {
+        status: 501,
+        body: json!({"ok":false,"error":blocked["error"],"body":blocked}),
     }
-    let backtest_id = backtest["id"].as_str().unwrap_or("backtest-local");
-    let job = json!({
-        "id": id,
-        "status": "completed",
-        "strategy_id": strategy_id,
-        "strategyId": strategy_id,
-        "dataset_id": body.get("datasetId").or_else(|| body.get("dataset_id")).cloned().unwrap_or_else(|| json!("dataset-local-fixture")),
-        "datasetId": body.get("datasetId").or_else(|| body.get("dataset_id")).cloned().unwrap_or_else(|| json!("dataset-local-fixture")),
-        "engine": body.get("engine").cloned().unwrap_or_else(|| json!("auto")),
-        "backtest_id": backtest_id,
-        "backtestId": backtest_id,
-        "artifacts": backtest["artifacts"].clone(),
-    });
-    if service
-        .bind_inherited_object("research_job", &id, "strategy", &strategy_id)
-        .is_err()
-    {
-        return unavailable();
-    }
-    persist(
-        service,
-        JOBS_NS,
-        &id,
-        job.clone(),
-        "research.job.completed",
-        &body,
-    );
-    job
 }
 
 pub(crate) fn job_status(service: &TradeAssemblyService, body: Value) -> Value {
@@ -201,13 +165,17 @@ pub(crate) fn job_status(service: &TradeAssemblyService, body: Value) -> Value {
             .get_json(JOBS_NS, requested)
             .ok()
             .flatten()
+            .map(|record| backtest::historical_summary(&record, "LegacyResearchJob"))
     }
     .unwrap_or_else(|| json!({"status": "not_found"}));
-    json!({"job": job, "artifacts": job["artifacts"].clone()})
+    json!({"job": job, "artifacts": []})
 }
 
 pub(crate) fn list_jobs(service: &TradeAssemblyService) -> Vec<Value> {
     visible_stored(service, "research_job", JOBS_NS, &["id"])
+        .iter()
+        .map(|record| backtest::historical_summary(record, "LegacyResearchJob"))
+        .collect()
 }
 
 pub(crate) fn list_sweeps(service: &TradeAssemblyService) -> Vec<Value> {

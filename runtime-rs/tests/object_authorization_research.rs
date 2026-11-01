@@ -143,17 +143,46 @@ fn cross_principal_research_roots_are_private_and_opaque() {
         .expect("universe id")
         .to_string();
 
-    // Research-job authorization is exercised through the explicit research
-    // job fixture route; the legacy front door is now a durable backtest alias.
+    // New legacy research creation is disabled even for an owned local dataset.
+    // Seed an explicitly historical row only to test its read authorization;
+    // this is not a backtest result or engine qualification fixture.
     let run = alice.handle_http(
         "POST",
         "/research/jobs",
         json!({"strategyId": strategy_id, "datasetId": dataset_id, "symbol": "BTC/USD"}),
     );
-    assert_eq!(run.status, 200, "{:?}", run.body);
-    let run = body(run.body);
-    assert_ne!(run["status"], "blocked", "{run:?}");
-    let job_id = run["id"].as_str().expect("job id").to_string();
+    assert_eq!(run.status, 501, "{:?}", run.body);
+    assert_eq!(
+        run.body["error"]["code"],
+        "legacy_constructed_research_disabled"
+    );
+    let job_id = "historical-owned-job".to_string();
+    let context = tradeassembly_runtime::ports::SideEffectContext::new(
+        tradeassembly_runtime::ports::AuthorityContext::local_cli(),
+        tradeassembly_runtime::ports::IdempotencyKey::new("historical-research-scope").unwrap(),
+    );
+    alice
+        .runtime()
+        .object_authorization
+        .bind(
+            &tradeassembly_runtime::ports::ObjectScope {
+                object_type: "research_job".into(),
+                object_id: job_id.clone(),
+                owner: alice
+                    .runtime()
+                    .object_authorization
+                    .scope("strategy", strategy_id)
+                    .unwrap()
+                    .unwrap()
+                    .owner,
+                parent_type: Some("strategy".into()),
+                parent_id: Some(strategy_id.into()),
+            },
+            &context,
+        )
+        .unwrap();
+    alice.runtime().storage.put_json("research_jobs", &job_id,
+        json!({"id":job_id,"strategyId":strategy_id,"status":"completed","artifacts":[{"uri":"legacy-only"}]}),&context).unwrap();
 
     let owner_jobs = alice.handle_http("GET", "/research/jobs", json!({}));
     assert!(owner_jobs
@@ -161,7 +190,9 @@ fn cross_principal_research_roots_are_private_and_opaque() {
         .as_array()
         .expect("owner jobs")
         .iter()
-        .any(|job| job["id"].as_str() == Some(job_id.as_str())));
+        .any(|job| job["id"].as_str() == Some(job_id.as_str())
+            && job["status"] == "unavailable"
+            && job["historicalRecord"]["storedStatus"] == "completed"));
     let foreign_jobs = bob.handle_http("GET", "/research/jobs", json!({}));
     assert!(!serde_json::to_string(&foreign_jobs.body)
         .expect("serialize foreign jobs")

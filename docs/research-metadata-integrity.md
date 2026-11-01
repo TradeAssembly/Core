@@ -6,7 +6,7 @@ do not infer row counts, content hashes, snapshot locations, symbols, time
 ranges, calendar, capital, costs, or execution defaults. Caller-supplied records
 remain declarations. They cannot qualify a canonical backtest.
 
-An explicit snapshot selector returns metadata only after current ownership,
+The explicit `immutableSnapshotId` selector returns metadata only after current ownership,
 strategy identity and immutable snapshot integrity checks. The content digest
 identifies those bytes; it does not by itself establish provider authenticity
 or the suitability of the dataset for a research claim.
@@ -23,3 +23,8 @@ existing durable command path.
 This correction does not acquire historical data or produce research results.
 Typed backtests still require a verified immutable dataset, pinned evaluator
 inputs, explicit execution and cost assumptions, and reproducible outputs.
+
+Legacy broad Studio payload fields such as `snapshotId: latest` and
+`datasetId: demo` keep their existing ignored-selector behavior. They cannot
+select or verify an immutable snapshot. Conflicting explicit immutable selector
+aliases refuse.

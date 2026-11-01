@@ -180,7 +180,7 @@ fn existing_snapshot_metadata_comes_only_from_verified_owned_matching_strategy_r
     let before = s.runtime().storage.list_json(DATASETS_NS).unwrap();
     let result = create_dataset(
         &s,
-        json!({"strategyId":"metadata-strategy","snapshotId":snapshot.dataset_id,
+        json!({"strategyId":"metadata-strategy","immutableSnapshotId":snapshot.dataset_id,
         "rows":99999,"contentHash":"caller-forged","sourcePluginRef":"forged-provider","calendar":"forged-calendar"}),
     );
     assert_eq!(result["verified"], true);
@@ -202,11 +202,11 @@ fn existing_snapshot_metadata_comes_only_from_verified_owned_matching_strategy_r
     );
     let foreign_result = create_dataset(
         &foreign,
-        json!({"strategyId":"foreign-strategy","datasetId":snapshot.dataset_id}),
+        json!({"strategyId":"foreign-strategy","immutableSnapshotId":snapshot.dataset_id}),
     );
     let missing = create_dataset(
         &foreign,
-        json!({"strategyId":"foreign-strategy","datasetId":"dataset_missing"}),
+        json!({"strategyId":"foreign-strategy","immutableSnapshotId":"dataset_missing"}),
     );
     assert_eq!(
         foreign_result, missing,
@@ -217,14 +217,14 @@ fn existing_snapshot_metadata_comes_only_from_verified_owned_matching_strategy_r
     assert_eq!(
         create_dataset(
             &s,
-            json!({"strategyId":"other-owned-strategy","datasetId":snapshot.dataset_id})
+            json!({"strategyId":"other-owned-strategy","immutableSnapshotId":snapshot.dataset_id})
         ),
         unavailable()
     );
     assert_eq!(
         create_dataset(
             &s,
-            json!({"strategyId":"metadata-strategy","datasetId":snapshot.dataset_id,"snapshotId":"different"})
+            json!({"strategyId":"metadata-strategy","immutableSnapshotId":snapshot.dataset_id,"immutable_snapshot_id":"different"})
         ),
         unavailable()
     );
@@ -242,7 +242,7 @@ fn existing_snapshot_metadata_comes_only_from_verified_owned_matching_strategy_r
     assert_eq!(
         create_dataset(
             &s,
-            json!({"strategyId":"metadata-strategy","snapshotId":snapshot.dataset_id})
+            json!({"strategyId":"metadata-strategy","immutableSnapshotId":snapshot.dataset_id})
         ),
         unavailable()
     );

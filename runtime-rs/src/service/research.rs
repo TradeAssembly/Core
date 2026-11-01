@@ -380,7 +380,7 @@ fn unverified_universe(record: &Value) -> Value {
 }
 fn requested_snapshot_id(body: &Value) -> Result<Option<&str>, ()> {
     let mut id = None;
-    for field in ["snapshotId", "snapshot_id", "datasetId", "dataset_id"] {
+    for field in ["immutableSnapshotId", "immutable_snapshot_id"] {
         if let Some(value) = body.get(field) {
             let value = value
                 .as_str()

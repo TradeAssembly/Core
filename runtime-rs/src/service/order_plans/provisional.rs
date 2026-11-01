@@ -575,6 +575,35 @@ pub(super) fn verify_applied_close(
     Ok(())
 }
 
+// Private authored storage regression seam; no provider or authority claim.
+#[cfg(test)]
+pub(super) fn commit_authored_close_test_observation(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    observation: wire::Observation,
+    key: &str,
+    ctx: &SideEffectContext,
+) -> Result<Value, String> {
+    let (_, record) = submission::record(s, p)?.ok_or("broker_v2_state_missing")?;
+    let binding = serde_json::from_value(record.intent["preparedBinding"].clone())
+        .map_err(|_| "provider_observation_original_binding_invalid")?;
+    let request = request(p, &record)?;
+    let response_hash = hash(&observation)?;
+    commit(
+        s,
+        p,
+        &record,
+        Acquired {
+            binding,
+            request,
+            response_hash,
+            observation,
+        },
+        key,
+        ctx,
+    )
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;
@@ -624,31 +653,3 @@ mod contract_tests {
     }
 }
 
-// Private authored storage regression seam; no provider or authority claim.
-#[cfg(test)]
-pub(super) fn commit_authored_close_test_observation(
-    s: &TradeAssemblyService,
-    p: &OrderPlan,
-    observation: wire::Observation,
-    key: &str,
-    ctx: &SideEffectContext,
-) -> Result<Value, String> {
-    let (_, record) = submission::record(s, p)?.ok_or("broker_v2_state_missing")?;
-    let binding = serde_json::from_value(record.intent["preparedBinding"].clone())
-        .map_err(|_| "provider_observation_original_binding_invalid")?;
-    let request = request(p, &record)?;
-    let response_hash = hash(&observation)?;
-    commit(
-        s,
-        p,
-        &record,
-        Acquired {
-            binding,
-            request,
-            response_hash,
-            observation,
-        },
-        key,
-        ctx,
-    )
-}

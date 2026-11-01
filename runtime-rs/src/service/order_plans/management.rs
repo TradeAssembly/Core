@@ -448,7 +448,7 @@ pub(in crate::service) fn exit_plan_subject(
         return Err("managed_plan_activation_invalid".into());
     }
     verify_entry(s, &entry, &pos)?;
-    let (quantity, basis, _, _) = entry_basis(s, &entry, &pos.policy, Some(entry_evidence(&pos)))?;
+    let (quantity, basis, _, _) = entry_basis(s, &entry, &pos.policy, Some(entry_evidence(pos)))?;
     if quantity != pos.quantity || basis != pos.basis {
         return Err("managed_plan_entry_basis_changed".into());
     }
@@ -532,7 +532,7 @@ pub(in crate::service) fn window_lineage(
         return Err("management_window_activation_mismatch".into());
     }
     verify_entry(s, &entry, &pos)?;
-    let (quantity, basis, _, _) = entry_basis(s, &entry, &pos.policy, Some(entry_evidence(&pos)))?;
+    let (quantity, basis, _, _) = entry_basis(s, &entry, &pos.policy, Some(entry_evidence(pos)))?;
     if quantity != pos.quantity || basis != pos.basis {
         return Err("management_window_entry_basis_changed".into());
     }
@@ -1749,7 +1749,7 @@ fn entry_basis(
 }
 fn verify_entry(s: &TradeAssemblyService, entry: &OrderPlan, pos: &Position) -> Result<(), String> {
     if pos.policy.entry_basis == "provider_reported_average_fill" {
-        let (q, b, _, _) = entry_basis(s, entry, &pos.policy, Some(entry_evidence(&pos)))?;
+        let (q, b, _, _) = entry_basis(s, entry, &pos.policy, Some(entry_evidence(pos)))?;
         if q != pos.quantity || b != pos.basis {
             return Err("managed_entry_basis_changed".into());
         }

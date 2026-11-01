@@ -92,8 +92,10 @@ in a fresh Core process. It enables the same owned worker intent and explicitly
 kills that Core child before due. Normal `api` startup must resume that unchanged
 intent, produce native warming/ready frames through the configured SRT, and keep
 the completed job unchanged across another API restart without provider replay.
-Orders and positions must be empty and unchanged throughout. Financial activation
-is explicitly excluded from this computation fixture.
+The exact seeded unrelated pending order and existing position must remain
+unchanged throughout; absent, extra or modified seed records refuse before
+starting Core. Financial activation is explicitly excluded from this computation
+fixture.
 
 Execution is explicitly Unix/SRT-only; other platforms refuse the driver rather
 than claim an unqualified sandbox boundary. MCP input/output use owned nonblocking

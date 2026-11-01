@@ -166,6 +166,24 @@ impl Namespace {
         }
     }
 }
+fn validate_seeded_financial_state(
+    orders: &[(String, Value)],
+    positions: &[(String, Value)],
+) -> Result<()> {
+    require(
+        orders
+            == [(
+                "unrelated-pending".into(),
+                json!({"symbol":"OLD","state":"pending"}),
+            )]
+            && positions
+                == [(
+                    "previous-member".into(),
+                    json!({"symbol":"OLD","quantity":2,"state":"open"}),
+                )],
+        "fixture_financial_seed_mismatch",
+    )
+}
 fn rows(db: &Path, ns: Namespace) -> Result<Vec<(String, Value)>> {
     let connection = Connection::open_with_flags(
         db,
@@ -576,10 +594,7 @@ fn run(cfg: Config) -> Result<Value> {
     let original = json!({"sessionDispatch":{"kind":"enqueue","job":cfg.job},"idempotencyKey":"process-enqueue-original"});
     let orders = rows(&db, Namespace::Orders)?;
     let positions = rows(&db, Namespace::Positions)?;
-    require(
-        orders.is_empty() && positions.is_empty(),
-        "fixture_financial_state_not_empty",
-    )?;
+    validate_seeded_financial_state(&orders, &positions)?;
     let initial_operations = rows(&db, Namespace::Operations)?;
     let mut lost = CoreProcess::spawn(&cfg, "lost-enqueue", true)?;
     lost.initialize()?;
@@ -777,6 +792,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn financial_seed_is_exact_and_unrelated_management_is_retained() {
+        let orders = vec![(
+            "unrelated-pending".into(),
+            json!({"symbol":"OLD","state":"pending"}),
+        )];
+        let positions = vec![(
+            "previous-member".into(),
+            json!({"symbol":"OLD","quantity":2,"state":"open"}),
+        )];
+        assert!(validate_seeded_financial_state(&orders, &positions).is_ok());
+        assert!(validate_seeded_financial_state(&[], &positions).is_err());
+        assert!(validate_seeded_financial_state(&orders, &[]).is_err());
+        let mut changed = positions.clone();
+        changed[0].1["quantity"] = json!(3);
+        assert!(validate_seeded_financial_state(&orders, &changed).is_err());
+        let mut extra = orders.clone();
+        extra.push(("another".into(), json!({"symbol":"OLD","state":"pending"})));
+        assert!(validate_seeded_financial_state(&extra, &positions).is_err());
+    }
     #[test]
     fn oversized_selected_record_refuses_before_owned_copy_or_json_parse() {
         let directory = tempfile::tempdir().unwrap();

@@ -50,6 +50,197 @@ fn ctx(key: &str) -> SideEffectContext {
         IdempotencyKey::new(key).unwrap(),
     )
 }
+// Cargo fingerprints, rather than file modification times, bind the fixture's
+// extern crates to the exact owning runtime test build. Never select an arbitrary
+// ABI-compatible-looking artifact from the shared target directory.
+fn native_fixture_dependency_hash(metadata: &Value, name: &str) -> Result<u64, String> {
+    let matches = metadata["deps"]
+        .as_array()
+        .ok_or("native_fixture_owner_dependencies_invalid")?
+        .iter()
+        .filter(|dependency| dependency.get(1).and_then(Value::as_str) == Some(name))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!("native_fixture_owner_dependency_not_unique:{name}"));
+    }
+    matches[0]
+        .get(3)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("native_fixture_owner_dependency_invalid:{name}"))
+}
+fn native_fixture_dependency_for_test(
+    executable: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, String> {
+    let stem = executable
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .and_then(|v| v.strip_prefix("tradeassembly_runtime-"))
+        .filter(|v| {
+            v.len() == 16
+                && v.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        .ok_or("native_fixture_owning_cargo_test_binary_required")?;
+    let deps = executable
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|v| v == "deps"))
+        .ok_or("native_fixture_owning_cargo_deps_directory_required")?;
+    let profile = deps
+        .parent()
+        .ok_or("native_fixture_cargo_profile_required")?;
+    let fingerprint_root = profile.join(".fingerprint");
+    let metadata: Value = serde_json::from_slice(
+        &fs::read(
+            fingerprint_root
+                .join(format!("tradeassembly-runtime-{stem}"))
+                .join("test-lib-tradeassembly_runtime.json"),
+        )
+        .map_err(|_| "native_fixture_owner_fingerprint_missing")?,
+    )
+    .map_err(|_| "native_fixture_owner_fingerprint_invalid")?;
+    let expected = native_fixture_dependency_hash(&metadata, name)?;
+    let encoded = expected
+        .to_le_bytes()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(&fingerprint_root)
+        .map_err(|_| "native_fixture_dependency_fingerprints_unavailable")?
+    {
+        let entry = entry.map_err(|_| "native_fixture_dependency_fingerprint_unavailable")?;
+        let candidate = entry.path().join(format!("lib-{name}"));
+        if !candidate.is_file() {
+            continue;
+        }
+        if fs::read_to_string(&candidate)
+            .map_err(|_| "native_fixture_dependency_fingerprint_unavailable")?
+            .trim()
+            != encoded
+        {
+            continue;
+        }
+        if matches!(
+            name,
+            "tradeassembly_plugin_sdk" | "serde_json_canonicalizer"
+        ) {
+            let dependency_metadata: Value = serde_json::from_slice(
+                &fs::read(entry.path().join(format!("lib-{name}.json")))
+                    .map_err(|_| "native_fixture_dependency_metadata_missing")?,
+            )
+            .map_err(|_| "native_fixture_dependency_metadata_invalid")?;
+            if native_fixture_dependency_hash(&dependency_metadata, "serde_json")?
+                != native_fixture_dependency_hash(&metadata, "serde_json")?
+            {
+                return Err("native_fixture_serde_json_dependency_mismatch".into());
+            }
+        }
+        let directory = entry.file_name();
+        let suffix = directory
+            .to_str()
+            .and_then(|v| v.rsplit_once('-').map(|(_, hash)| hash))
+            .filter(|v| {
+                v.len() == 16
+                    && v.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .ok_or("native_fixture_dependency_artifact_identity_invalid")?;
+        let library = deps.join(format!("lib{name}-{suffix}.rlib"));
+        if !library.is_file() {
+            return Err(format!("native_fixture_dependency_artifact_missing:{name}"));
+        }
+        matches.push(library);
+    }
+    if matches.len() != 1 {
+        return Err(format!(
+            "native_fixture_matching_dependency_not_unique:{name}"
+        ));
+    }
+    Ok(matches.remove(0))
+}
+fn owning_fingerprint_dependency(name: &str) -> std::path::PathBuf {
+    let executable = std::env::current_exe().expect("current owning Cargo test binary");
+    native_fixture_dependency_for_test(&executable, name)
+        .unwrap_or_else(|error| panic!("exact native fixture dependency {name}: {error}"))
+}
+#[test]
+fn native_fixture_dependency_selection_uses_owning_fingerprint_not_directory_order() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("debug");
+    let deps = profile.join("deps");
+    fs::create_dir_all(&deps).unwrap();
+    let executable = deps.join("tradeassembly_runtime-aaaaaaaaaaaaaaaa");
+    let owner = profile.join(".fingerprint/tradeassembly-runtime-aaaaaaaaaaaaaaaa");
+    fs::create_dir_all(&owner).unwrap();
+    let expected = 0x0102030405060708_u64;
+    fs::write(
+        owner.join("test-lib-tradeassembly_runtime.json"),
+        serde_json::to_vec(&json!({"deps":[[1,"serde_json",false,expected]]})).unwrap(),
+    )
+    .unwrap();
+    for (suffix, fingerprint) in [
+        ("bbbbbbbbbbbbbbbb", "ffffffffffffffff"),
+        ("cccccccccccccccc", "0807060504030201"),
+    ] {
+        let directory = profile.join(format!(".fingerprint/serde_json-{suffix}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("lib-serde_json"), fingerprint).unwrap();
+        fs::write(
+            deps.join(format!("libserde_json-{suffix}.rlib")),
+            b"not-executed-test-artifact",
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        native_fixture_dependency_for_test(&executable, "serde_json").unwrap(),
+        deps.join("libserde_json-cccccccccccccccc.rlib")
+    );
+    assert!(native_fixture_dependency_for_test(&executable, "not_declared").is_err());
+    assert!(
+        native_fixture_dependency_for_test(&deps.join("copied-runtime-test"), "serde_json")
+            .is_err()
+    );
+    // An additional exact fingerprint is ambiguous; neither first nor latest is selected.
+    let duplicate = profile.join(".fingerprint/serde_json-dddddddddddddddd");
+    fs::create_dir_all(&duplicate).unwrap();
+    fs::write(duplicate.join("lib-serde_json"), "0807060504030201").unwrap();
+    fs::write(
+        deps.join("libserde_json-dddddddddddddddd.rlib"),
+        b"not-executed-test-artifact",
+    )
+    .unwrap();
+    assert_eq!(
+        native_fixture_dependency_for_test(&executable, "serde_json").unwrap_err(),
+        "native_fixture_matching_dependency_not_unique:serde_json"
+    );
+}
+#[test]
+fn native_fixture_dependency_missing_artifact_and_malformed_owner_refuse() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("debug");
+    let deps = profile.join("deps");
+    fs::create_dir_all(&deps).unwrap();
+    let executable = deps.join("tradeassembly_runtime-aaaaaaaaaaaaaaaa");
+    let owner = profile.join(".fingerprint/tradeassembly-runtime-aaaaaaaaaaaaaaaa");
+    fs::create_dir_all(&owner).unwrap();
+    let metadata = owner.join("test-lib-tradeassembly_runtime.json");
+    fs::write(
+        &metadata,
+        serde_json::to_vec(&json!({"deps":[[1,"serde_json",false,1]]})).unwrap(),
+    )
+    .unwrap();
+    let candidate = profile.join(".fingerprint/serde_json-bbbbbbbbbbbbbbbb");
+    fs::create_dir_all(&candidate).unwrap();
+    fs::write(candidate.join("lib-serde_json"), "0100000000000000").unwrap();
+    assert_eq!(
+        native_fixture_dependency_for_test(&executable, "serde_json").unwrap_err(),
+        "native_fixture_dependency_artifact_missing:serde_json"
+    );
+    fs::write(&metadata, b"not-json").unwrap();
+    assert!(native_fixture_dependency_for_test(&executable, "serde_json").is_err());
+}
+
 fn fixture_executable() -> &'static [u8] {
     static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
@@ -77,21 +268,7 @@ fn fixture_executable() -> &'static [u8] {
             .arg("-o")
             .arg(&output);
         for name in ["serde_json", "sha2", "serde_json_canonicalizer", "tradeassembly_plugin_sdk"] {
-            let mut libraries = std::fs::read_dir(&deps)
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with(&format!("lib{name}-"))
-                        && e.path().extension().is_some_and(|e| e == "rlib")
-                })
-                .map(|e| e.path())
-                .collect::<Vec<_>>();
-            libraries.sort_by_key(|p| std::fs::metadata(p).unwrap().modified().unwrap());
-            let library = libraries
-                .last()
-                .expect("locked Rust fixture dependency artifact");
+            let library = owning_fingerprint_dependency(name);
             command
                 .arg("--extern")
                 .arg(format!("{name}={}", library.display()));

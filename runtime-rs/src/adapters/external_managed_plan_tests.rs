@@ -24,7 +24,11 @@ fn configure_managed_plan_native_spec(
         right: operand(crate::data_strategy::Sample::Previous),
     };
     *config = serde_json::to_value(template).unwrap();
-    configure_dispatch_calendar_fixture(s, spec);
+    if !spec["capability_requirements"]["required"].as_array().unwrap().iter()
+        .any(|requirement| requirement["requirement_id"] == "calendar")
+    {
+        configure_dispatch_calendar_fixture(s, spec);
+    }
     spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["offset_ms"] = json!(0);
     spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]
         ["max_lateness_ms"] = json!(600000);

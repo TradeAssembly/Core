@@ -177,3 +177,5 @@ fn exercise_native_background_management(s:&crate::service::TradeAssemblyService
 fn native_background_worker_drives_owned_close_after_selection_completion_and_resume(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_auto_worker"));}
 
 include!("external_automatic_health_tests.rs");
+
+include!("external_automatic_stream_tests.rs");

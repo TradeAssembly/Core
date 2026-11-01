@@ -42,7 +42,7 @@ fn exercise_native_v2_broker(s:&crate::service::TradeAssemblyService,scope:&data
  let first=submit("native-v2-submit");eprintln!("native V2 {scenario} response: {} {}",first.status,first.body);
  let calls=||fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap_or_default();
  assert_eq!(calls().lines().filter(|v|*v=="submit").count(),1,"{}",first.body);
- if scenario.starts_with("financial_screen_managed_plan"){assert_eq!(first.status,200,"{}",first.body);exercise_native_managed_plan(s,scope,revision,plan_id,root,scenario.ends_with("_stale"),scenario=="financial_screen_managed_plan_math");return;}
+ if scenario.starts_with("financial_screen_managed_plan"){assert_eq!(first.status,200,"{}",first.body);exercise_native_managed_plan(s,scope,revision,plan_id,root,scenario.ends_with("_stale"),actual_managed_math_case(scenario));return;}
  let record=source.state().unwrap().unwrap();
  if scenario.ends_with("reject"){assert_eq!(record.phase,crate::service::order_plans::submission::Phase::Rejected);assert_eq!(record.retained_cash.to_string(),"0");}
  else {

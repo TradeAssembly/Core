@@ -91,6 +91,8 @@ fn exercise_native_managed_plan(
     use crate::service::{
         data_collections as collections, order_plans as plans, session_schedules as schedules,
     };
+    let math_pack_sha = actual_math.then(|| s.runtime().plugins.get_instance("managed-real-calculation").unwrap().unwrap()["activePackageSha256"].as_str().unwrap().to_owned());
+    let minute_math = math_pack_sha.as_deref() == Some(MANAGED_MINUTE_PACK_SHA);
     let post = |path: &str, body: Value| {
         let r = s.handle_http("POST", path, body);
         let mut trace = std::fs::OpenOptions::new()
@@ -202,25 +204,35 @@ fn exercise_native_managed_plan(
     // this is not an exchange/UTC calendar or a user daily-market strategy.
     std::thread::sleep(std::time::Duration::from_millis(4));
     let scheduled_at = s.runtime().clock.trusted_now_ms().unwrap();
-    let end = if actual_math {
+    let end = if minute_math {
+        scheduled_at.checked_add(120000).unwrap().div_euclid(60000).checked_add(1).unwrap().checked_mul(60000).unwrap()
+    } else if actual_math {
         scheduled_at.checked_add(120000).unwrap()
     } else {
         (scheduled_at - 2) & !1
     };
     let count = if actual_math { 4 } else { 2 };
-    let interval = if actual_math { 86400000 } else { 1 };
+    let interval = if minute_math { 60000 } else if actual_math { 86400000 } else { 1 };
+    let grid_label = if minute_math { "synthetic-minute-grid" } else { "synthetic-daily-grid" };
+    let mut math_final_value = 100;
     let mut frame_timing = Vec::new();
     if actual_math {
         let pinned:data_plans::StoredDataPlan=serde_json::from_value(prepared["plan"].clone()).unwrap();
         let snapshot=&pinned.content.plan.request.nodes.iter().find(|node|node.graph_node_id=="exec_signal").unwrap().parameters["snapshot"];
-        assert_eq!(snapshot["fixtureFallingDaily"],true);
-        assert_eq!(snapshot["interval"],86400000);
+        assert_eq!(snapshot[if minute_math {"fixtureFallingMinute"} else {"fixtureFallingDaily"}],true);
+        assert_eq!(snapshot["interval"],interval);
         let original_observed=snapshot["observedAtMs"].as_i64().unwrap();
         // The exact pinned source definition then yields103,102,101,100 at
         // final-3days,...,final. No price or timestamp is rewritten after warmup.
-        assert!((0..interval).contains(&(end-original_observed)),"synthetic phase moved beyond the pinned oracle's domain");
-        eprintln!("synthetic 24h math phase selected at {scheduled_at}: historical ends {:?}; final completed endpoint {end}; source observedAt {original_observed}",[end-3*interval,end-2*interval,end-interval]);
-        write_screen_interface_evidence("managed_plan","synthetic-daily-grid-plan.json",&json!({"selectedAtMs":scheduled_at,"intervalMs":interval,"originalPublishedSnapshot":snapshot,"warmupEventEndsMs":[end-3*interval,end-2*interval,end-interval],"finalEventEndMs":end,"unchangedMaxReversalAgeMs":30000,"exchangeCalendarAlignmentClaimed":false,"userDailyBtcStrategyQualified":false,"qualification":"prospective phase of authored SPY numeric-series functional fixture; literal24h intervals, no market availability claim"}));
+        if minute_math {
+            let offset = (end-original_observed).div_euclid(interval);
+            assert!((0..=8).contains(&offset),"minute fixture preparation exceeded its bounded declared oracle horizon");
+            math_final_value -= offset;
+        } else {
+            assert!((0..interval).contains(&(end-original_observed)),"synthetic phase moved beyond the pinned oracle's domain");
+        }
+        eprintln!("synthetic declared-interval math phase selected at {scheduled_at}: historical ends {:?}; final completed endpoint {end}; source observedAt {original_observed}",[end-3*interval,end-2*interval,end-interval]);
+        write_screen_interface_evidence("managed_plan",&format!("{grid_label}-plan.json"),&json!({"selectedAtMs":scheduled_at,"intervalMs":interval,"originalPublishedSnapshot":snapshot,"expectedFinalValue":math_final_value,"warmupEventEndsMs":[end-3*interval,end-2*interval,end-interval],"finalEventEndMs":end,"unchangedMaxReversalAgeMs":30000,"exchangeCalendarAlignmentClaimed":false,"userDailyBtcStrategyQualified":false,"qualification":"prospective phase of authored SPY numeric-series functional fixture at declared interval; no market availability claim"}));
     }
     assert!(
         end >= registered["position"]["entryTime"]["knownAtMs"]
@@ -248,9 +260,9 @@ fn exercise_native_managed_plan(
                 assert!(now < end.checked_add(30000).unwrap(),"cold warmup overran the final synthetic bar's unchanged freshness deadline");
                 if now >= end { break; }
                 let wait_ms=(end-now).min(45000);
-                eprintln!("synthetic 24h math waiting at {now} for completed endpoint {end}: sleep {wait_ms} ms (maximum 45000)");
+                eprintln!("synthetic declared-interval math waiting at {now} for completed endpoint {end}: sleep {wait_ms} ms (maximum 45000)");
                 waits.push(json!({"waitStartedAtMs":now,"targetEventEndMs":end,"sleepMs":wait_ms}));
-                write_screen_interface_evidence("managed_plan",&format!("synthetic-daily-grid-wait-{}.json",waits.len()),&json!({"selectedAtMs":scheduled_at,"finalEventEndMs":end,"waits":waits}));
+                write_screen_interface_evidence("managed_plan",&format!("{grid_label}-wait-{}.json",waits.len()),&json!({"selectedAtMs":scheduled_at,"finalEventEndMs":end,"waits":waits}));
                 std::thread::sleep(std::time::Duration::from_millis(u64::try_from(wait_ms).unwrap()));
             }
             // Managed-plan currentness checks account health before invoking the
@@ -260,19 +272,19 @@ fn exercise_native_managed_plan(
             refresh_managed_math_account_health(s, root, "before-final");
             execution_schedule = Some(prepare_execution_schedule());
             let preparation_finished = restored.runtime().clock.trusted_now_ms().unwrap();
-            eprintln!("synthetic 24h final preparation {preparation_started}..{preparation_finished}: both health reads and execution calendar ready; final endpoint {end}");
-            write_screen_interface_evidence("managed_plan", "synthetic-daily-grid-final-preparation.json", &json!({"finalEventEndMs":end,"preparationStartedAtMs":preparation_started,"preparationFinishedAtMs":preparation_finished,"healthPhase":"before-final","providerHealthReadsPerSource":3,"executionSchedule":execution_schedule,"financialCloseAttempted":false}));
+            eprintln!("synthetic declared-interval final preparation {preparation_started}..{preparation_finished}: both health reads and execution calendar ready; final endpoint {end}");
+            write_screen_interface_evidence("managed_plan", &format!("{grid_label}-final-preparation.json"), &json!({"finalEventEndMs":end,"preparationStartedAtMs":preparation_started,"preparationFinishedAtMs":preparation_finished,"healthPhase":"before-final","providerHealthReadsPerSource":3,"executionSchedule":execution_schedule,"financialCloseAttempted":false}));
             assert!(preparation_finished < end.checked_add(30000).unwrap(), "real health/calendar preparation exhausted the unchanged final freshness budget");
         }
         let requested_at=restored.runtime().clock.trusted_now_ms().unwrap();
         assert!(t<=requested_at,"fixture cannot request a future event window");
-        if actual_math {eprintln!("synthetic 24h math frame {index} completed window {}..{t}; actual request at {requested_at}",t-interval);}
+        if actual_math {eprintln!("synthetic declared-interval math frame {index} completed window {}..{t}; actual request at {requested_at}",t-interval);}
         let r=restored.handle_http("POST","/product/strategies/data-runs/step",json!({"step":{"runId":"managed-position-reversal","planRevisionId":plan,"window":{"eventStartMs":t-interval,"eventEndMs":t,"asOfMs":requested_at},"expectedCheckpointSha256":checkpoint},"idempotencyKey":format!("managed-plan-frame-{index}")}));
         let processed_at=restored.runtime().clock.trusted_now_ms().unwrap();
         if actual_math {
             frame_timing.push(json!({"frame":index,"eventStartMs":t-interval,"eventEndMs":t,"requestedAtMs":requested_at,"processedAtMs":processed_at,"responseStatus":r.status,"waits":waits}));
-            eprintln!("synthetic 24h math frame {index} response at {processed_at}; event age {} ms",processed_at-t);
-            write_screen_interface_evidence("managed_plan",&format!("synthetic-daily-grid-frame-{index}.json"),&json!({"selectedAtMs":scheduled_at,"finalEventEndMs":end,"frames":frame_timing}));
+            eprintln!("synthetic declared-interval math frame {index} response at {processed_at}; event age {} ms",processed_at-t);
+            write_screen_interface_evidence("managed_plan",&format!("{grid_label}-frame-{index}.json"),&json!({"selectedAtMs":scheduled_at,"finalEventEndMs":end,"frames":frame_timing}));
         }
         assert_eq!(r.status, 200, "{}", r.body);
         if actual_math && index==3 {assert!(processed_at-end<30000,"final actual calculation exceeded the unchanged reversal freshness deadline");}
@@ -290,7 +302,7 @@ fn exercise_native_managed_plan(
         );
         checkpoint = r.body["receipt"]["checkpoint"]["checkpointSha256"].clone();
         if actual_math {
-            assert_managed_math_frame(&r.body["receipt"], index);
+            assert_managed_math_frame(&r.body["receipt"], index, math_final_value);
         }
         receipts.push(r.body["receipt"].clone());
         if actual_math && index == 0 {
@@ -386,7 +398,7 @@ fn exercise_native_managed_plan(
     write_screen_interface_evidence(
         "managed_plan",
         "generic-reversal-owned-removed-member.json",
-        &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"synthetic24hFrameTiming":frame_timing,"exchangeCalendarAlignmentQualified":false,"userDailyBtcStrategyQualified":false,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":if actual_math{Some(MANAGED_MATH_PACK_SHA)}else{None},"qualification":if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture; four daily frames, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
+        &json!({"entrySettlement":settled,"position":registered,"replacementSelection":replacement,"normalRemovedSubjectRefusal":normal.body,"wrongPositionRefusal":wrong.body,"managedPlan":prepared,"frames":receipts,"entryRefusal":noentry.body,"selectionRefusal":select.body,"unreadyRefusal":unready.map(|v|v.body),"advanced":advanced.body,"submitted":submitted,"finalPosting":final_posting,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"realBrokerCalls":0,"actualMaTsiMathQualified":actual_math,"declaredIntervalMs":interval,"syntheticFrameTiming":frame_timing,"exchangeCalendarAlignmentQualified":false,"userDailyBtcStrategyQualified":false,"automaticReversalQualified":false,"crossPositionReceiptLineageNegativeQualified":false,"actualPackSha256":math_pack_sha,"qualification":if actual_math{"actual native pinned-pack EMA2/TSI2,2 explicit fixture at declared interval, independent finite Core close C5; synthetic source/provider/mock Warden/traced sandbox; no auto/remote/OS-process restart claim"}else{"actual Core local API/native authored generic reversal source; manual finite management, independent normal close C5; no actual MA/TSI/process restart/remote producer qualification"}}),
     );
 }
 #[test]
@@ -400,6 +412,44 @@ fn native_managed_plan_generic_reversal_survives_removed_membership() {
 fn native_managed_plan_generic_reversal_stale_refuses() {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     native_execution_plan_fixture(Some("financial_screen_managed_plan_stale"));
+}
+
+const MANAGED_MINUTE_MATH_CASE: &str = "financial_screen_managed_plan_math_minute";
+const MANAGED_MINUTE_PACK_SHA: &str =
+    "a9c3ee822e5072f2890b33be47db50ff5269bda93882f856e393ffed57a1deb3";
+fn actual_managed_math_case(case: &str) -> bool {
+    matches!(case, "financial_screen_managed_plan_math" | MANAGED_MINUTE_MATH_CASE)
+}
+fn install_managed_minute_pack(s: &crate::service::TradeAssemblyService) -> InstalledPluginPackage {
+    let path = std::path::PathBuf::from(
+        std::env::var_os("MANAGED_MINUTE_TEST_PACKAGE")
+            .expect("explicit immutable0.74.1 pack archive required"),
+    );
+    assert_eq!(sha256(&fs::read(&path).unwrap()), MANAGED_MINUTE_PACK_SHA);
+    let installed = s.handle_http("POST", "/plugins/packages", json!({
+        "source":{"type":"package","locator":path,"package":{"type":"file","locator":path}},
+        "integrity":{"packageSha256":MANAGED_MINUTE_PACK_SHA,"manifestSha256":"b6fe45003d80c87604e1acb98568b35791a76556a67cb67f58d40a73386bdcf8"},
+        "offline":true,"idempotencyKey":"managed-minute-public-package"
+    }));
+    assert_eq!(installed.status, 200, "{}", installed.body);
+    let p = s.runtime().plugin_packages.get(MANAGED_MINUTE_PACK_SHA).unwrap().unwrap();
+    assert_eq!(p.plugin_ref, "tradeassembly.default-indicators");
+    assert_eq!(p.version, "0.74.1");
+    let created = s.handle_http("POST", "/plugins/instances", json!({
+        "pluginRef":p.plugin_ref,"instanceRef":"managed-real-calculation","enabled":false,
+        "configuration":{},"idempotencyKey":"managed-minute-public-instance"
+    }));
+    assert_eq!(created.status, 200, "{}", created.body);
+    let enabled = s.handle_http("POST", "/plugins/instances/managed-real-calculation:enable", json!({"idempotencyKey":"managed-minute-public-enable"}));
+    assert_eq!(enabled.status, 200, "{}", enabled.body);
+    assert_eq!(enabled.body["instance"]["activePackageSha256"], MANAGED_MINUTE_PACK_SHA);
+    write_screen_interface_evidence("managed_plan", "minute-public-package-admission.json", &json!({
+        "packageSha256":p.package_sha256,"manifestSha256":p.manifest_sha256,
+        "version":p.version,"publicInstallStatus":installed.status,"publicCreateStatus":created.status,
+        "publicEnableStatus":enabled.status,"registryFallbackUsed":false,
+        "qualification":"normal service public lifecycle in declared synthetic native fixture; separate normal compiled CLI/real Warden proof retained"
+    }));
+    p
 }
 
 const MANAGED_MATH_PACK_SHA: &str =
@@ -440,10 +490,13 @@ fn configure_managed_math_native_spec(
 ) {
     use crate::data_pipeline::PortBinding;
     use crate::selection_strategy::*;
+    let minute = pack.package_sha256 == MANAGED_MINUTE_PACK_SHA;
+    assert!(minute || pack.package_sha256 == MANAGED_MATH_PACK_SHA);
+    let interval = if minute { 60000 } else { 86400000 };
     let config = &mut spec["stages"]["evaluate"]["substeps"][0]["config"][CONFIG_KEY];
     let mut template: SelectionStrategy = serde_json::from_value(config.clone()).unwrap();
     template.nodes[0].context = ContextTemplate::Subject {
-        interval_ms: Some(86400000),
+        interval_ms: Some(interval),
     };
     for (node, parameters) in [
         ("managed_ema", json!({"period":2})),
@@ -453,7 +506,7 @@ fn configure_managed_math_native_spec(
             graph_node_id: node.into(),
             parameters,
             context: ContextTemplate::Subject {
-                interval_ms: Some(86400000),
+                interval_ms: Some(interval),
             },
             input_contexts: BTreeMap::new(),
         });
@@ -486,8 +539,8 @@ fn configure_managed_math_native_spec(
     };
     *config = serde_json::to_value(template).unwrap();
     for (node, operation) in [
-        ("managed_ema", "indicator.ema"),
-        ("managed_tsi", "indicator.tsi"),
+        ("managed_ema", if minute { "indicator.ema.minute" } else { "indicator.ema" }),
+        ("managed_tsi", if minute { "indicator.tsi.minute" } else { "indicator.tsi" }),
     ] {
         let mut r = spec["capability_requirements"]["required"][0].clone();
         r["requirement_id"] = json!(node);
@@ -515,18 +568,18 @@ fn configure_managed_math_native_spec(
         s.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("managed-real-math-grants")).unwrap();
     }
 }
-fn assert_managed_math_frame(receipt: &Value, index: i64) {
+fn assert_managed_math_frame(receipt: &Value, index: i64, final_value: i64) {
     let point =
         |node: &str| &receipt["outputs"][node][0]["outputs"]["value"]["points"][0]["result"];
     // Independent oracle for authored prices103,102,101,100:
     // EMA2 seeds102.5, then alpha2/3 gives101.5 and100.5.
     // All changes=-1: both seeded EMA2 cascades yield signed=-1, abs=1;
     // TSI2,2 first becomes ready on sample4 and equals100*(-1)/1=-100.
-    assert_eq!(point("exec_signal")["value"], json!(103 - index));
+    assert_eq!(point("exec_signal")["value"], json!(final_value + 3 - index));
     if index == 0 {
         assert_eq!(point("managed_ema")["state"], "warming_up");
     } else {
-        let expected = 103.5 - index as f64;
+        let expected = final_value as f64 + 3.5 - index as f64;
         let actual = point("managed_ema")["value"].as_f64().unwrap();
         assert!(
             (actual - expected).abs() < 1e-12,
@@ -545,6 +598,13 @@ fn assert_managed_math_frame(receipt: &Value, index: i64) {
 fn native_managed_plan_real_pack_ema_tsi_reversal_survives_removed_membership() {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     native_execution_plan_fixture(Some("financial_screen_managed_plan_math"));
+}
+
+#[test]
+#[ignore = "explicit immutable0.74.1 minute aliases/public admission/native managed reversal; requires MANAGED_MINUTE_TEST_PACKAGE"]
+fn native_managed_plan_real_pack_minute_ema_tsi_reversal_survives_removed_membership() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some(MANAGED_MINUTE_MATH_CASE));
 }
 
 // Actual native health reads for BOTH account-bound sources. The facts-only

@@ -54,11 +54,11 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  let forward=Arc::new(ForwardNative::default());let (mut dir,base,_,_)=data_plans::tests::fixture_service(Some(forward.clone()));
  if v2_case.is_some_and(|c|c.starts_with("financial_screen_auto")||c.starts_with("financial_screen_managed_plan")){dir.disable_cleanup(true);eprintln!("retained automatic fixture root {}",dir.path().display());}
  let automatic_health=v2_case==Some("financial_screen_auto_health");let automatic_stream=v2_case==Some(AUTOMATIC_STREAM_CASE);
- let managed_plan=v2_case.is_some_and(|c|c.starts_with("financial_screen_managed_plan"));let actual_math=v2_case==Some("financial_screen_managed_plan_math");let signal_interval=if actual_math{86400000}else if automatic_stream{1000}else if managed_plan{1}else{60000};
+ let managed_plan=v2_case.is_some_and(|c|c.starts_with("financial_screen_managed_plan"));let minute_math=v2_case==Some(MANAGED_MINUTE_MATH_CASE);let actual_math=v2_case.is_some_and(actual_managed_math_case);let signal_interval=if minute_math{60000}else if actual_math{86400000}else if automatic_stream{1000}else if managed_plan{1}else{60000};
  let automatic=v2_case.is_some_and(|c|c.starts_with("financial_screen_auto"));let managed=matches!(v2_case,Some("financial_screen_auto_managed"|"financial_screen_auto_worker"));let background=v2_case==Some("financial_screen_auto_worker");
  let dynamic=v2_case.is_some_and(|c|c.starts_with("financial_screen_"));
  let replay=install_fixture_variant_number_series(&base,dir.path(),false,signal_interval,false,dynamic,true,actual_math);
- let actual_pack=actual_math.then(||install_managed_math_pack(&base));let stream_package=automatic_stream.then(||install_automatic_stream_package(&base,dir.path()));
+ let actual_pack=(actual_math&&!minute_math).then(||install_managed_math_pack(&base));let stream_package=automatic_stream.then(||install_automatic_stream_package(&base,dir.path()));
  let facts=install_execution_package_with_health(&base,dir.path(),false,actual_math||automatic_health||automatic_stream);let sizing=install_execution_package(&base,dir.path(),true);
  let broker=v2_case.map(|case|install_v2_broker_fixture(&base,dir.path(),case));
  let warden=v2_case.map(|_|crate::finance_authority::tests::spawn_mock_warden(crate::finance_authority::tests::MockBehavior::Allow));
@@ -70,6 +70,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  if let Some(offset)=&financial_clock_offset {rt.clock=Arc::new(FinancialWitnessClock{base:rt.clock.clone(),offset:offset.clone()});}
  rt.identity=Arc::new(crate::adapters::local::system::LocalOwnerIdentityPort::new(db.to_str().unwrap()).unwrap());
  let service=crate::service::TradeAssemblyService::from_runtime(base.db(),rt).for_authenticated_invocation(&owner.issuer,&owner.stable_identity_id,None,None);
+ let actual_pack=if minute_math{Some(install_managed_minute_pack(&service))}else{actual_pack};
  for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
  let runtime=service.runtime();
  let mut native=crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(runtime.storage.clone(),runtime.plugins.clone(),runtime.credentials.clone(),runtime.plugin_packages.clone(),runtime.clock.clone(),Arc::new(TracedFixtureSandbox));
@@ -79,7 +80,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  if v2_case==Some("financial_settlement_joint"){let health=service.handle_http("POST","/plugins/instances/fixture.broker.v2/health:refresh",json!({"idempotencyKey":"bootstrap-genuine-health-read"}));assert_eq!(health.status,200,"{}",health.body);assert_eq!(health.body["instance"]["health"]["connectivityChecked"],true,"{}",health.body);assert_eq!(health.body["instance"]["health"]["account"]["id"],"fixture.paper.provider","{}",health.body);}
  for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
 
- let now=service.runtime().clock.now_ms();let mut snapshot=json!({"instrument":"SPY","start":now-i64::try_from(signal_interval).unwrap(),"interval":signal_interval,"observedAtMs":now,"values":[100]});if actual_math{snapshot["fixtureFallingDaily"]=json!(true);}else if managed_plan{snapshot["fixtureDynamicParity"]=json!(true);}
+ let now=service.runtime().clock.now_ms();let mut snapshot=json!({"instrument":"SPY","start":now-i64::try_from(signal_interval).unwrap(),"interval":signal_interval,"observedAtMs":now,"values":[100]});if minute_math{snapshot["fixtureFallingMinute"]=json!(true);}else if actual_math{snapshot["fixtureFallingDaily"]=json!(true);}else if managed_plan{snapshot["fixtureDynamicParity"]=json!(true);}
  let subject=InstrumentContext{instrument_id:"SPY".into(),asset_class:"equity".into(),instrument_family:"equity".into()};
  let program=crate::data_strategy::DataStrategy{version:1,nodes:vec![PipelineNode{graph_node_id:"exec_signal".into(),parameters:json!({"snapshot":snapshot,"digest":canonical_sha256(&snapshot).unwrap()}),context:DataContext{instruments:vec![subject.clone()],interval_ms:Some(60000)},input_contexts:BTreeMap::new()}],bindings:vec![],trade_instruments:vec![subject],entry:crate::data_strategy::Rule::Compare{left:crate::data_strategy::Operand::Output{node:"exec_signal".into(),port:"value".into(),instrument:"SPY".into(),sample:crate::data_strategy::Sample::Current},op:crate::data_strategy::Comparison::Greater,right:crate::data_strategy::Operand::Number{value:0.0}},exit:crate::data_strategy::Rule::IsTrue{value:crate::data_strategy::Operand::Boolean{value:false}}};
  let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();

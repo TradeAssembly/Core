@@ -128,14 +128,14 @@ fn main() {
                 snapshot["observedAtMs"]=json!(end);
                 snapshot["values"]=json!([if end%2==0{100}else{99}]);
             }
-            if snapshot["fixtureFallingDaily"] == true {
+            if snapshot["fixtureFallingDaily"] == true || snapshot["fixtureFallingMinute"] == true {
                 let end=payload["window"]["eventEndMs"].as_i64().unwrap();
-                let interval=86400000;
+                let interval=if snapshot["fixtureFallingMinute"] == true {60000}else{86400000};
                 let offset=(end-declared_snapshot["observedAtMs"].as_i64().unwrap()).div_euclid(interval);
                 snapshot["start"]=json!(end-interval);snapshot["interval"]=json!(interval);
                 snapshot["observedAtMs"]=json!(end);snapshot["values"]=json!([100-offset]);
             }
-            let schema_ref=if snapshot["fixtureFallingDaily"]==true{"schema://tradeassembly/number-series@1"}else{"schema://test/series@1"};
+            let schema_ref=if snapshot["fixtureFallingDaily"]==true || snapshot["fixtureFallingMinute"]==true{"schema://tradeassembly/number-series@1"}else{"schema://test/series@1"};
             let mut points = vec![];
             for (index, value) in snapshot["values"].as_array().unwrap().iter().enumerate() {
                 let start = snapshot["start"].as_i64().unwrap()

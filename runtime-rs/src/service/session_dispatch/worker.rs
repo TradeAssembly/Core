@@ -163,6 +163,28 @@ pub(super) fn has_work(s: &TradeAssemblyService, j: &Job) -> Result<bool, String
     let _timing = crate::service::order_plans::financial_timing("worker.has_work");
     Ok(!j.status.terminal() || automatic_health::needs_job_turn(s, j)? || management_work(s, j)?)
 }
+#[derive(Debug)]
+struct SchedulingDecision {
+    has_work: bool,
+    management_due: Option<i64>,
+}
+// A decision consumes one fresh management read for both eligibility and due
+// time. It is discarded before the next iteration; normal child admission
+// independently rechecks the owned intent, binding, current sources and clock.
+fn scheduling_decision(
+    terminal: bool,
+    health_work: bool,
+    management: impl FnOnce() -> Result<
+        crate::service::order_plans::management::automation::SchedulingState,
+        String,
+    >,
+) -> Result<SchedulingDecision, String> {
+    let management = management()?;
+    Ok(SchedulingDecision {
+        has_work: !terminal || health_work || management.has_work,
+        management_due: management.has_work.then_some(management.next_due_ms),
+    })
+}
 fn start_admission(
     terminal: bool,
     management_work: impl FnOnce() -> Result<bool, String>,
@@ -358,15 +380,18 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         let Some(j) = after_health(s, id)? else {
             return Ok(());
         };
-        if !has_work(s, &j)? {
+        let health_work = j.status.terminal() && automatic_health::needs_job_turn(s, &j)?;
+        let scheduling = scheduling_decision(j.status.terminal(), health_work, || {
+            crate::service::order_plans::management::automation::scheduling_state(s, &j)
+        })?;
+        if !scheduling.has_work {
             return Ok(());
         }
         iteration = iteration
             .checked_add(1)
             .ok_or("session_dispatch_worker_iteration_exhausted")?;
         let now = s.runtime().clock.trusted_now_ms()?;
-        let management_ready = management_work(s, &j)?
-            && crate::service::order_plans::management::automation::next_due(s, &j)? <= now;
+        let management_ready = scheduling.management_due.is_some_and(|due| due <= now);
         // Existing positions get bounded turns while selection/warmup is pending too.
         let manage = j.status.terminal() || (management_ready && iteration.is_multiple_of(2));
         // Fresh transport command; the durable domain child ID/body never changes.
@@ -392,16 +417,16 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         if automatic_health::needs_job_turn(s, &j)? {
             continue;
         }
-        if !has_work(s, &j)? {
+        let health_work = j.status.terminal() && automatic_health::needs_job_turn(s, &j)?;
+        let scheduling = scheduling_decision(j.status.terminal(), health_work, || {
+            crate::service::order_plans::management::automation::scheduling_state(s, &j)
+        })?;
+        if !scheduling.has_work {
             return Ok(());
         }
         let now = s.runtime().clock.now_ms();
-        let management_remaining = management_work(s, &j)?;
-        let management_due = if management_remaining {
-            Some(crate::service::order_plans::management::automation::next_due(s, &j)?)
-        } else {
-            None
-        };
+        let management_remaining = scheduling.management_due.is_some();
+        let management_due = scheduling.management_due;
         let mut target = wake_deadline(j.status.terminal(), management_due, || {
             // Nonterminal entry jobs retain their original validation and due time.
             let schedule = session_schedules::current(s, &j.request.occurrence_id)?;
@@ -613,4 +638,98 @@ mod management_start_tests {
 #[cfg(test)]
 mod health_worker_recovery_tests {
     include!("worker_health_recovery_tests.rs");
+
+    #[test]
+    fn scheduling_decision_reads_management_once_and_preserves_entry_health_and_wake_priority() {
+        use crate::service::order_plans::management::automation::SchedulingState;
+        for terminal in [false, true] {
+            for health_work in [false, true] {
+                for management_work in [false, true] {
+                    let reads = std::cell::Cell::new(0);
+                    let decision = scheduling_decision(terminal, health_work, || {
+                        reads.set(reads.get() + 1);
+                        Ok(SchedulingState {
+                            has_work: management_work,
+                            next_due_ms: 1234,
+                        })
+                    })
+                    .unwrap();
+                    assert_eq!(reads.get(), 1);
+                    assert_eq!(
+                        decision.has_work,
+                        !terminal || health_work || management_work
+                    );
+                    assert_eq!(decision.management_due, management_work.then_some(1234));
+                    if terminal && management_work {
+                        assert_eq!(
+                            wake_deadline(terminal, decision.management_due, || panic!(
+                                "terminal management must not read the old entry calendar"
+                            ))
+                            .unwrap(),
+                            1234
+                        );
+                    } else {
+                        assert_eq!(
+                            wake_deadline(terminal, decision.management_due, || Ok(2000)).unwrap(),
+                            if management_work { 1234 } else { 2000 }
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            scheduling_decision(false, true, || Err("current_source_refused".into())).unwrap_err(),
+            "current_source_refused"
+        );
+    }
+
+    #[test]
+    fn advisory_readiness_never_authorizes_a_child_after_stop_pause_or_source_change() {
+        for change in ["stop", "pause", "source"] {
+            let (_dir, s) = fixture();
+            let id = retain(&s, &format!("advisory-{change}"));
+            let (_release_tx, release_rx) = mpsc::channel();
+            let port = Arc::new(HeldHealth {
+                entered: Mutex::new(None),
+                release: Mutex::new(release_rx),
+                health_reads: AtomicUsize::new(0),
+                next_children: AtomicUsize::new(0),
+                clock: s.runtime().clock.clone(),
+            });
+            let s = install_held_health(&s, port.clone());
+            let (job, _) = read(&s, &id).unwrap();
+            let advisory = scheduling_decision(job.status.terminal(), false, || {
+                crate::service::order_plans::management::automation::scheduling_state(&s, &job)
+            })
+            .unwrap();
+            assert!(advisory.has_work);
+            let background = background_service(&s, &id);
+            let expected = match change {
+                "stop" => {
+                    stop(&s, &id).unwrap();
+                    "automatic_health_worker_intent_disabled"
+                }
+                "pause" => {
+                    update(&s, &id, |j| j.paused = true);
+                    "automatic_health_job_intent_stale"
+                }
+                _ => {
+                    // A retained job from another Core source cannot use this
+                    // iteration's earlier read to dispatch a normal HTTP child.
+                    update(&s, &id, |j| j.core_revision = "f".repeat(40));
+                    "automatic_health_job_intent_stale"
+                }
+            };
+            let denied = background.handle_http(
+                "POST",
+                "/plugins/instances/worker.health/operations/next:invoke",
+                json!({"mode":"paper","purpose":"account_health","input":{},
+                    "idempotencyKey":"advisory-must-not-dispatch"}),
+            );
+            assert_eq!(denied.status, 409, "{}", denied.body);
+            assert_eq!(denied.body["error"]["code"], expected);
+            assert_eq!(port.next_children.load(Ordering::SeqCst), 0);
+            assert_eq!(port.health_reads.load(Ordering::SeqCst), 0);
+        }
+    }
 }

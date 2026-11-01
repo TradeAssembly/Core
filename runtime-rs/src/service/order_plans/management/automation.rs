@@ -648,17 +648,24 @@ pub(crate) fn has_owned_work_for_health(
     };
     has_bound_work(s, &b, job)
 }
+fn has_loaded_work(
+    s: &TradeAssemblyService,
+    b: &Binding,
+    job: &session_dispatch::Job,
+    state: Option<&State>,
+) -> Result<bool, String> {
+    if state.is_some_and(|state| state.pending.is_some() || state.cursor < state.work.len()) {
+        return Ok(true);
+    }
+    Ok(!entry_work(s, b, job)?.is_empty() || !position_ids(s, b, job)?.is_empty())
+}
 fn has_bound_work(
     s: &TradeAssemblyService,
     b: &Binding,
     job: &session_dispatch::Job,
 ) -> Result<bool, String> {
-    if load_state(s, b)?
-        .is_some_and(|(_, state)| state.pending.is_some() || state.cursor < state.work.len())
-    {
-        return Ok(true);
-    }
-    Ok(!entry_work(s, b, job)?.is_empty() || !position_ids(s, b, job)?.is_empty())
+    let loaded = load_state(s, b)?;
+    has_loaded_work(s, b, job, loaded.as_ref().map(|(_, state)| state))
 }
 pub(crate) fn has_work(
     s: &TradeAssemblyService,
@@ -669,16 +676,39 @@ pub(crate) fn has_work(
     };
     has_bound_work(s, &b, job)
 }
-pub(crate) fn next_due(
+/// Advisory wake/selection data for one worker scheduling decision only. This
+/// carries no binding, grant, child body or permission into an effect handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SchedulingState {
+    pub has_work: bool,
+    pub next_due_ms: i64,
+}
+fn bound_scheduling_state(
+    s: &TradeAssemblyService,
+    b: &Binding,
+    job: &session_dispatch::Job,
+    now: i64,
+) -> Result<SchedulingState, String> {
+    let loaded = load_state(s, b)?;
+    let state = loaded.as_ref().map(|(_, state)| state);
+    Ok(SchedulingState {
+        has_work: has_loaded_work(s, b, job, state)?,
+        next_due_ms: state.map_or(now, |state| state.next_due_ms),
+    })
+}
+pub(crate) fn scheduling_state(
     s: &TradeAssemblyService,
     job: &session_dispatch::Job,
-) -> Result<i64, String> {
+) -> Result<SchedulingState, String> {
     let _timing = crate::service::order_plans::financial_timing("manager.next_due");
     let now = s.runtime().clock.trusted_now_ms()?;
     let Some(b) = binding(s, job)? else {
-        return Ok(now.saturating_add(60_000));
+        return Ok(SchedulingState {
+            has_work: false,
+            next_due_ms: now.saturating_add(60_000),
+        });
     };
-    Ok(load_state(s, &b)?.map_or(now, |(_, state)| state.next_due_ms))
+    bound_scheduling_state(s, &b, job, now)
 }
 fn summary(state: &State) -> Value {
     let status = if state.error.is_some() {
@@ -1755,6 +1785,87 @@ mod tests {
         assert!(decoded.window_heads.is_empty());
         assert_eq!(serde_json::to_value(&decoded).unwrap(), old);
     }
+    #[test]
+    fn scheduling_state_refreshes_retained_work_due_and_rejects_changed_config_or_window_head() {
+        let (_dir, s, _, _) = crate::service::data_plans::tests::fixture_service(None);
+        // Authored scheduler state only; no synthetic positions or financial
+        // receipts. Pending recovery must win without scanning for new lots.
+        let job: session_dispatch::Job = serde_json::from_value(json!({
+            "schemaVersion":"tradeassembly.session_dispatch.v1","jobId":"advisory-job",
+            "request":{"occurrenceId":"original","scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},
+                "capabilityGraphRevision":"g","mode":"paper","subjects":{"kind":"all_selected","maxMembers":1},
+                "eventStartMs":86400000,"eventEndMs":172800000,"intervalMs":86400000,"maxFramesPerStep":1,
+                "sourceCapturesBySubject":{}},
+            "coreRevision":"revision","ownerSha256":"owner","scheduleSha256":"schedule",
+            "createdAtMs":1,"startedAtMs":null,"status":"complete","paused":false,"generation":0,
+            "attempts":0,"nextAttemptAtMs":0,"error":null,"recordSha256":"","fencingToken":0,
+            "queueMessageId":null,"pending":null,"results":{},"subjects":null
+        })).unwrap();
+        let mut binding = Binding {
+            activation: "activation".into(),
+            config: config(),
+            config_hash: "config".into(),
+            owner: "owner".into(),
+            revision: "revision".into(),
+        };
+        let mut state = legacy_state();
+        state
+            .work
+            .push(Work::new(Kind::Position, "retained-position".into()));
+        let retained = child(
+            &mut state,
+            RECONCILE,
+            json!({"original":"unchanged"}),
+            Action::Reconcile {},
+        )
+        .unwrap();
+        state.pending = Some(retained);
+        state.next_due_ms = 1234;
+        save(&s, &binding, None, &mut state, None).unwrap();
+        let first = bound_scheduling_state(&s, &binding, &job, 1000).unwrap();
+        assert_eq!(
+            first,
+            SchedulingState {
+                has_work: true,
+                next_due_ms: 1234
+            }
+        );
+        let (old, _) = load_state(&s, &binding).unwrap().unwrap();
+        state.pending = None;
+        state.cursor = state.work.len();
+        state.next_due_ms = 5678;
+        save(&s, &binding, Some(old), &mut state, None).unwrap();
+        assert_eq!(
+            bound_scheduling_state(&s, &binding, &job, 2000).unwrap(),
+            SchedulingState {
+                has_work: false,
+                next_due_ms: 5678
+            }
+        );
+        assert_eq!(first.next_due_ms, 1234);
+        binding.config_hash = "changed".into();
+        assert_eq!(
+            bound_scheduling_state(&s, &binding, &job, 2000).unwrap_err(),
+            "management_automation_state_invalid"
+        );
+        binding.config_hash = "config".into();
+        let (old, _) = load_state(&s, &binding).unwrap().unwrap();
+        state.cursor = 0;
+        state.work[0].window_id = Some(format!("management_window_{}", "a".repeat(64)));
+        save(&s, &binding, Some(old), &mut state, None).unwrap();
+        assert_eq!(
+            bound_scheduling_state(&s, &binding, &job, 2000).unwrap_err(),
+            "management_automation_state_invalid"
+        );
+        assert!(s.runtime().storage.list_json(CHILDREN).unwrap().is_empty());
+        assert!(s
+            .runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn reversal_unknown_child_restarts_with_exact_original_bytes_key_and_no_cursor_advance() {
         let directory = tempfile::tempdir().unwrap();

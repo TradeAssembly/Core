@@ -1,3 +1,5 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
 # This protocol test deliberately keeps its genuine one-second process budget.
 # Reserve the runner's slots so parser assertions are not a host-saturation test.
 # No test, retry policy, timeout or production execution limit is changed.

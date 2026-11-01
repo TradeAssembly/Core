@@ -116,6 +116,7 @@ const COPYRIGHT_INCLUDE_PREFIXES: &[&str] = &[
     "webapp/",
 ];
 const COPYRIGHT_INCLUDE_EXACT: &[&str] = &[
+    ".config/nextest.toml",
     ".dockerignore",
     ".gitignore",
     ".gitleaksignore",
@@ -290,6 +291,11 @@ pub fn scan_text(path: &str, text: &str) -> Vec<PublicScanFinding> {
                 continue;
             }
             if rule.applies_to(path) && rule.pattern.is_match(line) {
+                if rule.category == "commercial or hosted-only product surface"
+                    && local_managed_lease_owner_line(path, normalized)
+                {
+                    continue;
+                }
                 findings.push(PublicScanFinding {
                     category: rule.category.to_string(),
                     path: path.to_string(),
@@ -308,6 +314,22 @@ pub fn scan_text(path: &str, text: &str) -> Vec<PublicScanFinding> {
         }
     }
     findings
+}
+
+// These exact existing lease-owner expressions identify local, owned recovery
+// fences. Their bytes must remain stable across restarts. No other source line,
+// path, appended text or scanner category receives this exception.
+fn local_managed_lease_owner_line(path: &str, line: &str) -> bool {
+    matches!(
+        (path, line),
+        (
+            "runtime-rs/src/service/order_plans/management.rs",
+            r#"let worker = format!("managed-worker:{}", hash(&(owner(s)?, &attempt))?);"#
+        ) | (
+            "runtime-rs/src/service/order_plans/management/automation.rs",
+            r#"&format!("managed-worker:{}", job.job_id),"#
+        )
+    )
 }
 
 fn rules() -> &'static [Rule] {
@@ -753,6 +775,72 @@ mod tests {
         assert!(findings
             .iter()
             .any(|finding| finding.category == "advice-like trading language"));
+    }
+
+    #[test]
+    fn local_lease_owner_exception_is_exact_and_does_not_allow_hosted_features() {
+        let cases = [
+            (
+                "runtime-rs/src/service/order_plans/management.rs",
+                r#"let worker = format!("managed-worker:{}", hash(&(owner(s)?, &attempt))?);"#,
+            ),
+            (
+                "runtime-rs/src/service/order_plans/management/automation.rs",
+                r#"&format!("managed-worker:{}", job.job_id),"#,
+            ),
+        ];
+        let commercial = |path: &str, text: &str| {
+            scan_text(path, text)
+                .iter()
+                .any(|finding| finding.category == "commercial or hosted-only product surface")
+        };
+        for (path, line) in cases {
+            assert!(scan_text(path, &format!("    {line}\n")).is_empty());
+            for suffix in [
+                " // billing",
+                " // checkout",
+                " // hosted managed-worker service",
+            ] {
+                assert!(commercial(path, &format!("{line}{suffix}")));
+                let findings = scan_text(path, &format!("{line}\n{suffix}"));
+                assert!(findings.iter().any(|finding| {
+                    finding.line == 2
+                        && finding.category == "commercial or hosted-only product surface"
+                }));
+            }
+            for hosted in [
+                "billing()",
+                "checkout()",
+                r#"let hosted = "managed-worker";"#,
+            ] {
+                assert!(commercial(path, hosted));
+            }
+            assert!(commercial("runtime-rs/src/service/other.rs", line));
+            assert!(commercial(&format!("{path}.extra"), line));
+            assert!(commercial(
+                path,
+                &line.replace("managed-worker", "hosted-managed-worker")
+            ));
+            assert!(scan_text(path, &format!("{line}\nSEC compliant"))
+                .iter()
+                .any(|finding| finding.category == "unsupported regulatory compliance claim"));
+        }
+        assert!(commercial(cases[0].0, cases[1].1));
+        assert!(commercial(cases[1].0, cases[0].1));
+    }
+
+    #[test]
+    fn exact_nextest_config_requires_a_copyright_notice() {
+        assert!(requires_copyright_notice(
+            ".config/nextest.toml",
+            Path::new(".config/nextest.toml")
+        ));
+        assert!(!requires_copyright_notice(
+            ".config/unreviewed.toml",
+            Path::new(".config/unreviewed.toml")
+        ));
+        assert!(include_str!("../../.config/nextest.toml")
+            .starts_with(&format!("# {COPYRIGHT_NOTICE}")));
     }
 
     #[test]

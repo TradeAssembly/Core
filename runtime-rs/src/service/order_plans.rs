@@ -986,11 +986,11 @@ fn risk(
         .multiply(p.maximum_ask_multiple)?
         .round(12, Rounding::Floor)?;
     within(limit_price, ceiling)?;
-    let purchase = order
+    let cash_required = order
         .limit_notional(f.account.currency.decimals)?
         .checked_add(p.fee_cash_cap)?;
-    within(purchase, p.max_purchase_cash)?;
-    within(purchase, available)?;
+    within(cash_required, p.max_purchase_cash)?;
+    within(cash_required, available)?;
     let already_reserved = f.available.checked_subtract(available)?;
     let provider_gross = *f.account.gross_exposure.required()?;
     let mut gross = if provider_gross.compare(f.gross_floor)?.is_lt() {
@@ -1020,10 +1020,12 @@ fn risk(
         gross = gross.checked_add(cost)?;
     }
     within(
-        gross.checked_add(already_reserved)?.checked_add(purchase)?,
+        gross
+            .checked_add(already_reserved)?
+            .checked_add(cash_required)?,
         p.max_premium_gross,
     )?;
-    Ok(purchase)
+    Ok(cash_required)
 }
 pub fn prepare(
     s: &TradeAssemblyService,
@@ -1148,7 +1150,7 @@ pub fn prepare(
         time_in_force: p.time_in_force.clone(),
         client_order_id: format!("ta-{}", &f.entry_id[..40]),
     };
-    let purchase = risk(&p, &f, &order, available)?;
+    let cash_required = risk(&p, &f, &order, available)?;
     let fresh = facts(s, &c, &p)?;
     if fresh.receipts != f.receipts
         || fresh.canonical_account != f.canonical_account
@@ -1176,7 +1178,7 @@ pub fn prepare(
         valid_until_ms: f.valid_until,
         available_cash: available,
         order,
-        purchase_cash: purchase,
+        purchase_cash: cash_required,
         calculation_response_sha256: hash(&response)?,
     };
     result.plan_id = format!("orderplan_{}", hash(&result)?);

@@ -987,6 +987,50 @@ mod tests {
     }
 
     #[test]
+    fn only_exact_nextest_config_is_classified_and_its_content_still_scans() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = manifest();
+        write(
+            root.path(),
+            ".config/nextest.toml",
+            "# local runner configuration\n",
+        );
+        let mut failures = Vec::new();
+        scan_path(
+            root.path(),
+            Path::new(".config/nextest.toml"),
+            &policy,
+            &mut failures,
+        );
+        assert!(failures.is_empty(), "{failures:?}");
+        for path in [".config/unreviewed.toml", ".config/nextest.toml.extra"] {
+            write(root.path(), path, "# not individually classified\n");
+            let mut failures = Vec::new();
+            scan_path(root.path(), Path::new(path), &policy, &mut failures);
+            assert!(
+                failures
+                    .iter()
+                    .any(|failure| failure.contains("not classified")),
+                "{failures:?}"
+            );
+        }
+        write(root.path(), ".config/nextest.toml", "WORKOS_API_KEY\n");
+        let mut failures = Vec::new();
+        scan_path(
+            root.path(),
+            Path::new(".config/nextest.toml"),
+            &policy,
+            &mut failures,
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("WORKOS_API_KEY")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
     fn rejects_private_product_path() {
         let root = tempfile::tempdir().unwrap();
         write(

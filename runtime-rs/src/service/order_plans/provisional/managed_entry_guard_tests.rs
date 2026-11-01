@@ -198,6 +198,23 @@ fn blocked_reported_entry_refuses_static_price_advance_and_c5_snapshot_without_e
     let (quantity, basis, pin, entry_time) = entry_basis(&s, &entry, None).unwrap();
     assert_eq!(quantity, entry.order.quantity);
     assert_eq!(basis, "100".parse::<Decimal>().unwrap());
+    // Even a valid terminal reported gross fill cannot become crypto net
+    // ownership. Preserve the original accepted observation and all state.
+    let before_net_refusal = stored_state(&s);
+    let mut crypto = entry.clone();
+    crypto.order.instrument.asset_class = "crypto".into();
+    crypto.order.instrument.instrument_family = "crypto_spot".into();
+    crypto.order.instrument.instrument_id = "BTC/USD".into();
+    assert_eq!(
+        entry_basis(&s, &crypto, None).unwrap_err(),
+        "managed_order_attributed_net_inventory_required"
+    );
+    assert_eq!(
+        super::super::management::require_reported_inventory_family("crypto_spot").unwrap_err(),
+        "managed_order_attributed_net_inventory_required"
+    );
+    assert_eq!(stored_state(&s), before_net_refusal);
+    assert_eq!(provider.0.load(Ordering::SeqCst), 0);
     let position_id = format!(
         "position_{}",
         hash(&(owner(&s).unwrap(), &entry.plan_id)).unwrap()

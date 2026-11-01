@@ -271,6 +271,24 @@ pub(crate) fn validate_unsettled_provider(
     }
     Ok(())
 }
+// Reported gross fills cannot establish crypto inventory after received-asset
+// fees. No net-ownership producer/reducer is admitted by this contract yet.
+pub(crate) fn require_reported_inventory_family(family: &str) -> Result<(), String> {
+    if family == "crypto_spot" {
+        return Err("managed_order_attributed_net_inventory_required".into());
+    }
+    Ok(())
+}
+pub(crate) fn validate_inventory_readiness(
+    s: &TradeAssemblyService,
+    scope: &data_plans::PlanScope,
+    family: &str,
+) -> Result<(), String> {
+    if policy(s, scope)?.is_some_and(|p| p.entry_basis == "provider_reported_average_fill") {
+        require_reported_inventory_family(family)?;
+    }
+    Ok(())
+}
 pub(crate) fn validate_automatic_policy(policy: &ExitPolicy) -> Result<(), String> {
     if policy.rules.reversal_signal.is_some() {
         return Err("management_automation_reversal_evidence_unsupported".into());

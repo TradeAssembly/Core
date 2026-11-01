@@ -1,0 +1,131 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "tradeassembly.cash_capacity_request.v1"
+    },
+    "expectedAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "brokerNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        },
+        "environment": {
+          "const": "paper"
+        },
+        "providerAccountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        }
+      },
+      "required": [
+        "brokerNamespace",
+        "environment",
+        "providerAccountId"
+      ]
+    },
+    "canonicalAccountSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hostAccountRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instrumentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "providerSymbol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assetClass": {
+          "const": "crypto"
+        },
+        "instrumentFamily": {
+          "const": "crypto_spot"
+        },
+        "quantityUnit": {
+          "const": "base_asset"
+        },
+        "multiplier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+        },
+        "quoteCurrency": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16
+        }
+      },
+      "required": [
+        "assetClass",
+        "instrumentFamily",
+        "instrumentId",
+        "multiplier",
+        "providerSymbol",
+        "quantityUnit",
+        "quoteCurrency"
+      ]
+    },
+    "baseAssetId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "quoteCurrency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{1,16}$"
+        },
+        "decimals": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12
+        }
+      },
+      "required": [
+        "code",
+        "decimals"
+      ]
+    },
+    "positionAction": {
+      "enum": [
+        "buy_to_open",
+        "sell_to_close"
+      ]
+    }
+  },
+  "required": [
+    "baseAssetId",
+    "canonicalAccountSha256",
+    "expectedAccount",
+    "hostAccountRef",
+    "instrument",
+    "positionAction",
+    "quoteCurrency",
+    "schemaVersion"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://tradeassembly/cash-capacity-request@1"
+}

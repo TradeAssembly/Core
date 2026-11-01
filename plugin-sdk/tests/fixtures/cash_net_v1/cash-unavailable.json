@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "tradeassembly.cash_capacity_observation.v1",
+  "requestSha256": "eceeda17560d39faba47a911d876f22b22d527bce27f8aac686b4b76365d50a7",
+  "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+  "status": "pending",
+  "coherence": "non_atomic",
+  "account": {
+    "status": "unavailable",
+    "reason": "not_observed"
+  },
+  "asset": {
+    "status": "unavailable",
+    "reason": "not_observed"
+  },
+  "positions": {
+    "status": "unavailable",
+    "reason": "not_observed"
+  },
+  "openOrders": {
+    "status": "unavailable",
+    "reason": "not_observed"
+  },
+  "evidence": []
+}

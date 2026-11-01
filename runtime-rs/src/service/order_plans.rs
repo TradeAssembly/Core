@@ -1072,6 +1072,7 @@ pub fn prepare(
         return Ok(prior);
     }
     let f = facts(s, &c, &p)?;
+    management::validate_inventory_readiness(s, &c.scope, &f.metadata.instrument_family)?;
     let (ledger_old, ledger, available) = cash(s, &f)?;
     if c.reserve_cash && ledger.reservations.len() >= 256 {
         return Err("order_plan_reservation_capacity".into());
@@ -1358,6 +1359,7 @@ fn checked_current_signal_in_round(
     signal.matches(s, &r.command)?;
     let p = current_record(s, &r)?;
     let f = facts_with_signal(s, &r.command, &p, signal)?;
+    management::validate_inventory_readiness(s, &r.command.scope, &f.metadata.instrument_family)?;
     if r.entry_id != f.entry_id
         || r.source_receipts != f.receipts
         || r.account_key != f.account_key

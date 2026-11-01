@@ -7,6 +7,7 @@
 pub mod broker_lookup_v3;
 pub mod broker_v2;
 pub mod canonical;
+pub mod cash_capacity_observation;
 pub mod cash_settlement;
 pub mod close_settlement;
 pub mod data_contract;
@@ -20,6 +21,7 @@ pub mod execution_snapshot;
 pub mod instrument_screen;
 pub mod instrument_set;
 pub mod market_data;
+pub mod net_base_inventory_observation;
 pub mod session_calendar;
 pub mod settlement_observation_v2;
 

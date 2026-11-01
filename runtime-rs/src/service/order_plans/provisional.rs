@@ -609,6 +609,7 @@ pub(super) fn entry_basis(
     p: &OrderPlan,
     pinned: Option<&str>,
 ) -> Result<(Decimal, Decimal, String, ObservationTime), String> {
+    super::management::require_reported_inventory_family(&p.order.instrument.instrument_family)?;
     let (_, h) = head(s, p)?.ok_or("provider_observation_required")?;
     if h.blocked_reason.is_some() {
         return Err("provider_observation_reconciliation_blocked".into());

@@ -900,8 +900,11 @@ pub fn advance(s: &TradeAssemblyService, id: &str) -> Result<Job, String> {
         return Ok(j);
     }
     s.require_background_worker_current()?;
-    let schedule =
-        super::order_plans::measured("dispatch.schedule", || validate_request(s, &j.request))?;
+    // Pure currentness only; never carry immutable metadata reuse into a
+    // dispatched child or across turns. All mutable authority reads stay live.
+    let schedule = super::order_plans::measured("dispatch.schedule", || {
+        super::package_validation::with_round(s, |s| validate_request(s, &j.request))
+    })?;
     if schedule.receipt_sha256 != j.schedule_sha256 {
         return Err("session_dispatch_schedule_changed".into());
     }

@@ -412,6 +412,9 @@ fn timing_phase(stage: &'static str) -> bool {
             | "cycle.signal"
             | "cycle.reversal"
             | "cycle.schedule"
+            | "prepare.validate_before"
+            | "prepare.calculation"
+            | "prepare.validate_after"
             | "broker.invoke"
             | "c5.prepare"
             | "c5.admit"
@@ -1080,13 +1083,28 @@ pub fn prepare(
         }
         return Ok(prior);
     }
-    let f = facts(s, &c, &p)?;
-    management::validate_inventory_readiness(s, &c.scope, &f.metadata.instrument_family)?;
-    let (ledger_old, ledger, available) = cash(s, &f)?;
-    if c.reserve_cash && ledger.reservations.len() >= 256 {
-        return Err("order_plan_reservation_capacity".into());
-    }
-    let (graph, selected, pin) = measured("calculation.pin", || calculation(s, &c, &p, &f))?;
+    // Only immutable package metadata is reused within this pure validation
+    // round. Current owner, grants, instances, credentials, receipts, clock and
+    // cash are still read normally. No scoped runtime crosses the plugin call.
+    let (f, ledger_old, ledger, available, graph, selected, pin) =
+        measured("prepare.validate_before", || {
+            super::package_validation::with_round(s, |s| {
+                let signal = verify_signal_in_round(s, &c)?;
+                let f = facts_with_signal(s, &c, &p, &signal)?;
+                management::validate_inventory_readiness(
+                    s,
+                    &c.scope,
+                    &f.metadata.instrument_family,
+                )?;
+                let (ledger_old, ledger, available) = cash(s, &f)?;
+                if c.reserve_cash && ledger.reservations.len() >= 256 {
+                    return Err("order_plan_reservation_capacity".into());
+                }
+                let (graph, selected, pin) =
+                    measured("calculation.pin", || calculation(s, &c, &p, &f))?;
+                Ok((f, ledger_old, ledger, available, graph, selected, pin))
+            })
+        })?;
     if s.runtime()
         .storage
         .get_json(ENTRIES, &f.entry_id)?
@@ -1135,7 +1153,9 @@ pub fn prepare(
     };
     let mut call = ctx.clone();
     call.idempotency_key = IdempotencyKey::new(format!("order-plan-calculation:{correlation}"))?;
-    let response = s.runtime().plugin_operations.invoke(&request, &call)?;
+    let response = measured("prepare.calculation", || {
+        s.runtime().plugin_operations.invoke(&request, &call)
+    })?;
     if response.correlation_id != correlation
         || response.schema_ref != calc::OUTPUT_SCHEMA
         || response.reconciliation_required
@@ -1168,13 +1188,20 @@ pub fn prepare(
         client_order_id: format!("ta-{}", &f.entry_id[..40]),
     };
     let cash_required = risk(&p, &f, &order, available)?;
-    let fresh = facts(s, &c, &p)?;
-    if fresh.receipts != f.receipts
-        || fresh.canonical_account != f.canonical_account
-        || fresh.account_binding_sha256 != f.account_binding_sha256
-        || fresh.capital_checkpoint_sha256 != f.capital_checkpoint_sha256
-        || measured("calculation.pin", || calculation(s, &c, &p, &fresh))?.2 != pin
-    {
+    // Start a distinct round after invocation, so a package or any mutable
+    // binding changed by the calculation cannot reuse pre-call evidence.
+    let sources_unchanged = measured("prepare.validate_after", || {
+        super::package_validation::with_round(s, |s| {
+            let signal = verify_signal_in_round(s, &c)?;
+            let fresh = facts_with_signal(s, &c, &p, &signal)?;
+            Ok(fresh.receipts == f.receipts
+                && fresh.canonical_account == f.canonical_account
+                && fresh.account_binding_sha256 == f.account_binding_sha256
+                && fresh.capital_checkpoint_sha256 == f.capital_checkpoint_sha256
+                && measured("calculation.pin", || calculation(s, &c, &p, &fresh))?.2 == pin)
+        })
+    })?;
+    if !sources_unchanged {
         return Err("order_plan_sources_changed".into());
     }
     let mut result = OrderPlan {
@@ -1629,6 +1656,9 @@ mod financial_timing_tests {
             "cycle.signal",
             "cycle.reversal",
             "cycle.schedule",
+            "prepare.validate_before",
+            "prepare.calculation",
+            "prepare.validate_after",
         ] {
             assert!(timing_phase(phase));
         }

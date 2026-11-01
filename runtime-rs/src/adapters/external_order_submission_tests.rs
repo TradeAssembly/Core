@@ -93,6 +93,7 @@ fn assert_rollover_config_refuses_unknown_trigger_before_entry(
 
 fn activate_native_typed_execution(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,scenario:&str){
  let mut typed=json!({"scope":scope,"capabilityGraphRevision":revision,"brokerRequirementRef":"exec_broker"});if scenario.starts_with("financial_screen_auto"){typed["automaticExecution"]=json!({"sourceInputs":{"account_data":{},"instrument_metadata":{},"pricing_quote":{}},"maxSubjectsPerOccurrence":1});}
+ if scenario.starts_with("financial_screen_auto_batch"){typed["automaticExecution"]["observationAcquisition"]=json!("bounded_independent_reads_v1");}
  if scenario=="financial_screen_auto_health"{typed["automaticExecution"]["accountHealthRefresh"]=json!({"schemaVersion":"tradeassembly.automatic_account_health_refresh.v1","refreshIntervalMs":60000});}
  if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{typed["automaticExecution"]["management"]=json!({"cadenceMs":1000,"maxPositionsPerRound":1,"sourceInputs":{"account_data":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"instrument_metadata":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"pricing_quote":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}}}});}
  if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{assert_rollover_config_refuses_unknown_trigger_before_entry(s,scope,&typed);}

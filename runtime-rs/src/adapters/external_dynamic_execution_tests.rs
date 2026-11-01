@@ -51,8 +51,17 @@ fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope
  let enqueued=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"enqueue","job":request},"idempotencyKey":"auto-enqueue"}));assert_eq!(enqueued.status,200,"{}",enqueued.body);let id=enqueued.body["body"]["job"]["jobId"].as_str().unwrap();
  if background{exercise_native_background_management(s,scope,id,root);return;}
  let positions=s.runtime().storage.list_json("positions").unwrap();let orders=s.runtime().storage.list_json("orders").unwrap();let mut final_job=None;
+ let scenario=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap()["configuration"]["scenario"].as_str().unwrap().to_owned();
+ let probe=scenario=="auto_batch_delay"||scenario=="auto_batch_pause";
+ let pause=scenario=="auto_batch_pause";
+ let fault=Arc::new(ObservationReadFault{inner:s.runtime().plugin_operations.clone(),storage:s.runtime().storage.clone(),fired:std::sync::atomic::AtomicBool::new(false),pause});
+ let mut fault_runtime=(*s.runtime()).clone();fault_runtime.plugin_operations=fault.clone();
+ let who=s.invocation_owner().unwrap();
+ let delayed=crate::service::TradeAssemblyService::from_runtime(s.db(),fault_runtime).for_authenticated_invocation(&who.issuer,&who.subject,None,None);
+ let mut partial_account=None;
+
  for step in 0..24{
-  let active=if step>=5{crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None)}else{s.clone()};
+  let active=if probe&&!fault.fired.load(std::sync::atomic::Ordering::SeqCst){delayed.clone()}else if step>=5{crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None)}else{s.clone()};
   let result=active.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("auto-advance-{step}")}));assert_eq!(result.status,200,"{}",result.body);assert_eq!(result.body["ok"],true,"{}",result.body);let job:dispatch::Job=serde_json::from_value(result.body["body"]["job"].clone()).unwrap();
   let wire=&result.body["body"]["job"];
   let cycles=wire["results"].as_object().unwrap().iter().filter(|(key,_)|key.starts_with("execute:")).collect::<Vec<_>>();
@@ -61,8 +70,33 @@ fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope
    assert_eq!(wire["pending"]["body"]["cycle"]["scope"],serde_json::to_value(scope).unwrap());
    assert_eq!(wire["pending"]["body"]["cycle"]["activationId"],"fixture-v2-activation");
   }
+
+  if probe {
+   let retained=s.runtime().storage.list_json("typed_execution_cycles_v1").unwrap();
+   if let Some((_,cycle))=retained.first(){
+    if cycle["phase"]==2 && fault.fired.load(std::sync::atomic::Ordering::SeqCst){
+     assert_eq!(observation_read_inventory(s),BTreeMap::from([("exec_account".to_string(),1)]));
+     partial_account=Some(cycle["collections"]["account_data"].clone());
+     assert!(s.runtime().storage.list_json("execution_order_plans_v1").unwrap().is_empty());
+     if pause {
+      assert!(matches!(job.status,dispatch::Status::Running|dispatch::Status::Failed));
+      assert_eq!(job.error.as_deref(),Some("typed_entry_controls_blocked"));
+      assert!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap().is_empty());
+      write_screen_interface_evidence("observation_batch","pause-between-reads.json",&json!({"status":"PASS","completedReads":1,"nextReadRefused":true,"schedulerState":job.status,"refusal":job.error,"plans":0,"cashHolds":0,"providerOrders":0}));return;
+     }
+    }
+    if !pause && cycle["phase"]==4 {
+     assert_eq!(cycle["collections"]["account_data"],partial_account.clone().expect("budget must yield after genuine10sfirstread"));
+     assert_eq!(observation_read_inventory(s),BTreeMap::from([("exec_account".to_string(),1),("exec_metadata".to_string(),1),("exec_quote".to_string(),1)]));
+     assert!(s.runtime().storage.list_json("execution_order_plans_v1").unwrap().is_empty());
+     assert!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap().is_empty());
+     write_screen_interface_evidence("observation_batch","budget-resume.json",&json!({"status":"PASS","completedReads":3,"perRoleReads":1,"accountReceiptRetained":true,"serviceRecreated":true,"realDelayMs":10001,"clockInjected":false,"plans":0,"cashHolds":0,"providerOrders":0}));return;
+    }
+   }
+  }
   if !matches!(job.status,dispatch::Status::Pending|dispatch::Status::Running){final_job=Some(job);break;}
  }
+ assert!(!probe,"fault probe must return its dedicated pause/budget proof, never silently pass the C5 smoke path");
  let job=final_job.expect("bounded selected evaluation-to-C5 path");assert_eq!(job.status,dispatch::Status::Complete,"{job:?}");let calls=||fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap_or_default();assert_eq!(calls().lines().filter(|x|*x=="submit").count(),1);
  let state=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();assert_eq!(state.len(),1);assert_eq!(state[0].1["phase"],"open");assert_eq!(state[0].1["retainedCash"],"41");
  for step in 0..2{let result=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("auto-terminal-retry-{step}")}));assert_eq!(result.status,200,"{}",result.body);}assert_eq!(calls().lines().filter(|x|*x=="submit").count(),1);assert_eq!(s.runtime().storage.list_json("positions").unwrap(),positions);assert_eq!(s.runtime().storage.list_json("orders").unwrap(),orders);
@@ -187,3 +221,57 @@ fn native_background_worker_drives_owned_close_after_selection_completion_and_re
 include!("external_automatic_health_tests.rs");
 
 include!("external_automatic_stream_tests.rs");
+
+// Delay is real fixture latency, not an injected clock or rewritten observation.
+struct ObservationReadFault {
+    inner: Arc<dyn PluginOperationPort>,
+    storage: Arc<dyn StoragePort>,
+    fired: std::sync::atomic::AtomicBool,
+    pause: bool,
+}
+impl VersionedPort for ObservationReadFault {
+    fn descriptors(&self) -> Vec<PortDescriptor> { self.inner.descriptors() }
+}
+impl PluginOperationPort for ObservationReadFault {
+    fn verify_broker_boundary(&self) -> Result<(), String> { self.inner.verify_broker_boundary() }
+    fn invoke(&self, r: &PluginOperationRequest, c: &SideEffectContext) -> Result<PluginOperationResponse, String> {
+        let result = self.inner.invoke(r, c)?;
+        if r.operation_id == "execution_account" && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if self.pause {
+                let mut control = self.storage.get_json("execution_controls", "fixture-v2-activation")?.ok_or("fixture_controls_missing")?;
+                control["paused"] = json!(true);
+                self.storage.put_json("execution_controls", "fixture-v2-activation", control, &ctx("batch-read-pause"))?;
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10001));
+            }
+        }
+        Ok(result)
+    }
+}
+fn observation_read_inventory(s: &crate::service::TradeAssemblyService) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for (_, r) in s.runtime().storage.list_json("data_collection_receipts_v1").unwrap() {
+        if let Some(node @ ("exec_account" | "exec_metadata" | "exec_quote")) = r["command"]["acquisitionNode"].as_str() {
+            *counts.entry(node.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+#[test]
+#[ignore="focused real-delay bounded financial read cursor and service recreation"]
+fn native_observation_batch_yields_and_resumes_without_reacquiring_account() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_auto_batch_delay"));
+}
+#[test]
+#[ignore="focused pause during first observation blocks the next independent read"]
+fn native_observation_batch_rechecks_entry_authority_between_reads() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_auto_batch_pause"));
+}
+#[test]
+#[ignore="focused native opted-in observation batch through original C5"]
+fn native_observation_batch_selected_entry_is_durable_and_idempotent() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_auto_batch"));
+}

@@ -252,6 +252,15 @@ pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
             let mut result = json!({"ready":true,"blockedReasons":[],"capabilityGraphRevision":s.runtime().storage.get_json("capability_graph_revisions",config["capabilityGraphRevisionId"].as_str().unwrap_or_default()).ok().flatten(),"executionContractVersion":VERSION,"continuousExecution":false,"entryDecisionRequired":true});
             if !config["typedExecution"]["automaticExecution"].is_null() {
                 result["scheduledFinancialEntrySupported"] = json!(true);
+                result["observationAcquisition"] = config["typedExecution"]["automaticExecution"]
+                    ["observationAcquisition"]
+                    .as_str()
+                    .map_or_else(|| json!("legacy_single_phase"), |mode| json!(mode));
+                result["observationAcquisitionModes"] =
+                    json!(["legacy_single_phase", "bounded_independent_reads_v1"]);
+                result["observationBatchMaxReads"] = json!(3);
+                result["observationBatchStartBudgetMs"] = json!(10000);
+                result["observationBatchProviderAtomicSnapshot"] = json!(false);
                 let management =
                     !config["typedExecution"]["automaticExecution"]["management"].is_null();
                 result["automaticExecutionScope"] = json!(if management {

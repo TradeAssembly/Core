@@ -1988,11 +1988,21 @@ mod stream_bridge_tests {
     fn absent_source_snapshot_preserves_legacy_receipt_bytes_and_hash() {
         let value = json!({"receiptSha256":"b".repeat(64),"requestSha256":"a".repeat(64),
             "status":"warming_up","checkpoint":{"runId":"r","planRevisionId":"p","generation":0,
-                "cursors":{},"states":{},"validCounts":{},"lastFrame":{},"checkpointSha256":"c".repeat(64)},
+                "cursors":{},"states":{},"validCounts":{},"checkpointSha256":"c".repeat(64)},
             "outputs":{},"framesProcessed":0});
         let receipt: EvaluationReceipt = serde_json::from_value(value.clone()).unwrap();
         assert!(receipt.source_snapshot_sha256.is_none());
         assert_eq!(serde_json::to_value(&receipt).unwrap(), value);
+        // Historical readers also accept an explicit empty map; its canonical
+        // serialization has always omitted that field, before stream snapshots.
+        let mut explicit_empty = value.clone();
+        explicit_empty["checkpoint"]["lastFrame"] = json!({});
+        let restored: EvaluationReceipt = serde_json::from_value(explicit_empty).unwrap();
+        assert_eq!(serde_json::to_value(&restored).unwrap(), value);
+        assert_eq!(
+            receipt_hash(&restored).unwrap(),
+            receipt_hash(&receipt).unwrap()
+        );
         let mut unhashed = value;
         unhashed["receiptSha256"] = json!("");
         assert_eq!(receipt_hash(&receipt).unwrap(), hash(&unhashed).unwrap());

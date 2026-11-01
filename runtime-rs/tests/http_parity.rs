@@ -235,11 +235,44 @@ async fn documented_http_routes_are_served_by_rust_axum_api() {
             );
             continue;
         }
+        if route == "POST /product/reports/envelope" {
+            assert_eq!(status.as_u16(), 501);
+            assert_eq!(body["error"]["code"], "durable_backtest_report_required");
+            assert_eq!(body["ok"], false);
+            assert_eq!(body["status"], "unavailable");
+            assert_eq!(body["summary"]["status"], "unavailable");
+            assert_eq!(body["charts"], json!([]));
+            assert_eq!(body["journal"]["rows"], json!([]));
+            assert_eq!(body["artifactRefs"], json!([]));
+            assert_eq!(body["exportRefs"], json!({}));
+            assert_eq!(body["replayRefs"], json!({}));
+            assert_eq!(body["nextAction"]["tool"], "tradeassembly.backtest.report");
+            continue;
+        }
         if route == "POST /product/strategies/share-snapshots/create" {
             assert_eq!(status.as_u16(), 501);
             assert_eq!(body["error"]["code"], "durable_share_snapshots_unavailable");
             assert_eq!(body["error"]["retryable"], false);
             assert!(body.get("snapshot").is_none());
+            continue;
+        }
+        if route == "POST /product/strategies/selection-plans/prepare" {
+            assert_eq!(status.as_u16(), 409);
+            assert_eq!(body["error"]["code"], "selection_plan_command_invalid");
+            assert_eq!(body["error"]["retryable"], false);
+            assert!(body.get("plan").is_none());
+            continue;
+        }
+        if matches!(
+            route,
+            "POST /research/jobs" | "POST /product/strategies/research/jobs/create"
+        ) {
+            assert_eq!(status.as_u16(), 501);
+            assert_eq!(body["error"]["code"], "legacy_constructed_research_disabled");
+            assert_eq!(body["body"]["status"], "blocked");
+            assert_eq!(body["body"]["researchEvidenceQualified"], false);
+            assert_eq!(body["body"]["artifacts"], json!([]));
+            assert_eq!(body["body"]["nextAction"]["tool"], "tradeassembly.backtest.run");
             continue;
         }
         assert!(

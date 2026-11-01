@@ -262,5 +262,9 @@
   "POST /product/strategies/data-captures/create",
   "POST /product/strategies/data-captures/get",
   "POST /product/strategies/data-plans/prepare",
-  "POST /product/strategies/data-runs/step"
+  "POST /product/strategies/data-runs/step",
+  "GET /backtests/{run_id}/recomputations/{recomputation_id}",
+  "POST /backtests/{run_id}/recomputations",
+  "POST /backtests/{run_id}/recomputations/{recomputation_id}/advance",
+  "POST /product/strategies/selection-plans/prepare"
 ]

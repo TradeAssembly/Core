@@ -635,6 +635,57 @@ pub(super) enum Action {
     Evaluate {},
 }
 
+pub(super) enum Step {
+    Child(Child),
+    Ready(String),
+    Wait(ObservationWait),
+}
+
+/// Host scheduling information only. A wait carries no observation, signal or
+/// permission to trade and is never persisted as fabricated provider evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ObservationWait {
+    WarmingUp { next_completed_at_ms: i64 },
+    Input { next_completed_at_ms: i64 },
+}
+impl ObservationWait {
+    pub(super) fn next_due_ms(self, now: i64, cadence: i64) -> i64 {
+        let (Self::WarmingUp {
+            next_completed_at_ms,
+        }
+        | Self::Input {
+            next_completed_at_ms,
+        }) = self;
+        now.saturating_add(cadence)
+            .min(next_completed_at_ms)
+            .max(now.saturating_add(1))
+    }
+}
+
+fn observation_wait(
+    waiting_for_input: bool,
+    origin: i64,
+    interval: u64,
+    now: i64,
+    lag: i64,
+) -> Result<ObservationWait, String> {
+    let completed = completed_boundary(origin, interval, now, lag)?;
+    let next_completed_at_ms = completed
+        .checked_add(interval as i64)
+        .and_then(|end| end.checked_add(lag))
+        .filter(|end| *end <= tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64)
+        .ok_or("management_reversal_grid_invalid")?;
+    Ok(if waiting_for_input {
+        ObservationWait::Input {
+            next_completed_at_ms,
+        }
+    } else {
+        ObservationWait::WarmingUp {
+            next_completed_at_ms,
+        }
+    })
+}
+
 fn completed_boundary(origin: i64, interval: u64, now: i64, lag: i64) -> Result<i64, String> {
     let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
     if origin <= 0
@@ -767,6 +818,38 @@ mod progress_tests {
             "unsupported_input"
         )));
     }
+    #[test]
+    fn expected_reversal_wait_uses_exact_source_grid_and_explicit_lag() {
+        let origin = 1_700_000_000_123;
+        let now = origin + 119_999;
+        let warmup = observation_wait(false, origin, 60_000, now, 100).unwrap();
+        assert_eq!(
+            warmup,
+            ObservationWait::WarmingUp {
+                next_completed_at_ms: origin + 120_100
+            }
+        );
+        assert_eq!(warmup.next_due_ms(now, 60_000), origin + 120_100);
+        assert_eq!(warmup.next_due_ms(now, 1000), origin + 120_100);
+        assert_eq!(warmup.next_due_ms(now, 50), now + 50);
+        let missing = observation_wait(true, origin, 60_000, origin + 120_100, 100).unwrap();
+        assert_eq!(
+            missing,
+            ObservationWait::Input {
+                next_completed_at_ms: origin + 180_100
+            }
+        );
+        assert_eq!(
+            missing.next_due_ms(origin + 120_100, 1000),
+            origin + 121_100
+        );
+        assert!(observation_wait(false, origin, 0, now, 0).is_err());
+        assert!(observation_wait(false, origin, 60_000, origin, 1).is_err());
+        assert!(observation_wait(false, origin, 60_000, origin - 1, 0).is_err());
+        let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
+        assert!(observation_wait(false, max - 1, 60_000, max, 0).is_err());
+    }
+
     #[test]
     fn grid_uses_provider_witnessed_origin_and_explicit_lag() {
         let origin = 1_700_000_000_123;
@@ -1041,7 +1124,7 @@ pub(super) fn next_child(
     state: &mut State,
     entry: &OrderPlan,
     position: &Position,
-) -> Result<WindowStep, String> {
+) -> Result<Step, String> {
     config.validate_reversal_age(position.policy.max_reversal_age_ms)?;
     if position.policy.rules.reversal_signal.as_deref() != Some("typed.exit") {
         return Err("management_reversal_policy_binding_invalid".into());
@@ -1084,7 +1167,7 @@ pub(super) fn next_child(
                     source: root.clone(),
                 },
             )
-            .map(WindowStep::Child);
+            .map(Step::Child);
         }
     }
     for (root, head) in &progress.streams {
@@ -1127,7 +1210,7 @@ pub(super) fn next_child(
         return finite_child(state,crate::service::selection_plans::MANAGED_PATH,json!({
             "managedPositionPlan":{"schemaVersion":"tradeassembly.managed_position_plan.v2",
                 "scope":entry.command.scope,"managedPositionId":id,"selectionReceipts":{},"sourceStreams":streams}
-        }),Action::PreparePlan {}).map(WindowStep::Child);
+        }),Action::PreparePlan {}).map(Step::Child);
     }
     // Bootstrap and catch-up steps consume already admitted source heads before
     // another acquisition. State/cursors remain the normal atomic evaluator's.
@@ -1163,7 +1246,7 @@ pub(super) fn next_child(
             }}),
             Action::Evaluate {},
         )
-        .map(WindowStep::Child);
+        .map(Step::Child);
     }
     let now = s.runtime().clock.trusted_now_ms()?;
     // A fast source may publish another completed bar while each capture and
@@ -1180,7 +1263,7 @@ pub(super) fn next_child(
             .is_some_and(|end| end <= now && now - end < position.policy.max_reversal_age_ms);
         if current && position.last_reversal_receipt.as_ref() != Some(receipt) {
             match reversal(s, position, entry, Some(receipt), now) {
-                Ok(_) => return Ok(WindowStep::Ready(receipt.clone())),
+                Ok(_) => return Ok(Step::Ready(receipt.clone())),
                 // A bootstrap result may predate the actual entry fill. It
                 // cannot close the position; acquire genuine later data below.
                 Err(code) if code == "managed_reversal_predates_entry" => {}
@@ -1202,7 +1285,7 @@ pub(super) fn next_child(
         return finite_child(state,APPEND_STREAM,json!({"scope":entry.command.scope,"append":{
             "schemaVersion":"tradeassembly.managed_data_stream_append.v1","streamId":head.stream_id,
             "expectedHeadSha256":head.head_sha256,"captureId":capture
-        }}),Action::AppendSegment { source:root.clone() }).map(WindowStep::Child);
+        }}),Action::AppendSegment { source:root.clone() }).map(Step::Child);
     }
     // Catch up the oldest admitted source first; one fast-changing source must
     // never starve the common frame barrier's other required inputs.
@@ -1242,20 +1325,28 @@ pub(super) fn next_child(
                     "parameterExtracts":binding.parameter_extracts,"context":head.context,
                     "eventStartMs":window.event_start_ms,"eventEndMs":window.event_end_ms,
                     "gapPolicy":"strict_fixed_interval"},"input":input
-            }}),Action::CaptureSegment { source:root.clone() }).map(WindowStep::Child);
+            }}),Action::CaptureSegment { source:root.clone() }).map(Step::Child);
         }
     }
     if let Some(receipt) = progress.signal_receipt_sha256 {
-        // This existing authoritative guard checks actual ready exit, current
-        // source/window/clocks and post-entry causal watermark; never fake false.
-        reversal(s, position, entry, Some(&receipt), now)?;
-        return Ok(WindowStep::Ready(receipt));
+        // Reached only after all genuine newer append/acquisition work above.
+        // Revalidate the indexed receipt even for a consumed/pre-entry wait;
+        // stored SHA equality alone never bypasses source/lineage/clock checks.
+        if !idle_reversal_observation(s, position, entry, &receipt, now)? {
+            // An unconsumed post-entry observation still needs the unchanged
+            // strict actual-now freshness and causal guard. Never fake false.
+            reversal(s, position, entry, Some(&receipt), now)?;
+            return Ok(Step::Ready(receipt));
+        }
     }
-    if progress.waiting_for_input {
-        Err("management_reversal_waiting_for_input".into())
-    } else {
-        Err("management_reversal_warming_up".into())
-    }
+    observation_wait(
+        progress.waiting_for_input,
+        first.original_origin_ms,
+        first.interval_ms,
+        now,
+        config.completion_lag_ms,
+    )
+    .map(Step::Wait)
 }
 
 pub(super) fn apply_response(

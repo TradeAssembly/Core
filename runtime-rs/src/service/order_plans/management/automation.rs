@@ -274,6 +274,10 @@ struct WindowHead {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct State {
+    // Earliest expected observation wake for this round. It is scheduler
+    // metadata, not market evidence, and is cleared only on a new round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    round_observation_wake_at_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     reversal_heads: BTreeMap<String, reversal::Progress>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -435,6 +439,9 @@ fn load_state(s: &TradeAssemblyService, b: &Binding) -> Result<Option<(Value, St
         || state.config_sha256 != b.config_hash
         || state.core_revision != b.revision
         || state.state_sha256 != state_hash(&state)?
+        || state.round_observation_wake_at_ms.is_some_and(|wake| {
+            wake <= 0 || wake > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64
+        })
         || state.reversal_heads.len() > MAX_ENTRIES
         || state
             .reversal_heads
@@ -987,14 +994,20 @@ enum WindowStep {
     Wait,
 }
 
+enum PlannedChild {
+    Child(Child),
+    Complete,
+    Wait(reversal::ObservationWait),
+}
+
 fn next_child(
     s: &TradeAssemblyService,
     b: &Binding,
     job: &session_dispatch::Job,
     state: &mut State,
-) -> Result<Option<Child>, String> {
+) -> Result<PlannedChild, String> {
     let Some(work) = state.work.get(state.cursor).cloned() else {
-        return Ok(None);
+        return Ok(PlannedChild::Complete);
     };
     if work.kind == Kind::Entry {
         let plan = read_owned(s, &work.id)?;
@@ -1008,7 +1021,8 @@ fn next_child(
         }
         if record.phase == submission::Phase::Consumed && record.filled_quantity.positive() {
             if record.settlement_receipt_sha256.is_none() {
-                return plan_child(state, &plan, SETTLE, Action::Settle {}).map(Some);
+                return plan_child(state, &plan, SETTLE, Action::Settle {})
+                    .map(PlannedChild::Child);
             }
             if s.runtime()
                 .storage
@@ -1022,7 +1036,7 @@ fn next_child(
                     "entryPlanId":plan.plan_id,"activationId":b.activation}}),
                     Action::Register {},
                 )
-                .map(Some);
+                .map(PlannedChild::Child);
             }
         } else if !work.reconciled
             && matches!(
@@ -1035,9 +1049,10 @@ fn next_child(
                     | submission::Phase::PartiallyFilled
             )
         {
-            return plan_child(state, &plan, RECONCILE, Action::Reconcile {}).map(Some);
+            return plan_child(state, &plan, RECONCILE, Action::Reconcile {})
+                .map(PlannedChild::Child);
         }
-        return Ok(None);
+        return Ok(PlannedChild::Complete);
     }
     let (_, position) = load(s, &work.id)?;
     if position.activation_id != b.activation {
@@ -1074,16 +1089,18 @@ fn next_child(
                 | submission::Phase::Rejected
                 | submission::Phase::Cancelled => {
                     if record.settlement_receipt_sha256.is_none() {
-                        return plan_child(state, &plan, SETTLE, Action::Settle {}).map(Some);
+                        return plan_child(state, &plan, SETTLE, Action::Settle {})
+                            .map(PlannedChild::Child);
                     }
-                    return Ok(None);
+                    return Ok(PlannedChild::Complete);
                 }
                 submission::Phase::Denied => {}
                 _ => {
                     return if work.reconciled {
-                        Ok(None)
+                        Ok(PlannedChild::Complete)
                     } else {
-                        plan_child(state, &plan, RECONCILE, Action::Reconcile {}).map(Some)
+                        plan_child(state, &plan, RECONCILE, Action::Reconcile {})
+                            .map(PlannedChild::Child)
                     };
                 }
             }
@@ -1102,7 +1119,7 @@ fn next_child(
                 ],
                 None,
             )
-            .map(Some);
+            .map(PlannedChild::Child);
         } else if let Some(submission) = &work.submission {
             if submission["planId"] != plan.plan_id {
                 return Err("management_automation_submission_binding_invalid".into());
@@ -1116,7 +1133,7 @@ fn next_child(
                     plan_id: plan.plan_id.clone(),
                 },
             )
-            .map(Some);
+            .map(PlannedChild::Child);
         }
         // Resume the retained close using its original collections and window.
         return advance_child(
@@ -1131,22 +1148,22 @@ fn next_child(
             ],
             None,
         )
-        .map(Some);
+        .map(PlannedChild::Child);
     }
     if !position
         .quantity
         .checked_subtract(position.closed_quantity)?
         .positive()
     {
-        return Ok(None);
+        return Ok(PlannedChild::Complete);
     }
     if position.policy.rules.reversal_signal.is_some() && b.config.reversal_evaluation.is_none() {
         return Err("management_automation_reversal_evidence_unsupported".into());
     }
     let occurrence = if let Some(rollover) = &b.config.calendar_rollover {
         match rollover_child(s, rollover, state, &work, &entry, &position)? {
-            WindowStep::Child(child) => return Ok(Some(child)),
-            WindowStep::Wait => return Ok(None),
+            WindowStep::Child(child) => return Ok(PlannedChild::Child(child)),
+            WindowStep::Wait => return Ok(PlannedChild::Complete),
             WindowStep::Ready(id) => id,
         }
     } else {
@@ -1166,14 +1183,14 @@ fn next_child(
                 }
             })
         {
-            return Ok(Some(retained));
+            return Ok(PlannedChild::Child(retained));
         }
     }
     let reversal_receipt = if let Some(config) = &b.config.reversal_evaluation {
         match reversal::next_child(s, config, state, &entry, &position)? {
-            WindowStep::Child(child) => return Ok(Some(child)),
-            WindowStep::Wait => return Ok(None),
-            WindowStep::Ready(receipt) => Some(receipt),
+            reversal::Step::Child(child) => return Ok(PlannedChild::Child(child)),
+            reversal::Step::Wait(wait) => return Ok(PlannedChild::Wait(wait)),
+            reversal::Step::Ready(receipt) => Some(receipt),
         }
     } else {
         None
@@ -1192,7 +1209,7 @@ fn next_child(
             return child(state, "/product/strategies/data-collections/create", json!({"collection":{
                 "scope":entry.command.scope,"capabilityGraphRevision":entry.command.capability_graph_revision,
                 "acquisitionNode":node,"mode":"paper","responseSchemaRef":schema,
-                "input":b.config.input(role, &entry.order.instrument.instrument_id)?}}), Action::Collect { role:role.into() }).map(Some);
+                "input":b.config.input(role, &entry.order.instrument.instrument_id)?}}), Action::Collect { role:role.into() }).map(PlannedChild::Child);
         }
     }
     advance_child(
@@ -1207,12 +1224,58 @@ fn next_child(
         ],
         reversal_receipt.as_deref(),
     )
-    .map(Some)
+    .map(PlannedChild::Child)
 }
 fn complete_work(state: &mut State) {
     state.cursor = (state.cursor + 1).min(state.work.len());
     state.pending = None;
 }
+// Expected observation waits are successful planning outcomes, not failed
+// provider calls. They retain the evaluator cursor/checkpoint and never grant
+// permission to collect financial facts or advance a close.
+fn apply_planned_child(
+    state: &mut State,
+    now: i64,
+    cadence: i64,
+    planned: Result<PlannedChild, String>,
+) {
+    match planned {
+        Ok(PlannedChild::Child(next)) => state.pending = Some(next),
+        Ok(PlannedChild::Complete) => complete_work(state),
+        Ok(PlannedChild::Wait(wait)) => {
+            state.error = None;
+            state.failures = 0;
+            complete_work(state);
+            let due = wait.next_due_ms(now, cadence);
+            state.round_observation_wake_at_ms = Some(
+                state
+                    .round_observation_wake_at_ms
+                    .map_or(due, |earlier| earlier.min(due)),
+            );
+            // Finish this position without delaying the remaining round.
+            // The retained wake is applied when the whole round completes.
+            state.next_due_ms = now;
+        }
+        Err(error) => fail_work(state, now, cadence, error),
+    }
+    schedule_round_end(state, now, cadence);
+}
+
+fn schedule_round_end(state: &mut State, now: i64, cadence: i64) {
+    if state.cursor == state.work.len() {
+        state.next_due_ms = state.next_due_ms.max(now.saturating_add(cadence));
+    }
+    // A later work item or successful child must not erase an earlier
+    // observation wake. Actual refusal/unknown-child backoff remains binding;
+    // never apply a global minimum to an error deadline.
+    if state.error.is_some() {
+        return;
+    }
+    if let Some(wake) = state.round_observation_wake_at_ms {
+        state.next_due_ms = state.next_due_ms.min(wake.max(now));
+    }
+}
+
 fn fail_work(state: &mut State, now: i64, cadence: i64, error: String) {
     state.error = Some(error);
     state.failures = state.failures.saturating_add(1).min(16);
@@ -1380,6 +1443,7 @@ pub(crate) fn advance(
             None => (
                 None,
                 State {
+                    round_observation_wake_at_ms: None,
                     reversal_heads: BTreeMap::new(),
                     window_heads: BTreeMap::new(),
                     schema_version: "tradeassembly.management_automation.v1".into(),
@@ -1406,6 +1470,7 @@ pub(crate) fn advance(
             return Ok(summary(&state));
         }
         if state.cursor == state.work.len() && state.pending.is_none() {
+            state.round_observation_wake_at_ms = None;
             state.work = entry_work(s, &b, job)?;
             let owned_positions = position_ids(s, &b, job)?;
             let live = owned_positions
@@ -1514,16 +1579,8 @@ pub(crate) fn advance(
             }
         }
         if state.pending.is_none() {
-            match measured("manager.next_child", || next_child(s, &b, job, &mut state)) {
-                Ok(Some(next)) => state.pending = Some(next),
-                Ok(None) => complete_work(&mut state),
-                Err(error) => fail_work(&mut state, now, b.config.cadence_ms, error),
-            }
-            if state.cursor == state.work.len() {
-                state.next_due_ms = state
-                    .next_due_ms
-                    .max(now.saturating_add(b.config.cadence_ms));
-            }
+            let planned = measured("manager.next_child", || next_child(s, &b, job, &mut state));
+            apply_planned_child(&mut state, now, b.config.cadence_ms, planned);
             save(s, &b, old, &mut state, None)?;
             old = Some(value(&state)?);
             if state.pending.is_none() {
@@ -1660,11 +1717,7 @@ pub(crate) fn advance(
             // above retain the original key instead of reacquiring evidence.
             fail_work(&mut state, after, b.config.cadence_ms, error);
         }
-        if state.cursor == state.work.len() {
-            state.next_due_ms = state
-                .next_due_ms
-                .max(after.saturating_add(b.config.cadence_ms));
-        }
+        schedule_round_end(&mut state, after, b.config.cadence_ms);
         save(s, &b, old, &mut state, Some((&pending, response_value)))?;
         Ok(summary(&state))
     })();
@@ -1752,6 +1805,241 @@ mod tests {
         serde_json::from_value(json!({"schemaVersion":"tradeassembly.management_automation.v1","activationId":"activation","ownerSha256":"owner","configSha256":"config","coreRevision":"revision","occurrenceId":"occurrence_original","round":1,"generation":0,"childSequence":0,"nextDueMs":1,"positionCursor":null,"work":[],"cursor":0,"pending":null,"error":null,"failures":0,"stateSha256":""})).unwrap()
     }
     #[test]
+    fn expected_reversal_waits_do_not_backoff_or_change_retained_evidence() {
+        let mut state = legacy_state();
+        state.error = Some("previous_real_failure".into());
+        state.failures = 6;
+        // Authored scheduling state only, not an evaluation/provider receipt.
+        state.reversal_heads.insert(
+            "owned-position".into(),
+            serde_json::from_value(json!({"streams":{},"pendingCaptures":{},
+                "planRevisionId":"retained-plan","runId":"retained-run",
+                "cursorMs":1_700_000_000_123_i64,"checkpointSha256":"a".repeat(64),
+                "signalReceiptSha256":null,"waitingForInput":false}))
+            .unwrap(),
+        );
+        let retained_heads = state.reversal_heads.clone();
+        let mut now = 1_700_000_000_123;
+        let boundary = now + 60_000;
+        for _ in 0..10 {
+            // The prior item finished the round. advance clears this marker
+            // when constructing the next round, before rescanning positions.
+            state.round_observation_wake_at_ms = None;
+            state.work = vec![Work::new(Kind::Position, "owned-position".into())];
+            state.cursor = 0;
+            apply_planned_child(
+                &mut state,
+                now,
+                1000,
+                Ok(PlannedChild::Wait(reversal::ObservationWait::WarmingUp {
+                    next_completed_at_ms: boundary,
+                })),
+            );
+            assert_eq!(state.failures, 0);
+            assert!(state.error.is_none());
+            assert!(state.pending.is_none());
+            assert_eq!(state.cursor, 1);
+            assert_eq!(state.next_due_ms, now + 1000);
+            assert_eq!(state.reversal_heads, retained_heads);
+            now = state.next_due_ms;
+        }
+        // A large configured cadence must not postpone a known imminent bar
+        // by a whole round after the last position waits.
+        state.round_observation_wake_at_ms = None;
+        apply_planned_child(
+            &mut state,
+            boundary - 1,
+            60_000,
+            Ok(PlannedChild::Wait(reversal::ObservationWait::Input {
+                next_completed_at_ms: boundary,
+            })),
+        );
+        assert_eq!(state.next_due_ms, boundary);
+        let restored: State = serde_json::from_value(value(&state).unwrap()).unwrap();
+        assert_eq!(restored.next_due_ms, boundary);
+        assert_eq!(restored.reversal_heads, retained_heads);
+        assert_eq!(restored.failures, 0);
+    }
+    #[test]
+    fn real_reversal_errors_keep_failure_backoff_including_legacy_wait_strings() {
+        for code in [
+            "managed_reversal_not_current",
+            "management_reversal_stream_input_template_changed",
+            "management_reversal_grid_invalid",
+            "management_reversal_warming_up",
+            "management_reversal_waiting_for_input",
+        ] {
+            let mut state = legacy_state();
+            state.work = vec![Work::new(Kind::Position, "owned-position".into())];
+            apply_planned_child(&mut state, 1000, 1000, Err(code.into()));
+            assert_eq!(state.error.as_deref(), Some(code));
+            assert_eq!(state.failures, 1);
+            assert_eq!(state.next_due_ms, 3000);
+            assert!(state.pending.is_none());
+        }
+    }
+
+    #[test]
+    fn earliest_reversal_wait_survives_later_work_and_service_recreation() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory
+            .path()
+            .join("multi-work-wake.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let service = TradeAssemblyService::test_local(&db);
+        let binding = Binding {
+            activation: "activation".into(),
+            config: config(),
+            config_hash: "config".into(),
+            owner: "owner".into(),
+            revision: "revision".into(),
+        };
+        let mut state = legacy_state();
+        state.work = vec![
+            Work::new(Kind::Position, "waiting-position".into()),
+            Work::new(Kind::Position, "later-position".into()),
+        ];
+        apply_planned_child(
+            &mut state,
+            1000,
+            60_000,
+            Ok(PlannedChild::Wait(reversal::ObservationWait::WarmingUp {
+                next_completed_at_ms: 1500,
+            })),
+        );
+        assert_eq!(state.cursor, 1);
+        assert!(
+            state.next_due_ms <= 1000,
+            "remaining work must be immediately due"
+        );
+        save(&service, &binding, None, &mut state, None).unwrap();
+        let restarted = TradeAssemblyService::test_local(&db);
+        let (raw, mut restored) = load_state(&restarted, &binding).unwrap().unwrap();
+        assert!(restored.next_due_ms <= 1000);
+        // Completing the remaining position before the boundary must retain
+        // that future wake instead of waiting another full cadence.
+        apply_planned_child(&mut restored, 1100, 60_000, Ok(PlannedChild::Complete));
+        assert_eq!(restored.cursor, 2);
+        assert_eq!(restored.next_due_ms, 1500);
+        assert_eq!(value(&restored).unwrap()["roundObservationWakeAtMs"], 1500);
+        assert!(restored.error.is_none());
+        assert_eq!(restored.failures, 0);
+        assert!(restored.pending.is_none());
+        save(&restarted, &binding, Some(raw), &mut restored, None).unwrap();
+        let second_restart = TradeAssemblyService::test_local(&db);
+        let (_, restored) = load_state(&second_restart, &binding).unwrap().unwrap();
+        assert_eq!(restored.next_due_ms, 1500);
+        assert_eq!(value(&restored).unwrap()["roundObservationWakeAtMs"], 1500);
+        assert!(second_restart
+            .runtime()
+            .storage
+            .list_json(CHILDREN)
+            .unwrap()
+            .is_empty());
+        assert!(second_restart
+            .runtime()
+            .storage
+            .list_json("plugin_operation_receipts")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn later_successful_child_and_later_wait_keep_the_earliest_round_wake() {
+        let mut state = legacy_state();
+        state.work = (0..3)
+            .map(|i| Work::new(Kind::Position, format!("position-{i}")))
+            .collect();
+        apply_planned_child(
+            &mut state,
+            1000,
+            60_000,
+            Ok(PlannedChild::Wait(reversal::ObservationWait::WarmingUp {
+                next_completed_at_ms: 1500,
+            })),
+        );
+        apply_planned_child(
+            &mut state,
+            1100,
+            60_000,
+            Ok(PlannedChild::Wait(reversal::ObservationWait::Input {
+                next_completed_at_ms: 2000,
+            })),
+        );
+        assert_eq!(state.round_observation_wake_at_ms, Some(1500));
+        assert!(
+            state.next_due_ms <= 1100,
+            "a second wait must not delay the last item"
+        );
+        // Model exactly the successful-child assignments in advance: after
+        // apply_response completes the last item, success clears the error and
+        // writes next_due_ms = after before the shared round-end scheduling.
+        complete_work(&mut state);
+        state.error = None;
+        state.failures = 0;
+        state.next_due_ms = 1200;
+        schedule_round_end(&mut state, 1200, 60_000);
+        assert_eq!(state.next_due_ms, 1500);
+        state.next_due_ms = 1800;
+        schedule_round_end(&mut state, 1800, 60_000);
+        assert_eq!(
+            state.next_due_ms, 1800,
+            "an overdue wake is immediately due"
+        );
+    }
+
+    #[test]
+    fn earlier_round_wake_never_shortens_real_error_or_unknown_child_backoff() {
+        let mut state = legacy_state();
+        state.work = vec![
+            Work::new(Kind::Position, "waiting-position".into()),
+            Work::new(Kind::Position, "failed-position".into()),
+        ];
+        apply_planned_child(
+            &mut state,
+            1000,
+            60_000,
+            Ok(PlannedChild::Wait(reversal::ObservationWait::WarmingUp {
+                next_completed_at_ms: 1500,
+            })),
+        );
+        apply_planned_child(
+            &mut state,
+            1500,
+            60_000,
+            Err("managed_reversal_not_current".into()),
+        );
+        assert_eq!(state.next_due_ms, 61_500);
+        assert_eq!(state.round_observation_wake_at_ms, Some(1500));
+        assert_eq!(state.error.as_deref(), Some("managed_reversal_not_current"));
+        assert_eq!(state.failures, 1);
+        // Unknown outcomes retain their exact original child and backoff too.
+        state.cursor = 1;
+        let original = child(
+            &mut state,
+            "/retained-test-child",
+            json!({"original":true}),
+            Action::Reversal {
+                step: reversal::Action::Evaluate {},
+            },
+        )
+        .unwrap();
+        state.pending = Some(original.clone());
+        retain_reversal_child(
+            &mut state,
+            1600,
+            1000,
+            "original_child_outcome_unknown".into(),
+        );
+        let deadline = state.next_due_ms;
+        schedule_round_end(&mut state, 1600, 1000);
+        assert_eq!(state.next_due_ms, deadline);
+        assert_eq!(state.pending.as_ref(), Some(&original));
+        assert_eq!(state.round_observation_wake_at_ms, Some(1500));
+    }
+
+    #[test]
     fn absent_rollover_preserves_legacy_config_bytes_and_state_hash() {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -1779,6 +2067,8 @@ mod tests {
         let mut old = serde_json::to_value(&state).unwrap();
         assert!(old.get("windowHeads").is_none());
         assert!(old.get("reversalHeads").is_none());
+        assert!(old.get("roundObservationWakeAtMs").is_none());
+        assert!(state.round_observation_wake_at_ms.is_none());
         old["stateSha256"] = json!("");
         assert_eq!(state_hash(&state).unwrap(), hash(&old).unwrap());
         let decoded: State = serde_json::from_value(old.clone()).unwrap();

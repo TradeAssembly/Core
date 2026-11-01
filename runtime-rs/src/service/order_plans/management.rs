@@ -706,20 +706,16 @@ fn causal_reversal(
     }
     Ok(())
 }
-fn reversal(
+// Shared by strict execution validation and read-only idle classification.
+// Current indexed receipt integrity/ownership/source, exact scope/lineage and
+// actual-now subject/clock checks are mandatory even for a no-action wait.
+fn reversal_frame(
     s: &TradeAssemblyService,
     p: &Position,
     entry: &OrderPlan,
-    id: Option<&str>,
+    id: &str,
     now: i64,
-) -> Result<Option<ReadyReversal>, String> {
-    if p.policy.rules.reversal_signal.is_none() {
-        if id.is_some() {
-            return Err("managed_unexpected_reversal".into());
-        }
-        return Ok(None);
-    }
-    let id = id.ok_or("managed_reversal_required")?;
+) -> Result<crate::data_strategy::SignalFrame, String> {
     let (plan, r) = data_evaluation::indexed_receipt(s, id)?;
     if plan.content.scope != entry.command.scope || r.receipt_sha256 != id {
         return Err("managed_reversal_scope_mismatch".into());
@@ -734,29 +730,133 @@ fn reversal(
         return Err("managed_reversal_position_lineage_mismatch".into());
     }
     let frame = r.signals.last().ok_or("managed_reversal_not_ready")?;
+    validate_reversal_subject(frame, &entry.order.instrument.instrument_id, now)?;
+    Ok(frame.clone())
+}
+fn validate_reversal_subject(
+    frame: &crate::data_strategy::SignalFrame,
+    instrument: &str,
+    now: i64,
+) -> Result<(), String> {
     if frame.trade_instruments.len() != 1
-        || frame.trade_instruments[0].instrument_id != entry.order.instrument.instrument_id
+        || frame.trade_instruments[0].instrument_id != instrument
         || frame.known_at_ms > now
         || frame.arrived_at_ms > now
         || frame.event_end_ms > now
-        || now - frame.event_end_ms >= p.policy.max_reversal_age_ms
     {
         return Err("managed_reversal_not_current".into());
     }
-    let watermark = ReversalWatermark {
+    Ok(())
+}
+fn reversal_watermark(id: &str, frame: &crate::data_strategy::SignalFrame) -> ReversalWatermark {
+    ReversalWatermark {
         receipt_sha256: id.into(),
         event_end_ms: frame.event_end_ms,
         known_at_ms: frame.known_at_ms,
         arrived_at_ms: frame.arrived_at_ms,
-    };
-    causal_reversal(&p.entry_time, p.reversal_watermark.as_ref(), &watermark)?;
-    match frame.exit {
-        crate::data_strategy::SignalValue::Ready { value } => {
-            Ok(Some(ReadyReversal { value, watermark }))
-        }
-        _ => Err("managed_reversal_not_ready".into()),
     }
 }
+fn ready_reversal(
+    frame: &crate::data_strategy::SignalFrame,
+    id: &str,
+    entry: &ObservationTime,
+    previous: Option<&ReversalWatermark>,
+    now: i64,
+    max_age_ms: i64,
+) -> Result<ReadyReversal, String> {
+    if now - frame.event_end_ms >= max_age_ms {
+        return Err("managed_reversal_not_current".into());
+    }
+    let watermark = reversal_watermark(id, frame);
+    causal_reversal(entry, previous, &watermark)?;
+    match frame.exit {
+        crate::data_strategy::SignalValue::Ready { value } => {
+            Ok(ReadyReversal { value, watermark })
+        }
+        crate::data_strategy::SignalValue::WarmingUp => Err("managed_reversal_not_ready".into()),
+    }
+}
+fn reversal(
+    s: &TradeAssemblyService,
+    p: &Position,
+    entry: &OrderPlan,
+    id: Option<&str>,
+    now: i64,
+) -> Result<Option<ReadyReversal>, String> {
+    if p.policy.rules.reversal_signal.is_none() {
+        if id.is_some() {
+            return Err("managed_unexpected_reversal".into());
+        }
+        return Ok(None);
+    }
+    let id = id.ok_or("managed_reversal_required")?;
+    let frame = reversal_frame(s, p, entry, id, now)?;
+    ready_reversal(
+        &frame,
+        id,
+        &p.entry_time,
+        p.reversal_watermark.as_ref(),
+        now,
+        p.policy.max_reversal_age_ms,
+    )
+    .map(Some)
+}
+
+// This classification can only suppress work, never return a trading signal.
+// TTL is irrelevant only to a consumed false reversal-only observation or initial
+// bootstrap before entry. With any prior management watermark/consumption,
+// pre-entry evidence remains a causal refusal, not another bootstrap.
+// True retries, independent price work and unconsumed post-entry evidence still
+// use strict reversal().
+fn idle_reversal_frame(
+    frame: &crate::data_strategy::SignalFrame,
+    id: &str,
+    entry: &ObservationTime,
+    previous: Option<&ReversalWatermark>,
+    last_consumed: Option<&str>,
+    price_exits: bool,
+) -> Result<bool, String> {
+    if !matches!(frame.exit, crate::data_strategy::SignalValue::Ready { .. }) {
+        return Err("managed_reversal_not_ready".into());
+    }
+    match causal_reversal(entry, previous, &reversal_watermark(id, frame)) {
+        // A consumed false signal needs no further reversal-only monitoring.
+        // A still-true signal can be needed after an unfilled close, and price
+        // rules require ordinary fresh quote/Advance work even when false.
+        Ok(()) => Ok(last_consumed == Some(id)
+            && matches!(
+                frame.exit,
+                crate::data_strategy::SignalValue::Ready { value: false }
+            )
+            && !price_exits),
+        Err(code)
+            if code == "managed_reversal_predates_entry"
+                && previous.is_none()
+                && last_consumed.is_none() =>
+        {
+            Ok(true)
+        }
+        Err(code) => Err(code),
+    }
+}
+fn idle_reversal_observation(
+    s: &TradeAssemblyService,
+    p: &Position,
+    entry: &OrderPlan,
+    id: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let frame = reversal_frame(s, p, entry, id, now)?;
+    idle_reversal_frame(
+        &frame,
+        id,
+        &p.entry_time,
+        p.reversal_watermark.as_ref(),
+        p.last_reversal_receipt.as_deref(),
+        p.policy.rules.stop_loss_ratio.is_some() || p.policy.rules.trailing_ratio.is_some(),
+    )
+}
+
 pub fn advance(
     s: &TradeAssemblyService,
     c: AdvanceCommand,
@@ -1937,6 +2037,272 @@ mod tests {
         );
         assert!(causal_reversal(&entry, Some(&first), &first).is_ok());
     }
+    fn idle_frame(end: i64, known: i64, arrived: i64) -> crate::data_strategy::SignalFrame {
+        crate::data_strategy::SignalFrame {
+            event_end_ms: end,
+            known_at_ms: known,
+            arrived_at_ms: arrived,
+            trade_instruments: vec![crate::data_pipeline::InstrumentContext {
+                instrument_id: "owned".into(),
+                asset_class: "equity".into(),
+                instrument_family: "equity".into(),
+            }],
+            entry: crate::data_strategy::SignalValue::Ready { value: false },
+            exit: crate::data_strategy::SignalValue::Ready { value: false },
+            upstream_content_sha256: vec![],
+        }
+    }
+    #[test]
+    fn consumed_false_and_verified_preentry_are_idle_without_manufacturing_a_signal() {
+        let now = 100_000;
+        let consumed = idle_frame(60_000, 60_001, 60_002);
+        validate_reversal_subject(&consumed, "owned", now).unwrap();
+        let watermark = reversal_watermark("consumed", &consumed);
+        assert!(idle_reversal_frame(
+            &consumed,
+            "consumed",
+            &time(50_000, 50_001),
+            Some(&watermark),
+            Some("consumed"),
+            false
+        )
+        .unwrap());
+        // The same stale receipt is still rejected for manual execution.
+        assert_eq!(
+            ready_reversal(
+                &consumed,
+                "consumed",
+                &time(50_000, 50_001),
+                Some(&watermark),
+                now,
+                30_000
+            )
+            .err()
+            .unwrap(),
+            "managed_reversal_not_current"
+        );
+        assert!(!idle_reversal_frame(
+            &consumed,
+            "unconsumed",
+            &time(50_000, 50_001),
+            None,
+            None,
+            false
+        )
+        .unwrap());
+        let bootstrap = idle_frame(60_000, 60_001, 60_002);
+        validate_reversal_subject(&bootstrap, "owned", now).unwrap();
+        assert!(idle_reversal_frame(
+            &bootstrap,
+            "bootstrap",
+            &time(70_000, 70_001),
+            None,
+            None,
+            false
+        )
+        .unwrap());
+        assert_eq!(
+            ready_reversal(
+                &bootstrap,
+                "bootstrap",
+                &time(70_000, 70_001),
+                None,
+                now,
+                30_000
+            )
+            .err()
+            .unwrap(),
+            "managed_reversal_not_current"
+        );
+        let fresh_bootstrap = idle_frame(90_000, 90_001, 90_002);
+        assert_eq!(
+            ready_reversal(
+                &fresh_bootstrap,
+                "fresh-bootstrap",
+                &time(95_000, 95_001),
+                None,
+                now,
+                30_000
+            )
+            .err()
+            .unwrap(),
+            "managed_reversal_predates_entry"
+        );
+    }
+    #[test]
+    fn idle_wait_preserves_fresh_true_close_retry_and_independent_price_monitoring() {
+        let frame = idle_frame(90_000, 90_001, 90_002);
+        let entry = time(50_000, 50_001);
+        let prior = reversal_watermark("false-observation", &frame);
+        assert!(idle_reversal_frame(
+            &frame,
+            "false-observation",
+            &entry,
+            Some(&prior),
+            Some("false-observation"),
+            false
+        )
+        .unwrap());
+        assert!(!idle_reversal_frame(
+            &frame,
+            "false-observation",
+            &entry,
+            Some(&prior),
+            Some("false-observation"),
+            true
+        )
+        .unwrap());
+        let mut exit = frame;
+        exit.exit = crate::data_strategy::SignalValue::Ready { value: true };
+        let prior = reversal_watermark("true-observation", &exit);
+        assert!(!idle_reversal_frame(
+            &exit,
+            "true-observation",
+            &entry,
+            Some(&prior),
+            Some("true-observation"),
+            false
+        )
+        .unwrap());
+        assert!(
+            ready_reversal(
+                &exit,
+                "true-observation",
+                &entry,
+                Some(&prior),
+                100_000,
+                30_000
+            )
+            .unwrap()
+            .value
+        );
+    }
+
+    #[test]
+    fn idle_classification_still_requires_actual_now_subject_clocks_and_ready_exit() {
+        let now = 100_000;
+        let frame = idle_frame(60_000, 60_001, 60_002);
+        let mut foreign = frame.clone();
+        foreign.trade_instruments[0].instrument_id = "foreign".into();
+        assert_eq!(
+            validate_reversal_subject(&foreign, "owned", now).unwrap_err(),
+            "managed_reversal_not_current"
+        );
+        let mut multiple = frame.clone();
+        multiple
+            .trade_instruments
+            .push(multiple.trade_instruments[0].clone());
+        assert_eq!(
+            validate_reversal_subject(&multiple, "owned", now).unwrap_err(),
+            "managed_reversal_not_current"
+        );
+        for clock in ["known", "arrived", "event"] {
+            let mut bad = frame.clone();
+            match clock {
+                "known" => bad.known_at_ms = now + 1,
+                "arrived" => bad.arrived_at_ms = now + 1,
+                "event" => bad.event_end_ms = now + 1,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_reversal_subject(&bad, "owned", now).unwrap_err(),
+                "managed_reversal_not_current"
+            );
+        }
+        let mut unready = frame;
+        unready.exit = crate::data_strategy::SignalValue::WarmingUp;
+        assert_eq!(
+            idle_reversal_frame(
+                &unready,
+                "consumed",
+                &time(70_000, 70_001),
+                None,
+                Some("consumed"),
+                false
+            )
+            .unwrap_err(),
+            "managed_reversal_not_ready"
+        );
+    }
+    #[test]
+    fn unconsumed_stale_and_revised_postentry_observations_remain_errors() {
+        let now = 100_000;
+        let frame = idle_frame(60_000, 60_001, 60_002);
+        assert!(!idle_reversal_frame(
+            &frame,
+            "unconsumed",
+            &time(50_000, 50_001),
+            None,
+            None,
+            false
+        )
+        .unwrap());
+        assert_eq!(
+            ready_reversal(
+                &frame,
+                "unconsumed",
+                &time(50_000, 50_001),
+                None,
+                now,
+                30_000
+            )
+            .err()
+            .unwrap(),
+            "managed_reversal_not_current"
+        );
+        let prior = reversal_watermark("original", &frame);
+        let preentry = idle_frame(40_000, 40_001, 40_002);
+        validate_reversal_subject(&preentry, "owned", now).unwrap();
+        assert_eq!(
+            idle_reversal_frame(
+                &preentry,
+                "regressed",
+                &time(50_000, 50_001),
+                Some(&prior),
+                Some("original"),
+                false
+            )
+            .unwrap_err(),
+            "managed_reversal_predates_entry",
+        );
+        assert_eq!(
+            idle_reversal_frame(
+                &preentry,
+                "regressed",
+                &time(50_000, 50_001),
+                Some(&prior),
+                None,
+                false
+            )
+            .unwrap_err(),
+            "managed_reversal_predates_entry",
+        );
+        assert_eq!(
+            idle_reversal_frame(
+                &preentry,
+                "regressed",
+                &time(50_000, 50_001),
+                None,
+                Some("original"),
+                false
+            )
+            .unwrap_err(),
+            "managed_reversal_predates_entry",
+        );
+        assert_eq!(
+            idle_reversal_frame(
+                &frame,
+                "revised",
+                &time(50_000, 50_001),
+                Some(&prior),
+                Some("revised"),
+                false
+            )
+            .unwrap_err(),
+            "managed_reversal_revision_requires_replay"
+        );
+    }
+
     #[test]
     fn unsupported_automatic_reversal_is_rejected_before_entry() {
         let mut p:ExitPolicy=serde_json::from_value(json!({"entryBasis":"provider_final_gross_excluding_fees","rules":{"schemaVersion":"tradeassembly.position_exit_rules.v1","priceBasis":"bid","stopLossRatio":"0.1","trailingRatio":"0.2","trailingStart":{"kind":"immediate"},"reversalSignal":null,"precedence":["stop_loss","trailing"],"maxQuoteAgeMs":30000},"feeCashCap":"1","maxLimitSlippageRatio":"0.01","timeInForce":"day","maxReversalAgeMs":30000})).unwrap();

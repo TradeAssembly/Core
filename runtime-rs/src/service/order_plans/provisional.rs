@@ -652,4 +652,3 @@ mod contract_tests {
         assert!(selected_manifest(&make(json!([dep.clone(), dep])), op, role).is_err());
     }
 }
-

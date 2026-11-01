@@ -16,6 +16,7 @@ mod agent_orders;
 mod attribution_journal;
 mod backtest;
 pub mod backtest_lifecycle;
+pub(crate) mod backtest_recomputations;
 mod broker_onboarding;
 mod broker_recovery;
 mod capability_graph;
@@ -1079,6 +1080,17 @@ impl TradeAssemblyService {
         path: &str,
         body: Value,
     ) -> ServiceResponse {
+        if matches!(
+            backtest_recomputations::route(method, path),
+            Some(backtest_recomputations::Route::Inspect(..))
+        ) {
+            return backtest_recomputations::dispatch(self, method, path, &body)
+                .expect("matched finite inspect route");
+        }
+        let recompute_request = match backtest_recomputations::capture_http(method, path, &body) {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
         let timing_route = method.eq_ignore_ascii_case("POST")
             && (matches!(
                 path,
@@ -1143,6 +1155,9 @@ impl TradeAssemblyService {
             // authenticated actor/account/authority fields remain bound above.
             body["mode"] = json!("backtest");
         }
+        if let Some(request) = recompute_request {
+            backtest_recomputations::bind_body(&mut body, request);
+        }
         let normalized_method = method.to_ascii_uppercase();
         let normalized_path = normalize_path(path);
         if let Some(response) =
@@ -1172,6 +1187,11 @@ impl TradeAssemblyService {
             return response;
         }
         if let Some(response) = selection_plans::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) =
+            backtest_recomputations::preflight(self, &normalized_method, &normalized_path, &body)
+        {
             return response;
         }
         if let Some(response) = management_windows::preflight(self, &normalized_path, &body) {
@@ -1407,6 +1427,9 @@ impl TradeAssemblyService {
     }
 
     fn dispatch_http(&self, method: &str, path: &str, body: Value) -> ServiceResponse {
+        if let Some(response) = backtest_recomputations::dispatch(self, method, path, &body) {
+            return response;
+        }
         let normalized_method = method.to_ascii_uppercase();
         let normalized_path = normalize_path(path);
         if let Some(response) =
@@ -3490,6 +3513,19 @@ impl TradeAssemblyService {
         // Authenticated-variable enrichment is for invocation authority, not this
         // closed data selector. Keep the exact request but still run the normal
         // agent allowlist/current-lease binding below before dispatching it.
+        let recompute_request = match backtest_recomputations::capture_mcp(self, name, &arguments) {
+            Ok(request) => request,
+            Err(response) => {
+                return mcp::tool_error(
+                    name,
+                    service_error_code(&response.body)
+                        .as_deref()
+                        .unwrap_or("typed_recompute_command_invalid"),
+                    "Typed recompute command refused.",
+                    Some(json!({"httpStatus":response.status})),
+                )
+            }
+        };
         let indicator_request =
             (name == indicator_context::TOOL).then(|| arguments["request"].clone());
         if matches!(
@@ -3619,6 +3655,36 @@ impl TradeAssemblyService {
         } else {
             arguments
         };
+        if let Some(request) = recompute_request {
+            if name == backtest_recomputations::INSPECT_TOOL {
+                arguments["request"] = request;
+                let response = backtest_recomputations::mcp_response(self, name, &arguments)
+                    .expect("finite recompute inspect");
+                return if response.status >= 400 {
+                    mcp::tool_error(
+                        name,
+                        service_error_code(&response.body)
+                            .as_deref()
+                            .unwrap_or("typed_recompute_refused"),
+                        "Typed recompute inspection refused.",
+                        Some(json!({"httpStatus":response.status})),
+                    )
+                } else {
+                    mcp::call_tool_with_payload(name, response.body)
+                };
+            }
+            backtest_recomputations::bind_body(&mut arguments, request);
+            if let Some(response) = backtest_recomputations::mcp_preflight(self, name, &arguments) {
+                return mcp::tool_error(
+                    name,
+                    service_error_code(&response.body)
+                        .as_deref()
+                        .unwrap_or("typed_recompute_refused"),
+                    "Typed recompute command refused.",
+                    Some(json!({"httpStatus":response.status})),
+                );
+            }
+        }
         if let Some(request) = indicator_request {
             if let Err(code) = self.require_background_worker_current() {
                 return mcp::tool_error(
@@ -4261,6 +4327,31 @@ impl TradeAssemblyService {
             }
             "tradeassembly.plugin.status" => self.plugins_providers(),
             "tradeassembly.indicator.status" => json!({"ok": true, "indicators": ["sma", "rsi"]}),
+            backtest_recomputations::START_TOOL | backtest_recomputations::ADVANCE_TOOL => {
+                let response = backtest_recomputations::mcp_response(self, name, &arguments)
+                    .expect("finite recompute mutation");
+                let payload = if response.status >= 400 {
+                    mcp::tool_error(
+                        name,
+                        service_error_code(&response.body)
+                            .as_deref()
+                            .unwrap_or("typed_recompute_refused"),
+                        "Typed recompute command refused.",
+                        Some(json!({"httpStatus":response.status})),
+                    )
+                } else {
+                    mcp::call_tool_with_payload(name, response.body.clone())
+                };
+                if response.status == 503 && response.body["error"]["retryable"] == true {
+                    return payload;
+                }
+                return self.complete_mcp_command_or_error(
+                    name,
+                    &command_envelope,
+                    response.status,
+                    payload,
+                );
+            }
             "tradeassembly.backtest.run" => {
                 backtest_lifecycle::create(self, nested_graphql_request(&arguments)).body
             }
@@ -4305,15 +4396,32 @@ impl TradeAssemblyService {
                 .body
             }
             "tradeassembly.backtest.replay" => {
-                backtest_lifecycle::replay(
+                let response = backtest_lifecycle::replay(
                     self,
                     arguments["run_id"]
                         .as_str()
                         .or_else(|| arguments["backtest_id"].as_str())
                         .unwrap_or_default(),
-                )
-                .body
+                );
+                if response.status >= 400 {
+                    let payload = mcp::tool_error(
+                        name,
+                        service_error_code(&response.body)
+                            .as_deref()
+                            .unwrap_or("backtest_replay_refused"),
+                        "Backtest replay refused.",
+                        Some(json!({"httpStatus":response.status})),
+                    );
+                    return self.complete_mcp_command_or_error(
+                        name,
+                        &command_envelope,
+                        response.status,
+                        payload,
+                    );
+                }
+                response.body
             }
+
             "tradeassembly.robustness.run" => {
                 robustness::create(self, nested_graphql_request(&arguments)).body
             }

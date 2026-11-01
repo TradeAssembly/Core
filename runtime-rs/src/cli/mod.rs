@@ -575,6 +575,10 @@ pub enum BacktestsCommand {
     Replay {
         run_id: String,
     },
+    Recompute {
+        #[command(subcommand)]
+        command: BacktestRecomputeCommand,
+    },
     Report {
         run_id: String,
     },
@@ -583,6 +587,23 @@ pub enum BacktestsCommand {
         #[arg(long, default_value = "reportJson")]
         export_kind: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum BacktestRecomputeCommand {
+    Start(BacktestRecomputeRequestArgs),
+    Advance(BacktestRecomputeRequestArgs),
+    Inspect {
+        run_id: String,
+        recomputation_id: String,
+    },
+}
+
+#[derive(Args)]
+pub struct BacktestRecomputeRequestArgs {
+    /// Closed recompute command JSON, including its explicit stable idempotencyKey.
+    #[arg(long)]
+    request_file: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -3154,6 +3175,9 @@ pub fn execute_backtests_command(
             &format!("/backtests/{run_id}/replay"),
             json!({}),
         ),
+        BacktestsCommand::Recompute { command } => {
+            execute_backtest_recompute_command(service, command)
+        }
         BacktestsCommand::Report { run_id } => service.handle_http_from_source(
             "cli",
             "GET",
@@ -3169,6 +3193,75 @@ pub fn execute_backtests_command(
             &format!("/backtests/{run_id}/export"),
             json!({"exportKind": export_kind}),
         ),
+    }
+}
+
+fn recompute_request_file(path: &PathBuf, kind: &str) -> Result<(String, Value), ServiceResponse> {
+    use std::io::Read;
+    let file = fs::File::open(path)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_unreadable"))?;
+    if !file
+        .metadata()
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_unreadable"))?
+        .is_file()
+    {
+        return Err(ServiceResponse::bad_request(
+            "typed_recompute_request_bounds_invalid",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_unreadable"))?;
+    if bytes.len() > 65_536 {
+        return Err(ServiceResponse::bad_request(
+            "typed_recompute_request_bounds_invalid",
+        ));
+    }
+    let request: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_invalid"))?;
+    let route = crate::service::backtest_recomputations::cli_command_path(kind, &request)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_invalid"))?;
+    Ok((route, json!({"request":request})))
+}
+
+fn execute_backtest_recompute_command(
+    service: &TradeAssemblyService,
+    command: BacktestRecomputeCommand,
+) -> ServiceResponse {
+    match command {
+        BacktestRecomputeCommand::Start(args) => execute_recompute_request(service, args, "start"),
+        BacktestRecomputeCommand::Advance(args) => {
+            execute_recompute_request(service, args, "advance")
+        }
+        BacktestRecomputeCommand::Inspect {
+            run_id,
+            recomputation_id,
+        } => {
+            if [&run_id, &recomputation_id]
+                .iter()
+                .any(|id| !crate::service::backtest_recomputations::cli_path_segment(id))
+            {
+                return ServiceResponse::bad_request("typed_recompute_request_invalid");
+            }
+            service.handle_http_from_source(
+                "cli",
+                "GET",
+                &format!("/backtests/{run_id}/recomputations/{recomputation_id}"),
+                json!({}),
+            )
+        }
+    }
+}
+
+fn execute_recompute_request(
+    service: &TradeAssemblyService,
+    args: BacktestRecomputeRequestArgs,
+    kind: &str,
+) -> ServiceResponse {
+    match recompute_request_file(&args.request_file, kind) {
+        Ok((path, body)) => service.handle_http_from_source("cli", "POST", &path, body),
+        Err(response) => response,
     }
 }
 
@@ -4219,5 +4312,130 @@ mod tests {
         let exact = spawn_health_response("0.1.0");
         preflight_api_warden(&warden_config(exact, &token_path))
             .expect("exact Warden health must allow API startup");
+    }
+
+    fn recompute_cli_fixture_command(kind: &str) -> serde_json::Value {
+        let mut command = json!({
+            "schemaVersion":"tradeassembly.typed_backtest_recompute_command.v1",
+            "kind":kind,
+            "scope":{"strategyId":"strategy_cli","strategyVersionId":"version_cli",
+                "strategySpecHash":format!("sha256:{}", "a".repeat(64))},
+            "runId":"backtest_cli","idempotencyKey":format!("explicit-cli-{kind}")
+        });
+        if kind == "start" {
+            command["expectedManifestHash"] = json!(format!("sha256:{}", "b".repeat(64)));
+            command["expectedResultHash"] = json!(format!("sha256:{}", "c".repeat(64)));
+        } else {
+            command["recomputationId"] = json!("backtest_recompute_cli");
+            command["expectedStateSha256"] = json!("d".repeat(64));
+        }
+        command
+    }
+
+    #[test]
+    fn backtest_recompute_cli_preserves_explicit_keys_and_fixed_routes() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        for kind in ["start", "advance"] {
+            let file = dir.path().join(format!("{kind}.json"));
+            let request = recompute_cli_fixture_command(kind);
+            fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
+            let first = recompute_request_file(&file, kind).unwrap();
+            let retry = recompute_request_file(&file, kind).unwrap();
+            assert_eq!(
+                first, retry,
+                "CLI retries must never mint a replacement key"
+            );
+            assert_eq!(first.1, json!({"request":request}));
+            assert_eq!(
+                first.0,
+                if kind == "start" {
+                    "/backtests/backtest_cli/recomputations"
+                } else {
+                    "/backtests/backtest_cli/recomputations/backtest_recompute_cli/advance"
+                }
+            );
+            let cli = Cli::try_parse_from([
+                "tradeassembly",
+                "backtests",
+                "recompute",
+                kind,
+                "--request-file",
+                file.to_str().unwrap(),
+            ])
+            .unwrap();
+            let Command::Backtests {
+                command: BacktestsCommand::Recompute { command },
+            } = cli.command
+            else {
+                panic!("expected explicit recompute subcommand");
+            };
+            match (kind, command) {
+                ("start", BacktestRecomputeCommand::Start(args))
+                | ("advance", BacktestRecomputeCommand::Advance(args)) => {
+                    assert_eq!(args.request_file, file)
+                }
+                _ => panic!("wrong recompute action"),
+            }
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["tradeassembly", "backtests", "replay", "backtest_old"])
+                .unwrap()
+                .command,
+            Command::Backtests {
+                command: BacktestsCommand::Replay { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn backtest_recompute_cli_refuses_unkeyed_oversized_or_ambiguous_requests() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("request.json");
+        let mut request = recompute_cli_fixture_command("start");
+        request.as_object_mut().unwrap().remove("idempotencyKey");
+        fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(
+            recompute_request_file(&file, "start").unwrap_err().status,
+            400
+        );
+        let mut request = recompute_cli_fixture_command("start");
+        request["owner"] = json!("caller-selected-owner");
+        fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(
+            recompute_request_file(&file, "start").unwrap_err().status,
+            400
+        );
+        fs::write(
+            &file,
+            serde_json::to_vec(&recompute_cli_fixture_command("advance")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            recompute_request_file(&file, "start").unwrap_err().status,
+            400
+        );
+        fs::write(&file, vec![b' '; 65_537]).unwrap();
+        let oversized = recompute_request_file(&file, "start").unwrap_err();
+        assert_eq!(
+            oversized.body["error"]["code"],
+            "typed_recompute_request_bounds_invalid"
+        );
+        let service = TradeAssemblyService::test_local(":memory:");
+        let invalid_path = execute_backtest_recompute_command(
+            &service,
+            BacktestRecomputeCommand::Inspect {
+                run_id: "../other".into(),
+                recomputation_id: "id".into(),
+            },
+        );
+        assert_eq!(invalid_path.status, 400);
+        assert!(service
+            .runtime()
+            .storage
+            .list_json("plugin_operation_requests")
+            .unwrap()
+            .is_empty());
     }
 }

@@ -504,6 +504,32 @@ fn validate_stored_receipt(
     validate_state_availability(&receipt.checkpoint)?;
     Ok(receipt)
 }
+/// Internal historical recovery only. The owning recompute caller has already
+/// verified the actual current human and original completed run. This reader
+/// grants no current-data, provider or execution authority.
+pub(super) fn recover_owned_receipt(
+    service: &TradeAssemblyService,
+    request: &EvaluationStep,
+    context: &SideEffectContext,
+) -> Result<Option<EvaluationReceipt>, String> {
+    let plan = data_plans::read_owned(service, &request.plan_revision_id)?;
+    if plan.content.plan.request.mode != "backtest" {
+        return Err("typed_recompute_original_mode_invalid".into());
+    }
+    let run_key = key(&[&request.run_id, &request.plan_revision_id])?;
+    let receipt_key = key(&[&run_key, context.idempotency_key.as_str()])?;
+    let Some(value) = service.runtime().storage.get_json(RECEIPTS, &receipt_key)? else {
+        return Ok(None);
+    };
+    let request_hash = hash(&json!({"request":request,"authority":context.authority}))?;
+    let receipt = validate_stored_receipt(value, &request_hash, request)?;
+    if receipt.request_authority.as_ref() != Some(&context.authority)
+        || receipt.source_snapshot_sha256.is_some()
+    {
+        return Err("typed_recompute_original_receipt_invalid".into());
+    }
+    Ok(Some(receipt))
+}
 /// Inspect original committed evidence without executing or advancing a run.
 /// Current owner/plan/source/window and request-authority bindings still apply.
 pub(crate) fn inspect_receipt(

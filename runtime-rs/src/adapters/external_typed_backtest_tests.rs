@@ -824,29 +824,7 @@ fn exercise_native_typed_research(asset: TypedResearchAsset) {
         serde_json::to_value(decoded).unwrap(),
         report.body["report"]
     );
-    let calls_before = restored
-        .runtime()
-        .storage
-        .list_json("plugin_operation_receipts")
-        .unwrap()
-        .len();
-    let replay = restored.handle_http(
-        "POST",
-        &format!("/backtests/{id}/replay"),
-        json!({"idempotencyKey":"typed-recompute"}),
-    );
-    assert_eq!(replay.status, 200, "{}", replay.body);
-    assert_eq!(replay.body["status"], "verified");
-    assert!(
-        restored
-            .runtime()
-            .storage
-            .list_json("plugin_operation_receipts")
-            .unwrap()
-            .len()
-            > calls_before,
-        "fresh evaluator run forces actual pure-plugin calls"
-    );
+    let replay = typed_recompute_native(&restored, &scope, id, &result);
     assert_eq!(
         restored
             .runtime()
@@ -938,7 +916,7 @@ fn exercise_native_typed_research(asset: TypedResearchAsset) {
             "typed_research"
         },
         "canonical-native-parity.json",
-        &json!({"configuration":config,"backtest":completed,"report":report.body,"replay":replay.body,"paperSignals":paper_signals,"consumers":consumers,"qualification":"actual native synthetic pure plugin subprocesses and canonical typed research queue/state/replay with service recreation in the same Core process; diagnostic sandbox/test identity; no Core OS-process restart, SRT, normal local-owner bootstrap, live provider/history entitlement, full sizing/risk/stop/screen parity or actual pack formula qualification"}),
+        &json!({"configuration":config,"backtest":completed,"report":report.body,"replay":replay,"paperSignals":paper_signals,"consumers":consumers,"qualification":"actual native synthetic pure plugin subprocesses and canonical typed research queue/state/replay with service recreation in the same Core process; diagnostic sandbox/test identity; no Core OS-process restart, SRT, normal local-owner bootstrap, live provider/history entitlement, full sizing/risk/stop/screen parity or actual pack formula qualification"}),
     );
 }
 
@@ -1192,3 +1170,5 @@ fn typed_research_consumers(
     }
     json!({"secondBacktest":done,"comparison":comparison.body,"robustness":robust_report.body,"workerBoundary":"existing bare system worker consumed verified admitted immutable reports only; no typed/plugin calls, no stored-owner impersonation; owner-scoped/delegated processing is not qualified"})
 }
+
+include!("typed_recompute_fixture.rs");

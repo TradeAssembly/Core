@@ -144,6 +144,9 @@ pub fn replay(service: &TradeAssemblyService, run_id: &str) -> ServiceResponse {
     if run.state != BacktestRunState::Completed {
         return ServiceResponse::conflict("backtest_not_replayable");
     }
+    if manifest.content.configuration.typed_evaluation.is_some() {
+        return ServiceResponse::conflict("typed_backtest_recompute_command_required");
+    }
     let Some(version) = exact_strategy_version(service, &manifest) else {
         return ServiceResponse::bad_request("backtest_strategy_version_required");
     };
@@ -155,11 +158,7 @@ pub fn replay(service: &TradeAssemblyService, run_id: &str) -> ServiceResponse {
     else {
         return ServiceResponse::bad_request("backtest_dataset_unavailable");
     };
-    let replayed = if manifest.content.configuration.typed_evaluation.is_some() {
-        super::typed_backtest::replay(service, &manifest, &version, &snapshot, &expected)
-    } else {
-        crate::backtest_engine::replay(&manifest, &version, &snapshot, &expected)
-    };
+    let replayed = crate::backtest_engine::replay(&manifest, &version, &snapshot, &expected);
     match replayed {
         Ok(result) => ServiceResponse::ok(json!({
             "runId": run_id,
@@ -1625,7 +1624,7 @@ fn version_matches_binding(version: &Value, binding: &StrategyVersionBinding) ->
         })
 }
 
-fn exact_strategy_version(
+pub(super) fn exact_strategy_version(
     service: &TradeAssemblyService,
     manifest: &BacktestRunManifest,
 ) -> Option<Value> {

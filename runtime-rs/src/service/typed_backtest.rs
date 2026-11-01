@@ -11,7 +11,6 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow;
 const PROGRESS: &str = "typed_backtest_progress_v1";
-const REPLAYS: &str = "typed_backtest_replays_v1";
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 static NONCE: AtomicU64 = AtomicU64::new(0);
 fn hash<T: Serialize>(value: &T) -> Result<String, String> {
@@ -32,14 +31,17 @@ fn context(manifest: &BacktestRunManifest, key: &str) -> Result<SideEffectContex
         IdempotencyKey::new(key)?,
     ))
 }
-fn actual_owner(s: &TradeAssemblyService) -> Result<crate::ports::ObjectOwner, String> {
+pub(super) fn actual_owner(s: &TradeAssemblyService) -> Result<crate::ports::ObjectOwner, String> {
     if s.agent_mcp_execution_context().is_some() || s.invocation_actor_kind != "user" {
         return Err("typed_backtest_delegation_unsupported".into());
     }
     s.invocation_owner()
         .ok_or("typed_backtest_current_owner_required".into())
 }
-fn owner(s: &TradeAssemblyService, manifest: &BacktestRunManifest) -> Result<String, String> {
+pub(super) fn owner(
+    s: &TradeAssemblyService,
+    manifest: &BacktestRunManifest,
+) -> Result<String, String> {
     let current = actual_owner(s)?;
     let scope = s
         .runtime()
@@ -426,17 +428,17 @@ pub(crate) fn validate_dataset(
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Progress {
-    schema_version: String,
-    owner_sha256: String,
-    manifest_hash: String,
-    evaluation_run_id: String,
-    cursor_ms: i64,
-    checkpoint_sha256: Option<String>,
-    pending: Option<data_evaluation::EvaluationStep>,
-    steps: Vec<data_evaluation::EvaluationStep>,
-    receipts: Vec<String>,
-    state_sha256: String,
+pub(super) struct Progress {
+    pub(super) schema_version: String,
+    pub(super) owner_sha256: String,
+    pub(super) manifest_hash: String,
+    pub(super) evaluation_run_id: String,
+    pub(super) cursor_ms: i64,
+    pub(super) checkpoint_sha256: Option<String>,
+    pub(super) pending: Option<data_evaluation::EvaluationStep>,
+    pub(super) steps: Vec<data_evaluation::EvaluationStep>,
+    pub(super) receipts: Vec<String>,
+    pub(super) state_sha256: String,
 }
 fn seal(state: &mut Progress) -> Result<(), String> {
     state.state_sha256.clear();
@@ -471,13 +473,16 @@ fn save(
     }
     Ok(())
 }
-fn step_context(
+pub(super) fn step_context(
     manifest: &BacktestRunManifest,
     request: &data_evaluation::EvaluationStep,
 ) -> Result<SideEffectContext, String> {
     context(manifest, &format!("typed-backtest:{}", hash(request)?))
 }
-fn next_step(b: &TypedBacktestBinding, state: &Progress) -> data_evaluation::EvaluationStep {
+pub(super) fn next_step(
+    b: &TypedBacktestBinding,
+    state: &Progress,
+) -> data_evaluation::EvaluationStep {
     data_evaluation::EvaluationStep {
         run_id: state.evaluation_run_id.clone(),
         plan_revision_id: b.plan_revision_id.clone(),
@@ -490,7 +495,7 @@ fn next_step(b: &TypedBacktestBinding, state: &Progress) -> data_evaluation::Eva
         expected_checkpoint_sha256: state.checkpoint_sha256.clone(),
     }
 }
-fn admit_receipt(
+pub(super) fn admit_receipt(
     c: &BacktestConfiguration,
     state: &mut Progress,
     request: data_evaluation::EvaluationStep,
@@ -539,6 +544,7 @@ fn evidence(
     s: &TradeAssemblyService,
     m: &BacktestRunManifest,
     state: &Progress,
+    original_only: bool,
 ) -> Result<
     (
         TypedBacktestEvidence,
@@ -558,7 +564,12 @@ fn evidence(
     let mut values = Vec::new();
     let mut warming = 0;
     for (request, digest) in state.steps.iter().zip(&state.receipts) {
-        let receipt = data_evaluation::inspect_receipt(s, request, &step_context(m, request)?)?;
+        let receipt = if original_only {
+            data_evaluation::recover_owned_receipt(s, request, &step_context(m, request)?)?
+                .ok_or("typed_recompute_original_receipt_missing")?
+        } else {
+            data_evaluation::inspect_receipt(s, request, &step_context(m, request)?)?
+        };
         if receipt.receipt_sha256 != *digest {
             return Err("typed_backtest_original_receipt_changed".into());
         }
@@ -719,7 +730,7 @@ pub(crate) fn advance(
         if state.cursor_ms < b.event_end_ms {
             return Ok(None);
         }
-        let (evidence, signals) = evidence(s, m, &state)?;
+        let (evidence, signals) = evidence(s, m, &state, false)?;
         crate::backtest_engine::execute_typed(
             m,
             version,
@@ -733,45 +744,19 @@ pub(crate) fn advance(
     let _ = s.runtime().leases.release(&lease);
     result
 }
-/// Recompute in a fresh normal evaluator run so no original receipt/operation
-/// key can satisfy the computation. Only identity fields are excluded from the
-/// semantic comparison; original immutable result evidence remains unchanged.
-pub(crate) fn replay(
+/// Pure final comparison of already committed receipts from a retained
+/// recomputation generation. Never allocates a run or invokes a provider.
+pub(super) fn finish_recompute(
     s: &TradeAssemblyService,
     m: &BacktestRunManifest,
     version: &Value,
     snapshot: &DatasetSnapshot,
     expected: &BacktestResult,
-) -> Result<BacktestResult, String> {
-    let who = owner(s, m)?;
+    state: &Progress,
+) -> Result<super::backtest_recomputations::Proof, String> {
+    owner(s, m)?;
     expected.verify()?;
-    validate_configuration(s, &m.content.configuration)?;
-    validate_dataset(s, &m.content.configuration, snapshot)?;
-    let b = m
-        .content
-        .configuration
-        .typed_evaluation
-        .as_ref()
-        .ok_or("typed_backtest_binding_required")?;
-    let mut state = Progress {
-        schema_version: "tradeassembly.typed-backtest-progress.v1".into(),
-        owner_sha256: who,
-        manifest_hash: m.manifest_hash.clone(),
-        evaluation_run_id: format!("typed-replay-{}", hash(&nonce(s)?)?),
-        cursor_ms: b.event_start_ms,
-        checkpoint_sha256: None,
-        pending: None,
-        steps: Vec::new(),
-        receipts: Vec::new(),
-        state_sha256: String::new(),
-    };
-    while state.cursor_ms < b.event_end_ms {
-        owner(s, m)?;
-        let request = next_step(b, &state);
-        let receipt = data_evaluation::step(s, request.clone(), &step_context(m, &request)?)?;
-        admit_receipt(&m.content.configuration, &mut state, request, &receipt)?;
-    }
-    let (evidence, signals) = evidence(s, m, &state)?;
+    let (evidence, signals) = evidence(s, m, state, true)?;
     let mut recomputed = crate::backtest_engine::execute_typed(
         m,
         version,
@@ -793,31 +778,21 @@ pub(crate) fn replay(
     if original.semantic_sha256 != actual.semantic_sha256 {
         return Err("typed_backtest_replay_semantic_mismatch".into());
     }
-    // All recalculated economic outputs and semantic signal evidence must match.
-    // Original receipt/checkpoint identities remain the original run's lineage.
-    let actual_receipts = actual.evaluation_receipts.clone();
-    let actual_checkpoint = actual.final_checkpoint_sha256.clone();
-    recomputed
-        .content
-        .typed_evaluation
-        .as_mut()
-        .unwrap()
-        .evaluation_receipts = original.evaluation_receipts.clone();
-    recomputed
-        .content
-        .typed_evaluation
-        .as_mut()
-        .unwrap()
-        .final_checkpoint_sha256 = original.final_checkpoint_sha256.clone();
+    let mut proof = super::backtest_recomputations::Proof {
+        original_result_hash: expected.result_hash.clone(),
+        semantic_sha256: actual.semantic_sha256.clone(),
+        evaluation_receipt_sha256: actual.evaluation_receipts.clone(),
+        final_checkpoint_sha256: actual.final_checkpoint_sha256.clone(),
+        proof_sha256: String::new(),
+    };
+    let normalized = recomputed.content.typed_evaluation.as_mut().unwrap();
+    normalized.evaluation_receipts = original.evaluation_receipts.clone();
+    normalized.final_checkpoint_sha256 = original.final_checkpoint_sha256.clone();
     if recomputed.content != expected.content {
         return Err("typed_backtest_replay_mismatch".into());
     }
-    let ctx = context(
-        m,
-        &format!("typed-backtest-replay:{}", hash(&state.evaluation_run_id)?),
-    )?;
-    s.runtime().storage.put_json_if_absent(REPLAYS,&state.evaluation_run_id,json!({"schemaVersion":"tradeassembly.typed-backtest-replay.v1","originalResultHash":expected.result_hash,"recomputed":true,"replayRunId":state.evaluation_run_id,"evaluationReceipts":actual_receipts,"finalCheckpointSha256":actual_checkpoint,"semanticSha256":original.semantic_sha256}),&ctx)?;
-    Ok(expected.clone())
+    proof.proof_sha256 = hash(&proof)?;
+    Ok(proof)
 }
 
 #[cfg(test)]

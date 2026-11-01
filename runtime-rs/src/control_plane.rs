@@ -539,6 +539,13 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("POST", path) if path.starts_with("/dataset-ingestions/") && path.ends_with("/cancel") => {
             "research.dataset.cancel".to_string()
         }
+        ("POST", path)
+            if path.starts_with("/backtests/")
+                && (path.ends_with("/recomputations") || path.ends_with("/advance"))
+                && path.contains("/recomputations") =>
+        {
+            "backtest.run.execute".to_string()
+        }
         ("POST", "/product/strategies/backtests/run")
         | ("POST", "/backtests")
         | ("POST", "/backtests:process")
@@ -825,6 +832,9 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.sightline.list_events" => {
             return "sightline.events.list".to_string();
         }
+        "tradeassembly.backtest.recompute.start" | "tradeassembly.backtest.recompute.advance" => {
+            return "backtest.run.execute".to_string()
+        }
         "tradeassembly.backtest.run" => {
             return "backtest.run.execute".to_string();
         }
@@ -1008,6 +1018,15 @@ fn mcp_route_path(name: &str, command_name: &str) -> String {
         "tradeassembly.execution.scheduler.start" => "/product/scheduler/start".to_string(),
         "tradeassembly.execution.scheduler.run" => "/scheduler/run".to_string(),
         "tradeassembly.execution.scheduler.stop" => "/product/scheduler/stop".to_string(),
+        "tradeassembly.backtest.recompute.start" => {
+            "/backtests/{run_id}/recomputations".to_string()
+        }
+        "tradeassembly.backtest.recompute.advance" => {
+            "/backtests/{run_id}/recomputations/{recomputation_id}/advance".to_string()
+        }
+        "tradeassembly.backtest.recompute.inspect" => {
+            "/backtests/{run_id}/recomputations/{recomputation_id}".to_string()
+        }
         "tradeassembly.backtest.run" => "/product/strategies/backtests/run".to_string(),
         "tradeassembly.backtest.get" => "/backtests/{run_id}".to_string(),
         "tradeassembly.backtest.list" => "/backtests".to_string(),
@@ -1550,6 +1569,16 @@ fn command_group(command_name: &str) -> &str {
 }
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
+    if path.starts_with("/backtests/") && path.contains("/recomputations") {
+        return body
+            .get("request")
+            .and_then(|r| r.get("runId"))
+            .or_else(|| body.get("runId"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+    }
+
     let scope = match path {
         "/product/strategies/management-windows/prepare" => {
             Some("/managementWindow/scope/strategyId")

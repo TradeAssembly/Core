@@ -1361,6 +1361,27 @@ pub(super) fn next_child(
     .map(Step::Wait)
 }
 
+// The managed-plan route has a typed command envelope; the other reversal
+// routes retain their existing outer scope. Never fall back between shapes.
+fn response_child_scope(body: &Value, action: &Action) -> Result<data_plans::PlanScope, String> {
+    let raw = match action {
+        Action::PreparePlan {} => &body["managedPositionPlan"]["scope"],
+        _ => &body["scope"],
+    };
+    let scope: data_plans::PlanScope =
+        serde_json::from_value(raw.clone()).map_err(|_| "management_reversal_scope_invalid")?;
+    if matches!(action, Action::PreparePlan {}) {
+        if let Some(outer) = body.get("scope") {
+            let outer: data_plans::PlanScope = serde_json::from_value(outer.clone())
+                .map_err(|_| "management_reversal_scope_invalid")?;
+            if outer != scope {
+                return Err("management_reversal_child_scope_mismatch".into());
+            }
+        }
+    }
+    Ok(scope)
+}
+
 pub(super) fn apply_response(
     s: &TradeAssemblyService,
     binding: &Binding,
@@ -1379,9 +1400,7 @@ pub(super) fn apply_response(
     let (_, position) = load(s, &work.id)?;
     let entry = read_owned(s, &position.entry_plan_id)?;
     if position.activation_id != binding.activation
-        || entry.command.scope
-            != serde_json::from_value::<data_plans::PlanScope>(child.body["scope"].clone())
-                .map_err(|_| "management_reversal_scope_invalid")?
+        || entry.command.scope != response_child_scope(&child.body, action)?
     {
         return Err("management_reversal_child_scope_mismatch".into());
     }
@@ -1789,5 +1808,62 @@ mod query_binding_tests {
             materialize_input(&template, 60000, "OWNED", &far, far.event_start_ms).unwrap_err(),
             "management_reversal_timestamp_invalid"
         );
+    }
+}
+
+#[cfg(test)]
+mod response_scope_tests {
+    use super::*;
+    fn scope() -> Value {
+        json!({"strategyId":"owned","strategyVersionId":"v1","strategySpecHash":"hash"})
+    }
+    #[test]
+    fn managed_plan_response_uses_typed_command_scope_without_outer_fallback() {
+        let expected: data_plans::PlanScope = serde_json::from_value(scope()).unwrap();
+        assert_eq!(
+            response_child_scope(
+                &json!({"managedPositionPlan":{"scope":scope()}}),
+                &Action::PreparePlan {}
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            response_child_scope(&json!({"scope":scope()}), &Action::PreparePlan {}).unwrap_err(),
+            "management_reversal_scope_invalid"
+        );
+        let mut other = scope();
+        other["strategyId"] = json!("foreign");
+        assert_eq!(
+            response_child_scope(
+                &json!({"scope":other,"managedPositionPlan":{"scope":scope()}}),
+                &Action::PreparePlan {}
+            )
+            .unwrap_err(),
+            "management_reversal_child_scope_mismatch"
+        );
+    }
+    #[test]
+    fn other_reversal_children_still_require_their_original_outer_scope() {
+        for action in [
+            Action::CreateStream { source: "s".into() },
+            Action::CaptureSegment { source: "s".into() },
+            Action::AppendSegment { source: "s".into() },
+            Action::Evaluate {},
+        ] {
+            assert!(response_child_scope(&json!({"scope":scope()}), &action).is_ok());
+            assert_eq!(
+                response_child_scope(&json!({"managedPositionPlan":{"scope":scope()}}), &action)
+                    .unwrap_err(),
+                "management_reversal_scope_invalid"
+            );
+        }
+        let mut malformed = scope();
+        malformed["unexpected"] = json!(true);
+        assert!(response_child_scope(
+            &json!({"managedPositionPlan":{"scope":malformed}}),
+            &Action::PreparePlan {}
+        )
+        .is_err());
     }
 }

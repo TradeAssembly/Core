@@ -11,6 +11,152 @@ use std::thread;
 use tradeassembly_runtime::cli::{execute_command, Cli};
 use tradeassembly_runtime::service::{ServiceResponse, TradeAssemblyService};
 
+/// Actual bytes selected by the compiled bundle pin, without provider calls,
+/// credentials, activation or orders. This does not waive bundle privacy checks.
+#[test]
+#[ignore = "requires the exact TRADEASSEMBLY_ALPACA_PLUGIN_PACKAGE selected by packaging/alpaca.json"]
+fn compiled_alpaca_pin_installs_and_reloads_actual_package_v2() {
+    use sha2::{Digest, Sha256};
+    let package = required_path("TRADEASSEMBLY_ALPACA_PLUGIN_PACKAGE");
+    let pin: Value = serde_json::from_slice(include_bytes!("../../packaging/alpaca.json")).unwrap();
+    let digest = pin["packageSha256"].as_str().unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fs::read(&package).unwrap())),
+        digest
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let db = directory.path().join("pinned-package.sqlite");
+    let database = db.to_str().unwrap();
+    let service = TradeAssemblyService::test_local(database).for_authenticated_invocation(
+        "fixture",
+        "pinned-package-owner",
+        None,
+        None,
+    );
+    let response = service.handle_http("POST", "/plugins/packages", json!({
+        "source":{"type":"package","locator":package,"package":{"type":"file","locator":package}},
+        "integrity":{"packageSha256":digest,"manifestSha256":pin["manifestSha256"]},
+        "offline":true,"idempotencyKey":"actual-compiled-alpaca-pin-install"
+    }));
+    assert_eq!(response.status, 200, "{}", response.body);
+    let installed = service
+        .runtime()
+        .plugin_packages
+        .get(digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(installed.plugin_ref, "tradeassembly.alpaca");
+    assert_eq!(installed.version, pin["version"].as_str().unwrap());
+    assert_eq!(
+        installed.manifest_sha256,
+        pin["manifestSha256"].as_str().unwrap()
+    );
+    assert_eq!(installed.descriptor["packageContractVersion"], "2");
+    let contracts = installed.descriptor["dataContracts"].as_array().unwrap();
+    assert_eq!(
+        contracts.len(),
+        18,
+        "the selected V2 provider's declared closure"
+    );
+    for item in contracts {
+        assert!(service
+            .runtime()
+            .plugin_packages
+            .operation_data(digest, item["operationId"].as_str().unwrap())
+            .unwrap()
+            .is_some());
+    }
+    let before_manifest = service
+        .runtime()
+        .plugins
+        .get_manifest("tradeassembly.alpaca")
+        .unwrap();
+    assert!(
+        before_manifest.is_some(),
+        "normal public lifecycle registered the manifest"
+    );
+    let no_invocations = service
+        .runtime()
+        .storage
+        .list_json("plugin_operation_requests")
+        .unwrap();
+    assert!(no_invocations.is_empty());
+    drop(service);
+    let reloaded = TradeAssemblyService::test_local(database).for_authenticated_invocation(
+        "fixture",
+        "pinned-package-owner",
+        None,
+        None,
+    );
+    let fresh = reloaded
+        .runtime()
+        .plugin_packages
+        .get(digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fresh, installed,
+        "new store/cache verifies the same immutable package"
+    );
+    assert_eq!(
+        reloaded
+            .runtime()
+            .plugins
+            .get_manifest("tradeassembly.alpaca")
+            .unwrap(),
+        before_manifest
+    );
+    let schema = reloaded
+        .runtime()
+        .plugin_packages
+        .data_schema(digest, "schema://tradeassembly/ohlcv-series@1")
+        .unwrap()
+        .unwrap();
+    let schema_hash = tradeassembly_plugin_sdk::canonical::canonical_sha256(&schema).unwrap();
+    assert_eq!(
+        schema_hash,
+        "b959916994ffb0ab79bf9cc0314daa36c47b1548dde74e96110e8e6d9f07d26b"
+    );
+    for item in contracts {
+        assert!(reloaded
+            .runtime()
+            .plugin_packages
+            .operation_data(digest, item["operationId"].as_str().unwrap())
+            .unwrap()
+            .is_some());
+    }
+    // Corruption of this isolated installed copy must invalidate both the warm
+    // and a fresh package reader. The original archive remains untouched.
+    let document = fresh.descriptor["dataSchemas"][0]["document"]["path"]
+        .as_str()
+        .unwrap();
+    fs::write(fresh.install_root.join(document), b"{}").unwrap();
+    assert!(reloaded.runtime().plugin_packages.get(digest).is_err());
+    drop(reloaded);
+    let third = TradeAssemblyService::test_local(database);
+    assert!(third.runtime().plugin_packages.get(digest).is_err());
+    assert!(third
+        .runtime()
+        .storage
+        .list_json("plugin_operation_requests")
+        .unwrap()
+        .is_empty());
+    if let Some(path) = std::env::var_os("TRADEASSEMBLY_PIN_PROOF_DIR") {
+        let path = PathBuf::from(path);
+        assert!(path.is_absolute());
+        fs::create_dir_all(&path).unwrap();
+        let proof = json!({"pin":pin,"normalPublicInstall":true,"newServiceAndStoreReload":true,
+            "declaredContractsVerified":contracts.len(),"ohlcvCanonicalSha256":schema_hash,
+            "warmAndFreshTamperRejected":true,"providerCalls":0,"credentialsRead":false,
+            "brokerOrders":0,"bundlePrivacyQualified":false,"realProviderCompatibilityQualified":false});
+        fs::write(
+            path.join("actual-compiled-pin-install-reload.json"),
+            serde_json::to_vec_pretty(&proof).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 #[ignore = "requires TRADEASSEMBLY_ALPACA_PLUGIN_PACKAGE and TRADEASSEMBLY_ALPACA_PLUGIN_LOCK"]
 fn standalone_alpaca_package_installs_resolves_and_invokes_without_exposing_secrets() {

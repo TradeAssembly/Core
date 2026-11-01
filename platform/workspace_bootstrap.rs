@@ -895,16 +895,16 @@ pub(crate) mod installed_pin_tests {
             fs::create_dir(payload.join("plugins")).unwrap();
             let executable = payload.join(binary_name());
             fs::write(&executable, b"new runtime fixture; never executed").unwrap();
-            let filename = "tradeassembly-plugin-alpaca-0.1.19.tar.gz";
+            let compiled: Value =
+                serde_json::from_str(include_str!("../packaging/alpaca.json")).unwrap();
+            let filename = compiled["packageFile"].as_str().unwrap();
             fs::write(
                 payload.join("plugins").join(filename),
                 b"derived signed-package fixture",
             )
             .unwrap();
             let package_hash = hash(&payload.join("plugins").join(filename)).unwrap();
-            let compiled: Value =
-                serde_json::from_str(include_str!("../packaging/alpaca.json")).unwrap();
-            let pin = json!({"version":"0.1.19","target":target,"packageFile":filename,"sourceRevision":compiled["sourceRevision"],"packageSha256":package_hash,"manifestSha256":"b".repeat(64)});
+            let pin = json!({"version":compiled["version"],"target":target,"packageFile":filename,"sourceRevision":compiled["sourceRevision"],"packageSha256":package_hash,"manifestSha256":"b".repeat(64)});
             fs::write(
                 payload.join("plugins/alpaca.json"),
                 serde_json::to_vec(&pin).unwrap(),
@@ -956,14 +956,15 @@ pub(crate) mod installed_pin_tests {
     }
     #[test]
     fn installed_pin_substitution_of_package_lock_bundle_or_executing_binary_fails_closed() {
-        for relative in [
-            "plugins/tradeassembly-plugin-alpaca-0.1.19.tar.gz",
-            "plugins/alpaca.json",
-            "bundle.json",
-            binary_name(),
-        ] {
+        for component in ["package", "pin", "bundle", "executable"] {
             let f = Fixture::new("aarch64-apple-darwin");
-            fs::write(f.payload.join(relative), b"substitution").unwrap();
+            let relative = match component {
+                "package" => format!("plugins/{}", f.pin["packageFile"].as_str().unwrap()),
+                "pin" => "plugins/alpaca.json".to_string(),
+                "bundle" => "bundle.json".to_string(),
+                _ => binary_name().to_string(),
+            };
+            fs::write(f.payload.join(&relative), b"substitution").unwrap();
             assert!(
                 installed_plugin_pin(&f.executable, "aarch64-apple-darwin")
                     .unwrap()

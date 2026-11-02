@@ -176,6 +176,10 @@ fn exercise_native_managed_plan(
             &ctx("managed-plan-calendar"),
         )
         .unwrap();
+        if s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap()["configuration"]["scenario"] == "managed_plan_c5_profile" {
+            return post(crate::service::management_windows::PREPARE,
+                json!({"managementWindow":{"scope":scope,"positionId":id,"triggerRef":"preopen","executionCalendarCollectionId":calendar.collection_id},"accountMode":"paper","idempotencyKey":"c5-profile-owned-window"}));
+        }
         let now = s.runtime().clock.now_ms();
         let date = chrono::DateTime::from_timestamp_millis(now)
             .unwrap()
@@ -445,9 +449,11 @@ fn exercise_native_managed_plan(
     }
     let (noentry, select) = entry_refusals.expect("entry refusals and entry pause completed");
     let schedule = execution_schedule.expect("fresh execution calendar prepared before close");
+    let occurrence = schedule["managementWindow"]["windowId"].as_str()
+        .unwrap_or_else(|| schedule["schedule"]["occurrence"]["occurrenceId"].as_str().unwrap());
     let advance = |receipt: &Value, key: &str| {
         let ids = managed_plan_fixture_observations(s, scope, revision, key);
-        s.handle_http("POST",plans::management::ADVANCE,json!({"scope":scope,"advance":{"executionOccurrenceId":schedule["schedule"]["occurrence"]["occurrenceId"],"positionId":id,"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"],"reversalSignalReceiptSha256":receipt["receiptSha256"]},"accountMode":"paper","idempotencyKey":key}))
+        s.handle_http("POST",plans::management::ADVANCE,json!({"scope":scope,"advance":{"executionOccurrenceId":occurrence,"positionId":id,"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"],"reversalSignalReceiptSha256":receipt["receiptSha256"]},"accountMode":"paper","idempotencyKey":key}))
     };
     let submits = fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
     let unready = if actual_math || provisional {

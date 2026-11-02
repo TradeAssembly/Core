@@ -404,7 +404,9 @@ pub(crate) fn profile_validation_round(
     };
     let start = std::time::Instant::now();
     let (_, reference_plan, reference_intent) =
-        validate_in_round(&deps, request, context, &prepared, source)?;
+        crate::service::management_windows::with_reference_subject_check(|| {
+            validate_in_round(&deps, request, context, &prepared, source)
+        })?;
     let reference_us = start.elapsed().as_micros();
     let start = std::time::Instant::now();
     let (_, current_plan, current_intent) = validate(&deps, request, context, &prepared, source)?;

@@ -535,22 +535,46 @@ pub fn current(s: &TradeAssemblyService, id: &str) -> Result<Current, String> {
     // The scoped service never escapes to acquisition, dispatch or a write.
     super::package_validation::with_round(s, |s| current_in_round(s, id))
 }
+// Read-only benchmark reference only; production has no switch or legacy path.
+#[cfg(test)]
+thread_local! {
+    static PROFILE_REDUNDANT_SUBJECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(crate) fn with_reference_subject_check<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.replace(true)));
+    f()
+}
 fn current_in_round(s: &TradeAssemblyService, id: &str) -> Result<Current, String> {
     let r = {
         let _timing = super::order_plans::financial_timing("management.window.historical");
         historical(s, id)?
     };
-    let subject = {
-        let _timing = super::order_plans::financial_timing("management.window.subject");
-        management::window_subject(s, &r.command.position_id)?
-    };
-    if subject != r.subject {
-        return Err("management_window_subject_changed".into());
+    #[cfg(test)]
+    if PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()) {
+        let subject = management::window_subject(s, &r.command.position_id)?;
+        if subject != r.subject {
+            return Err("management_window_subject_changed".into());
+        }
     }
+    // build() obtains the current subject itself. Comparing that freshly
+    // rebuilt subject preserves the same refusal without resolving the entire
+    // owned strategy twice before any write, wait or external operation.
+    // The independent final policy/calendar and trusted-clock checks below
+    // still run on every invocation and every C5 validation boundary.
     let fresh = {
         let _timing = super::order_plans::financial_timing("management.window.rebuild");
         build(s, r.command.clone(), r.prepared_at_ms)?
     };
+    if fresh.subject != r.subject {
+        return Err("management_window_subject_changed".into());
+    }
     if fresh != r {
         return Err("management_window_source_changed".into());
     }
@@ -717,6 +741,22 @@ pub fn prepare_response(s: &TradeAssemblyService, body: Value) -> ServiceRespons
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reference_subject_profile_never_escapes_callback_or_unwind() {
+        assert!(!PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()));
+        with_reference_subject_check(|| {
+            assert!(PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()));
+            with_reference_subject_check(|| {
+                assert!(PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()))
+            });
+            assert!(PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()));
+        });
+        assert!(!PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()));
+        let result =
+            std::panic::catch_unwind(|| with_reference_subject_check(|| panic!("profile unwind")));
+        assert!(result.is_err());
+        assert!(!PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.get()));
+    }
     fn ms(value: &str) -> i64 {
         chrono::DateTime::parse_from_rfc3339(value)
             .unwrap()

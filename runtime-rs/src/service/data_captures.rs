@@ -523,6 +523,7 @@ fn validate_coverage(service: &TradeAssemblyService, r: &CaptureReceipt) -> Resu
     Ok(())
 }
 pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<CaptureReceipt, String> {
+    let _timing = super::order_plans::financial_timing("capture.current_total");
     if id.len() != 72
         || !id.starts_with("capture_")
         || !id[8..]
@@ -531,6 +532,7 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     {
         return Err("data_capture_not_available".into());
     }
+    let read_timing = super::order_plans::financial_timing("capture.read_deserialize");
     let value = service
         .runtime()
         .storage
@@ -539,6 +541,8 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     bounded(&value, MAX_BYTES)?;
     let r: CaptureReceipt =
         serde_json::from_value(value).map_err(|_| "data_capture_receipt_invalid")?;
+    drop(read_timing);
+    let integrity_timing = super::order_plans::financial_timing("capture.integrity");
     service
         .require_object("strategy", &r.policy.scope.strategy_id)
         .map_err(|_| "data_capture_not_available")?;
@@ -554,13 +558,16 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     {
         return Err("data_capture_receipt_invalid".into());
     }
-    let graph = resolve(service, &r.policy)?;
+    drop(integrity_timing);
+    let graph = super::order_plans::measured("capture.graph", || resolve(service, &r.policy))?;
+    let pin_timing = super::order_plans::financial_timing("capture.pins");
     if data_binding::pin(service, selection(&graph, &r.policy.acquisition_node)?)? != r.acquisition
         || data_binding::pin(service, selection(&graph, &r.policy.replay_node)?)? != r.replay
     {
         return Err("data_capture_binding_stale".into());
     }
-    validate_coverage(service, &r)?;
+    drop(pin_timing);
+    super::order_plans::measured("capture.coverage", || validate_coverage(service, &r))?;
     Ok(r)
 }
 fn check_replay_partition(

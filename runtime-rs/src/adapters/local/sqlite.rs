@@ -11,6 +11,9 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(unix)]
+mod read_round;
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS tradeassembly_kv (
     namespace TEXT NOT NULL,
@@ -231,7 +234,23 @@ impl LocalSqliteStorage {
         Ok(ImmutablePutOutcome::Created)
     }
 
+    fn with_read_connection<T>(
+        &self,
+        read: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        #[cfg(unix)]
+        {
+            read_round::read(self, read)
+        }
+        #[cfg(not(unix))]
+        {
+            read(&self.connection()?)
+        }
+    }
+
     fn connection(&self) -> Result<Connection, String> {
+        let _timing = crate::service::order_plans::financial_timing("storage.connection_total");
+        let legacy_timing = crate::service::order_plans::financial_timing("storage.legacy_fs");
         if self.db_path != ":memory:" {
             if let Some(parent) = Path::new(&self.db_path)
                 .parent()
@@ -242,7 +261,12 @@ impl LocalSqliteStorage {
             }
         }
         migrate_legacy_json_store(Path::new(&self.db_path))?;
+        drop(legacy_timing);
+        let open_timing = crate::service::order_plans::financial_timing("storage.open");
         let mut connection = Connection::open(&self.db_path).map_err(redacted_sqlite_error)?;
+        drop(open_timing);
+        let _schema_timing =
+            crate::service::order_plans::financial_timing("storage.schema_pragmas");
         let was_empty = !super::schema::has_user_tables(&connection)?;
         connection
             .busy_timeout(Duration::from_secs(5))
@@ -427,6 +451,12 @@ impl VersionedPort for LocalSqliteStorage {
 }
 
 impl StoragePort for LocalSqliteStorage {
+    #[cfg(unix)]
+    fn read_validation_scope(
+        &self,
+    ) -> Result<Box<dyn crate::ports::storage::ReadValidationScope>, String> {
+        Ok(read_round::begin())
+    }
     fn adapter_name(&self) -> &'static str {
         "sqlite-wal"
     }
@@ -677,26 +707,33 @@ impl StoragePort for LocalSqliteStorage {
     }
 
     fn get_json(&self, namespace: &str, key: &str) -> Result<Option<Value>, String> {
+        let _timing = crate::service::order_plans::financial_timing("storage.get_total");
         validate_key(namespace, key)?;
-        let connection = self.connection()?;
-        let value = connection
-            .query_row(
-                "SELECT value_json FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2",
-                params![namespace, key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(redacted_sqlite_error)?;
-        value
-            .map(|body| serde_json::from_str(&body).map_err(|error| error.to_string()))
-            .transpose()
+        self.with_read_connection(|connection| {
+            let query_timing = crate::service::order_plans::financial_timing("storage.get_query");
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM tradeassembly_kv WHERE namespace=?1 AND item_key=?2",
+                    params![namespace, key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(redacted_sqlite_error)?;
+            drop(query_timing);
+            let _decode_timing =
+                crate::service::order_plans::financial_timing("storage.get_json_decode");
+            value
+                .map(|body| serde_json::from_str(&body).map_err(|error| error.to_string()))
+                .transpose()
+        })
     }
 
     fn list_json(&self, namespace: &str) -> Result<Vec<(String, Value)>, String> {
+        let _timing = crate::service::order_plans::financial_timing("storage.list_total");
         if namespace.trim().is_empty() {
             return Err("storage namespace is required".to_string());
         }
-        let connection = self.connection()?;
+        self.with_read_connection(|connection| {
         let mut statement = connection
             .prepare(
                 "SELECT item_key, value_json FROM tradeassembly_kv WHERE namespace=?1 ORDER BY item_key",
@@ -713,6 +750,7 @@ impl StoragePort for LocalSqliteStorage {
             Ok((key, value))
         })
         .collect()
+        })
     }
 
     fn list_json_page(

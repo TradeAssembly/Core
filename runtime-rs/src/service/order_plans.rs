@@ -425,6 +425,56 @@ fn timing_phase(stage: &'static str) -> bool {
             | "evaluation.step"
             | "evaluation.graph"
             | "evaluation.current"
+            | "binding.context_hash"
+            | "binding.live_instance_manifest"
+            | "binding.package_load"
+            | "binding.pin_total"
+            | "capture.coverage"
+            | "capture.current_total"
+            | "capture.graph"
+            | "capture.integrity"
+            | "capture.pins"
+            | "capture.read_deserialize"
+            | "current_plan.read_owned"
+            | "current_plan.total"
+            | "graph.catalog"
+            | "graph.entitlements"
+            | "graph.resolve_total"
+            | "graph.semantic_resolve"
+            | "management.exit_subject_total"
+            | "management.typed_current"
+            | "metadata.cached_closure_fs_hash"
+            | "metadata.document_decode_validate"
+            | "metadata.document_fs_bounds"
+            | "metadata.document_hash"
+            | "metadata.identity_hash"
+            | "metadata.total"
+            | "metadata.uncached_decode_validate"
+            | "package.descriptor_fs"
+            | "package.descriptor_semantic"
+            | "package.executable_fs"
+            | "package.hash_serialize_compare"
+            | "package.load_total"
+            | "package.manifest_fs"
+            | "package.manifest_yaml"
+            | "package.metadata_closure"
+            | "package.record_read_parse"
+            | "stream.position"
+            | "stream.record_integrity"
+            | "stream.seed"
+            | "stream.stored_total"
+            | "profile.current_plan"
+            | "storage.connection_total"
+            | "storage.validation_readonly_open"
+            | "storage.legacy_fs"
+            | "storage.open"
+            | "storage.schema_pragmas"
+            | "storage.get_total"
+            | "storage.get_query"
+            | "storage.get_json_decode"
+            | "storage.list_total"
+            | "entitlement.free_total"
+            | "entitlement.free_semantic"
             | "evaluation.invoke"
             | "evaluation.commit"
             | "plugin.prepare"
@@ -1685,6 +1735,63 @@ mod tests;
 #[cfg(test)]
 mod financial_timing_tests {
     use super::*;
+    #[test]
+    fn current_plan_leaf_instrumentation_is_registered() {
+        for phase in [
+            "binding.context_hash",
+            "binding.live_instance_manifest",
+            "binding.package_load",
+            "binding.pin_total",
+            "capture.coverage",
+            "capture.current_total",
+            "capture.graph",
+            "capture.integrity",
+            "capture.pins",
+            "capture.read_deserialize",
+            "current_plan.read_owned",
+            "current_plan.total",
+            "graph.catalog",
+            "graph.entitlements",
+            "graph.resolve_total",
+            "graph.semantic_resolve",
+            "management.exit_subject_total",
+            "management.typed_current",
+            "metadata.cached_closure_fs_hash",
+            "metadata.document_decode_validate",
+            "metadata.document_fs_bounds",
+            "metadata.document_hash",
+            "metadata.identity_hash",
+            "metadata.total",
+            "metadata.uncached_decode_validate",
+            "package.descriptor_fs",
+            "package.descriptor_semantic",
+            "package.executable_fs",
+            "package.hash_serialize_compare",
+            "package.load_total",
+            "package.manifest_fs",
+            "package.manifest_yaml",
+            "package.metadata_closure",
+            "package.record_read_parse",
+            "stream.position",
+            "stream.record_integrity",
+            "stream.seed",
+            "stream.stored_total",
+            "profile.current_plan",
+            "storage.connection_total",
+            "storage.validation_readonly_open",
+            "storage.legacy_fs",
+            "storage.open",
+            "storage.schema_pragmas",
+            "storage.get_total",
+            "storage.get_query",
+            "storage.get_json_decode",
+            "storage.list_total",
+            "entitlement.free_total",
+            "entitlement.free_semantic",
+        ] {
+            assert!(timing_phase(phase), "inactive timing phase: {phase}");
+        }
+    }
     #[test]
     fn diagnostic_requires_exact_opt_in_and_closed_static_phase() {
         assert!(!timing_requested(None));

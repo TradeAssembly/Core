@@ -56,7 +56,16 @@ pub enum ComparePutOutcome {
     Conflict,
 }
 
+/// Thread-affine, callback-local optimization token. It must not retain application query results,
+/// authority decisions, or a database read transaction. Every read sees fresh
+/// committed data; writes and atomic comparisons keep their original semantics.
+pub trait ReadValidationScope {}
+impl ReadValidationScope for () {}
+
 pub trait StoragePort: VersionedPort {
+    fn read_validation_scope(&self) -> Result<Box<dyn ReadValidationScope>, String> {
+        Ok(Box::new(()))
+    }
     fn adapter_name(&self) -> &'static str;
     fn put_json(
         &self,

@@ -33,6 +33,10 @@ pub(super) fn with_round<T>(
     if service.package_validation_round {
         return validate(service);
     }
+    // Optional backend handle reuse lasts only through this pure callback.
+    // Ports still execute every current ownership/configuration/receipt query;
+    // no result or authorization decision is cached and no transaction is held.
+    let _read_scope = service.runtime().storage.read_validation_scope()?;
     let mut runtime = (*service.runtime()).clone();
     runtime.plugin_packages = Arc::new(ValidationPackages::new(runtime.plugin_packages.clone()));
     let mut scoped = service.clone();

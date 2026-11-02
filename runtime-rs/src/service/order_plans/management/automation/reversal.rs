@@ -686,6 +686,24 @@ fn observation_wait(
     })
 }
 
+/// A scheduling prediction, not evidence that a future bar exists. If the bar
+/// becomes available while current-source checks run, next_due_ms makes the
+/// next turn immediately due; that turn resamples actual time before capture.
+fn next_source_input(head_end: i64, interval: u64, lag: i64) -> Result<ObservationWait, String> {
+    let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
+    if head_end <= 0 || interval == 0 || interval > max as u64 || lag < 0 {
+        return Err("management_reversal_grid_invalid".into());
+    }
+    let next_completed_at_ms = head_end
+        .checked_add(interval as i64)
+        .and_then(|v| v.checked_add(lag))
+        .filter(|v| *v <= max)
+        .ok_or("management_reversal_grid_invalid")?;
+    Ok(ObservationWait::Input {
+        next_completed_at_ms,
+    })
+}
+
 fn completed_boundary(origin: i64, interval: u64, now: i64, lag: i64) -> Result<i64, String> {
     let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
     if origin <= 0
@@ -848,6 +866,37 @@ mod progress_tests {
         assert!(observation_wait(false, origin, 60_000, origin - 1, 0).is_err());
         let max = tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64;
         assert!(observation_wait(false, max - 1, 60_000, max, 0).is_err());
+    }
+
+    #[test]
+    fn stale_receipt_wait_targets_next_real_completion_and_never_rolls_past_it() {
+        let head = 1_700_000_120_123;
+        let wait = next_source_input(head, 60_000, 100).unwrap();
+        assert_eq!(
+            wait,
+            ObservationWait::Input {
+                next_completed_at_ms: head + 60_100
+            }
+        );
+        assert_eq!(wait.next_due_ms(head + 59_500, 1000), head + 60_100);
+        // Completion during validation: immediately resample and acquire only
+        // on the next turn, rather than accidentally waiting another minute.
+        assert_eq!(wait.next_due_ms(head + 60_200, 1000), head + 60_201);
+        assert_eq!(
+            completed_boundary(head, 60_000, head + 60_099, 100).unwrap(),
+            head
+        );
+        assert_eq!(
+            completed_boundary(head, 60_000, head + 60_100, 100).unwrap(),
+            head + 60_000
+        );
+        assert!(next_source_input(head, 0, 0).is_err());
+        assert!(next_source_input(
+            tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER as i64,
+            60_000,
+            0
+        )
+        .is_err());
     }
 
     #[test]
@@ -1372,11 +1421,26 @@ pub(super) fn next_child(
         // Reached only after all genuine newer append/acquisition work above.
         // Revalidate the indexed receipt even for a consumed/pre-entry wait;
         // stored SHA equality alone never bypasses source/lineage/clock checks.
-        if !idle_reversal_observation(s, position, entry, &receipt, now)? {
-            // An unconsumed post-entry observation still needs the unchanged
-            // strict actual-now freshness and causal guard. Never fake false.
-            reversal(s, position, entry, Some(&receipt), now)?;
-            return Ok(Step::Ready(receipt));
+        match reversal_input(s, position, entry, &receipt, now)? {
+            ReversalInput::Current => {
+                // Final ordinary validation remains authoritative for financial
+                // use; classification alone never grants permission to close.
+                reversal(s, position, entry, Some(&receipt), now)?;
+                return Ok(Step::Ready(receipt));
+            }
+            ReversalInput::Stale => {
+                // No new completed input was available above. Do not retry the
+                // old receipt or turn it into false/current evidence. Preserve
+                // cursor, checkpoint and receipt; wait for real later input.
+                state
+                    .reversal_heads
+                    .get_mut(id)
+                    .ok_or("management_reversal_state_missing")?
+                    .waiting_for_input = true;
+                return next_source_input(available, first.interval_ms, config.completion_lag_ms)
+                    .map(Step::Wait);
+            }
+            ReversalInput::Idle => {}
         }
     }
     observation_wait(

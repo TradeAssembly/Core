@@ -18,6 +18,7 @@ fn document_bytes(
     doc: &DigestedPackagePath,
     total: &mut usize,
 ) -> Result<Vec<u8>, String> {
+    let fs_timing = crate::service::order_plans::financial_timing("metadata.document_fs_bounds");
     if fs::symlink_metadata(root)
         .map_err(|_| "plugin_data_document_missing")?
         .file_type()
@@ -60,6 +61,8 @@ fn document_bytes(
     if *total > MAX_METADATA_TOTAL_BYTES {
         return Err("plugin_data_metadata_total_exceeded".into());
     }
+    drop(fs_timing);
+    let _hash_timing = crate::service::order_plans::financial_timing("metadata.document_hash");
     if format!("{:x}", Sha256::digest(&bytes)) != doc.sha256 {
         return Err("plugin_data_artifact_digest_mismatch".into());
     }
@@ -68,6 +71,8 @@ fn document_bytes(
 
 fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result<Value, String> {
     let bytes = document_bytes(root, doc, total)?;
+    let _parse_timing =
+        crate::service::order_plans::financial_timing("metadata.document_decode_validate");
     let value: Value =
         serde_json::from_slice(&bytes).map_err(|_| "plugin_data_document_invalid")?;
     metadata_budget(&value)?;
@@ -138,10 +143,14 @@ impl VerificationCache {
         let Some(data) = envelope.data() else {
             return Ok(Arc::new(VerifiedMetadata::default()));
         };
+        let _timing = crate::service::order_plans::financial_timing("metadata.total");
+        let identity_timing =
+            crate::service::order_plans::financial_timing("metadata.identity_hash");
         let identity = canonical_sha256(&serde_json::json!({
             "root": root, "descriptor": data, "manifest": manifest
         }))
         .map_err(|_| "plugin_data_cache_identity_invalid")?;
+        drop(identity_timing);
         let cached = self
             .entries
             .lock()
@@ -153,6 +162,8 @@ impl VerificationCache {
         if let Some(cached) = cached {
             // Identity includes every expected digest. Recheck the entire artifact
             // closure, including unrelated operations, rather than trusting mtime.
+            let _recheck_timing =
+                crate::service::order_plans::financial_timing("metadata.cached_closure_fs_hash");
             let mut total = 0;
             for document in data
                 .package
@@ -179,7 +190,10 @@ impl VerificationCache {
             }
             return Ok(cached);
         }
-        let verified = Arc::new(load_metadata(envelope, root, manifest)?);
+        let verified = Arc::new(crate::service::order_plans::measured(
+            "metadata.uncached_decode_validate",
+            || load_metadata(envelope, root, manifest),
+        )?);
         if let Some(bytes) = retained_metadata_bytes(&verified, self.max_retained_bytes) {
             let mut entries = self
                 .entries

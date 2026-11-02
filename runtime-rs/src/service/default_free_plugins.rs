@@ -105,6 +105,7 @@ pub(super) fn grants_matching(
     service: &TradeAssemblyService,
     requested_capabilities: Option<&BTreeSet<String>>,
 ) -> Vec<EntitlementGrant> {
+    let _timing = super::order_plans::financial_timing("entitlement.free_total");
     // The ordinary ownership helper deliberately permits internal ownerless
     // calls. New product eligibility requires an actual authenticated owner.
     if service.invocation_owner().is_none() {
@@ -186,7 +187,11 @@ pub(super) fn grants_matching(
                     .verified_metadata_snapshot(&rule.package_sha256)
                     .ok()
                     .flatten()
-                    .and_then(|metadata| verified(metadata, rule))
+                    .and_then(|metadata| {
+                        super::order_plans::measured("entitlement.free_semantic", || {
+                            verified(metadata, rule)
+                        })
+                    })
                     .map(Arc::new)
             });
         let Some(package) = loaded.as_ref() else {

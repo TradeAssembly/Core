@@ -212,7 +212,10 @@ pub fn current(
     service: &TradeAssemblyService,
     revision_id: &str,
 ) -> Result<StoredDataPlan, String> {
-    let stored = read_owned(service, revision_id)?;
+    let _timing = super::order_plans::financial_timing("current_plan.total");
+    let stored = super::order_plans::measured("current_plan.read_owned", || {
+        read_owned(service, revision_id)
+    })?;
     let fresh = if let Some(source) = &stored.content.selection_source {
         if stored.content.recipe_source.is_some() {
             return Err("selection_plan_recipe_conflict".into());

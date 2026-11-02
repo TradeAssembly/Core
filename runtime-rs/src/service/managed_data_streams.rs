@@ -435,6 +435,8 @@ fn stored_round(
     id: &str,
     scope: &data_plans::PlanScope,
 ) -> Result<(Value, Stream), String> {
+    let _timing = super::order_plans::financial_timing("stream.stored_total");
+    let record_timing = super::order_plans::financial_timing("stream.record_integrity");
     s.require_object("strategy", &scope.strategy_id)
         .map_err(|_| "managed_stream_not_available")?;
     let raw = s
@@ -458,12 +460,16 @@ fn stored_round(
     if check != stream.head {
         return Err("managed_stream_head_invalid".into());
     }
-    let (_, graph, proof) =
-        super::order_plans::management::exit_plan_subject(s, &stream.binding.position_id, scope)?;
+    drop(record_timing);
+    let (_, graph, proof) = super::order_plans::measured("stream.position", || {
+        super::order_plans::management::exit_plan_subject(s, &stream.binding.position_id, scope)
+    })?;
     if graph != stream.binding.graph_revision || proof != stream.binding.position_source_sha256 {
         return Err("managed_stream_position_binding_changed".into());
     }
-    let seed = data_captures::current(s, &stream.binding.seed_capture_id)?;
+    let seed = super::order_plans::measured("stream.seed", || {
+        data_captures::current(s, &stream.binding.seed_capture_id)
+    })?;
     verify_segment(&stream.binding, &seed)?;
     if seed.receipt_sha256 != stream.binding.seed_receipt_sha256 {
         return Err("managed_stream_seed_changed".into());

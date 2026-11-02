@@ -1039,15 +1039,21 @@ fn graph_resolution(
     service: &TradeAssemblyService,
     request: &CapabilityGraphRequest,
 ) -> CapabilityGraphResolution {
-    let plugins = providers::plugin_catalog(service);
-    let entitlements = providers::entitlements_for_graph(service, request, &plugins);
-    service.runtime().capability_resolver.resolve_graph(
-        request.clone(),
-        CapabilityResolverCatalog {
-            plugins,
-            entitlements,
-        },
-    )
+    let _timing = super::order_plans::financial_timing("graph.resolve_total");
+    let plugins =
+        super::order_plans::measured("graph.catalog", || providers::plugin_catalog(service));
+    let entitlements = super::order_plans::measured("graph.entitlements", || {
+        providers::entitlements_for_graph(service, request, &plugins)
+    });
+    super::order_plans::measured("graph.semantic_resolve", || {
+        service.runtime().capability_resolver.resolve_graph(
+            request.clone(),
+            CapabilityResolverCatalog {
+                plugins,
+                entitlements,
+            },
+        )
+    })
 }
 
 fn graph_value(service: &TradeAssemblyService, request: &CapabilityGraphRequest) -> Value {

@@ -316,7 +316,9 @@ pub(crate) fn management_run(s: &TradeAssemblyService, id: &str) -> Result<(Valu
             r["configId"].as_str().ok_or("managed_config_missing")?,
         )?
         .ok_or("managed_config_missing")?;
-    crate::service::execution::typed::current(s, &c)?;
+    super::measured("management.typed_current", || {
+        crate::service::execution::typed::current(s, &c)
+    })?;
     if r["state"] != "active"
         || a["state"] != "active"
         || r["configId"] != a["configId"]
@@ -470,6 +472,7 @@ pub(in crate::service) fn exit_plan_subject(
     id: &str,
     scope: &data_plans::PlanScope,
 ) -> Result<(crate::data_pipeline::InstrumentContext, String, String), String> {
+    let _timing = super::financial_timing("management.exit_subject_total");
     let (pos, entry) = exit_plan_base(s, id, scope)?;
     let (_, config) = management_run(s, &pos.activation_id)?;
     if config["strategyId"] != scope.strategy_id
@@ -971,21 +974,69 @@ fn idle_reversal_frame(
         Err(code) => Err(code),
     }
 }
-fn idle_reversal_observation(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReversalInput {
+    Idle,
+    Current,
+    Stale,
+}
+struct ReversalInputContext<'a> {
+    instrument: &'a str,
+    id: &'a str,
+    entry: &'a ObservationTime,
+    previous: Option<&'a ReversalWatermark>,
+    last_consumed: Option<&'a str>,
+    price_exits: bool,
+    now: i64,
+    max_age_ms: i64,
+}
+fn classify_reversal_frame(
+    frame: &crate::data_strategy::SignalFrame,
+    context: ReversalInputContext<'_>,
+) -> Result<ReversalInput, String> {
+    let ReversalInputContext {
+        instrument,
+        id,
+        entry,
+        previous,
+        last_consumed,
+        price_exits,
+        now,
+        max_age_ms,
+    } = context;
+    validate_reversal_subject(frame, instrument, now)?;
+    // Readiness and causality must pass before age can be an expected wait.
+    // Invalid/regressed/pre-entry replays remain actual failures.
+    if idle_reversal_frame(frame, id, entry, previous, last_consumed, price_exits)? {
+        return Ok(ReversalInput::Idle);
+    }
+    match ready_reversal(frame, id, entry, previous, now, max_age_ms) {
+        Ok(_) => Ok(ReversalInput::Current),
+        Err(code) if code == "managed_reversal_not_current" => Ok(ReversalInput::Stale),
+        Err(code) => Err(code),
+    }
+}
+fn reversal_input(
     s: &TradeAssemblyService,
     p: &Position,
     entry: &OrderPlan,
     id: &str,
     now: i64,
-) -> Result<bool, String> {
+) -> Result<ReversalInput, String> {
     let frame = reversal_frame(s, p, entry, id, now)?;
-    idle_reversal_frame(
+    classify_reversal_frame(
         &frame,
-        id,
-        &p.entry_time,
-        p.reversal_watermark.as_ref(),
-        p.last_reversal_receipt.as_deref(),
-        p.policy.rules.stop_loss_ratio.is_some() || p.policy.rules.trailing_ratio.is_some(),
+        ReversalInputContext {
+            instrument: &entry.order.instrument.instrument_id,
+            id,
+            entry: &p.entry_time,
+            previous: p.reversal_watermark.as_ref(),
+            last_consumed: p.last_reversal_receipt.as_deref(),
+            price_exits: p.policy.rules.stop_loss_ratio.is_some()
+                || p.policy.rules.trailing_ratio.is_some(),
+            now,
+            max_age_ms: p.policy.max_reversal_age_ms,
+        },
     )
 }
 
@@ -2581,6 +2632,51 @@ mod tests {
             "managed_reversal_not_ready"
         );
     }
+    #[test]
+    fn only_valid_causal_stale_observation_is_an_input_wait_not_a_signal() {
+        let entry = time(50_000, 50_001);
+        let frame = idle_frame(120_000, 120_001, 120_002);
+        let classify =
+            |f: &crate::data_strategy::SignalFrame, previous: Option<&ReversalWatermark>, now| {
+                classify_reversal_frame(
+                    f,
+                    ReversalInputContext {
+                        instrument: "owned",
+                        id: "candidate",
+                        entry: &entry,
+                        previous,
+                        last_consumed: None,
+                        price_exits: false,
+                        now,
+                        max_age_ms: 30_000,
+                    },
+                )
+            };
+        assert_eq!(
+            classify(&frame, None, 149_999).unwrap(),
+            ReversalInput::Current
+        );
+        assert_eq!(
+            classify(&frame, None, 150_000).unwrap(),
+            ReversalInput::Stale
+        );
+        let mut yes = frame.clone();
+        yes.exit = crate::data_strategy::SignalValue::Ready { value: true };
+        assert_eq!(classify(&yes, None, 150_000).unwrap(), ReversalInput::Stale);
+        assert!(ready_reversal(&yes, "candidate", &entry, None, 150_000, 30_000).is_err());
+        let mut foreign = frame.clone();
+        foreign.trade_instruments[0].instrument_id = "foreign".into();
+        assert!(classify(&foreign, None, 150_000).is_err());
+        let mut future = frame.clone();
+        future.known_at_ms = 150_001;
+        assert!(classify(&future, None, 150_000).is_err());
+        let previous = reversal_watermark("newer", &idle_frame(120_001, 120_002, 120_003));
+        assert!(classify(&frame, Some(&previous), 150_000).is_err());
+        let mut warming = frame.clone();
+        warming.exit = crate::data_strategy::SignalValue::WarmingUp;
+        assert!(classify(&warming, None, 150_000).is_err());
+    }
+
     #[test]
     fn reversal_freshness_is_exclusive_age_from_completed_end_not_ingestion() {
         // A one-minute bar opens at 60000 and completes at 120000. The

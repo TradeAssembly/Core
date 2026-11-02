@@ -100,31 +100,52 @@ impl LocalPluginPackageStore {
         ),
         String,
     > {
+        let _timing = crate::service::order_plans::financial_timing("package.load_total");
+        let record_timing =
+            crate::service::order_plans::financial_timing("package.record_read_parse");
         let bytes = fs::read(package_root.join(INSTALLED_RECORD))
             .map_err(|_| "plugin_package_record_missing".to_string())?;
         let mut record: InstalledPluginPackage = serde_json::from_slice(&bytes)
             .map_err(|_| "plugin_package_record_invalid".to_string())?;
+        drop(record_timing);
+        let descriptor_read_timing =
+            crate::service::order_plans::financial_timing("package.descriptor_fs");
         let descriptor_bytes = read_metadata_file(
             &package_root.join(PACKAGE_DESCRIPTOR),
             MAX_DESCRIPTOR_BYTES,
             "plugin_package_descriptor_missing",
             "plugin_package_descriptor_too_large",
         )?;
+        drop(descriptor_read_timing);
+        let descriptor_timing =
+            crate::service::order_plans::financial_timing("package.descriptor_semantic");
         let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
         let descriptor = envelope.base();
         descriptor
             .validate()
             .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
         let target = target_record(descriptor)?;
+        drop(descriptor_timing);
+        let manifest_read_timing =
+            crate::service::order_plans::financial_timing("package.manifest_fs");
         let manifest_path = package_root.join(&descriptor.manifest.path);
         ensure_within(package_root, &manifest_path)?;
         let manifest_bytes = read_manifest_file(&manifest_path, &envelope)?;
+        drop(manifest_read_timing);
+        let manifest_decode_timing =
+            crate::service::order_plans::financial_timing("package.manifest_yaml");
         let manifest: Value = serde_yaml::from_slice(&manifest_bytes)
             .map_err(|_| "plugin_package_manifest_invalid".to_string())?;
+        drop(manifest_decode_timing);
+        let executable_read_timing =
+            crate::service::order_plans::financial_timing("package.executable_fs");
         let executable_path = package_root.join(&target.binary.path);
         ensure_within(package_root, &executable_path)?;
         let executable_bytes = fs::read(&executable_path)
             .map_err(|_| "plugin_package_executable_missing".to_string())?;
+        drop(executable_read_timing);
+        let integrity_timing =
+            crate::service::order_plans::financial_timing("package.hash_serialize_compare");
         let canonical_manifest_sha256 = canonical_sha256(&manifest)?;
         let descriptor_value: Value = serde_json::from_slice(&descriptor_bytes)
             .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
@@ -143,7 +164,10 @@ impl LocalPluginPackageStore {
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
-        let metadata = self.verified_metadata(&envelope, package_root, &manifest)?;
+        drop(integrity_timing);
+        let metadata = crate::service::order_plans::measured("package.metadata_closure", || {
+            self.verified_metadata(&envelope, package_root, &manifest)
+        })?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
         Ok((record, metadata))

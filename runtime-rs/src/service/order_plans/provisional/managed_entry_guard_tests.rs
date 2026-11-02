@@ -502,6 +502,7 @@ fn blocked_reported_entry_refuses_static_price_advance_and_c5_snapshot_without_e
             management::advance(
                 &s,
                 management::AdvanceCommand {
+                    observation_only: None,
                     execution_occurrence_id: "static.missing.occurrence".into(),
                     position_id: position_id.clone(),
                     account_collection_id: "missing.account".into(),

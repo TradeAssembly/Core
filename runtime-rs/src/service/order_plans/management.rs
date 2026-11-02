@@ -89,12 +89,138 @@ pub struct RegisterCommand {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdvanceCommand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_only: Option<ReversalObservationMode>,
     pub execution_occurrence_id: String,
     pub position_id: String,
     pub account_collection_id: String,
     pub metadata_collection_id: String,
     pub quote_collection_id: String,
     pub reversal_signal_receipt_sha256: Option<String>,
+}
+/// Explicitly non-financial consumption of an actual false reversal. Existing
+/// Advance commands retain their full quote/account/metadata semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReversalObservationMode {
+    ReversalFalseOnlyV1,
+}
+fn reversal_only_rules(rules: &rules::ExitRules) -> bool {
+    rules.reversal_signal.as_deref() == Some("typed.exit")
+        && rules.stop_loss_ratio.is_none()
+        && rules.trailing_ratio.is_none()
+}
+fn prepare_false_reversal(
+    position: &Position,
+    instrument: &str,
+    id: &str,
+    frame: &crate::data_strategy::SignalFrame,
+    now: i64,
+) -> Result<Position, String> {
+    if !reversal_only_rules(&position.policy.rules)
+        || !position.reservations.is_empty()
+        || !position
+            .quantity
+            .checked_subtract(position.closed_quantity)?
+            .positive()
+    {
+        return Err("managed_false_observation_mode_invalid".into());
+    }
+    validate_reversal_subject(frame, instrument, now)?;
+    if frame.exit != (crate::data_strategy::SignalValue::Ready { value: false }) {
+        return Err("managed_false_observation_required".into());
+    }
+    let mut pos = position.clone();
+    let ready = ready_reversal(
+        frame,
+        id,
+        &pos.entry_time,
+        pos.reversal_watermark.as_ref(),
+        now,
+        pos.policy.max_reversal_age_ms,
+    )?;
+    pos.last_reversal_receipt = Some(id.into());
+    pos.reversal_watermark = Some(ready.watermark);
+    pos.generation = pos
+        .generation
+        .checked_add(1)
+        .filter(|v| *v <= 10000)
+        .ok_or("managed_generation_exhausted")?;
+    seal(&mut pos)?;
+    Ok(pos)
+}
+fn consume_false_reversal(
+    s: &TradeAssemblyService,
+    old: Value,
+    mut pos: Position,
+    entry: &OrderPlan,
+    c: &AdvanceCommand,
+    ctx: &SideEffectContext,
+) -> Result<Value, String> {
+    if !reversal_only_rules(&pos.policy.rules)
+        || !pos.reservations.is_empty()
+        || !c.account_collection_id.is_empty()
+        || !c.metadata_collection_id.is_empty()
+        || !c.quote_collection_id.is_empty()
+    {
+        return Err("managed_false_observation_mode_invalid".into());
+    }
+    let id = c
+        .reversal_signal_receipt_sha256
+        .as_deref()
+        .ok_or("managed_reversal_required")?;
+    let now = s.runtime().clock.trusted_now_ms()?;
+    let frame = reversal_frame(s, &pos, entry, id, now)?;
+    if frame.exit != (crate::data_strategy::SignalValue::Ready { value: false }) {
+        return Err("managed_false_observation_required".into());
+    }
+    if pos.last_reversal_receipt.as_deref() == Some(id) {
+        // Indexed source/lineage/subject and current authority were rechecked.
+        // A replay of consumed false evidence changes nothing, even after TTL.
+        idle_reversal_frame(
+            &frame,
+            id,
+            &pos.entry_time,
+            pos.reversal_watermark.as_ref(),
+            Some(id),
+            false,
+        )?;
+        return inspect(s, &pos.position_id);
+    }
+    pos = prepare_false_reversal(&pos, &entry.order.instrument.instrument_id, id, &frame, now)?;
+    persist_false_reversal(s, old, pos, id, ctx)
+}
+fn persist_false_reversal(
+    s: &TradeAssemblyService,
+    old: Value,
+    pos: Position,
+    id: &str,
+    ctx: &SideEffectContext,
+) -> Result<Value, String> {
+    // No price/high-water, quantity, cash, reservation, close or broker mutation.
+    let writes = [
+        StorageWrite::new(POSITIONS, &pos.position_id, value(&pos)?, ctx.clone()),
+        StorageWrite::new(
+            JOURNAL,
+            format!("{}:{}", pos.position_id, pos.generation),
+            journal(&pos, "reversal_false_observed", id),
+            ctx.clone(),
+        ),
+    ];
+    if s.runtime().storage.put_json_batch(
+        &writes,
+        &[StorageExpectation::new(
+            POSITIONS,
+            &pos.position_id,
+            Some(old),
+        )],
+    )? != ComparePutOutcome::Updated
+    {
+        return Err("managed_advance_conflict".into());
+    }
+    Ok(
+        json!({"position":pos,"decision":null,"observationOnly":"reversal_false_only_v1","executionAuthorityGranted":false}),
+    )
 }
 fn seal(p: &mut Position) -> Result<(), String> {
     p.state_sha256.clear();
@@ -1056,6 +1182,9 @@ pub fn advance(
     let (_, config) = management_run(s, &pos.activation_id)?;
     if policy(s, &entry.command.scope)?.as_ref() != Some(&pos.policy) {
         return Err("managed_policy_changed".into());
+    }
+    if c.observation_only.is_some() {
+        return consume_false_reversal(s, old, pos, &entry, &c, ctx);
     }
     if !pos.reservations.is_empty() {
         if pos.reservations.len() != 1 {
@@ -2802,3 +2931,204 @@ mod tests {
 #[cfg(test)]
 #[path = "management/final_close_evidence_tests.rs"]
 mod final_close_evidence_tests;
+
+#[cfg(test)]
+mod false_observation_tests {
+    use super::*;
+    fn position() -> Position {
+        serde_json::from_value(json!({
+            "schemaVersion":"tradeassembly.managed_position.v1","positionId":"owned-position",
+            "ownerSha256":"a".repeat(64),"entryPlanId":"original-entry","activationId":"owned-activation",
+            "entrySettlementSha256":"b".repeat(64),
+            "policy":{"entryBasis":"provider_reported_average_fill","rules":{
+                "schemaVersion":"tradeassembly.position_exit_rules.v1","priceBasis":"bid",
+                "stopLossRatio":null,"trailingRatio":null,"trailingStart":null,
+                "reversalSignal":"typed.exit","precedence":["reversal"],"maxQuoteAgeMs":30000},
+                "feeCashCap":"1","maxLimitSlippageRatio":"0.01","timeInForce":"day","maxReversalAgeMs":30000},
+            "quantity":"0.4","closedQuantity":"0","basis":"100",
+            "entryTime":{"observedAtMs":50000,"knownAtMs":50000,"basis":"provider_observed"},
+            "highWater":"101","lastQuoteKnownAtMs":70000,"lastQuoteObservedAtMs":70000,
+            "lastReversalReceipt":null,"reversalWatermark":null,"lastQuoteReceipt":"original-quote",
+            "reservations":{},"generation":0,"stateSha256":""
+        })).unwrap()
+    }
+    fn frame() -> crate::data_strategy::SignalFrame {
+        serde_json::from_value(json!({"eventEndMs":100000,"knownAtMs":110410,"arrivedAtMs":110410,
+            "tradeInstruments":[{"instrumentId":"OWNED","assetClass":"equity","instrumentFamily":"equity"}],
+            "entry":{"status":"ready","value":false},"exit":{"status":"ready","value":false},
+            "upstreamContentSha256":["c".repeat(64)]})).unwrap()
+    }
+    #[test]
+    fn false_observation_consumes_current_receipt_before_unneeded_reads_exhaust_ttl() {
+        let before = position();
+        let signal = frame();
+        // The actual full-driver order: evaluation seal age22.252s, then
+        // account4.077s + metadata4.041s; reclassification dropped the work.
+        assert_eq!(
+            ready_reversal(&signal, "receipt", &before.entry_time, None, 130370, 30000)
+                .err()
+                .unwrap(),
+            "managed_reversal_not_current"
+        );
+        let after = prepare_false_reversal(&before, "OWNED", "receipt", &signal, 122252).unwrap();
+        assert_eq!(after.last_reversal_receipt.as_deref(), Some("receipt"));
+        assert_eq!(
+            after.reversal_watermark.as_ref().unwrap().event_end_ms,
+            100000
+        );
+        assert_eq!(after.generation, 1);
+        let mut actual = value(&after).unwrap();
+        let mut expected = value(&before).unwrap();
+        for key in [
+            "lastReversalReceipt",
+            "reversalWatermark",
+            "generation",
+            "stateSha256",
+        ] {
+            actual.as_object_mut().unwrap().remove(key);
+            expected.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(
+            actual, expected,
+            "no price, high-water, lot or reservation changes"
+        );
+        let recreated: Position = serde_json::from_value(value(&after).unwrap()).unwrap();
+        assert!(idle_reversal_frame(
+            &signal,
+            "receipt",
+            &recreated.entry_time,
+            recreated.reversal_watermark.as_ref(),
+            recreated.last_reversal_receipt.as_deref(),
+            false
+        )
+        .unwrap());
+    }
+    #[test]
+    fn false_observation_cannot_accept_true_warming_stale_future_wrong_subject_or_preentry() {
+        let p = position();
+        let f = frame();
+        assert_eq!(
+            prepare_false_reversal(&p, "OWNED", "r", &f, 130000)
+                .err()
+                .unwrap(),
+            "managed_reversal_not_current"
+        );
+        assert!(prepare_false_reversal(&p, "OTHER", "r", &f, 122252).is_err());
+        assert!(prepare_false_reversal(&p, "OWNED", "r", &f, 100000).is_err());
+        for exit in [
+            crate::data_strategy::SignalValue::Ready { value: true },
+            crate::data_strategy::SignalValue::WarmingUp,
+        ] {
+            let mut next = f.clone();
+            next.exit = exit;
+            assert_eq!(
+                prepare_false_reversal(&p, "OWNED", "r", &next, 122252)
+                    .err()
+                    .unwrap(),
+                "managed_false_observation_required"
+            );
+        }
+        let mut p = p;
+        p.entry_time.observed_at_ms = 110000;
+        p.entry_time.known_at_ms = 110000;
+        assert_eq!(
+            prepare_false_reversal(&p, "OWNED", "r", &f, 122252)
+                .err()
+                .unwrap(),
+            "managed_reversal_predates_entry"
+        );
+    }
+    #[test]
+    fn false_observation_never_suppresses_price_rules_or_pending_close_management() {
+        let p = position();
+        let f = frame();
+        let mut stop = p.clone();
+        stop.policy.rules.stop_loss_ratio = Some("0.1".parse().unwrap());
+        let mut trail = p.clone();
+        trail.policy.rules.trailing_ratio = Some("0.2".parse().unwrap());
+        let mut pending = p.clone();
+        pending
+            .reservations
+            .insert("close".into(), "0.1".parse().unwrap());
+        let mut flat = p;
+        flat.closed_quantity = flat.quantity;
+        for blocked in [stop, trail, pending, flat] {
+            assert_eq!(
+                prepare_false_reversal(&blocked, "OWNED", "r", &f, 122252)
+                    .err()
+                    .unwrap(),
+                "managed_false_observation_mode_invalid"
+            );
+        }
+    }
+    #[test]
+    fn false_observation_commit_is_atomic_and_survives_service_recreation() {
+        let (dir, service, _, _) = super::super::tests::fixture();
+        let ctx = super::super::tests::context("false-observation-cas");
+        let before = position();
+        let old = value(&before).unwrap();
+        service
+            .runtime()
+            .storage
+            .put_json(POSITIONS, &before.position_id, old.clone(), &ctx)
+            .unwrap();
+        let after = prepare_false_reversal(&before, "OWNED", "receipt", &frame(), 122252).unwrap();
+        let result =
+            persist_false_reversal(&service, old.clone(), after.clone(), "receipt", &ctx).unwrap();
+        assert_eq!(result["decision"], Value::Null);
+        assert_eq!(result["executionAuthorityGranted"], false);
+        drop(service);
+        let db = dir.path().join("cash.db").to_string_lossy().into_owned();
+        let recreated =
+            TradeAssemblyService::from_runtime(&db, crate::adapters::local::test_runtime(&db))
+                .for_authenticated_invocation("fixture", "cash-owner", None, None);
+        let actual = recreated
+            .runtime()
+            .storage
+            .get_json(POSITIONS, &before.position_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, value(&after).unwrap());
+        let journal_before = recreated.runtime().storage.list_json(JOURNAL).unwrap();
+        assert_eq!(journal_before.len(), 1);
+        assert_eq!(journal_before[0].1["event"], "reversal_false_observed");
+        assert_eq!(
+            persist_false_reversal(&recreated, old, after, "receipt", &ctx).unwrap_err(),
+            "managed_advance_conflict"
+        );
+        assert_eq!(
+            recreated
+                .runtime()
+                .storage
+                .get_json(POSITIONS, &before.position_id)
+                .unwrap()
+                .unwrap(),
+            actual
+        );
+        assert_eq!(
+            recreated.runtime().storage.list_json(JOURNAL).unwrap(),
+            journal_before
+        );
+        for namespace in [CASH, PLANS, TRIGGERS, submission::STATE] {
+            assert!(
+                recreated
+                    .runtime()
+                    .storage
+                    .list_json(namespace)
+                    .unwrap()
+                    .is_empty(),
+                "false observation must not write financial state"
+            );
+        }
+    }
+    #[test]
+    fn legacy_advance_wire_is_unchanged_and_observation_mode_is_closed() {
+        let old = json!({"executionOccurrenceId":"window","positionId":"p","accountCollectionId":"a","metadataCollectionId":"m","quoteCollectionId":"q","reversalSignalReceiptSha256":null});
+        let command: AdvanceCommand = serde_json::from_value(old.clone()).unwrap();
+        assert!(command.observation_only.is_none());
+        assert_eq!(value(&command).unwrap(), old);
+        let mut invalid = old;
+        invalid["observationOnly"] = json!("true_or_trade");
+        assert!(serde_json::from_value::<AdvanceCommand>(invalid).is_err());
+    }
+}

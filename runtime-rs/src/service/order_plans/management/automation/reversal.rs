@@ -637,7 +637,7 @@ pub(super) enum Action {
 
 pub(super) enum Step {
     Child(Child),
-    Ready(String),
+    Ready { receipt: String, value: bool },
     Wait(ObservationWait),
 }
 
@@ -1352,7 +1352,13 @@ pub(super) fn next_child(
             .is_some_and(|end| end <= now && now - end < position.policy.max_reversal_age_ms);
         if current && position.last_reversal_receipt.as_ref() != Some(receipt) {
             match reversal(s, position, entry, Some(receipt), now) {
-                Ok(_) => return Ok(Step::Ready(receipt.clone())),
+                Ok(Some(ready)) => {
+                    return Ok(Step::Ready {
+                        receipt: receipt.clone(),
+                        value: ready.value,
+                    })
+                }
+                Ok(None) => return Err("managed_reversal_required".into()),
                 // A bootstrap result may predate the actual entry fill. It
                 // cannot close the position; acquire genuine later data below.
                 Err(code) if code == "managed_reversal_predates_entry" => {}
@@ -1425,8 +1431,12 @@ pub(super) fn next_child(
             ReversalInput::Current => {
                 // Final ordinary validation remains authoritative for financial
                 // use; classification alone never grants permission to close.
-                reversal(s, position, entry, Some(&receipt), now)?;
-                return Ok(Step::Ready(receipt));
+                let ready = reversal(s, position, entry, Some(&receipt), now)?
+                    .ok_or("managed_reversal_required")?;
+                return Ok(Step::Ready {
+                    receipt,
+                    value: ready.value,
+                });
             }
             ReversalInput::Stale => {
                 // No new completed input was available above. Do not retry the

@@ -1243,7 +1243,19 @@ fn next_child(
         match reversal::next_child(s, config, state, &entry, &position)? {
             reversal::Step::Child(child) => return Ok(PlannedChild::Child(child)),
             reversal::Step::Wait(wait) => return Ok(PlannedChild::Wait(wait)),
-            reversal::Step::Ready(receipt) => Some(receipt),
+            reversal::Step::Ready {
+                receipt,
+                value: false,
+            } if reversal_only_rules(&position.policy.rules) => {
+                // This child can only record a current false observation. It
+                // cannot price an exit, reserve cash or submit an order.
+                return child(state, ADVANCE, json!({"scope":entry.command.scope,"advance":{
+                    "executionOccurrenceId":occurrence,"positionId":position.position_id,
+                    "accountCollectionId":"","metadataCollectionId":"","quoteCollectionId":"",
+                    "reversalSignalReceiptSha256":receipt,"observationOnly":"reversal_false_only_v1"
+                }}), Action::Advance {}).map(PlannedChild::Child);
+            }
+            reversal::Step::Ready { receipt, .. } => Some(receipt),
         }
     } else {
         None

@@ -1680,7 +1680,7 @@ pub(crate) mod tests {
         routing::{get, post},
         Json, Router,
     };
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot;
 
@@ -1700,7 +1700,7 @@ pub(crate) mod tests {
     struct MockState {
         behavior: MockBehavior,
         request: Mutex<Option<Value>>,
-        receipt: Mutex<Option<Value>>,
+        receipts: Mutex<BTreeMap<String, Value>>,
     }
 
     pub(crate) struct MockServer {
@@ -1730,7 +1730,7 @@ pub(crate) mod tests {
         let state = Arc::new(MockState {
             behavior,
             request: Mutex::new(None),
-            receipt: Mutex::new(None),
+            receipts: Mutex::new(BTreeMap::new()),
         });
         let server_state = Arc::clone(&state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1832,7 +1832,13 @@ pub(crate) mod tests {
                 "signature": "mock-signature"
             }
         });
-        *state.receipt.lock().expect("receipt lock") = Some(signed.clone());
+        state.receipts.lock().expect("receipt lock").insert(
+            signed["receipt"]["receipt_id"]
+                .as_str()
+                .expect("receipt id")
+                .into(),
+            signed.clone(),
+        );
         Json(json!({
             "schema_version": "apf.action_authorization_decision.v1",
             "decision_id": format!("decision:{}", request["request_id"].as_str().unwrap_or("missing")),
@@ -1847,18 +1853,83 @@ pub(crate) mod tests {
 
     async fn mock_receipt(
         State(state): State<Arc<MockState>>,
-        AxumPath(_receipt_id): AxumPath<String>,
-    ) -> Json<Value> {
+        AxumPath(receipt_id): AxumPath<String>,
+    ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
         let mut receipt = state
-            .receipt
+            .receipts
             .lock()
             .expect("receipt lock")
-            .clone()
-            .expect("authorization receipt");
+            .get(&receipt_id)
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"code":"receipt_not_found"})),
+                )
+            })?;
         if matches!(state.behavior, MockBehavior::ReceiptMismatch) {
             receipt["receipt"]["action"] = json!("forged.action");
         }
-        Json(receipt)
+        Ok(Json(receipt))
+    }
+
+    #[test]
+    fn mock_warden_concurrent_authorizations_retrieve_their_own_signed_receipt() {
+        let server = spawn_mock_warden(MockBehavior::Allow);
+        let authority = WardenSidecarAuthority::new(
+            &server.base_url,
+            TEST_TOKEN,
+            REQUIRED_WARDEN_SERVICE_VERSION,
+        )
+        .unwrap();
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let handles = (0..4)
+                .map(|index| {
+                    let authority = &authority;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let envelope = strategy_envelope(&format!("concurrent-read-{index}"));
+                        let definition = authority_definition(&envelope).unwrap();
+                        let request = authorization_request_at(
+                            &envelope,
+                            definition,
+                            json!({}),
+                            EnforcementPoint::ControlPlane,
+                        );
+                        let decision = authority
+                            .protected_post("/v1/actions/authorize", &request)
+                            .unwrap();
+                        validate_decision(
+                            &envelope,
+                            definition,
+                            &decision,
+                            EnforcementPoint::ControlPlane,
+                        )
+                        .unwrap();
+                        // Force all four decisions to exist before any receipt lookup.
+                        // A singleton last-receipt fixture deterministically fails here.
+                        barrier.wait();
+                        let id = decision["receipt"]["receipt_id"].as_str().unwrap();
+                        let signed = authority
+                            .protected_get(&format!("/v1/receipts/{id}"))
+                            .unwrap();
+                        validate_signed_receipt(&decision, &signed).unwrap();
+                        assert_eq!(signed["receipt"]["receipt_id"], id);
+                        id.to_string()
+                    })
+                })
+                .collect::<Vec<_>>();
+            let ids = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(ids.len(), 4);
+        });
+        assert!(authority
+            .protected_get("/v1/receipts/not-created")
+            .unwrap_err()
+            .contains("404:receipt_not_found"));
     }
 
     fn strategy_envelope(idempotency_key: &str) -> ControlPlaneCommandEnvelope {

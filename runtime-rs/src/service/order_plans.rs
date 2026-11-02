@@ -375,6 +375,7 @@ fn timing_phase(stage: &'static str) -> bool {
             | "management.decide.second_snapshot"
             | "management.decide.lease"
             | "management.decide.commit"
+            | "management.window.validate"
             | "management.snapshot"
             | "management.snapshot.window"
             | "management.snapshot.run"
@@ -1673,6 +1674,7 @@ mod financial_timing_tests {
         assert!(timing_requested(Some(std::ffi::OsStr::new("1"))));
         assert!(timing_phase("c5.admit"));
         assert!(timing_phase("management.snapshot"));
+        assert!(timing_phase("management.window.validate"));
         for phase in [
             "dispatch.advance",
             "dispatch.schedule",

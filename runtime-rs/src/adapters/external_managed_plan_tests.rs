@@ -161,6 +161,31 @@ fn exercise_native_managed_plan(
         prepared["plan"]["content"]["selectionSource"]["managedPositionId"],
         id
     );
+    let prepare_execution_schedule = || {
+        let calendar = collections::acquire(
+            s,
+            collections::CollectionCommand {
+                scope: scope.clone(),
+                capability_graph_revision: revision.into(),
+                acquisition_node: "calendar".into(),
+                mode: "paper".into(),
+                response_schema_ref:
+                    tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),
+                input: json!({}),
+            },
+            &ctx("managed-plan-calendar"),
+        )
+        .unwrap();
+        let now = s.runtime().clock.now_ms();
+        let date = chrono::DateTime::from_timestamp_millis(now)
+            .unwrap()
+            .date_naive()
+            .to_string();
+        post(
+            "/product/strategies/session-schedules/prepare",
+            json!({"schedule":schedules::ScheduleCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:calendar.collection_id.clone(),execution_calendar_collection_id:calendar.collection_id,knowledge_cutoff_ms:now},"idempotencyKey":"managed-plan-schedule"}),
+        )
+    };
     if metadata_round_only {
         assert!(!actual_math && !stale && !provisional);
         // A prior successful plan is not a grant for another validation round.
@@ -186,6 +211,40 @@ fn exercise_native_managed_plan(
             &json!({"original":prepared["plan"],"replay":replay["plan"],"revokedRefusalStatus":refused.status,
                 "revokedRefusal":refused.body,"restored":restored["plan"],"compiledPlanRowsUnchangedOnRefusal":true,
                 "scope":"native authored generic fixture; no real provider or account"}));
+        let schedule = prepare_execution_schedule();
+        let occurrence = schedule["schedule"]["occurrence"]["occurrenceId"].as_str().unwrap();
+        let window = || plans::management::fixture_execution_window(s, entry, occurrence);
+        let original_window = window().unwrap();
+        assert_eq!(window().unwrap(), original_window);
+        let calendar_instance = graph["graph"]["nodes"].as_array().unwrap().iter()
+            .find(|n| n["nodeId"] == "calendar").unwrap()["selected"]["pluginInstanceRef"]
+            .as_str().unwrap();
+        let calendar_original = s.runtime().plugins.get_instance(calendar_instance).unwrap().unwrap();
+        let before_effects = s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();
+        let before_holds = s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
+        let mut refusals = Vec::new();
+        for mutation in ["revocation", "configuration", "credential_revision"] {
+            let mut changed = calendar_original.clone();
+            match mutation {
+                "revocation" => changed["enabled"] = json!(false),
+                "configuration" => changed["configuration"]["fixtureWindowChanged"] = json!(true),
+                "credential_revision" => changed["credentialRevision"] = json!(2),
+                _ => unreachable!(),
+            }
+            s.runtime().plugins.put_instance(calendar_instance, changed, &ctx("window-round-invalidate")).unwrap();
+            let error = window().expect_err("previous window proof must not authorize changed source");
+            refusals.push(json!({"mutation":mutation,"error":error}));
+            assert_eq!(s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap(), before_effects);
+            assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(), before_holds);
+            s.runtime().plugins.put_instance(calendar_instance, calendar_original.clone(), &ctx("window-round-restore")).unwrap();
+            assert_eq!(window().unwrap(), original_window);
+        }
+        let foreign = s.for_authenticated_invocation("fixture", "window-foreign-owner", None, None);
+        assert!(plans::management::fixture_execution_window(&foreign, entry, occurrence).is_err());
+        write_screen_interface_evidence("managed_plan", "window-round-invalidation.json",
+            &json!({"window":original_window.0,"deadline":original_window.1,"refusals":refusals,
+                "restoredExactWindow":true,"financialRowsUnchanged":true,"foreignOwnerRefused":true,
+                "scope":"synthetic native window validation; no real account or provider"}));
         return; // This dedicated regression does not qualify a close lifecycle.
     }
     let plan = prepared["plan"]["revisionId"].as_str().unwrap();
@@ -206,31 +265,6 @@ fn exercise_native_managed_plan(
             json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"managed-plan-pause-entries"}),
         );
         (noentry, select)
-    };
-    let prepare_execution_schedule = || {
-        let calendar = collections::acquire(
-            s,
-            collections::CollectionCommand {
-                scope: scope.clone(),
-                capability_graph_revision: revision.into(),
-                acquisition_node: "calendar".into(),
-                mode: "paper".into(),
-                response_schema_ref:
-                    tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),
-                input: json!({}),
-            },
-            &ctx("managed-plan-calendar"),
-        )
-        .unwrap();
-        let now = s.runtime().clock.now_ms();
-        let date = chrono::DateTime::from_timestamp_millis(now)
-            .unwrap()
-            .date_naive()
-            .to_string();
-        post(
-            "/product/strategies/session-schedules/prepare",
-            json!({"schedule":schedules::ScheduleCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:calendar.collection_id.clone(),execution_calendar_collection_id:calendar.collection_id,knowledge_cutoff_ms:now},"idempotencyKey":"managed-plan-schedule"}),
-        )
     };
     let mut entry_refusals = None;
     let mut execution_schedule = None;

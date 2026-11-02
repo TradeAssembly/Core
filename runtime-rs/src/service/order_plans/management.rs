@@ -1306,6 +1306,17 @@ fn execution_window(
     p: &OrderPlan,
     id: &str,
 ) -> Result<(Value, i64), String> {
+    let _timing = crate::service::order_plans::financial_timing("management.window.validate");
+    // Only immutable package bytes are shared inside this pure check. Owner,
+    // configuration, revocation, calendar receipts and the clock remain live;
+    // dispatch and storage effects use the original service outside this round.
+    crate::service::package_validation::with_round(s, |s| execution_window_in_round(s, p, id))
+}
+fn execution_window_in_round(
+    s: &TradeAssemblyService,
+    p: &OrderPlan,
+    id: &str,
+) -> Result<(Value, i64), String> {
     if id.starts_with("management_window_") {
         let current = crate::service::management_windows::current(s, id)?;
         let r = current.receipt;
@@ -1374,6 +1385,14 @@ fn execution_window(
         json!({"schemaVersion":"tradeassembly.execution_window_constraint.v1","scope":p.command.scope,"occurrenceId":id,"scheduleReceiptSha256":r.receipt_sha256,"openAtMs":open,"closeAtMs":close}),
         close,
     ))
+}
+#[cfg(test)]
+pub(crate) fn fixture_execution_window(
+    s: &TradeAssemblyService,
+    entry_plan_id: &str,
+    occurrence_id: &str,
+) -> Result<(Value, i64), String> {
+    execution_window(s, &read_owned(s, entry_plan_id)?, occurrence_id)
 }
 pub(crate) fn snapshot(s: &TradeAssemblyService, p: &OrderPlan) -> Result<OrderPlan, String> {
     let _timing = crate::service::order_plans::financial_timing("management.snapshot");

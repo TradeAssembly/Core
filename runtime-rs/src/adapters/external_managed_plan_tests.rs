@@ -216,6 +216,13 @@ fn exercise_native_managed_plan(
         let window = || plans::management::fixture_execution_window(s, entry, occurrence);
         let original_window = window().unwrap();
         assert_eq!(window().unwrap(), original_window);
+        let managed_window = crate::service::management_windows::prepare(s,
+            crate::service::management_windows::Command { scope:scope.clone(),position_id:id.into(),
+                trigger_ref:"preopen".into(),execution_calendar_collection_id:schedules::current(s, occurrence).unwrap().command.execution_calendar_collection_id },
+            &ctx("window-round-owned-position")).unwrap();
+        let owned_window = || crate::service::management_windows::current(s, &managed_window.window_id);
+        let original_owned_window = owned_window().unwrap();
+        assert_eq!(owned_window().unwrap(), original_owned_window);
         let calendar_instance = graph["graph"]["nodes"].as_array().unwrap().iter()
             .find(|n| n["nodeId"] == "calendar").unwrap()["selected"]["pluginInstanceRef"]
             .as_str().unwrap();
@@ -233,17 +240,33 @@ fn exercise_native_managed_plan(
             }
             s.runtime().plugins.put_instance(calendar_instance, changed, &ctx("window-round-invalidate")).unwrap();
             let error = window().expect_err("previous window proof must not authorize changed source");
-            refusals.push(json!({"mutation":mutation,"error":error}));
+            let owned_error = owned_window().expect_err("owned window must independently reject changed source");
+            refusals.push(json!({"mutation":mutation,"error":error,"ownedWindowError":owned_error}));
             assert_eq!(s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap(), before_effects);
             assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(), before_holds);
             s.runtime().plugins.put_instance(calendar_instance, calendar_original.clone(), &ctx("window-round-restore")).unwrap();
             assert_eq!(window().unwrap(), original_window);
+            assert_eq!(owned_window().unwrap(), original_owned_window);
         }
+        let installed = s.runtime().plugin_packages.get(calendar_original["activePackageSha256"].as_str().unwrap()).unwrap().unwrap();
+        let executable = std::path::Path::new(&installed.executable_path);
+        assert!(executable.canonicalize().unwrap().starts_with(root.canonicalize().unwrap()), "only this test's private installed fixture may be changed");
+        let original_bytes = fs::read(executable).unwrap();
+        let mut changed_bytes = original_bytes.clone(); changed_bytes.push(0);
+        fs::write(executable, changed_bytes).unwrap();
+        let artifact_refusal = owned_window();
+        fs::write(executable, original_bytes).unwrap();
+        assert!(artifact_refusal.is_err(), "new validation round must reject changed artifact bytes");
+        assert_eq!(owned_window().unwrap(), original_owned_window);
         let foreign = s.for_authenticated_invocation("fixture", "window-foreign-owner", None, None);
         assert!(plans::management::fixture_execution_window(&foreign, entry, occurrence).is_err());
+        assert!(crate::service::management_windows::current(&foreign, &managed_window.window_id).is_err());
+        assert_eq!(s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap(), before_effects);
+        assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(), before_holds);
         write_screen_interface_evidence("managed_plan", "window-round-invalidation.json",
             &json!({"window":original_window.0,"deadline":original_window.1,"refusals":refusals,
-                "restoredExactWindow":true,"financialRowsUnchanged":true,"foreignOwnerRefused":true,
+                "restoredExactWindow":true,"ownedWindow":managed_window,"tamperedArtifactRefusal":artifact_refusal.unwrap_err(),
+                "financialRowsUnchanged":true,"foreignOwnerRefused":true,
                 "scope":"synthetic native window validation; no real account or provider"}));
         return; // This dedicated regression does not qualify a close lifecycle.
     }

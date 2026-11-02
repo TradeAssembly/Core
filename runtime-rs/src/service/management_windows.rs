@@ -505,11 +505,29 @@ pub fn historical(s: &TradeAssemblyService, id: &str) -> Result<Receipt, String>
 /// Rechecks exact current owner/config/graph/source/calendar plus both ages.
 /// It never rewrites an immutable receipt when waiting becomes active or closed.
 pub fn current(s: &TradeAssemblyService, id: &str) -> Result<Current, String> {
-    let r = historical(s, id)?;
-    if management::window_subject(s, &r.command.position_id)? != r.subject {
+    let _timing = super::order_plans::financial_timing("management.window.current");
+    // This is a pure validation round: share immutable package bytes across
+    // repeated subject/policy/calendar checks, but retain original live owner,
+    // configuration, revocation, entitlement, receipt and trusted-clock ports.
+    // The scoped service never escapes to acquisition, dispatch or a write.
+    super::package_validation::with_round(s, |s| current_in_round(s, id))
+}
+fn current_in_round(s: &TradeAssemblyService, id: &str) -> Result<Current, String> {
+    let r = {
+        let _timing = super::order_plans::financial_timing("management.window.historical");
+        historical(s, id)?
+    };
+    let subject = {
+        let _timing = super::order_plans::financial_timing("management.window.subject");
+        management::window_subject(s, &r.command.position_id)?
+    };
+    if subject != r.subject {
         return Err("management_window_subject_changed".into());
     }
-    let fresh = build(s, r.command.clone(), r.prepared_at_ms)?;
+    let fresh = {
+        let _timing = super::order_plans::financial_timing("management.window.rebuild");
+        build(s, r.command.clone(), r.prepared_at_ms)?
+    };
     if fresh != r {
         return Err("management_window_source_changed".into());
     }
@@ -517,14 +535,20 @@ pub fn current(s: &TradeAssemblyService, id: &str) -> Result<Current, String> {
     if now < r.prepared_at_ms {
         return Err("management_window_clock_reversed".into());
     }
-    let trigger = policy(
-        s,
-        &r.command.scope,
-        &r.command.position_id,
-        &r.command.trigger_ref,
-        &r.subject,
-    )?;
-    let (_, document, until) = calendar(s, &r.command, &r.subject, &trigger, now)?;
+    let trigger = {
+        let _timing = super::order_plans::financial_timing("management.window.policy");
+        policy(
+            s,
+            &r.command.scope,
+            &r.command.position_id,
+            &r.command.trigger_ref,
+            &r.subject,
+        )?
+    };
+    let (_, document, until) = {
+        let _timing = super::order_plans::financial_timing("management.window.calendar");
+        calendar(s, &r.command, &r.subject, &trigger, now)?
+    };
     if until != r.fresh_until_ms {
         return Err("management_window_receipt_invalid".into());
     }

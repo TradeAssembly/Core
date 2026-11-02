@@ -1307,16 +1307,6 @@ fn execution_window(
     id: &str,
 ) -> Result<(Value, i64), String> {
     let _timing = crate::service::order_plans::financial_timing("management.window.validate");
-    // Only immutable package bytes are shared inside this pure check. Owner,
-    // configuration, revocation, calendar receipts and the clock remain live;
-    // dispatch and storage effects use the original service outside this round.
-    crate::service::package_validation::with_round(s, |s| execution_window_in_round(s, p, id))
-}
-fn execution_window_in_round(
-    s: &TradeAssemblyService,
-    p: &OrderPlan,
-    id: &str,
-) -> Result<(Value, i64), String> {
     if id.starts_with("management_window_") {
         let current = crate::service::management_windows::current(s, id)?;
         let r = current.receipt;

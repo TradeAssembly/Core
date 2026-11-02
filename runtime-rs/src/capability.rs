@@ -65,12 +65,12 @@ pub fn resolve(
     requirement: CapabilityRequirement,
     catalog: CapabilityResolverCatalog,
 ) -> CapabilityResolution {
-    resolve_requirement(requirement, catalog, false, None)
+    resolve_requirement(requirement, &catalog, false, None)
 }
 
 fn resolve_graph_requirement(
     requirement: CapabilityRequirement,
-    catalog: CapabilityResolverCatalog,
+    catalog: &CapabilityResolverCatalog,
     evaluation_epoch: &str,
 ) -> CapabilityResolution {
     resolve_requirement(requirement, catalog, true, Some(evaluation_epoch))
@@ -78,7 +78,7 @@ fn resolve_graph_requirement(
 
 fn resolve_requirement(
     requirement: CapabilityRequirement,
-    catalog: CapabilityResolverCatalog,
+    catalog: &CapabilityResolverCatalog,
     graph_contract: bool,
     evaluation_epoch: Option<&str>,
 ) -> CapabilityResolution {
@@ -224,14 +224,14 @@ fn resolve_requirement(
     }
     if candidates.is_empty() {
         let missing_code = if requirement.operation_id.is_some()
-            && catalog_has_capability_with_different_operation(&requirement, &catalog)
+            && catalog_has_capability_with_different_operation(&requirement, catalog)
         {
             if graph_contract {
                 "missing_operation"
             } else {
                 "operation_unsupported"
             }
-        } else if catalog_has_capability_mode_mismatch(&requirement, &catalog) {
+        } else if catalog_has_capability_mode_mismatch(&requirement, catalog) {
             "mode_incompatible"
         } else {
             "missing_plugin"
@@ -538,11 +538,8 @@ fn select_node(
     Option<CapabilitySelection>,
     Vec<CapabilityBlocker>,
 ) {
-    let base_resolution = resolve_graph_requirement(
-        requirement.clone(),
-        catalog.clone(),
-        &request.evaluation_epoch,
-    );
+    let base_resolution =
+        resolve_graph_requirement(requirement.clone(), catalog, &request.evaluation_epoch);
     let mut candidates = base_resolution.candidates.clone();
     sort_candidates(&mut candidates);
     let direct_binding = request
@@ -556,7 +553,7 @@ fn select_node(
         let bound_requirement = apply_binding(requirement, binding);
         let resolution = resolve_graph_requirement(
             bound_requirement.clone(),
-            catalog.clone(),
+            catalog,
             &request.evaluation_epoch,
         );
         if let Some(selected) = unique_usable_candidate(&resolution.candidates) {
@@ -602,7 +599,7 @@ fn select_node(
                 let bound_requirement = apply_binding(requirement, binding);
                 let resolution = resolve_graph_requirement(
                     bound_requirement.clone(),
-                    catalog.clone(),
+                    catalog,
                     &request.evaluation_epoch,
                 );
                 if let Some(selected) = unique_usable_candidate(&resolution.candidates) {

@@ -376,6 +376,11 @@ fn timing_phase(stage: &'static str) -> bool {
             | "management.decide.lease"
             | "management.decide.commit"
             | "management.window.validate"
+            | "management.window.acquisition"
+            | "management.window.build"
+            | "management.window.build.subject"
+            | "management.window.build.policy"
+            | "management.window.build.calendar"
             | "management.window.current"
             | "management.window.historical"
             | "management.window.subject"
@@ -1802,6 +1807,11 @@ mod financial_timing_tests {
         assert!(timing_phase("c5.admit"));
         assert!(timing_phase("management.snapshot"));
         assert!(timing_phase("management.window.validate"));
+        assert!(timing_phase("management.window.acquisition"));
+        assert!(timing_phase("management.window.build"));
+        assert!(timing_phase("management.window.build.subject"));
+        assert!(timing_phase("management.window.build.policy"));
+        assert!(timing_phase("management.window.build.calendar"));
         assert!(timing_phase("management.window.current"));
         assert!(timing_phase("management.window.historical"));
         assert!(timing_phase("management.window.subject"));

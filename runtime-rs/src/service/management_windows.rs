@@ -280,6 +280,14 @@ pub(crate) fn acquisition(
     position_id: &str,
     trigger_ref: &str,
 ) -> Result<CalendarAcquisition, String> {
+    super::package_validation::with_round(s, |s| acquisition_in_round(s, position_id, trigger_ref))
+}
+fn acquisition_in_round(
+    s: &TradeAssemblyService,
+    position_id: &str,
+    trigger_ref: &str,
+) -> Result<CalendarAcquisition, String> {
+    let _timing = super::order_plans::financial_timing("management.window.acquisition");
     if !text(position_id) || !text(trigger_ref) {
         return Err("management_window_command_invalid".into());
     }
@@ -437,10 +445,25 @@ fn calendar(
     Ok((r, document, until))
 }
 fn build(s: &TradeAssemblyService, c: Command, at: i64) -> Result<Receipt, String> {
+    // Pure reconstruction only. Preflight and the eventual commit each start
+    // their own round, so no ownership, source or clock decision crosses them.
+    super::package_validation::with_round(s, |s| build_in_round(s, c, at))
+}
+fn build_in_round(s: &TradeAssemblyService, c: Command, at: i64) -> Result<Receipt, String> {
+    let _timing = super::order_plans::financial_timing("management.window.build");
     validate_command(&c)?;
-    let subject = management::window_subject(s, &c.position_id)?;
-    let trigger = policy(s, &c.scope, &c.position_id, &c.trigger_ref, &subject)?;
-    let (calendar, document, until) = calendar(s, &c, &subject, &trigger, at)?;
+    let subject = {
+        let _timing = super::order_plans::financial_timing("management.window.build.subject");
+        management::window_subject(s, &c.position_id)?
+    };
+    let trigger = {
+        let _timing = super::order_plans::financial_timing("management.window.build.policy");
+        policy(s, &c.scope, &c.position_id, &c.trigger_ref, &subject)?
+    };
+    let (calendar, document, until) = {
+        let _timing = super::order_plans::financial_timing("management.window.build.calendar");
+        calendar(s, &c, &subject, &trigger, at)?
+    };
     let selection = select(&document, &trigger.execution_window, at)?;
     let mut r = Receipt {
         schema_version: VERSION.into(),

@@ -1826,6 +1826,7 @@ pub(crate) fn advance(
             let error = crate::service::service_error_code(&response.body)
                 .unwrap_or_else(|| "management_automation_child_failed".into());
             if matches!(pending.action, Action::AcquireInputs { .. })
+                && observations::retryable_response(&response)
                 || matches!(pending.action, Action::Reversal { .. })
                     && reversal::unknown_response(&response)
             {

@@ -237,8 +237,20 @@ fn run_parallel(
             .collect()
     })
 }
+pub(super) fn retryable_response(response: &ServiceResponse) -> bool {
+    !matches!(response.status, 401 | 403)
+        && response.body["error"]["retryable"].as_bool() == Some(true)
+}
 fn response(reads: BTreeMap<String, ReadResponse>) -> ServiceResponse {
     let success = reads.len() == 4 && reads.values().all(|r| (200..300).contains(&r.status));
+    let terminal = reads
+        .values()
+        .find(|r| {
+            !(200..300).contains(&r.status)
+                && (matches!(r.status, 401 | 403)
+                    || r.body["error"]["retryable"].as_bool() != Some(true))
+        })
+        .cloned();
     let body = match value(&Response {
         schema_version: VERSION.into(),
         reads,
@@ -252,7 +264,19 @@ fn response(reads: BTreeMap<String, ReadResponse>) -> ServiceResponse {
     let response = if success {
         ServiceResponse::ok(body)
     } else {
-        let mut error = ServiceResponse::error(503, "management_input_batch_incomplete", true);
+        let mut error = if let Some(terminal) = terminal {
+            // Preserve a known refusal, especially a per-read authority denial.
+            // It must not be converted into a retryable unknown batch outcome.
+            ServiceResponse {
+                status: terminal.status,
+                body: terminal.body,
+            }
+        } else {
+            ServiceResponse::error(503, "management_input_batch_incomplete", true)
+        };
+        if matches!(error.status, 401 | 403) {
+            error.body["error"]["retryable"] = json!(false);
+        }
         error.body["readResults"] = body;
         error
     };
@@ -534,6 +558,32 @@ mod tests {
             "bounded-four-read-wall-us={}",
             started.elapsed().as_micros()
         );
+    }
+    #[test]
+    fn input_batch_preserves_terminal_authority_denial_without_retry_or_partial_join() {
+        let (b, e, c) = planned();
+        let req = requests(&validate_shape(&b, &e, &c).unwrap());
+        for role in ROLES.into_iter().chain([CAPTURE_KEY]) {
+            let mut reads = run_parallel(&req, |_, body| ServiceResponse::ok(body.clone()));
+            reads.insert(role.into(), ReadResponse {
+                status: 403,
+                body: json!({"error":{"code":"finance_authority_denied","retryable":true,"details":{"reason":"warden_signed_receipt_invalid"}}}),
+            });
+            let denied = response(reads);
+            assert_eq!(denied.status, 403);
+            assert_eq!(denied.body["error"]["code"], "finance_authority_denied");
+            assert_eq!(denied.body["error"]["retryable"], false);
+            assert!(!retryable_response(&denied));
+            assert!(successful_reads(&denied).is_err());
+        }
+        assert!(retryable_response(&ServiceResponse::error(
+            503,
+            "temporary",
+            true
+        )));
+        assert!(!retryable_response(&ServiceResponse::error(
+            503, "invalid", false
+        )));
     }
     #[test]
     fn input_batch_partial_failures_panics_and_oversized_results_never_join_successfully() {

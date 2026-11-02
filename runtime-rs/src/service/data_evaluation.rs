@@ -346,7 +346,9 @@ fn invoke(
     claim: &mut LeaseClaim,
     context: &SideEffectContext,
 ) -> Result<DataEvaluationResponse, String> {
-    data_plans::current(service, &plan.revision_id)?;
+    super::order_plans::measured("evaluation.current", || {
+        data_plans::current(service, &plan.revision_id)
+    })?;
     request_budget(service)?;
     live_lease(service, claim)?;
     *claim = service
@@ -384,10 +386,12 @@ fn invoke(
     };
     let mut call_context = context.clone();
     call_context.idempotency_key = IdempotencyKey::new(format!("data-evaluation:{invocation}"))?;
-    let response = service
-        .runtime()
-        .plugin_operations
-        .invoke(&request, &call_context)?;
+    let response = super::order_plans::measured("evaluation.invoke", || {
+        service
+            .runtime()
+            .plugin_operations
+            .invoke(&request, &call_context)
+    })?;
     if response.reconciliation_required
         || response.schema_ref != EVALUATION_RESPONSE_SCHEMA
         || !response.replayable
@@ -634,6 +638,7 @@ pub fn step(
     {
         return Err("data_evaluation_request_invalid".into());
     }
+    let _timing = super::order_plans::financial_timing("evaluation.step");
     let started = service
         .data_step_request
         .as_ref()
@@ -851,6 +856,7 @@ impl StepEnvironment<'_> {
         Ok(())
     }
     fn graph(&self) -> Result<CapabilityGraphResolution, String> {
+        let _timing = super::order_plans::financial_timing("evaluation.graph");
         let revision = capability_graph::get_revision(
             self.service,
             &self.plan.content.plan.request.capability_graph_revision,
@@ -1381,7 +1387,9 @@ impl StepEnvironment<'_> {
         };
         receipt.receipt_sha256 = receipt_hash(&receipt)?;
         self.check_budget()?;
-        data_plans::current(self.service, &self.plan.revision_id)?;
+        super::order_plans::measured("evaluation.current", || {
+            data_plans::current(self.service, &self.plan.revision_id)
+        })?;
         self.check_budget()?;
         live_lease(self.service, claim)?;
         let mut writes = vec![
@@ -1438,6 +1446,7 @@ impl StepEnvironment<'_> {
             expectations.push(StorageExpectation::new(SOURCES, &id, None));
             writes.push(StorageWrite::new(SOURCES, id, value, self.context.clone()));
         }
+        let _commit_timing = super::order_plans::financial_timing("evaluation.commit");
         if self
             .service
             .runtime()

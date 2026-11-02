@@ -395,6 +395,20 @@ fn timing_phase(stage: &'static str) -> bool {
             | "manager.before_child_checks"
             | "manager.reversal.response_validation"
             | "selected_plan.rebuild"
+            | "managed_eval.preflight"
+            | "managed_eval.response"
+            | "managed_eval.prepared"
+            | "managed_eval.plan"
+            | "managed_eval.streams"
+            | "managed_eval.snapshot"
+            | "evaluation.step"
+            | "evaluation.graph"
+            | "evaluation.current"
+            | "evaluation.invoke"
+            | "evaluation.commit"
+            | "plugin.prepare"
+            | "plugin.process"
+            | "plugin.response_schema"
             | "managed_plan.preflight"
             | "managed_plan.command"
             | "managed_plan.resolve"
@@ -1675,6 +1689,20 @@ mod financial_timing_tests {
             "approval.preflight",
             "approval.validate",
             "approval.revalidate",
+            "managed_eval.preflight",
+            "managed_eval.response",
+            "managed_eval.prepared",
+            "managed_eval.plan",
+            "managed_eval.streams",
+            "managed_eval.snapshot",
+            "evaluation.step",
+            "evaluation.graph",
+            "evaluation.current",
+            "evaluation.invoke",
+            "evaluation.commit",
+            "plugin.prepare",
+            "plugin.process",
+            "plugin.response_schema",
         ] {
             assert!(timing_phase(phase));
         }

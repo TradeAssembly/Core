@@ -97,6 +97,7 @@ fn prepared(
     ),
     String,
 > {
+    let _timing = super::order_plans::financial_timing("managed_eval.prepared");
     let (scope, c) = command(body)?;
     s.require_object("strategy", &scope.strategy_id)
         .map_err(|_| "managed_stream_step_not_available")?;
@@ -112,7 +113,9 @@ fn prepared(
         }
     }
     let ctx = context(s, body)?;
-    let plan = data_plans::current(s, &c.step.plan_revision_id)?;
+    let plan = super::order_plans::measured("managed_eval.plan", || {
+        data_plans::current(s, &c.step.plan_revision_id)
+    })?;
     if plan.content.scope != scope
         || plan.content.plan.request.mode != "paper"
         || plan.content.selection_source.as_ref().is_none_or(|source| {
@@ -160,7 +163,10 @@ fn prepared(
             return Err("managed_stream_step_budget_exceeded".into());
         }
     }
-    managed_data_streams::validate_plan_streams(s, &plan)?;
+    super::order_plans::measured("managed_eval.streams", || {
+        managed_data_streams::validate_plan_streams(s, &plan)
+    })?;
+    let snapshot_timing = super::order_plans::financial_timing("managed_eval.snapshot");
     let snapshot = managed_data_streams::snapshot(
         s,
         &scope,
@@ -170,6 +176,7 @@ fn prepared(
         &c.step.window,
     )?;
     managed_data_streams::validate_snapshot_plan(s, &plan, &snapshot)?;
+    drop(snapshot_timing);
     data_evaluation::remember_request_plan(s, &c.step, &plan)?;
     Ok((c, plan, snapshot, ctx))
 }
@@ -181,12 +188,14 @@ pub(super) fn preflight(
     if path != PATH {
         return None;
     }
+    let _timing = super::order_plans::financial_timing("managed_eval.preflight");
     prepared(s, body).err().map(error)
 }
 pub(super) fn response(s: &TradeAssemblyService, body: Value) -> ServiceResponse {
     if s.data_step_request.is_none() {
         return response(&data_evaluation::request_service(s), body);
     }
+    let _timing = super::order_plans::financial_timing("managed_eval.response");
     let result = (|| {
         let (c, plan, snapshot, ctx) = prepared(s, &body)?;
         let request_sha256 = hash(&json!({"request":c.step,"authority":ctx.authority}))?;

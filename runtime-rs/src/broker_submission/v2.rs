@@ -388,7 +388,9 @@ pub(crate) fn profile_validation_round(
         capability_resolver: runtime.capability_resolver.clone(),
         clock: runtime.clock.clone(),
         leases: runtime.leases.clone(),
-        owner: crate::local_owner_identity::LocalOwnerIdentity::existing_for_database(s.db())?,
+        owner: crate::local_owner_identity::LocalOwnerIdentity::existing_for_database(
+            std::fs::canonicalize(s.db()).map_err(|_| "c5_profile_database_path_invalid")?,
+        )?,
     };
     let state = load_management_state(&deps, request, context)?;
     let prepared = BrokerPreparedBinding {

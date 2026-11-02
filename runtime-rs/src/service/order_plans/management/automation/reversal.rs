@@ -851,6 +851,34 @@ mod progress_tests {
     }
 
     #[test]
+    fn minute_completion_grid_never_uses_an_open_or_not_yet_available_bar() {
+        let origin = 1_700_000_000_123;
+        let end = origin + 120_000;
+        for (now, lag, expected) in [
+            (end - 1, 0, end - 60_000),
+            (end, 0, end),
+            (end + 99, 100, end - 60_000),
+            (end + 100, 100, end),
+            (end + 46_370, 0, end),
+            (end + 59_999, 0, end),
+            (end + 60_000, 0, end + 60_000),
+        ] {
+            let completed = completed_boundary(origin, 60_000, now, lag).unwrap();
+            assert_eq!(completed, expected);
+            assert!(completed + lag <= now);
+            assert!(completed + 60_000 + lag > now);
+        }
+        // Waiting uses the real next completion plus configured lag; it does
+        // not assign a fresh timestamp to the stale latest completed frame.
+        assert_eq!(
+            observation_wait(false, origin, 60_000, end + 46_370, 100).unwrap(),
+            ObservationWait::WarmingUp {
+                next_completed_at_ms: end + 60_100
+            }
+        );
+    }
+
+    #[test]
     fn grid_uses_provider_witnessed_origin_and_explicit_lag() {
         let origin = 1_700_000_000_123;
         assert_eq!(

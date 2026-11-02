@@ -26,10 +26,18 @@ pub(super) fn with_round<T>(
     service: &TradeAssemblyService,
     validate: impl FnOnce(&TradeAssemblyService) -> Result<T, String>,
 ) -> Result<T, String> {
+    // Nested pure validators already share this exact immutable-byte round.
+    // Rewrapping would clone and reserialize the whole verified manifest into
+    // each nested cache. It never made live authority checks fresher: those
+    // ports remain the original ports and every caller still invokes them.
+    if service.package_validation_round {
+        return validate(service);
+    }
     let mut runtime = (*service.runtime()).clone();
     runtime.plugin_packages = Arc::new(ValidationPackages::new(runtime.plugin_packages.clone()));
     let mut scoped = service.clone();
     scoped.runtime = Arc::new(runtime);
+    scoped.package_validation_round = true;
     validate(&scoped)
 }
 
@@ -411,7 +419,13 @@ mod tests {
                     .data_schema(&d, "schema://fixture/value@1")?;
                 Ok(())
             };
-            nested(round)
+            with_round(round, |same_round| {
+                assert!(Arc::ptr_eq(
+                    &round.runtime().plugin_packages,
+                    &same_round.runtime().plugin_packages
+                ));
+                nested(same_round)
+            })
         })
         .unwrap();
         assert_eq!(packages.snapshots.load(Ordering::SeqCst), 1);
@@ -435,6 +449,72 @@ mod tests {
         .unwrap();
         assert_eq!(packages.snapshots.load(Ordering::SeqCst), 2);
     }
+    #[test]
+    #[ignore = "read-only metadata microbenchmark; explicit installed package required"]
+    fn profile_nested_verified_package_rounds() {
+        let root = std::env::var("PACKAGE_ROUND_PROFILE_ROOT").unwrap();
+        let digest = std::env::var("PACKAGE_ROUND_PROFILE_DIGEST").unwrap();
+        assert!(std::path::Path::new(&root).join("packages").is_dir());
+        assert!(std::path::Path::new(&root).join("staging").is_dir());
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("profile.db").to_string_lossy().into_owned();
+        let mut runtime = crate::adapters::local::test_runtime(&db);
+        runtime.plugin_packages = Arc::new(
+            crate::adapters::plugin_packages::LocalPluginPackageStore::new(&root).unwrap(),
+        );
+        let s = TradeAssemblyService::from_runtime(&db, runtime);
+        let mut baseline = Vec::new();
+        let mut corrected = Vec::new();
+        // Only the previous redundant nested wrapper versus the same outer
+        // immutable-byte round. No financial, authority or source validation is
+        // timed here, so this cannot establish full runtime performance.
+        for sample in 0..8 {
+            for old in if sample % 2 == 0 {
+                [true, false]
+            } else {
+                [false, true]
+            } {
+                let mut elapsed = 0;
+                with_round(&s, |outer| {
+                    let expected = outer.runtime().plugin_packages.get(&digest)?;
+                    assert!(expected.is_some());
+                    let start = std::time::Instant::now();
+                    for _ in 0..20 {
+                        let observed = if old {
+                            let nested =
+                                ValidationPackages::new(outer.runtime().plugin_packages.clone());
+                            nested.get(&digest)?
+                        } else {
+                            with_round(outer, |inner| inner.runtime().plugin_packages.get(&digest))?
+                        };
+                        assert_eq!(observed, expected);
+                    }
+                    elapsed = start.elapsed().as_micros();
+                    Ok(())
+                })
+                .unwrap();
+                if sample > 0 {
+                    if old {
+                        baseline.push(elapsed);
+                    } else {
+                        corrected.push(elapsed);
+                    }
+                }
+            }
+        }
+        baseline.sort();
+        corrected.sort();
+        println!(
+            "{}",
+            serde_json::json!({
+                "scope":"20 nested get calls; immutable metadata only; no full path qualification",
+                "packageSha256":digest,"baselineMedianUs":baseline[3],
+                "correctedMedianUs":corrected[3],"baselineSamplesUs":baseline,
+                "correctedSamplesUs":corrected
+            })
+        );
+    }
+
     #[test]
     fn cached_package_never_caches_current_configuration_credentials_or_revocation() {
         use super::super::{capability_graph, data_binding, data_plans};

@@ -2582,6 +2582,37 @@ mod tests {
         );
     }
     #[test]
+    fn reversal_freshness_is_exclusive_age_from_completed_end_not_ingestion() {
+        // A one-minute bar opens at 60000 and completes at 120000. The
+        // completion is fresh even though its opening is already a minute old.
+        let end = 120_000;
+        let entry = time(50_000, 50_001);
+        let frame = idle_frame(end, end, end);
+        for now in [end, end + 29_999] {
+            validate_reversal_subject(&frame, "owned", now).unwrap();
+            ready_reversal(&frame, "bar", &entry, None, now, 30_000).unwrap();
+        }
+        for age in [30_000, 46_370, 60_000] {
+            let now = end + age;
+            // Delayed observation/ingestion is causal but cannot launder the
+            // already completed bar into a current reversal observation.
+            let delayed = idle_frame(end, now, now);
+            validate_reversal_subject(&delayed, "owned", now).unwrap();
+            assert_eq!(
+                ready_reversal(&delayed, "delayed", &entry, None, now, 30_000)
+                    .err()
+                    .unwrap(),
+                "managed_reversal_not_current"
+            );
+        }
+        let future = idle_frame(end + 1, end, end);
+        assert_eq!(
+            validate_reversal_subject(&future, "owned", end).unwrap_err(),
+            "managed_reversal_not_current"
+        );
+    }
+
+    #[test]
     fn unconsumed_stale_and_revised_postentry_observations_remain_errors() {
         let now = 100_000;
         let frame = idle_frame(60_000, 60_001, 60_002);

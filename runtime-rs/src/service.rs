@@ -289,6 +289,8 @@ pub struct TradeAssemblyService {
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
     // Private, one-public-request lifetime; never serialized or shared by roots.
     data_step_request: Option<Arc<data_evaluation::DataStepRequest>>,
+    // Immutable package metadata only, scoped to one pure validation callback.
+    package_validation_round: bool,
     // Restrictive, in-memory worker provenance; never caller supplied or stored.
     background_worker_job: Option<String>,
 }
@@ -378,6 +380,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            package_validation_round: false,
             background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
@@ -518,6 +521,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            package_validation_round: false,
             background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
@@ -559,6 +563,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            package_validation_round: false,
             background_worker_job: None,
         })
     }
@@ -587,6 +592,7 @@ impl TradeAssemblyService {
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
             data_step_request: None,
+            package_validation_round: false,
             background_worker_job: None,
         }
     }

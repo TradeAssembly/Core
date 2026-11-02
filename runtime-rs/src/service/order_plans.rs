@@ -543,6 +543,22 @@ fn timing_phase(stage: &'static str) -> bool {
 fn timing_requested(value: Option<&std::ffi::OsStr>) -> bool {
     value == Some(std::ffi::OsStr::new("1"))
 }
+// Private opt-in timestamp witness for the existing authoritative check.
+// No request, order, account or identity values are logged, and no new clock
+// sample is taken: this records the exact value already used by the guard.
+pub(crate) fn trace_financial_freshness(
+    checked_at_ms: i64,
+    plan_until_ms: i64,
+    lease_until_ms: i64,
+) {
+    if timing_requested(std::env::var_os("TRADEASSEMBLY_FINANCIAL_TIMING").as_deref()) {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CORE_FIN_FRESHNESS phase=broker.v2.final checked_at_ms={checked_at_ms} plan_until_ms={plan_until_ms} lease_until_ms={lease_until_ms}"
+        );
+    }
+}
 pub(crate) fn financial_timing(stage: &'static str) -> FinancialTiming {
     if !timing_phase(stage)
         || !timing_requested(std::env::var_os("TRADEASSEMBLY_FINANCIAL_TIMING").as_deref())

@@ -369,6 +369,11 @@ fn validate_in_round(
             )
         }),
     )?;
+    order_plans::trace_financial_freshness(
+        final_now,
+        p.valid_until_ms,
+        state.current_lease.expires_at_ms,
+    );
     Ok((state, p, intent))
 }
 /// Read-only native comparison; never persists an intent or obtains a permit.

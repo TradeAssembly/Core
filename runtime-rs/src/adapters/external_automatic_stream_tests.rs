@@ -1,6 +1,7 @@
 // Generic host-flow qualification with a separately declared synthetic 1-second
 // counter package. This does not qualify the real pack's daily EMA/TSI formulas.
 const AUTOMATIC_STREAM_CASE: &str = "financial_screen_auto_stream";
+const STREAM_REBUILD_VALIDATION_CASE: &str = "financial_screen_auto_stream_validation";
 const STREAM_PLUGIN: &str = "fixture.managed_stream.synthetic";
 const STREAM_SOURCE: &str = "exec_stream_source";
 const STREAM_ACQUIRE: &str = "exec_stream_acquire";
@@ -408,17 +409,98 @@ fn automatic_stream_receipts(
     receipts.sort_by_key(automatic_stream_cursor);
     receipts
 }
+// At a quiescent real stream checkpoint, changes made after lightweight source
+// resolution must still be rejected by final full stream authority validation.
+fn assert_stream_rebuild_final_authority(
+    s: &crate::service::TradeAssemblyService,
+    plan_id: &str,
+    root: &std::path::Path,
+) {
+    use crate::service::selection_plans;
+    let plan = data_plans::current(s, plan_id).unwrap();
+    let source = plan.content.selection_source.as_ref().unwrap();
+    assert!(!source.source_streams.is_empty());
+    assert_eq!(selection_plans::fixture_rebuild_after_resolve(s, source, |_| Ok(())).unwrap(), plan.content);
+    let namespaces = ["execution_order_plan_submissions_v2", "execution_cash_reservations_v1",
+        "execution_managed_positions_v1", "execution_managed_position_journal_v1",
+        "data_evaluation_receipts_v1", "data_evaluation_checkpoints_v1"];
+    let protected = || namespaces.iter().map(|n| (*n,s.runtime().storage.list_json(n).unwrap())).collect::<Vec<_>>();
+    let before = protected();
+    let calls_path = root.join("synthetic-broker/calls.log");
+    let before_calls = fs::read_to_string(&calls_path).unwrap();
+    let instance_id = "fixture.broker.v2";
+    let original = s.runtime().plugins.get_instance(instance_id).unwrap().unwrap();
+    let mut refusals = Vec::new();
+    for mutation in ["revocation", "configuration", "credential_revision"] {
+        let mut changed = original.clone();
+        match mutation {
+            "revocation" => changed["enabled"] = json!(false),
+            "configuration" => changed["configuration"]["changedAfterResolution"] = json!(true),
+            "credential_revision" => changed["credentialRevision"] = json!(2),
+            _ => unreachable!(),
+        }
+        let result = selection_plans::fixture_rebuild_after_resolve(s, source, |round| {
+            round.runtime().plugins.put_instance(instance_id, changed, &ctx("stream-late-authority-change"))?;
+            Ok(())
+        });
+        s.runtime().plugins.put_instance(instance_id, original.clone(), &ctx("stream-late-authority-restore")).unwrap();
+        let error = result.expect_err("live authority changed after resolution must not escape checked rebuild");
+        refusals.push(json!({"mutation":mutation,"error":error}));
+        assert_eq!(protected(), before);
+        assert_eq!(fs::read_to_string(&calls_path).unwrap(), before_calls);
+        assert_eq!(data_plans::current(s, plan_id).unwrap(), plan);
+    }
+    let mut wrong = source.clone();
+    wrong.managed_position_sha256 = Some("0".repeat(64));
+    // Keep the forged selection identity internally consistent, so only the
+    // final live stream proof comparison can reject this expected proof.
+    let subject = &source.resolved_program.trade_instruments[0];
+    let digest_for = |proof: &str| crate::data_pipeline::canonical_sha256(&json!({
+        "schemaVersion":"tradeassembly.managed_trade_selection.v1", "subject":subject,
+        "managedPositionSha256":proof})).unwrap();
+    let original_digest = digest_for(source.managed_position_sha256.as_deref().unwrap());
+    let aliases = source.selection_sha256.iter().filter(|(_,v)| **v == original_digest)
+        .map(|(name,_)| name.clone()).collect::<Vec<_>>();
+    assert_eq!(aliases.len(), 1);
+    wrong.selection_sha256.insert(aliases[0].clone(), digest_for(wrong.managed_position_sha256.as_deref().unwrap()));
+    assert_eq!(selection_plans::fixture_rebuild_after_resolve(s, &wrong, |_| Ok(())).unwrap_err(), "managed_stream_plan_binding_invalid");
+    let package = s.runtime().plugin_packages.get(original["activePackageSha256"].as_str().unwrap()).unwrap().unwrap();
+    let executable = std::path::Path::new(&package.executable_path);
+    assert!(executable.canonicalize().unwrap().starts_with(root.canonicalize().unwrap()));
+    let original_bytes = fs::read(executable).unwrap();
+    let mut changed_bytes = original_bytes.clone(); changed_bytes.push(0);
+    fs::write(executable, changed_bytes).unwrap();
+    let tamper = data_plans::current(s, plan_id);
+    fs::write(executable, original_bytes).unwrap();
+    assert!(tamper.is_err(), "fresh round must reject executable tampering");
+    assert_eq!(data_plans::current(s, plan_id).unwrap(), plan);
+    let foreign = s.for_authenticated_invocation("fixture", "foreign-stream-plan", None, None);
+    assert!(data_plans::current(&foreign, plan_id).is_err());
+    assert_eq!(protected(), before);
+    assert_eq!(fs::read_to_string(&calls_path).unwrap(), before_calls);
+    write_screen_interface_evidence("automatic_stream", "late-source-authority-regression.json", &json!({
+        "planRevisionId":plan_id,"lateRefusals":refusals,"wrongExpectedProofRefusedAtFinalBinding":true,
+        "tamperedExecutableRefused":true,"foreignOwnerRefused":true,"restoredPlanExactlyMatches":true,
+        "protectedFinancialAndCheckpointRowsUnchanged":true,"noAdditionalBrokerCalls":true,
+        "qualification":"fresh native synthetic stream fixture; no real provider or account"}));
+}
 fn exercise_native_automatic_stream(
     s: &crate::service::TradeAssemblyService,
     scope: &data_plans::PlanScope,
     revision: &str,
     prepared: &Value,
     root: &std::path::Path,
+    validation_only: bool,
 ) {
     use crate::service::{
         data_collections as collections, session_dispatch as dispatch,
         session_schedules as schedules,
     };
+    // Opt in through the ordinary config API; sequential acquisition exhausted
+    // the original 30-second input budget before this regression's entry.
+    // Preserve that failed root and every financial age/deadline unchanged.
+    let configured = s.runtime().storage.list_json("execution_configs").unwrap();
+    assert!(configured.iter().any(|(_,c)| c["typedExecution"]["automaticExecution"]["observationAcquisition"] == "bounded_independent_reads_v1"));
     let seed = prepared["capture"]["captureId"].as_str().unwrap();
     let seed = crate::service::data_captures::current(s, seed).unwrap();
     let calendar = collections::acquire(
@@ -529,6 +611,29 @@ fn exercise_native_automatic_stream(
                 resumed.body
             );
             removed = true;
+        }
+        if validation_only && removed {
+            let plan_id = s.runtime().storage.list_json("execution_management_automation_v1").unwrap()
+                .into_iter().find_map(|(_,manager)| manager["reversalHeads"].as_object()
+                    .and_then(|heads| heads.values().find_map(|head| head["planRevisionId"].as_str().map(str::to_owned))));
+            if let Some(plan_id) = plan_id {
+                dispatch::halt_worker_for_test(s, id);
+                native_health_wait_worker_stopped(s, id);
+                assert_stream_rebuild_final_authority(s, &plan_id, root);
+                let stopped=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"stop_worker","jobId":id},"accountMode":"paper","idempotencyKey":"stream-validation-explicit-stop"}));
+                assert_eq!(stopped.body["ok"],true,"{}",stopped.body);
+                let positions=s.runtime().storage.list_json("execution_managed_positions_v1").unwrap();
+                assert_eq!(positions.len(),1);
+                assert_eq!(positions[0].1["closedQuantity"],"0");
+                let calls=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
+                assert_eq!(calls.lines().filter(|line| *line=="submit").count(),1);
+                write_screen_interface_evidence("automatic_stream","focused-source-validation-checkpoint.json",&json!({
+                    "planRevisionId":plan_id,"entriesPausedAndMembershipReplaced":true,
+                    "lateAuthorityAndPinnedProofRegressionPassed":true,"durableWorkerStopped":true,
+                    "entrySubmits":1,"closeSubmits":0,"realProviderCalls":0,
+                    "qualification":"first managed plan validation only; no reversal, close, or restart qualification"}));
+                return;
+            }
         }
         let receipts = automatic_stream_receipts(s);
         if receipts.len() >= 2 && !checkpoint_restart {
@@ -802,7 +907,7 @@ fn exercise_native_automatic_stream(
     write_screen_interface_evidence(
         "automatic_stream",
         "checkpointed-background-reversal.json",
-        &json!({"position":final_position,"receipts":receipts,"captures":captures,"heads":heads,"retainedCheckpointAtRecreation":retained_checkpoint,"entryMembershipReplacedBy":"B","entriesPaused":true,"serviceRecreatedAfterRegistrationAndCheckpoint":true,"actualCoreOsProcessRestartQualified":false,"enforcingSrtQualified":false,"actualPackMathQualified":false,"realProviderCalls":0,"syntheticIntervalMs":1000,"maxCaptureBars":8,"maxEvaluationFrames":4,"counterTrueAt":18,"unchangedMaxReversalAgeMs":30000,"unchangedC5ExpiryMs":45000,"qualification":"native Core service plus actual separately declared synthetic plugin subprocesses; diagnostic sandbox and mock Warden; normal automatic C3 capture/stream/step and ordinary C5 broker/settlement; requires separate frozen Core/SRT process gate"}),
+        &json!({"position":final_position,"receipts":receipts,"captures":captures,"heads":heads,"retainedCheckpointAtRecreation":retained_checkpoint,"entryMembershipReplacedBy":"B","entriesPaused":true,"serviceRecreatedAfterRegistrationAndCheckpoint":true,"actualCoreOsProcessRestartQualified":false,"enforcingSrtQualified":false,"actualPackMathQualified":false,"realProviderCalls":0,"syntheticIntervalMs":1000,"maxCaptureBars":8,"maxEvaluationFrames":4,"counterTrueAt":18,"observationAcquisition":"bounded_independent_reads_v1","unchangedMaxReversalAgeMs":30000,"unchangedC5ExpiryMs":45000,"qualification":"native Core service plus actual separately declared synthetic plugin subprocesses; diagnostic sandbox and mock Warden; normal automatic C3 capture/stream/step and ordinary C5 broker/settlement; requires separate frozen Core/SRT process gate"}),
     );
 }
 #[test]
@@ -811,4 +916,11 @@ fn native_automatic_batched_captured_stream_reversal_preserves_checkpoint_after_
 ) {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     native_execution_plan_fixture(Some(AUTOMATIC_STREAM_CASE));
+}
+
+#[test]
+#[ignore = "focused native synthetic managed-stream source authority and pinned-proof invalidation"]
+fn native_stream_rebuild_retains_late_authority_proof_and_tamper_guards() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some(STREAM_REBUILD_VALIDATION_CASE));
 }

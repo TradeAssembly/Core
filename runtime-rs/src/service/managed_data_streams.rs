@@ -509,6 +509,7 @@ pub(crate) fn bind_plan_sources(
             .find(|n| &n.graph_node_id == node)
             .ok_or("managed_stream_source_node_missing")?;
         if b.position_id != *position
+            || source.managed_position_sha256.as_deref() != Some(b.position_source_sha256.as_str())
             || b.replay_node != *node
             || b.graph_revision != content.plan.request.capability_graph_revision
             || b.context != declared.context

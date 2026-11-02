@@ -427,13 +427,11 @@ pub fn register(
     }
     inspect(s, &id)
 }
-/// Current host witness for a computation-only managed exit plan. No caller
-/// supplies the traded instrument, account, activation or executable authority.
-pub(in crate::service) fn exit_plan_subject(
+fn exit_plan_base(
     s: &TradeAssemblyService,
     id: &str,
     scope: &data_plans::PlanScope,
-) -> Result<(crate::data_pipeline::InstrumentContext, String, String), String> {
+) -> Result<(Position, OrderPlan), String> {
     let (_, pos) = load(s, id)?;
     let entry = read_owned(s, &pos.entry_plan_id)?;
     if entry.command.scope != *scope
@@ -445,6 +443,34 @@ pub(in crate::service) fn exit_plan_subject(
     {
         return Err("managed_plan_scope_or_remaining_lot_invalid".into());
     }
+    Ok((pos, entry))
+}
+/// Read owned immutable instrument/graph identity only. This grants no source,
+/// broker or computation authority: stream-plan rebuilds must still perform
+/// full exit_plan_subject validation at their final stream binding boundary.
+pub(in crate::service) fn exit_plan_identity(
+    s: &TradeAssemblyService,
+    id: &str,
+    scope: &data_plans::PlanScope,
+) -> Result<(crate::data_pipeline::InstrumentContext, String), String> {
+    let (_, entry) = exit_plan_base(s, id, scope)?;
+    Ok((
+        crate::data_pipeline::InstrumentContext {
+            instrument_id: entry.order.instrument.instrument_id,
+            asset_class: entry.order.instrument.asset_class,
+            instrument_family: entry.order.instrument.instrument_family,
+        },
+        entry.command.capability_graph_revision,
+    ))
+}
+/// Current host witness for a computation-only managed exit plan. No caller
+/// supplies the traded instrument, account, activation or executable authority.
+pub(in crate::service) fn exit_plan_subject(
+    s: &TradeAssemblyService,
+    id: &str,
+    scope: &data_plans::PlanScope,
+) -> Result<(crate::data_pipeline::InstrumentContext, String, String), String> {
+    let (pos, entry) = exit_plan_base(s, id, scope)?;
     let (_, config) = management_run(s, &pos.activation_id)?;
     if config["strategyId"] != scope.strategy_id
         || config["strategyVersionId"] != scope.strategy_version_id

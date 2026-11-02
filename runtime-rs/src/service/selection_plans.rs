@@ -145,6 +145,27 @@ fn resolve_bound(
     managed_position_id: Option<&str>,
     source_streams: &BTreeMap<String, String>,
 ) -> Result<SelectionPlanSource, String> {
+    resolve_bound_with_subject(
+        service,
+        c,
+        prepared_at_ms,
+        managed_position_id,
+        source_streams,
+        super::order_plans::management::exit_plan_subject,
+    )
+}
+fn resolve_bound_with_subject(
+    service: &TradeAssemblyService,
+    c: &SelectionPlanCommand,
+    prepared_at_ms: i64,
+    managed_position_id: Option<&str>,
+    source_streams: &BTreeMap<String, String>,
+    resolve_subject: impl FnOnce(
+        &TradeAssemblyService,
+        &str,
+        &data_plans::PlanScope,
+    ) -> Result<(InstrumentContext, String, String), String>,
+) -> Result<SelectionPlanSource, String> {
     if !matches!(c.mode.as_str(), "paper" | "live" | "backtest")
         || prepared_at_ms <= 0
         || prepared_at_ms > service.runtime().clock.now_ms()
@@ -168,8 +189,7 @@ fn resolve_bound(
             if c.mode != "paper" {
                 return Err("managed_plan_paper_required".into());
             }
-            let (subject, graph, proof) =
-                super::order_plans::management::exit_plan_subject(service, id, &c.scope)?;
+            let (subject, graph, proof) = resolve_subject(service, id, &c.scope)?;
             if c.subject_instrument_id != subject.instrument_id
                 || c.capability_graph_revision != graph
             {
@@ -371,19 +391,62 @@ fn rebuild_round(
     service: &TradeAssemblyService,
     source: &SelectionPlanSource,
 ) -> Result<data_plans::DataPlanContent, String> {
+    let fresh = resolve_for_rebuild(service, source)?;
+    super::order_plans::measured("selected_plan.build", || build(service, fresh))
+}
+fn resolve_for_rebuild(
+    service: &TradeAssemblyService,
+    source: &SelectionPlanSource,
+) -> Result<SelectionPlanSource, String> {
     let fresh = super::order_plans::measured("selected_plan.resolve", || {
-        resolve_bound(
-            service,
-            &source.command,
-            source.prepared_at_ms,
-            source.managed_position_id.as_deref(),
-            &source.source_streams,
-        )
+        if source.managed_position_id.is_some() && !source.source_streams.is_empty() {
+            let expected = source
+                .managed_position_sha256
+                .as_deref()
+                .ok_or("selection_plan_source_invalid")?;
+            // Rebuild pure program structure from owned immutable identity.
+            // Do not repeat full live source validation here: bind_plan_sources
+            // performs it at the later boundary and must match this exact proof.
+            // No invocation, persistence or result escapes before that check.
+            resolve_bound_with_subject(
+                service,
+                &source.command,
+                source.prepared_at_ms,
+                source.managed_position_id.as_deref(),
+                &source.source_streams,
+                |service, id, scope| {
+                    let (subject, graph) =
+                        super::order_plans::management::exit_plan_identity(service, id, scope)?;
+                    Ok((subject, graph, expected.to_owned()))
+                },
+            )
+        } else {
+            // Legacy/capture-based plans have no final stream authority check.
+            resolve_bound(
+                service,
+                &source.command,
+                source.prepared_at_ms,
+                source.managed_position_id.as_deref(),
+                &source.source_streams,
+            )
+        }
     })?;
     if fresh != *source {
         return Err("selection_plan_source_stale".into());
     }
-    super::order_plans::measured("selected_plan.build", || build(service, fresh))
+    Ok(fresh)
+}
+#[cfg(test)]
+pub(crate) fn fixture_rebuild_after_resolve(
+    service: &TradeAssemblyService,
+    source: &SelectionPlanSource,
+    after_resolve: impl FnOnce(&TradeAssemblyService) -> Result<(), String>,
+) -> Result<data_plans::DataPlanContent, String> {
+    super::package_validation::with_round(service, |service| {
+        let fresh = resolve_for_rebuild(service, source)?;
+        after_resolve(service)?;
+        build(service, fresh)
+    })
 }
 fn build(
     service: &TradeAssemblyService,

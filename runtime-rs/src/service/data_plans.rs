@@ -69,6 +69,7 @@ fn prepare_inner(
     service
         .require_object("strategy", &scope.strategy_id)
         .map_err(|_| "data_plan_not_available")?;
+    let graph_timing = super::order_plans::financial_timing("plan.prepare.graph");
     let now_ms = service.runtime().clock.now_ms();
     if now_ms <= 0 {
         return Err("data_plan_clock_unavailable".into());
@@ -90,7 +91,11 @@ fn prepare_inner(
     }
     let graph: CapabilityGraphResolution =
         serde_json::from_value(revision["graph"].clone()).map_err(|_| "data_plan_graph_invalid")?;
-    super::data_captures::resolve_parameters(service, &scope, &mut request)?;
+    drop(graph_timing);
+    super::order_plans::measured("plan.prepare.parameters", || {
+        super::data_captures::resolve_parameters(service, &scope, &mut request)
+    })?;
+    let bindings_timing = super::order_plans::financial_timing("plan.prepare.bindings");
     let runtime = service.runtime();
     let mut contracts = Vec::new();
     let mut packages = BTreeMap::new();
@@ -144,14 +149,18 @@ fn prepare_inner(
         packages.insert(node.graph_node_id.clone(), digest.to_owned());
         bindings.insert(node.graph_node_id.clone(), pinned.context_sha256);
     }
-    let plan = compile_data_plan(&graph, request, contracts).map_err(|errors| {
-        format!(
-            "data_plan_compile_failed:{}",
-            serde_json::to_string(&errors).unwrap_or_default()
-        )
+    drop(bindings_timing);
+    let plan = super::order_plans::measured("plan.prepare.compile", || {
+        compile_data_plan(&graph, request, contracts).map_err(|errors| {
+            format!(
+                "data_plan_compile_failed:{}",
+                serde_json::to_string(&errors).unwrap_or_default()
+            )
+        })
     })?;
-    let source_authentication =
-        super::data_captures::validate_plan_sources(service, &scope, &graph, &plan)?;
+    let source_authentication = super::order_plans::measured("plan.prepare.sources", || {
+        super::data_captures::validate_plan_sources(service, &scope, &graph, &plan)
+    })?;
     let content = DataPlanContent {
         recipe_source: None,
         selection_source,
@@ -161,9 +170,11 @@ fn prepare_inner(
         package_sha256: packages,
         binding_sha256: bindings,
     };
+    let program_timing = super::order_plans::financial_timing("plan.prepare.program");
     if let Some(program) = super::data_strategy::program_for_content(service, &content)? {
         program.validate(&content.plan)?;
     }
+    drop(program_timing);
     Ok(content)
 }
 

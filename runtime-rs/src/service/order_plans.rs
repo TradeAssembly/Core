@@ -402,6 +402,20 @@ fn timing_phase(stage: &'static str) -> bool {
             | "manager.before_child_checks"
             | "manager.reversal.response_validation"
             | "selected_plan.rebuild"
+            | "selected_plan.resolve"
+            | "selected_plan.build"
+            | "selected_plan.template"
+            | "selected_plan.subject"
+            | "selected_plan.members"
+            | "selected_plan.program"
+            | "selected_plan.prepare"
+            | "selected_plan.stream_bind"
+            | "plan.prepare.graph"
+            | "plan.prepare.parameters"
+            | "plan.prepare.bindings"
+            | "plan.prepare.compile"
+            | "plan.prepare.sources"
+            | "plan.prepare.program"
             | "managed_eval.preflight"
             | "managed_eval.response"
             | "managed_eval.prepared"
@@ -1688,6 +1702,20 @@ mod financial_timing_tests {
         assert!(timing_phase("management.window.policy"));
         assert!(timing_phase("management.window.calendar"));
         for phase in [
+            "selected_plan.resolve",
+            "selected_plan.build",
+            "selected_plan.template",
+            "selected_plan.subject",
+            "selected_plan.members",
+            "selected_plan.program",
+            "selected_plan.prepare",
+            "selected_plan.stream_bind",
+            "plan.prepare.graph",
+            "plan.prepare.parameters",
+            "plan.prepare.bindings",
+            "plan.prepare.compile",
+            "plan.prepare.sources",
+            "plan.prepare.program",
             "dispatch.advance",
             "dispatch.schedule",
             "dispatch.next",

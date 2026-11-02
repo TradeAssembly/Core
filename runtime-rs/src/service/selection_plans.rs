@@ -153,13 +153,16 @@ fn resolve_bound(
     {
         return Err("selection_plan_command_invalid".into());
     }
-    let (spec, template) = template(service, &c.scope)?.ok_or("selection_plan_template_missing")?;
+    let (spec, template) =
+        super::order_plans::measured("selected_plan.template", || template(service, &c.scope))?
+            .ok_or("selection_plan_template_missing")?;
     if c.selection_receipts
         .keys()
         .any(|k| !template.selections.contains_key(k))
     {
         return Err("selection_plan_binding_unknown".into());
     }
+    let subject_timing = super::order_plans::financial_timing("selected_plan.subject");
     let managed = managed_position_id
         .map(|id| -> Result<_, String> {
             if c.mode != "paper" {
@@ -175,6 +178,8 @@ fn resolve_bound(
             Ok((subject, proof))
         })
         .transpose()?;
+    drop(subject_timing);
+    let members_timing = super::order_plans::financial_timing("selected_plan.members");
     let mut selected = BTreeMap::new();
     let mut evidence = BTreeMap::new();
     let mut known = prepared_at_ms;
@@ -301,6 +306,8 @@ fn resolve_bound(
         )?;
         selected.insert(name.clone(), members);
     }
+    drop(members_timing);
+    let program_timing = super::order_plans::financial_timing("selected_plan.program");
     let resolved_program = if let Some((subject, _)) = &managed {
         // Metadata category remains the published trade market category.
         let binding = template
@@ -325,6 +332,7 @@ fn resolve_bound(
     } else {
         template.resolve(&selected, &c.subject_instrument_id)?
     };
+    drop(program_timing);
     Ok(SelectionPlanSource {
         source_streams: source_streams.clone(),
         managed_position_id: managed_position_id.map(str::to_owned),
@@ -363,17 +371,19 @@ fn rebuild_round(
     service: &TradeAssemblyService,
     source: &SelectionPlanSource,
 ) -> Result<data_plans::DataPlanContent, String> {
-    let fresh = resolve_bound(
-        service,
-        &source.command,
-        source.prepared_at_ms,
-        source.managed_position_id.as_deref(),
-        &source.source_streams,
-    )?;
+    let fresh = super::order_plans::measured("selected_plan.resolve", || {
+        resolve_bound(
+            service,
+            &source.command,
+            source.prepared_at_ms,
+            source.managed_position_id.as_deref(),
+            &source.source_streams,
+        )
+    })?;
     if fresh != *source {
         return Err("selection_plan_source_stale".into());
     }
-    build(service, fresh)
+    super::order_plans::measured("selected_plan.build", || build(service, fresh))
 }
 fn build(
     service: &TradeAssemblyService,
@@ -392,9 +402,13 @@ fn build(
     };
     let scope = c.scope.clone();
     let streams = source.source_streams.clone();
-    let mut content = data_plans::prepare_selected(service, scope, request, source)?;
+    let mut content = super::order_plans::measured("selected_plan.prepare", || {
+        data_plans::prepare_selected(service, scope, request, source)
+    })?;
     if !streams.is_empty() {
-        super::managed_data_streams::bind_plan_sources(service, &mut content, &streams)?;
+        super::order_plans::measured("selected_plan.stream_bind", || {
+            super::managed_data_streams::bind_plan_sources(service, &mut content, &streams)
+        })?;
     }
     Ok(content)
 }

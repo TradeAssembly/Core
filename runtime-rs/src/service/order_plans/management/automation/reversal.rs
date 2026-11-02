@@ -1550,7 +1550,19 @@ pub(super) fn apply_response(
                 .values()
                 .copied()
                 .collect::<std::collections::BTreeSet<_>>();
-            let cursor = if actual.frames_processed == 0 {
+            let seed = actual.checkpoint.warmup_origin.as_ref().filter(|origin| {
+                actual.frames_processed == 0
+                    && progress.checkpoint_sha256.is_none()
+                    && requested.expected_checkpoint_sha256.is_none()
+                    && origin.event_start_ms == old_cursor
+                    && origin.event_end_ms == requested.window.event_end_ms
+                    && origin.event_end_ms > old_cursor
+                    && cursors.len() == 1
+                    && cursors.first() == Some(&origin.event_end_ms)
+            });
+            let cursor = if let Some(origin) = seed {
+                origin.event_end_ms
+            } else if actual.frames_processed == 0 {
                 old_cursor
             } else {
                 if cursors.len() != 1 {

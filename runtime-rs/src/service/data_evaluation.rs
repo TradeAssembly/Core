@@ -15,6 +15,9 @@ use tradeassembly_plugin_sdk::{
     data_history::{Partitioning, VersionedOperationData},
 };
 
+mod warmup;
+pub use warmup::WarmupOrigin;
+
 /// One host request's verified immutable plan, not a package/tenant-wide cache.
 /// Mutable authority, artifacts and bindings are still fully checked at every
 /// plugin dispatch and immediately before atomic result commitment.
@@ -22,6 +25,9 @@ pub(super) struct DataStepRequest {
     started: std::time::Instant,
     verified: std::sync::Mutex<Option<(EvaluationStep, data_plans::StoredDataPlan)>>,
     source_snapshot: std::sync::Mutex<Option<super::managed_data_streams::Snapshot>>,
+    warmup_expectations: std::sync::Mutex<Vec<StorageExpectation>>,
+    #[cfg(test)]
+    cold_warmup: bool,
 }
 pub(super) fn request_service(service: &TradeAssemblyService) -> TradeAssemblyService {
     let mut scoped = service.clone();
@@ -29,7 +35,18 @@ pub(super) fn request_service(service: &TradeAssemblyService) -> TradeAssemblySe
         started: std::time::Instant::now(),
         verified: Default::default(),
         source_snapshot: Default::default(),
+        warmup_expectations: Default::default(),
+        #[cfg(test)]
+        cold_warmup: false,
     }));
+    scoped
+}
+#[cfg(test)]
+pub(crate) fn fixture_cold_warmup_service(service: &TradeAssemblyService) -> TradeAssemblyService {
+    let mut scoped = request_service(service);
+    std::sync::Arc::get_mut(scoped.data_step_request.as_mut().unwrap())
+        .unwrap()
+        .cold_warmup = true;
     scoped
 }
 pub(super) fn attach_source_snapshot(
@@ -163,6 +180,8 @@ pub struct EvaluationStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warmup_origin: Option<WarmupOrigin>,
     pub run_id: String,
     pub plan_revision_id: String,
     pub generation: u64,
@@ -230,6 +249,18 @@ fn checkpoint_hash(checkpoint: &EvaluationCheckpoint) -> Result<String, String> 
     hash(&value)
 }
 fn validate_state_availability(checkpoint: &EvaluationCheckpoint) -> Result<(), String> {
+    if let Some(origin) = &checkpoint.warmup_origin {
+        origin.validate()?;
+        if origin.source_plan_revision_id == checkpoint.plan_revision_id
+            || checkpoint.cursors.is_empty()
+            || checkpoint
+                .cursors
+                .values()
+                .any(|end| *end < origin.event_end_ms)
+        {
+            return Err("data_evaluation_warmup_origin_invalid".into());
+        }
+    }
     for node in checkpoint.states.keys() {
         let availability = checkpoint
             .state_availability
@@ -676,7 +707,8 @@ pub fn step(
         Some(v) => {
             serde_json::from_value(v.clone()).map_err(|_| "data_evaluation_checkpoint_invalid")?
         }
-        None => EvaluationCheckpoint {
+        None => warmup::checkpoint(service, &plan, &request)?.unwrap_or(EvaluationCheckpoint {
+            warmup_origin: None,
             run_id: request.run_id.clone(),
             plan_revision_id: request.plan_revision_id.clone(),
             generation: 0,
@@ -688,7 +720,7 @@ pub fn step(
             partition_resets: BTreeMap::new(),
             last_frame: BTreeMap::new(),
             checkpoint_sha256: String::new(),
-        },
+        }),
     };
     if prior.is_some()
         && (checkpoint_hash(&checkpoint)? != checkpoint.checkpoint_sha256
@@ -1012,6 +1044,10 @@ impl StepEnvironment<'_> {
         let mut roots: BTreeMap<(String, String), DataBatch> = BTreeMap::new();
         let mut step_bytes = 0;
         let mut pending_source = false;
+        // Already-consumed managed source windows need no replay subprocess.
+        // Current plan/stream/snapshot checks and atomic commitment remain live.
+        let consumed = !super::managed_data_streams::plan_roots(self.plan).is_empty()
+            && warmup::consumed_window(self.plan, checkpoint, &self.request.window)?;
         for node in &plan.request.nodes {
             self.check_budget()?;
             let contract = &plan
@@ -1047,6 +1083,19 @@ impl StepEnvironment<'_> {
             }
             if contract.state.is_some() {
                 return Err("data_evaluation_provider_state_unsupported".into());
+            }
+            if consumed {
+                for (port, declaration) in &contract.outputs {
+                    roots.insert(
+                        (node.graph_node_id.clone(), port.clone()),
+                        DataBatch {
+                            schema: declaration.schema.clone(),
+                            shape: declaration.shape.clone(),
+                            points: Vec::new(),
+                        },
+                    );
+                }
+                continue;
             }
             let payload = DataEvaluationRequest {
                 schema_version: EvaluationVersion::V1,
@@ -1442,6 +1491,15 @@ impl StepEnvironment<'_> {
             StorageExpectation::new(RECEIPTS, &self.receipt_key, None),
             StorageExpectation::new(FENCES, &self.run_key, Some(self.fence.clone())),
         ];
+        if let Some(request) = &self.service.data_step_request {
+            expectations.extend(
+                request
+                    .warmup_expectations
+                    .lock()
+                    .map_err(|_| "data_evaluation_request_context_unavailable")?
+                    .clone(),
+            );
+        }
         for (id, value) in source_writes {
             expectations.push(StorageExpectation::new(SOURCES, &id, None));
             writes.push(StorageWrite::new(SOURCES, id, value, self.context.clone()));

@@ -255,6 +255,8 @@ mod tests {
             "providerPayload",
             "checkpoint",
             "sourceSnapshot",
+            "warmupOrigin",
+            "checkpointSeed",
             "accountRef",
             "latestHead",
         ] {

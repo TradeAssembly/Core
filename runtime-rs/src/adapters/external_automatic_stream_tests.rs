@@ -2,6 +2,7 @@
 // counter package. This does not qualify the real pack's daily EMA/TSI formulas.
 const AUTOMATIC_STREAM_CASE: &str = "financial_screen_auto_stream";
 const STREAM_REBUILD_VALIDATION_CASE: &str = "financial_screen_auto_stream_validation";
+const STREAM_WARMUP_VALIDATION_CASE: &str = "financial_screen_auto_stream_warmup";
 const STREAM_PLUGIN: &str = "fixture.managed_stream.synthetic";
 const STREAM_SOURCE: &str = "exec_stream_source";
 const STREAM_ACQUIRE: &str = "exec_stream_acquire";
@@ -491,6 +492,7 @@ fn exercise_native_automatic_stream(
     prepared: &Value,
     root: &std::path::Path,
     validation_only: bool,
+    warmup_only: bool,
 ) {
     use crate::service::{
         data_collections as collections, session_dispatch as dispatch,
@@ -619,7 +621,11 @@ fn exercise_native_automatic_stream(
             if let Some(plan_id) = plan_id {
                 dispatch::halt_worker_for_test(s, id);
                 native_health_wait_worker_stopped(s, id);
-                assert_stream_rebuild_final_authority(s, &plan_id, root);
+                if warmup_only {
+                    assert_entry_warmup_continuation(s, &plan_id);
+                } else {
+                    assert_stream_rebuild_final_authority(s, &plan_id, root);
+                }
                 let stopped=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"stop_worker","jobId":id},"accountMode":"paper","idempotencyKey":"stream-validation-explicit-stop"}));
                 assert_eq!(stopped.body["ok"],true,"{}",stopped.body);
                 let positions=s.runtime().storage.list_json("execution_managed_positions_v1").unwrap();
@@ -629,7 +635,7 @@ fn exercise_native_automatic_stream(
                 assert_eq!(calls.lines().filter(|line| *line=="submit").count(),1);
                 write_screen_interface_evidence("automatic_stream","focused-source-validation-checkpoint.json",&json!({
                     "planRevisionId":plan_id,"entriesPausedAndMembershipReplaced":true,
-                    "lateAuthorityAndPinnedProofRegressionPassed":true,"durableWorkerStopped":true,
+                    "lateAuthorityAndPinnedProofRegressionPassed":!warmup_only,"entryWarmupContinuationQualified":warmup_only,"durableWorkerStopped":true,
                     "entrySubmits":1,"closeSubmits":0,"realProviderCalls":0,
                     "qualification":"first managed plan validation only; no reversal, close, or restart qualification"}));
                 return;
@@ -923,4 +929,148 @@ fn native_automatic_batched_captured_stream_reversal_preserves_checkpoint_after_
 fn native_stream_rebuild_retains_late_authority_proof_and_tamper_guards() {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     native_execution_plan_fixture(Some(STREAM_REBUILD_VALIDATION_CASE));
+}
+
+#[test]
+#[ignore = "explicit native synthetic entry warm-up continuation, replay equivalence and recovery"]
+fn native_entry_warmup_continuation_matches_replay_and_resumes_without_duplicate_calls() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some(STREAM_WARMUP_VALIDATION_CASE));
+}
+
+// Calculation-only replay comparison; never calls management Advance or submit.
+fn assert_entry_warmup_continuation(s: &crate::service::TradeAssemblyService, id: &str) {
+    use crate::service::{data_evaluation, managed_data_streams};
+    use tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow;
+    let plan = crate::service::data_plans::current(s, id).unwrap();
+    let scope = plan.content.scope.clone();
+    let roots = managed_data_streams::plan_roots(&plan);
+    assert_eq!(roots.len(), 1);
+    let (node, (stream_id, _)) = roots.iter().next().unwrap();
+    let binding = managed_data_streams::binding(s, stream_id, &scope).unwrap();
+    let raw = s.runtime().storage.get_json("managed_capture_streams_v1", stream_id).unwrap().unwrap();
+    let end = raw["head"]["eventEndMs"].as_i64().unwrap();
+    let step_body = |run: &str, start, end, prior: Option<String>, head: &str, key: &str| json!({
+        "scope":scope,"managedStep":{"schemaVersion":"tradeassembly.managed_stream_evaluation_step.v1",
+            "step":{"runId":run,"planRevisionId":id,"window":{"eventStartMs":start,"eventEndMs":end,
+                "asOfMs":s.runtime().clock.trusted_now_ms().unwrap()},"expectedCheckpointSha256":prior},
+            "streamHeads":{node:head},"contextSelectionReceipts":{}},"accountMode":"paper","idempotencyKey":key});
+    let call = |service: &crate::service::TradeAssemblyService, body: Value| {
+        let key=body["idempotencyKey"].clone();
+        eprintln!("warmup calculation {key}");
+        let result = service.handle_http("POST","/product/strategies/managed-data-runs/step",body);
+        assert_eq!(result.status,200,"warmup {key}: {}",result.body);result.body["receipt"].clone()
+    };
+    let calls = || s.runtime().storage.list_json("plugin_operation_receipts").unwrap().len();
+    let current_health = |service: &crate::service::TradeAssemblyService| {
+        // The stopped worker no longer refreshes observations. Use the normal
+        // owned product route for these two already configured fake providers.
+        // This obtains actual new provider evidence, never edits checkedAtMs.
+        for instance in ["fixture.broker.v2","fixture.execution.facts"] {
+            let record=service.runtime().plugins.get_instance(instance).unwrap().unwrap();
+            let age=service.runtime().clock.trusted_now_ms().unwrap()-record["health"]["checkedAtMs"].as_i64().unwrap();
+            if age>=60000 {
+                let refreshed=service.handle_http("POST",&format!("/plugins/instances/{instance}/health:refresh"),json!({"accountMode":"paper"}));
+                assert_eq!(refreshed.status,200,"{}",refreshed.body);
+            }
+            let record=service.runtime().plugins.get_instance(instance).unwrap().unwrap();
+            let age=service.runtime().clock.trusted_now_ms().unwrap()-record["health"]["checkedAtMs"].as_i64().unwrap();
+            assert!((0..60000).contains(&age),"fixture health must be genuinely current");
+        }
+    };
+    current_health(s);
+    let before = calls();
+    let start=std::time::Instant::now();
+    let seeded = call(s,step_body("warmup-seeded",binding.original_origin_ms,end,None,
+        raw["head"]["headSha256"].as_str().unwrap(),"warmup-seed"));
+    let seed_ms=start.elapsed().as_millis();
+    assert_eq!(seeded["framesProcessed"],0);assert_eq!(seeded["status"],"no_new_data");
+    assert!(seeded["signals"].is_null());
+    assert_eq!(seeded["checkpoint"]["warmupOrigin"]["schemaVersion"],"tradeassembly.entry_warmup_origin.v1");
+    assert_eq!(calls(),before,"warmup must not replay a plugin");
+    let (original_plan,original_receipt)=data_evaluation::historical_indexed_receipt(s,
+        seeded["checkpoint"]["warmupOrigin"]["sourceReceiptSha256"].as_str().unwrap()).unwrap();
+    for field in ["states","validCounts","stateAvailability","partitionAvailability","partitionResets","lastFrame"] {
+        assert_eq!(seeded["checkpoint"][field],serde_json::to_value(&original_receipt.checkpoint).unwrap()[field],"retained {field}");
+    }
+    let original_run=crate::data_pipeline::canonical_sha256(&[&original_receipt.checkpoint.run_id,&original_plan.revision_id]).unwrap();
+    let root_node=original_plan.content.plan.request.nodes.iter().find(|n|n.graph_node_id==*node).unwrap();
+    let root_contract=&original_plan.content.plan.contracts.iter().find(|c|c.graph_node_id==*node).unwrap().contract;
+    let source_key=crate::data_pipeline::canonical_sha256(&[original_run.as_str(),node.as_str(),root_contract.outputs.keys().next().unwrap().as_str(),
+        root_node.context.instruments[0].instrument_id.as_str(),binding.original_origin_ms.to_string().as_str()]).unwrap();
+    let original_fact=s.runtime().storage.get_json("data_evaluation_sources_v1",&source_key).unwrap().unwrap();
+    let fault_context=crate::ports::SideEffectContext::new(crate::ports::AuthorityContext::local_cli(),crate::ports::IdempotencyKey::new("warmup-source-fault").unwrap());
+    current_health(s);
+    let before_fault_calls=calls();
+    let before_fault_runs=s.runtime().storage.list_json("data_evaluation_checkpoints_v1").unwrap();
+    let mut changed=original_fact.clone();changed["contentSha256"]=json!("contradictory-recorded-source");
+    s.runtime().storage.put_json("data_evaluation_sources_v1",&source_key,changed,&fault_context).unwrap();
+    let refused=s.handle_http("POST","/product/strategies/managed-data-runs/step",step_body("warmup-source-refusal",binding.original_origin_ms,end,None,
+        raw["head"]["headSha256"].as_str().unwrap(),"warmup-source-refusal"));
+    s.runtime().storage.put_json("data_evaluation_sources_v1",&source_key,original_fact,&fault_context).unwrap();
+    assert_eq!(refused.status,409,"{}",refused.body);
+    assert!(refused.body.to_string().contains("data_evaluation_warmup_source_revised"));
+    assert_eq!(calls(),before_fault_calls);
+    assert_eq!(s.runtime().storage.list_json("data_evaluation_checkpoints_v1").unwrap(),before_fault_runs);
+
+    current_health(s);
+    let start=std::time::Instant::now();
+    let replayed = call(&data_evaluation::fixture_cold_warmup_service(s),step_body("warmup-replayed",
+        binding.original_origin_ms,end,None,raw["head"]["headSha256"].as_str().unwrap(),"warmup-replay"));
+    let replay_ms=start.elapsed().as_millis();
+    assert!(replayed["framesProcessed"].as_u64().unwrap()>0);
+    assert!(calls()>before);
+    let state_equal=|a:&Value,b:&Value| {
+        for field in ["states","cursors","validCounts"] {assert_eq!(a["checkpoint"][field],b["checkpoint"][field],"{field}");}
+        let values=|r:&Value| r["checkpoint"]["lastFrame"].as_object().unwrap().iter().map(|(node,response)|
+            (node.clone(),response["outputs"].as_object().unwrap().iter().map(|(port,batch)|
+                (port.clone(),batch["points"].as_array().unwrap().iter().map(|p|json!({"instrumentId":p["instrumentId"],
+                    "eventStartMs":p["provenance"]["eventStartMs"],"eventEndMs":p["provenance"]["eventEndMs"],"result":p["result"]})).collect::<Vec<_>>()))
+                .collect::<BTreeMap<_,_>>())).collect::<BTreeMap<_,_>>();
+        assert_eq!(values(a),values(b));
+    };
+    state_equal(&seeded,&replayed);
+    let owner=s.invocation_owner().unwrap();
+    let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone())
+        .for_authenticated_invocation(&owner.issuer,&owner.subject,None,None);
+    let next_end=end+binding.source.interval_ms as i64;
+    let window=EvaluationWindow{event_start_ms:end,event_end_ms:next_end,as_of_ms:s.runtime().clock.trusted_now_ms().unwrap()};
+    assert!(next_end<window.as_of_ms);
+    let input=crate::service::order_plans::management::automation::reversal::materialize_input(
+        &binding.source.input_template,binding.source.interval_ms,&binding.owned_trade_instrument,&window,binding.original_origin_ms).unwrap();
+    current_health(&restored);
+    let captured=restored.handle_http("POST","/product/strategies/data-captures/create",json!({"capture":{
+        "receiptVersion":"tradeassembly.data_capture_receipt.v2","policy":{"scope":scope,
+            "capabilityGraphRevision":binding.graph_revision,"mode":"paper","acquisitionNode":binding.source.acquisition_node,
+            "replayNode":node,"parameterExtracts":binding.source.parameter_extracts,"context":binding.context,
+            "eventStartMs":end,"eventEndMs":next_end,"gapPolicy":"strict_fixed_interval"},"input":input},
+        "accountMode":"paper","idempotencyKey":"warmup-new-capture"}));
+    assert_eq!(captured.status,200,"{}",captured.body);
+    let appended=restored.handle_http("POST","/product/strategies/managed-data-streams/append",json!({"scope":scope,
+        "append":{"schemaVersion":"tradeassembly.managed_data_stream_append.v1","streamId":stream_id,
+            "expectedHeadSha256":raw["head"]["headSha256"],"captureId":captured.body["capture"]["captureId"]},
+        "accountMode":"paper","idempotencyKey":"warmup-new-append"}));
+    assert_eq!(appended.status,200,"{}",appended.body);
+    let head=appended.body["stream"]["headSha256"].as_str().unwrap();
+    let request=step_body("warmup-seeded",end,next_end,Some(seeded["checkpoint"]["checkpointSha256"].as_str().unwrap().into()),head,"warmup-next");
+    current_health(&restored);
+    let start=std::time::Instant::now();let next=call(&restored,request.clone());let next_ms=start.elapsed().as_millis();
+    assert_eq!(next["framesProcessed"],1);
+    assert_eq!(next["checkpoint"]["warmupOrigin"],seeded["checkpoint"]["warmupOrigin"]);
+
+    current_health(&restored);
+    let cold_next=call(&restored,step_body("warmup-replayed",end,next_end,
+        Some(replayed["checkpoint"]["checkpointSha256"].as_str().unwrap().into()),head,"warmup-cold-next"));
+    state_equal(&next,&cold_next);
+    assert_eq!(next["signals"][0]["entry"],cold_next["signals"][0]["entry"]);
+    assert_eq!(next["signals"][0]["exit"],cold_next["signals"][0]["exit"]);
+    current_health(&restored);
+    let before=calls();assert_eq!(call(&restored,request),next);assert_eq!(calls(),before);
+    write_screen_interface_evidence("automatic_stream","entry-warmup-continuation.json",&json!({
+        "seedMs":seed_ms,"coldReplayMs":replay_ms,"oneNewFrameMs":next_ms,"seedPluginCalls":0,"healthPreparation":"normal owned product health refresh for configured synthetic providers before timed calculation calls; no timestamps edited",
+        "seedFramesProcessed":0,"coldFramesProcessed":replayed["framesProcessed"],"stateAndCountersMatch":true,
+        "nextFrameMatchesReplay":true,"serviceRecreated":true,"duplicateReceiptNoNewPluginCalls":true,
+        "contradictoryEntrySourceFactRefused":true,"refusalNoCheckpointOrPluginChanges":true,
+        "originalAvailabilityRetained":seeded["checkpoint"]["stateAvailability"],"warmupOrigin":seeded["checkpoint"]["warmupOrigin"],
+        "realProviderCalls":0,"financialSubmissions":0,"qualification":"native synthetic calculation continuation only; not current signal or OS process restart qualification"}));
 }

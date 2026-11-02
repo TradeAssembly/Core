@@ -269,6 +269,17 @@ pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
                     "entry_only"
                 });
                 result["syntheticExitAdmissionSupported"] = json!(management);
+                if management {
+                    result["managementObservationAcquisition"] = config["typedExecution"]
+                        ["automaticExecution"]["management"]["observationAcquisition"]
+                        .clone();
+                    result["managementObservationAcquisitionModes"] =
+                        json!([null, "bounded_independent_reads_v1"]);
+                    result["managementObservationAcquisitionDefault"] = json!("legacy_serial");
+                    result["managementObservationBatchMaxReads"] = json!(4);
+                    result["managementObservationBatchProviderAtomicSnapshot"] = json!(false);
+                }
+
                 result["automaticReversalSupported"] = json!(false);
                 if !config["typedExecution"]["automaticExecution"]["accountHealthRefresh"].is_null()
                 {

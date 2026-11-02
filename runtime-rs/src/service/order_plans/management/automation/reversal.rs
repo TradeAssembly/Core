@@ -1463,6 +1463,86 @@ pub(super) fn next_child(
     .map(Step::Wait)
 }
 
+/// Validate a retained capture before allowing it into the finite independent
+/// read group. This preserves its original query/cutoff/key on every retry.
+pub(super) fn validate_capture_child(
+    s: &TradeAssemblyService,
+    binding: &Binding,
+    state: &State,
+    child: &Child,
+    source: &str,
+    position: &Position,
+    entry: &OrderPlan,
+) -> Result<(), String> {
+    let config = binding
+        .config
+        .reversal_evaluation
+        .as_ref()
+        .ok_or("management_reversal_disabled")?;
+    let input = config
+        .source_bindings
+        .get(source)
+        .ok_or("management_reversal_source_binding_invalid")?;
+    let progress = state
+        .reversal_heads
+        .get(&position.position_id)
+        .ok_or("management_reversal_state_missing")?;
+    let head = progress
+        .streams
+        .get(source)
+        .ok_or("management_reversal_state_missing")?;
+    let actual =
+        crate::service::managed_data_streams::binding(s, &head.stream_id, &entry.command.scope)?;
+    if hash(&actual)? != head.binding_sha256
+        || hash(&actual.source.input_template)? != hash(&input.input)?
+    {
+        return Err("management_reversal_stream_input_template_changed".into());
+    }
+    let command: crate::service::data_captures::CaptureCommand =
+        serde_json::from_value(child.body["capture"].clone())
+            .map_err(|_| "management_reversal_capture_request_invalid")?;
+    let p = &command.policy;
+    let now = s.runtime().clock.trusted_now_ms()?;
+    let as_of = witness_as_of(&input.input, &command.input, p.event_end_ms, now)?.unwrap_or(now);
+    let window = tradeassembly_plugin_sdk::data_evaluation::EvaluationWindow {
+        event_start_ms: p.event_start_ms,
+        event_end_ms: p.event_end_ms,
+        as_of_ms: as_of,
+    };
+    if command.receipt_version != Some(crate::service::data_captures::CaptureReceiptVersion::V2)
+        || p.scope != entry.command.scope
+        || p.capability_graph_revision != entry.command.capability_graph_revision
+        || p.mode != "paper"
+        || p.replay_node != source
+        || p.acquisition_node != input.acquisition_node
+        || p.context != head.context
+        || p.parameter_extracts != input.parameter_extracts
+        || p.event_start_ms != head.event_end_ms
+        || p.event_end_ms <= p.event_start_ms
+        || p.event_end_ms
+            > completed_boundary(
+                head.original_origin_ms,
+                head.interval_ms,
+                now,
+                config.completion_lag_ms,
+            )?
+        || (p.event_end_ms - p.event_start_ms)
+            % i64::try_from(head.interval_ms).map_err(|_| "management_reversal_grid_invalid")?
+            != 0
+        || (p.event_end_ms - p.event_start_ms) as u64 / head.interval_ms
+            > config.max_segment_observations
+        || command.input
+            != input.materialize_input(
+                &entry.order.instrument.instrument_id,
+                &window,
+                head.original_origin_ms,
+            )?
+    {
+        return Err("management_reversal_capture_request_binding_invalid".into());
+    }
+    Ok(())
+}
+
 // Read scope from each finite route's authoritative command envelope.
 // Persisted capture and managed-plan bodies use nested scope; never fall back.
 fn response_child_scope(body: &Value, action: &Action) -> Result<data_plans::PlanScope, String> {

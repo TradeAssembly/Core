@@ -4,6 +4,7 @@
 //! lookup/settlement, never another submit. Calendar rollover and automatic
 //! reversal-signal evaluation are deliberately not qualified here.
 use super::*;
+mod observations;
 pub(crate) mod reversal;
 use crate::service::{execution::typed_cycle, session_dispatch};
 
@@ -17,6 +18,8 @@ const ROLES: [&str; 3] = ["account_data", "instrument_metadata", "pricing_quote"
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Config {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_acquisition: Option<typed_cycle::ObservationAcquisition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reversal_evaluation: Option<reversal::Config>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -245,6 +248,7 @@ impl Work {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
+    AcquireInputs { source: String },
     Reversal { step: reversal::Action },
     CollectCalendar {},
     PrepareWindow {},
@@ -809,7 +813,10 @@ fn calendar_action(action: &Action) -> bool {
 fn observation_action(action: &Action) -> bool {
     matches!(
         action,
-        Action::Collect { .. } | Action::Advance {} | Action::Reversal { .. }
+        Action::Collect { .. }
+            | Action::Advance {}
+            | Action::Reversal { .. }
+            | Action::AcquireInputs { .. }
     )
 }
 fn head_current(
@@ -1241,7 +1248,18 @@ fn next_child(
     }
     let reversal_receipt = if let Some(config) = &b.config.reversal_evaluation {
         match reversal::next_child(s, config, state, &entry, &position)? {
-            reversal::Step::Child(child) => return Ok(PlannedChild::Child(child)),
+            reversal::Step::Child(child) => {
+                if b.config.observation_acquisition.is_some() {
+                    if let Action::Reversal {
+                        step: reversal::Action::CaptureSegment { source },
+                    } = &child.action
+                    {
+                        return observations::plan(b, &entry, source, child.clone())
+                            .map(PlannedChild::Child);
+                    }
+                }
+                return Ok(PlannedChild::Child(child));
+            }
             reversal::Step::Wait(wait) => return Ok(PlannedChild::Wait(wait)),
             reversal::Step::Ready {
                 receipt,
@@ -1369,6 +1387,13 @@ fn apply_response(
     child: &Child,
     response: &ServiceResponse,
 ) -> Result<(), String> {
+    if matches!(child.action, Action::AcquireInputs { .. }) {
+        crate::service::package_validation::with_round(s, |s| {
+            observations::apply(s, b, state, child, response)
+        })?;
+        state.pending = None;
+        return Ok(());
+    }
     if let Action::Reversal { step } = &child.action {
         measured("manager.reversal.response_validation", || {
             crate::service::package_validation::with_round(s, |s| {
@@ -1383,7 +1408,9 @@ fn apply_response(
         .get_mut(state.cursor)
         .ok_or("management_automation_work_missing")?;
     match &child.action {
-        Action::Reversal { .. } => return Err("management_reversal_action_invalid".into()),
+        Action::Reversal { .. } | Action::AcquireInputs { .. } => {
+            return Err("management_reversal_action_invalid".into())
+        }
         Action::CollectCalendar {} => {
             let id = response.body["collection"]["collectionId"]
                 .as_str()
@@ -1736,10 +1763,15 @@ pub(crate) fn advance(
             Action::Submit { .. } => "manager.child.submit",
             Action::Collect { .. } => "manager.child.collect",
             Action::CollectCalendar {} | Action::PrepareWindow {} => "manager.child.calendar",
+            Action::AcquireInputs { .. } => "manager.child.acquire_inputs",
             _ => "manager.child.other",
         };
         let response = measured(phase, || {
-            s.handle_http("POST", &pending.path, pending.body.clone())
+            if matches!(pending.action, Action::AcquireInputs { .. }) {
+                observations::execute(s, &b, &state, &pending)
+            } else {
+                s.handle_http("POST", &pending.path, pending.body.clone())
+            }
         });
         // Losing the fence leaves the original pending child for safe recovery.
         if current_owner(s)? != b.owner
@@ -1764,12 +1796,24 @@ pub(crate) fn advance(
                     state.error = None;
                     state.next_due_ms = after;
                 }
-                Err(error) if matches!(pending.action, Action::Reversal { .. }) => {
+                Err(error)
+                    if matches!(
+                        pending.action,
+                        Action::Reversal { .. } | Action::AcquireInputs { .. }
+                    ) =>
+                {
                     retain_reversal_child(
                         &mut state,
                         after,
                         b.config.cadence_ms,
-                        format!("management_reversal_outcome_seal_required:{error}"),
+                        format!(
+                            "{}_outcome_seal_required:{error}",
+                            if matches!(pending.action, Action::AcquireInputs { .. }) {
+                                "management_input_batch"
+                            } else {
+                                "management_reversal"
+                            }
+                        ),
                     );
                     let observed =
                         json!({"retryRetainedOriginalChild":true,"observed":response_value});
@@ -1781,14 +1825,22 @@ pub(crate) fn advance(
         } else {
             let error = crate::service::service_error_code(&response.body)
                 .unwrap_or_else(|| "management_automation_child_failed".into());
-            if matches!(pending.action, Action::Reversal { .. })
-                && reversal::unknown_response(&response)
+            if matches!(pending.action, Action::AcquireInputs { .. })
+                || matches!(pending.action, Action::Reversal { .. })
+                    && reversal::unknown_response(&response)
             {
                 retain_reversal_child(
                     &mut state,
                     after,
                     b.config.cadence_ms,
-                    format!("management_reversal_child_outcome_unknown:{error}"),
+                    format!(
+                        "{}:{error}",
+                        if matches!(pending.action, Action::AcquireInputs { .. }) {
+                            "management_input_batch_incomplete"
+                        } else {
+                            "management_reversal_child_outcome_unknown"
+                        }
+                    ),
                 );
                 let observed = json!({"retryRetainedOriginalChild":true,"observed":response_value});
                 save(s, &b, old, &mut state, Some((&pending, observed)))?;
@@ -1812,6 +1864,7 @@ mod tests {
     use std::collections::BTreeSet;
     fn config() -> Config {
         Config {
+            observation_acquisition: None,
             reversal_evaluation: None,
             calendar_rollover: None,
             cadence_ms: 1000,

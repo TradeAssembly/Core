@@ -73,7 +73,7 @@ pub struct CollectionSummary {
     pub observed_at_ms: i64,
     pub host_known_at_ms: i64,
 }
-fn summary(r: &CollectionReceipt) -> CollectionSummary {
+pub(crate) fn summary(r: &CollectionReceipt) -> CollectionSummary {
     CollectionSummary {
         schema_version: CollectionSummaryVersion::V1,
         collection_id: r.collection_id.clone(),

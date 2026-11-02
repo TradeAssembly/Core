@@ -425,6 +425,16 @@ fn stored(
     id: &str,
     scope: &data_plans::PlanScope,
 ) -> Result<(Value, Stream), String> {
+    // This is one pure read/validation boundary: reuse immutable package bytes
+    // across the position and seed checks, never their live authority results.
+    // The scoped service is discarded before append/retention/dispatch effects.
+    super::package_validation::with_round(s, |s| stored_round(s, id, scope))
+}
+fn stored_round(
+    s: &TradeAssemblyService,
+    id: &str,
+    scope: &data_plans::PlanScope,
+) -> Result<(Value, Stream), String> {
     s.require_object("strategy", &scope.strategy_id)
         .map_err(|_| "managed_stream_not_available")?;
     let raw = s

@@ -1,6 +1,6 @@
 //! Explicit owned local worker intent, not a serialized principal or grant.
 use super::*;
-use crate::service::execution::automatic_health;
+use crate::service::{execution::automatic_health, ServiceResponse};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 const INTENTS: &str = "session_dispatch_worker_intents_v1";
@@ -333,6 +333,21 @@ fn turn_delay(now: i64, target: i64, pending: bool, attempts: u32, management: b
         1
     }
 }
+// A successful local management response can avoid redundant wake planning.
+// This is only a scheduling hint. The next turn still rereads owner, durable
+// intent, pause, health and current management binding before any command.
+fn management_successor_ready(manage: bool, response: &ServiceResponse, now: i64) -> bool {
+    let management = &response.body["body"]["management"];
+    manage
+        && response.status == 200
+        && response.body["ok"] == true
+        && management["status"] == "running"
+        && management["error"].is_null()
+        && management["workRemaining"].as_u64().is_some_and(|n| n > 0)
+        && management["nextAttemptAtMs"]
+            .as_i64()
+            .is_some_and(|due| due > 0 && due <= now)
+}
 // Set only here, never from a request body, durable intent or remote principal.
 fn background_service(s: &TradeAssemblyService, id: &str) -> TradeAssemblyService {
     let mut scoped = s.clone();
@@ -422,6 +437,10 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         let (j, _) = read(s, id)?;
         if j.paused {
             return Ok(());
+        }
+        if management_successor_ready(manage, &response, s.runtime().clock.trusted_now_ms()?) {
+            wake.wait(observed, 1);
+            continue;
         }
         // A successful phase has already persisted its unattempted successor.
         // Return to the normal owner/intent/health/management checks at the top
@@ -586,6 +605,38 @@ pub(super) fn halt_for_test(s: &TradeAssemblyService, id: &str) {
 #[cfg(test)]
 mod management_wake_tests {
     use super::*;
+    #[test]
+    fn management_successor_hint_only_skips_wake_planning_for_due_success() {
+        let response = ServiceResponse::ok(json!({"ok":true,"body":{"management":{
+            "status":"running","error":null,"workRemaining":1,"nextAttemptAtMs":1000
+        }}}));
+        assert!(management_successor_ready(true, &response, 1000));
+        assert!(!management_successor_ready(false, &response, 1000));
+        assert!(!management_successor_ready(true, &response, 999));
+        for (field, value) in [
+            ("status", json!("blocked")),
+            ("status", json!("waiting")),
+            ("error", json!("retry_required")),
+            ("workRemaining", json!(0)),
+            ("nextAttemptAtMs", json!(null)),
+            ("nextAttemptAtMs", json!(0)),
+        ] {
+            let mut changed = response.clone();
+            changed.body["body"]["management"][field] = value;
+            assert!(!management_successor_ready(true, &changed, 1000));
+        }
+        let mut refused = response.clone();
+        refused.body["ok"] = json!(false);
+        assert!(!management_successor_ready(true, &refused, 1000));
+        refused = response.clone();
+        refused.status = 409;
+        assert!(!management_successor_ready(true, &refused, 1000));
+        assert!(!management_successor_ready(
+            true,
+            &ServiceResponse::ok(json!({})),
+            1000
+        ));
+    }
     #[test]
     fn persisted_successor_is_ready_but_retry_floor_and_future_deadline_are_preserved() {
         assert_eq!(turn_delay(1000, 1000, true, 0, false), 1);

@@ -7,7 +7,10 @@ use crate::ports::{
 use flate2::read::GzDecoder;
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
 use serde_json::Value;
+#[cfg(not(target_arch = "aarch64"))]
 use sha2::{Digest, Sha256};
+#[cfg(target_arch = "aarch64")]
+use sha2_platform::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -814,7 +817,15 @@ fn read_manifest_file(
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    // Keep the same lowercase fixed-width encoding across Digest API versions.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut result = String::with_capacity(64);
+    for &byte in digest.iter() {
+        result.push(HEX[(byte >> 4) as usize] as char);
+        result.push(HEX[(byte & 15) as usize] as char);
+    }
+    result
 }
 
 fn canonical_sha256(value: &Value) -> Result<String, String> {
@@ -1190,3 +1201,22 @@ metadata:
 #[cfg(test)]
 #[path = "plugin_packages_data_tests.rs"]
 pub(crate) mod data_package_tests;
+
+#[cfg(test)]
+mod integrity_digest_compatibility_tests {
+    #[test]
+    fn platform_file_digest_preserves_standard_and_legacy_sha256_identity() {
+        use sha2::Digest as _;
+        assert_eq!(
+            super::sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        for length in [0, 1, 55, 56, 63, 64, 65, 1000, 65536, 1048576] {
+            let bytes = (0..length)
+                .map(|i| ((i * 31 + 7) % 256) as u8)
+                .collect::<Vec<_>>();
+            let legacy = format!("{:x}", sha2::Sha256::digest(&bytes));
+            assert_eq!(super::sha256(&bytes), legacy, "length {length}");
+        }
+    }
+}

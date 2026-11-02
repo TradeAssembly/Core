@@ -404,6 +404,7 @@ fn timing_phase(stage: &'static str) -> bool {
             | "manager.child.advance"
             | "manager.child.submit"
             | "manager.child.collect"
+            | "manager.child.acquire_inputs"
             | "manager.child.calendar"
             | "manager.child.other"
             | "manager.before_child_checks"

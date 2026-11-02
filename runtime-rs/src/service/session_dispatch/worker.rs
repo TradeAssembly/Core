@@ -185,6 +185,28 @@ fn scheduling_decision(
         management_due: management.has_work.then_some(management.next_due_ms),
     })
 }
+// A due local successor only selects a turn; it carries no service, binding,
+// permission or child bytes. The next effect handler independently rechecks
+// current owner/source/configuration/intent/health and its durable child.
+fn scheduling_after_local_successor(
+    successor: bool,
+    now: i64,
+    terminal: bool,
+    health_work: bool,
+    management: impl FnOnce() -> Result<
+        crate::service::order_plans::management::automation::SchedulingState,
+        String,
+    >,
+) -> Result<SchedulingDecision, String> {
+    if successor {
+        Ok(SchedulingDecision {
+            has_work: true,
+            management_due: Some(now),
+        })
+    } else {
+        scheduling_decision(terminal, health_work, management)
+    }
+}
 fn start_admission(
     terminal: bool,
     management_work: impl FnOnce() -> Result<bool, String>,
@@ -377,7 +399,10 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         .map_err(|_| "session_dispatch_worker_nonce_unavailable")?;
     let transport_run = hash(&nonce)?;
     let mut iteration = 0u64;
+    let mut immediate_management_successor = false;
     loop {
+        // Consume once, before any wait or mutable current-state check.
+        let successor = std::mem::take(&mut immediate_management_successor);
         #[cfg(test)]
         if wake.halted.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("fixture_worker_stopped_without_disabling_intent".into());
@@ -406,10 +431,18 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
         let Some(j) = after_health(s, id)? else {
             return Ok(());
         };
-        let health_work = j.status.terminal() && automatic_health::needs_job_turn(s, &j)?;
-        let scheduling = scheduling_decision(j.status.terminal(), health_work, || {
-            crate::service::order_plans::management::automation::scheduling_state(s, &j)
-        })?;
+        // advance_worker_job already performed the current health work above.
+        // A due successor needs neither another advisory health-work probe nor
+        // advisory management reconstruction; both effect guards still run.
+        let health_work =
+            !successor && j.status.terminal() && automatic_health::needs_job_turn(s, &j)?;
+        let scheduling = scheduling_after_local_successor(
+            successor,
+            s.runtime().clock.trusted_now_ms()?,
+            j.status.terminal(),
+            health_work,
+            || crate::service::order_plans::management::automation::scheduling_state(s, &j),
+        )?;
         if !scheduling.has_work {
             return Ok(());
         }
@@ -439,6 +472,7 @@ fn run_loop(s: &TradeAssemblyService, id: &str, k: &str, wake: &Wake) -> Result<
             return Ok(());
         }
         if management_successor_ready(manage, &response, s.runtime().clock.trusted_now_ms()?) {
+            immediate_management_successor = true;
             wake.wait(observed, 1);
             continue;
         }
@@ -774,6 +808,43 @@ mod health_worker_recovery_tests {
     }
 
     #[test]
+    fn local_successor_skips_only_one_advisory_read_and_preserves_fresh_fallback() {
+        let mut successor = true;
+        let decision = scheduling_after_local_successor(
+            std::mem::take(&mut successor),
+            1234,
+            true,
+            false,
+            || panic!("due local successor needs no redundant advisory reconstruction"),
+        )
+        .unwrap();
+        assert!(decision.has_work);
+        assert_eq!(decision.management_due, Some(1234));
+        assert!(!successor, "a wait or another turn cannot reuse the hint");
+        assert_eq!(
+            scheduling_after_local_successor(successor, 1300, true, false, || {
+                Err("current_management_refused".into())
+            })
+            .unwrap_err(),
+            "current_management_refused"
+        );
+        let fresh = scheduling_after_local_successor(false, 1300, true, false, || {
+            Ok(
+                crate::service::order_plans::management::automation::SchedulingState {
+                    has_work: true,
+                    next_due_ms: 5000,
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            fresh.management_due,
+            Some(5000),
+            "future wakes are unchanged"
+        );
+    }
+
+    #[test]
     fn advisory_readiness_never_authorizes_a_child_after_stop_pause_or_source_change() {
         for change in ["stop", "pause", "source"] {
             let (_dir, s) = fixture();
@@ -788,9 +859,13 @@ mod health_worker_recovery_tests {
             });
             let s = install_held_health(&s, port.clone());
             let (job, _) = read(&s, &id).unwrap();
-            let advisory = scheduling_decision(job.status.terminal(), false, || {
-                crate::service::order_plans::management::automation::scheduling_state(&s, &job)
-            })
+            let advisory = scheduling_after_local_successor(
+                true,
+                s.runtime().clock.now_ms(),
+                job.status.terminal(),
+                false,
+                || panic!("hint must not be interpreted as a fresh permission"),
+            )
             .unwrap();
             assert!(advisory.has_work);
             let background = background_service(&s, &id);

@@ -24,6 +24,9 @@ use tradeassembly_plugin_sdk::{
 };
 use url::Url;
 
+#[path = "plugin_package_parsing.rs"]
+pub(super) mod parsing;
+
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const MAX_PACKAGE_BYTES: usize = 128 * 1024 * 1024;
@@ -56,6 +59,7 @@ impl PackageAddressResolver for SystemPackageAddressResolver {
 pub struct LocalPluginPackageStore {
     root: PathBuf,
     metadata: super::plugin_data_contracts::VerificationCache,
+    parsing: parsing::ParsingCache,
 }
 
 impl LocalPluginPackageStore {
@@ -70,6 +74,7 @@ impl LocalPluginPackageStore {
         Ok(Self {
             root,
             metadata: Default::default(),
+            parsing: Default::default(),
         })
     }
 
@@ -108,8 +113,7 @@ impl LocalPluginPackageStore {
             crate::service::order_plans::financial_timing("package.record_read_parse");
         let bytes = fs::read(package_root.join(INSTALLED_RECORD))
             .map_err(|_| "plugin_package_record_missing".to_string())?;
-        let mut record: InstalledPluginPackage = serde_json::from_slice(&bytes)
-            .map_err(|_| "plugin_package_record_invalid".to_string())?;
+        let mut record = (*self.parsing.record(&bytes)?).clone();
         drop(record_timing);
         let descriptor_read_timing =
             crate::service::order_plans::financial_timing("package.descriptor_fs");
@@ -122,7 +126,8 @@ impl LocalPluginPackageStore {
         drop(descriptor_read_timing);
         let descriptor_timing =
             crate::service::order_plans::financial_timing("package.descriptor_semantic");
-        let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
+        let parsed_descriptor = self.parsing.descriptor(&descriptor_bytes)?;
+        let envelope = parsed_descriptor.envelope();
         let descriptor = envelope.base();
         descriptor
             .validate()
@@ -133,12 +138,12 @@ impl LocalPluginPackageStore {
             crate::service::order_plans::financial_timing("package.manifest_fs");
         let manifest_path = package_root.join(&descriptor.manifest.path);
         ensure_within(package_root, &manifest_path)?;
-        let manifest_bytes = read_manifest_file(&manifest_path, &envelope)?;
+        let manifest_bytes = read_manifest_file(&manifest_path, envelope)?;
         drop(manifest_read_timing);
         let manifest_decode_timing =
             crate::service::order_plans::financial_timing("package.manifest_yaml");
-        let manifest: Value = serde_yaml::from_slice(&manifest_bytes)
-            .map_err(|_| "plugin_package_manifest_invalid".to_string())?;
+        let parsed_manifest = self.parsing.manifest(&manifest_bytes)?;
+        let manifest = parsed_manifest.value();
         drop(manifest_decode_timing);
         let executable_read_timing =
             crate::service::order_plans::financial_timing("package.executable_fs");
@@ -149,28 +154,33 @@ impl LocalPluginPackageStore {
         drop(executable_read_timing);
         let integrity_timing =
             crate::service::order_plans::financial_timing("package.hash_serialize_compare");
-        let canonical_manifest_sha256 = canonical_sha256(&manifest)?;
-        let descriptor_value: Value = serde_json::from_slice(&descriptor_bytes)
-            .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
+        let canonical_manifest_sha256 = parsed_manifest.canonical_sha256();
+        let descriptor_value = parsed_descriptor.value();
         if descriptor.manifest.sha256 != sha256(&manifest_bytes)
             || target.binary.sha256 != sha256(&executable_bytes)
             || descriptor.plugin.id != record.plugin_ref
             || descriptor.plugin.version != record.version
             || manifest["metadata"]["id"] != record.plugin_ref
             || manifest["metadata"]["version"] != record.version
-            || canonical_manifest_sha256 != record.manifest_sha256
+            || canonical_manifest_sha256 != record.manifest_sha256.as_str()
             || descriptor.compatibility.host_contract.minimum != record.host_contract
             || descriptor.compatibility.host_contract.maximum != record.host_contract
             || descriptor.compatibility.sdk_version != record.sdk_version
-            || descriptor_value != record.descriptor
-            || manifest != record.manifest
+            || descriptor_value != &record.descriptor
+            || manifest != &record.manifest
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
         drop(integrity_timing);
-        let metadata = crate::service::order_plans::measured("package.metadata_closure", || {
-            self.verified_metadata(&envelope, package_root, &manifest)
-        })?;
+        let metadata =
+            crate::service::order_plans::measured("package.metadata_closure", || match envelope {
+                VersionedPackageDescriptor::Legacy(_) => {
+                    self.verified_metadata(envelope, package_root, manifest)
+                }
+                _ => self
+                    .metadata
+                    .get_parsed(package_root, &parsed_descriptor, &parsed_manifest),
+            })?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
         Ok((record, metadata))

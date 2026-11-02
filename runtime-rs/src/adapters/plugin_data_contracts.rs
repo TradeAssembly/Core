@@ -84,6 +84,7 @@ fn document(root: &Path, doc: &DigestedPackagePath, total: &mut usize) -> Result
 /// rereads all declared documents with the same path/byte/aggregate bounds.
 const MAX_VERIFIED_CACHE_ENTRIES: usize = 8;
 pub(crate) struct VerificationCache {
+    identities: super::plugin_packages::parsing::PureMemo<String>,
     entries: Mutex<MetadataEntries>,
     max_retained_bytes: usize,
 }
@@ -91,6 +92,7 @@ impl Default for VerificationCache {
     fn default() -> Self {
         Self {
             entries: Mutex::default(),
+            identities: Default::default(),
             max_retained_bytes: MAX_METADATA_TOTAL_BYTES,
         }
     }
@@ -151,13 +153,52 @@ impl VerificationCache {
         }))
         .map_err(|_| "plugin_data_cache_identity_invalid")?;
         drop(identity_timing);
+        self.get_identified(envelope, root, manifest, &identity)
+    }
+    pub(super) fn get_parsed(
+        &self,
+        root: &Path,
+        descriptor: &super::plugin_packages::parsing::Descriptor,
+        manifest: &super::plugin_packages::parsing::Manifest,
+    ) -> Result<Arc<VerifiedMetadata>, String> {
+        let Some(data) = descriptor.envelope().data() else {
+            return Ok(Arc::new(VerifiedMetadata::default()));
+        };
+        let _timing = crate::service::order_plans::financial_timing("metadata.total");
+        let identity_timing =
+            crate::service::order_plans::financial_timing("metadata.identity_hash");
+        // The small witness is derived only from freshly read descriptor/manifest
+        // bytes and the current root. Cache the SAME canonical identity used by
+        // get(), never a second metadata namespace or a verification result.
+        let witness = serde_json::to_vec(&serde_json::json!({"root":root,
+            "descriptor":descriptor.encoding_sha256(),"manifest":manifest.encoding_sha256()}))
+        .map_err(|_| "plugin_data_cache_identity_invalid")?;
+        let identity = self.identities.get(&witness, || {
+            canonical_sha256(
+                &serde_json::json!({"root":root,"descriptor":data,"manifest":manifest.value()}),
+            )
+            .map_err(|_| "plugin_data_cache_identity_invalid".into())
+        })?;
+        drop(identity_timing);
+        self.get_identified(descriptor.envelope(), root, manifest.value(), &identity)
+    }
+    fn get_identified(
+        &self,
+        envelope: &VersionedPackageDescriptor,
+        root: &Path,
+        manifest: &Value,
+        identity: &str,
+    ) -> Result<Arc<VerifiedMetadata>, String> {
+        let Some(data) = envelope.data() else {
+            return Ok(Arc::new(VerifiedMetadata::default()));
+        };
         let cached = self
             .entries
             .lock()
             .map_err(|_| "plugin_data_cache_unavailable")?
             .values
             .iter()
-            .find(|(key, _, _)| key == &identity)
+            .find(|(key, _, _)| key.as_str() == identity)
             .map(|(_, value, _)| Arc::clone(value));
         if let Some(cached) = cached {
             // Identity includes every expected digest. Recheck the entire artifact
@@ -183,7 +224,7 @@ impl VerificationCache {
             if let Some(index) = entries
                 .values
                 .iter()
-                .position(|(key, _, _)| key == &identity)
+                .position(|(key, _, _)| key.as_str() == identity)
             {
                 let value = entries.values.remove(index).unwrap();
                 entries.values.push_back(value);
@@ -202,7 +243,7 @@ impl VerificationCache {
             if let Some(index) = entries
                 .values
                 .iter()
-                .position(|(key, _, _)| key == &identity)
+                .position(|(key, _, _)| key.as_str() == identity)
             {
                 let previous = entries.values.remove(index).unwrap();
                 entries.bytes -= previous.2;
@@ -216,7 +257,7 @@ impl VerificationCache {
             entries.bytes += bytes;
             entries
                 .values
-                .push_back((identity, Arc::clone(&verified), bytes));
+                .push_back((identity.to_owned(), Arc::clone(&verified), bytes));
         }
         Ok(verified)
     }
@@ -470,6 +511,80 @@ mod cache_tests {
             manifest,
         )
     }
+    fn encoded_descriptor(v: &VersionedPackageDescriptor) -> Vec<u8> {
+        match v {
+            VersionedPackageDescriptor::Legacy(v) => serde_json::to_vec(v),
+            VersionedPackageDescriptor::Data(v) => serde_json::to_vec(v),
+            VersionedPackageDescriptor::Recipes(v) => serde_json::to_vec(v),
+        }
+        .unwrap()
+    }
+    #[test]
+    fn parsed_identity_matches_canonical_identity_and_keeps_live_closure_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let (descriptor, manifest) = fixture(root.path());
+        let parsing = super::super::plugin_packages::parsing::ParsingCache::default();
+        let parsed_descriptor = parsing
+            .descriptor(&encoded_descriptor(&descriptor))
+            .unwrap();
+        let parsed_manifest = parsing
+            .manifest(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        let cache = VerificationCache::default();
+        let first = cache.get(&descriptor, root.path(), &manifest).unwrap();
+        let second = cache
+            .get_parsed(root.path(), &parsed_descriptor, &parsed_manifest)
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "same canonical cache namespace"
+        );
+        let file = root.path().join("unrelated.json");
+        let original = fs::read(&file).unwrap();
+        fs::write(&file, b"changed after cached parse").unwrap();
+        assert!(cache
+            .get_parsed(root.path(), &parsed_descriptor, &parsed_manifest)
+            .is_err());
+        fs::write(file, original).unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &cache
+                .get_parsed(root.path(), &parsed_descriptor, &parsed_manifest)
+                .unwrap()
+        ));
+        let other = tempfile::tempdir().unwrap();
+        fixture(other.path());
+        let distinct = cache
+            .get_parsed(other.path(), &parsed_descriptor, &parsed_manifest)
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &distinct),
+            "root binding remains exact"
+        );
+    }
+    #[test]
+    fn changed_parsed_manifest_cannot_reuse_previously_verified_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let (descriptor, mut manifest) = fixture(root.path());
+        let parsing = super::super::plugin_packages::parsing::ParsingCache::default();
+        let descriptor = parsing
+            .descriptor(&encoded_descriptor(&descriptor))
+            .unwrap();
+        let original = parsing
+            .manifest(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        let cache = VerificationCache::default();
+        cache
+            .get_parsed(root.path(), &descriptor, &original)
+            .unwrap();
+        manifest["operations"][0]["id"] = json!("missing_contract_operation");
+        let changed = parsing
+            .manifest(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        assert!(cache
+            .get_parsed(root.path(), &descriptor, &changed)
+            .is_err());
+    }
     #[test]
     fn cache_reuses_verified_metadata_but_hashes_unrelated_artifacts_on_every_hit() {
         let dir = tempfile::tempdir().unwrap();
@@ -578,6 +693,7 @@ mod cache_tests {
         )
         .unwrap();
         let cache = VerificationCache {
+            identities: Default::default(),
             entries: Mutex::default(),
             max_retained_bytes: 2 * bytes,
         };
@@ -609,6 +725,7 @@ mod cache_tests {
         )
         .unwrap();
         let cache = VerificationCache {
+            identities: Default::default(),
             entries: Mutex::default(),
             max_retained_bytes: bytes - 1,
         };

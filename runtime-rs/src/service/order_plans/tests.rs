@@ -1098,3 +1098,49 @@ fn prepared_health_hint_refuses_original_plan_expiry_and_real_release_fence() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn v2_source_pure_round_never_wraps_dispatch_or_survives_next_boundary() {
+    let (_dir, service, _facts, plan, source) = lifecycle_fixture("v2-pure-round");
+    assert!(source.service().graph_metadata.is_none());
+    let weak = source
+        .with_validation_round(|round| {
+            assert!(round.service().package_validation_round);
+            assert!(std::sync::Arc::ptr_eq(
+                &service.runtime().plugin_operations,
+                &round.service().runtime().plugin_operations
+            ));
+            assert!(std::sync::Arc::ptr_eq(
+                &service.runtime().finance_authority,
+                &round.service().runtime().finance_authority
+            ));
+            assert!(std::sync::Arc::ptr_eq(
+                &service.runtime().clock,
+                &round.service().runtime().clock
+            ));
+            let metadata = round.service().graph_metadata.as_ref().unwrap();
+            round.with_validation_round(|nested| {
+                assert!(std::sync::Arc::ptr_eq(
+                    metadata,
+                    nested.service().graph_metadata.as_ref().unwrap()
+                ));
+                assert_eq!(nested.historical()?, plan);
+                Ok(())
+            })?;
+            Ok(std::sync::Arc::downgrade(metadata))
+        })
+        .unwrap();
+    assert!(
+        weak.upgrade().is_none(),
+        "metadata must die before writes/C5/network/revalidation"
+    );
+    assert!(source.service().graph_metadata.is_none());
+    source
+        .with_validation_round(|round| {
+            assert!(round.service().graph_metadata.is_some());
+            assert_eq!(round.historical()?, plan);
+            Ok(())
+        })
+        .unwrap();
+    assert!(source.state().unwrap().is_none());
+}

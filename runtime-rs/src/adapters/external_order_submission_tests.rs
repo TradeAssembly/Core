@@ -51,6 +51,7 @@ fn exercise_native_v2_broker(s:&crate::service::TradeAssemblyService,scope:&data
  let _=(revision,policy);
  let decided=if scenario.starts_with("financial_"){financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Decide{scope:scope.clone(),decision:crate::service::order_plans::decision::DecisionCommand{plan_id:plan_id.into(),activation_id:"fixture-v2-activation".into()}},"normal-entry-decision")}else{s.handle_http("POST","/product/strategies/order-plans/decide",json!({"scope":scope,"decision":{"planId":plan_id,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"normal-entry-decision"}))};assert_eq!(decided.status,200,"{}",decided.body);let command=decided.body["submission"].clone();assert!(command["attemptId"].as_str().unwrap().starts_with("attempt_typed_"));
  let foreign=s.for_authenticated_invocation("fixture","foreign",None,None);let refused=foreign.call_mcp_tool("tradeassembly.strategy.order_plan.submit",json!({"scope":scope,"submission":command,"accountMode":"paper","idempotencyKey":"foreign-v2"}));assert_eq!(refused["isError"],true,"{refused}");assert!(!root.join("synthetic-broker/calls.log").exists());
+ if scenario.starts_with("financial_c5_round_"){exercise_native_c5_round_refusal(s,scope,plan_id,&command,root,scenario);return;}
  if scenario=="financial_screen_refresh"{refuse_removed_dynamic_entry(s,scope,revision,plan_id,&command,root);return;}
  let submit=|key:&str|if scenario.starts_with("financial_"){financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Submit{scope:scope.clone(),submission:serde_json::from_value(command.clone()).unwrap()},key)}else{s.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":command,"accountMode":"paper","idempotencyKey":key}))};
  let first=submit("native-v2-submit");eprintln!("native V2 {scenario} response: {} {}",first.status,first.body);
@@ -170,3 +171,37 @@ fn native_provisional_entry_and_close_preserve_cash_holds_and_recover_receipts()
 #[test]
 #[ignore="explicit native non-atomic terminal partial-close quantity and cash hold journey"]
 fn native_provisional_partial_close_preserves_remaining_owned_quantity(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_managed_plan_provisional_partial_close"));}
+
+// Actual normal V2 submission, with one independently fresh fixture per refusal.
+fn exercise_native_c5_round_refusal(
+ s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,plan_id:&str,command:&Value,root:&std::path::Path,scenario:&str,
+){
+ let run=s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();
+ let plan=s.runtime().storage.get_json("execution_order_plans_v1",plan_id).unwrap().unwrap();
+ let (namespace,key,field,changed)=if scenario.ends_with("config") {
+  ("execution_configs",run["configId"].as_str().unwrap().to_string(),"strategySpecHash",json!("changed-config"))
+ } else if scenario.ends_with("authority") {
+  ("execution_controls","fixture-v2-activation".to_string(),"paused",json!(true))
+ } else {
+  let index=s.runtime().storage.get_json("data_evaluation_receipt_hash_index_v1",plan["command"]["signalReceiptSha256"].as_str().unwrap()).unwrap().unwrap();
+  ("data_evaluation_receipts_v1",index["receiptKey"].as_str().unwrap().to_string(),"receiptSha256",json!("0".repeat(64)))
+ };
+ let mut invalid=s.runtime().storage.get_json(namespace,&key).unwrap().unwrap();invalid[field]=changed;
+ s.runtime().storage.put_json(namespace,&key,invalid,&ctx("c5-round-negative-change")).unwrap();
+ let cash=s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
+ let submit=|service:&crate::service::TradeAssemblyService,label:&str| service.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":command,"accountMode":"paper","idempotencyKey":label}));
+ let first=submit(s,"changed-c5-round");assert_ne!(first.status,200,"{scenario}: {}",first.body);
+ let owner=s.invocation_owner().unwrap();
+ let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone())
+  .for_authenticated_invocation(&owner.issuer,&owner.subject,None,None);
+ let repeated=submit(&restored,"changed-c5-after-recreation");assert_ne!(repeated.status,200,"{scenario}: {}",repeated.body);
+ assert!(!root.join("synthetic-broker/calls.log").exists(),"refused C5 must not dispatch or replay");
+ assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),cash);
+ write_screen_interface_evidence("c5_validation",&format!("{scenario}.json"),&json!({"first":first.body,"afterServiceRecreation":repeated.body,"providerCalls":0,"cashUnchanged":true,"qualification":"synthetic normal V2 transport refusal; no OS restart or real broker"}));
+}
+#[test]
+#[ignore="focused actual C5 changed config/authority/tampered signal refusal and service recreation"]
+fn native_c5_validation_rounds_refuse_current_mutations_before_dispatch_and_after_restart(){
+ crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+ for case in ["financial_c5_round_config","financial_c5_round_authority","financial_c5_round_tamper"]{native_execution_plan_fixture(Some(case));}
+}

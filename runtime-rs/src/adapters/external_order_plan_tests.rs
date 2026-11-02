@@ -71,6 +71,7 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  if let Some(offset)=&financial_clock_offset {rt.clock=Arc::new(FinancialWitnessClock{base:rt.clock.clone(),offset:offset.clone()});}
  rt.identity=Arc::new(crate::adapters::local::system::LocalOwnerIdentityPort::new(db.to_str().unwrap()).unwrap());
  let service=crate::service::TradeAssemblyService::from_runtime(base.db(),rt).for_authenticated_invocation(&owner.issuer,&owner.stable_identity_id,None,None);
+ let c5_profile_pack=(v2_case==Some("financial_screen_managed_plan_c5_profile")).then(||install_managed_minute_pack(&service));
  let actual_pack=if minute_math{Some(install_managed_minute_pack(&service))}else{actual_pack};
  for instance in service.runtime().plugins.list_instances().unwrap(){service.bind_owned_object("plugin_instance",instance["instanceRef"].as_str().unwrap()).unwrap();}
  let runtime=service.runtime();
@@ -113,6 +114,14 @@ fn native_execution_plan_fixture(v2_case:Option<&str>){
  if let Some(stream)=&stream_package{configure_automatic_stream_spec(&service,&mut spec,&mut bindings,&replay,stream);}
  if let Some(pack)=&actual_pack{configure_managed_math_native_spec(&service,&mut spec,&mut bindings,pack);}
  if managed {spec["stages"]["exit_policy"]["enabled"]=json!(true);spec["stages"]["exit_policy"]["policy"]=json!({"monitoring":["synthetic"],"triggers":[{"id":"stop_loss","kind":"price","scope":"full_position"},{"id":"trailing","kind":"price","scope":"full_position"}],"composition":"priority","precedence":["stop_loss","trailing"],"end_of_data":"preserve_open_positions"});spec["stages"]["exit_policy"]["config"]["tradeassembly.managed_exit.v1"]=json!({"rules":{"schemaVersion":"tradeassembly.position_exit_rules.v1","priceBasis":"bid","stopLossRatio":"0.1","trailingRatio":"0.2","trailingStart":{"kind":"immediate"},"reversalSignal":null,"precedence":["stop_loss","trailing"],"maxQuoteAgeMs":30000},"entryBasis":"provider_final_gross_excluding_fees","feeCashCap":"1","maxLimitSlippageRatio":"0.01","timeInForce":"day","maxReversalAgeMs":30000});}
+ if let Some(pack)=&c5_profile_pack {
+  for (index,operation) in ["indicator.ema.minute","indicator.tsi.minute"].iter().enumerate(){
+   let mut req=spec["capability_requirements"]["required"][0].clone();let id=format!("profile_math_{index}");
+   req["requirement_id"]=json!(id);req["capability"]=json!(format!("{operation}@1"));req["stage_refs"]=json!(["evaluate"]);req["substep_refs"]=json!([]);req["dependency_refs"]=json!([]);req["constraints"]=json!({});
+   spec["capability_requirements"]["required"].as_array_mut().unwrap().push(req);
+   bindings[&id]=json!({"pluginInstanceRef":"managed-real-calculation","pluginRef":pack.plugin_ref,"operationId":operation});
+  }
+ }
  let validation=crate::spec::validate_strategy_spec_report(&spec);assert!(validation.valid,"{validation:?}");
  let created=service.handle_http("POST","/product/strategies/create",json!({"name":"Authored native execution fixture","spec":spec,"idempotencyKey":"execution-create"}));assert_eq!(created.status,201,"{}",created.body);
  let id=created.body["body"]["strategy"]["id"].as_str().unwrap();let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":id,"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"idempotencyKey":"execution-publish"}));assert_eq!(published.body["body"]["published"],true,"{}",published.body);

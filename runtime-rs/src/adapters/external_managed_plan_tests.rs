@@ -494,6 +494,19 @@ fn exercise_native_managed_plan(
         exercise_native_owned_close_outcome(s,scope,id,entry,decision,root,scenario);
         return;
     }
+    if provider["configuration"]["scenario"]=="managed_plan_c5_profile" {
+        let command=serde_json::from_value(decision["submission"].clone()).unwrap();
+        let (source,request,context)=plans::transport::request(s,&command).unwrap();
+        let cash=s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
+        let states=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();
+        let profile=crate::broker_submission::v2::profile_validation_round(&source,&request,&context).unwrap();
+        assert_eq!(fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap(),submits);
+        assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),cash);
+        assert_eq!(s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap(),states);
+        eprintln!("C5_VALIDATION_PROFILE {profile}");
+        write_screen_interface_evidence("c5_validation","pure-validation-cost.json",&profile);
+        return;
+    }
     let submitted = post(
         "/product/strategies/order-plans/submit",
         json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-plan-close-submit"}),
@@ -830,4 +843,18 @@ fn native_provider_management_v7_preserves_receipts_and_cash_holds(){crate::buil
 fn native_managed_plan_metadata_round_replay_and_revocation() {
     crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
     native_execution_plan_fixture(Some("financial_screen_managed_plan_metadata_round"));
+}
+
+#[test]
+#[ignore="bounded actual owned-close pure C5 validation comparison with wide pinned calculation catalog; no close submission"]
+fn native_owned_close_c5_validation_round_cost(){
+ crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+ let evidence=std::path::PathBuf::from(std::env::var_os("SCREEN_INTERFACE_EVIDENCE_DIR").expect("explicit fresh profiling evidence directory"))
+  .join("financial_screen_managed_plan_c5_profile/c5_validation/pure-validation-cost.json");
+ assert!(!evidence.exists(),"profile requires a fresh evidence path");
+ native_execution_plan_fixture(Some("financial_screen_managed_plan_c5_profile"));
+ let result:Value=serde_json::from_slice(&fs::read(evidence).expect("profiling branch must actually execute")).unwrap();
+ assert_eq!(result["samePlanAndIntent"],true);
+ assert_eq!(result["durableIntentWritten"],false);
+ assert_eq!(result["brokerCalls"],0);
 }

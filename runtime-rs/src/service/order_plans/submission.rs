@@ -101,6 +101,20 @@ pub(crate) fn reserve_guard(s: &TradeAssemblyService, p: &OrderPlan) -> Result<(
     }
 }
 impl OrderPlanSource {
+    /// One pure V2 validation only. Never carry this service across begin(),
+    /// C5 authorization, durability waits, admission writes or broker dispatch.
+    /// All mutable ports/reads and trusted-clock checks remain the originals.
+    pub(crate) fn with_validation_round<T>(
+        &self,
+        validate: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        crate::service::package_validation::with_round(&self.service, |service| {
+            validate(&Self {
+                service: service.clone(),
+                id: self.id.clone(),
+            })
+        })
+    }
     pub(crate) fn service(&self) -> &TradeAssemblyService {
         &self.service
     }

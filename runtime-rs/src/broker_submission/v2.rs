@@ -140,9 +140,23 @@ fn validate(
     prepared: &BrokerPreparedBinding,
     source: &OrderPlanSource,
 ) -> Result<(BrokerCurrentState, order_plans::OrderPlan, Value), String> {
+    let _timing = order_plans::financial_timing("broker.v2.validate");
     if !is_submission(request) {
         return Err("broker_v2_paper_context_required".into());
     }
+    source.with_validation_round(|round| validate_in_round(deps, request, context, prepared, round))
+}
+fn validate_in_round(
+    deps: &BrokerSubmissionDependencies,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+    prepared: &BrokerPreparedBinding,
+    source: &OrderPlanSource,
+) -> Result<(BrokerCurrentState, order_plans::OrderPlan, Value), String> {
+    if !is_submission(request) {
+        return Err("broker_v2_paper_context_required".into());
+    }
+    let _timing = order_plans::financial_timing("broker.v2.validate_body");
     let owner = source
         .service()
         .invocation_owner()
@@ -357,6 +371,52 @@ fn validate(
     )?;
     Ok((state, p, intent))
 }
+/// Read-only native comparison; never persists an intent or obtains a permit.
+#[cfg(test)]
+pub(crate) fn profile_validation_round(
+    source: &OrderPlanSource,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+) -> Result<Value, String> {
+    let s = source.service();
+    let runtime = s.runtime();
+    let deps = BrokerSubmissionDependencies {
+        storage: runtime.storage.clone(),
+        plugins: runtime.plugins.clone(),
+        plugin_packages: runtime.plugin_packages.clone(),
+        credentials: runtime.credentials.clone(),
+        capability_resolver: runtime.capability_resolver.clone(),
+        clock: runtime.clock.clone(),
+        leases: runtime.leases.clone(),
+        owner: crate::local_owner_identity::LocalOwnerIdentity::existing_for_database(s.db())?,
+    };
+    let state = load_management_state(&deps, request, context)?;
+    let prepared = BrokerPreparedBinding {
+        plugin_instance_ref: required_value(&state.selected, "pluginInstanceRef")?.into(),
+        plugin_ref: required_value(&state.selected, "pluginRef")?.into(),
+        package_sha256: state.package.package_sha256.clone(),
+        manifest_fingerprint: required_value(&state.selected, "manifestFingerprint")?.into(),
+        configuration_digest: crate::spec::canonical_hash(&state.instance["configuration"])?,
+        credential_ref: required_value(&state.instance, "credentialRef")?.into(),
+        credential_generation: crate::live_execution_checks::credential_revision(&state.instance),
+    };
+    let start = std::time::Instant::now();
+    let (_, reference_plan, reference_intent) =
+        validate_in_round(&deps, request, context, &prepared, source)?;
+    let reference_us = start.elapsed().as_micros();
+    let start = std::time::Instant::now();
+    let (_, current_plan, current_intent) = validate(&deps, request, context, &prepared, source)?;
+    let current_us = start.elapsed().as_micros();
+    if reference_plan != current_plan || reference_intent != current_intent {
+        return Err("c5_validation_profile_changed_inputs".into());
+    }
+    Ok(
+        json!({"referenceUs":reference_us,"scopedUs":current_us,"samePlanAndIntent":true,
+        "validUntilMs":current_plan.valid_until_ms,"finishedAtMs":deps.clock.trusted_now_ms()?,
+        "durableIntentWritten":false,"brokerCalls":0,"scope":"single pure V2validate; independent C5 revalidations remainfresh"}),
+    )
+}
+
 fn envelope(
     state: &BrokerCurrentState,
     request: &PluginOperationRequest,

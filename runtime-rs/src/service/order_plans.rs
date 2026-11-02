@@ -365,6 +365,8 @@ fn timing_phase(stage: &'static str) -> bool {
             | "calculation.pin"
             | "snapshot.checked_current"
             | "decision.typed.current"
+            | "broker.v2.validate"
+            | "broker.v2.validate_body"
             | "broker.source.snapshot"
             | "broker.load_current_state"
             | "management.advance"
@@ -1759,6 +1761,8 @@ mod financial_timing_tests {
             "capture.read_deserialize",
             "current_plan.read_owned",
             "current_plan.total",
+            "broker.v2.validate",
+            "broker.v2.validate_body",
             "graph.catalog",
             "graph.catalog.builtin",
             "graph.catalog.instances",

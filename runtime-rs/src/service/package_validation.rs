@@ -42,6 +42,7 @@ pub(super) fn with_round<T>(
     let mut scoped = service.clone();
     scoped.runtime = Arc::new(runtime);
     scoped.package_validation_round = true;
+    scoped.graph_metadata = Some(Arc::new(super::graph_metadata::GraphMetadata::default()));
     validate(&scoped)
 }
 
@@ -105,6 +106,12 @@ impl ValidationPackages {
 struct BoundedSize {
     bytes: usize,
     limit: usize,
+}
+pub(super) fn bounded_size<T: serde::Serialize>(value: &T, limit: usize) -> Option<usize> {
+    let mut writer = BoundedSize { bytes: 0, limit };
+    serde_json::to_writer(&mut writer, value)
+        .ok()
+        .map(|_| writer.bytes)
 }
 impl Write for BoundedSize {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

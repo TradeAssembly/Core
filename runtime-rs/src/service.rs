@@ -41,6 +41,7 @@ mod execution;
 mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
+mod graph_metadata;
 pub(crate) mod indicator_context;
 pub mod instrument_screens;
 mod journal_view;
@@ -291,6 +292,7 @@ pub struct TradeAssemblyService {
     data_step_request: Option<Arc<data_evaluation::DataStepRequest>>,
     // Immutable package metadata only, scoped to one pure validation callback.
     package_validation_round: bool,
+    graph_metadata: Option<Arc<graph_metadata::GraphMetadata>>,
     // Restrictive, in-memory worker provenance; never caller supplied or stored.
     background_worker_job: Option<String>,
 }
@@ -381,6 +383,7 @@ impl TradeAssemblyService {
             agent_mcp_execution_context: None,
             data_step_request: None,
             package_validation_round: false,
+            graph_metadata: None,
             background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
@@ -522,6 +525,7 @@ impl TradeAssemblyService {
             agent_mcp_execution_context: None,
             data_step_request: None,
             package_validation_round: false,
+            graph_metadata: None,
             background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
@@ -564,6 +568,7 @@ impl TradeAssemblyService {
             agent_mcp_execution_context: None,
             data_step_request: None,
             package_validation_round: false,
+            graph_metadata: None,
             background_worker_job: None,
         })
     }
@@ -593,6 +598,7 @@ impl TradeAssemblyService {
             agent_mcp_execution_context: None,
             data_step_request: None,
             package_validation_round: false,
+            graph_metadata: None,
             background_worker_job: None,
         }
     }

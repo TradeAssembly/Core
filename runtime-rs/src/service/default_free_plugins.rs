@@ -8,7 +8,8 @@ use std::{
     sync::Arc,
 };
 
-struct EligiblePackage {
+#[derive(serde::Serialize)]
+pub(super) struct EligiblePackage {
     metadata: VerifiedPackageMetadataSnapshot,
     operations: Vec<PluginOperationContract>,
 }
@@ -182,17 +183,26 @@ pub(super) fn grants_matching(
         let loaded = packages
             .entry(rule.package_sha256.clone())
             .or_insert_with(|| {
-                runtime
-                    .plugin_packages
-                    .verified_metadata_snapshot(&rule.package_sha256)
-                    .ok()
-                    .flatten()
-                    .and_then(|metadata| {
-                        super::order_plans::measured("entitlement.free_semantic", || {
-                            verified(metadata, rule)
+                let load = || {
+                    runtime
+                        .plugin_packages
+                        .verified_metadata_snapshot(&rule.package_sha256)
+                        .ok()
+                        .flatten()
+                        .and_then(|metadata| {
+                            super::order_plans::measured("entitlement.free_semantic", || {
+                                verified(metadata, rule)
+                            })
                         })
-                    })
-                    .map(Arc::new)
+                };
+                if let Some(metadata) = &service.graph_metadata {
+                    // Only package-derived purity facts are reused. Every call
+                    // still checks owner, current instance/manifest and grants.
+                    let witness = serde_json::to_value(rule).ok()?;
+                    metadata.eligible.get(&rule.package_sha256, &witness, load)
+                } else {
+                    load().map(Arc::new)
+                }
             });
         let Some(package) = loaded.as_ref() else {
             continue;
@@ -257,34 +267,9 @@ mod tests {
     #[ignore = "requires exact MANAGED_MINUTE_TEST_PACKAGE; actual package lifecycle and synthetic owned store"]
     fn default_free_actual_package_is_owned_read_only_and_stored_overrides_win() {
         use crate::ports::{AuthorityContext, IdempotencyKey, SideEffectContext};
-        let path =
-            std::path::PathBuf::from(std::env::var_os("MANAGED_MINUTE_TEST_PACKAGE").unwrap());
-        let rule = &policy::compiled_policy().unwrap().packages[0];
-        let directory = tempfile::tempdir().unwrap();
+        let (directory, owner) = installed_owned_calculation();
         let db = directory.path().join("eligibility.sqlite");
-        let owner = TradeAssemblyService::test_local(db.to_str().unwrap())
-            .for_authenticated_invocation("fixture", "calculation-owner", None, None);
-        let response = owner.handle_http("POST", "/plugins/packages", json!({
-            "source":{"type":"package","locator":path,"package":{"type":"file","locator":path}},
-            "integrity":{"packageSha256":rule.package_sha256,"manifestSha256":rule.manifest_sha256},
-            "offline":true,"idempotencyKey":"free-actual-install"
-        }));
-        assert_eq!(response.status, 200, "{}", response.body);
-        let response = owner.handle_http(
-            "POST",
-            "/plugins/instances",
-            json!({
-                "pluginRef":rule.plugin_ref,"instanceRef":"owned-calculation","enabled":false,
-                "configuration":{},"idempotencyKey":"free-actual-create"
-            }),
-        );
-        assert_eq!(response.status, 200, "{}", response.body);
-        let response = owner.handle_http(
-            "POST",
-            "/plugins/instances/owned-calculation:enable",
-            json!({"idempotencyKey":"free-actual-enable"}),
-        );
-        assert_eq!(response.status, 200, "{}", response.body);
+        let rule = &policy::compiled_policy().unwrap().packages[0];
         let cap = "indicator.ema.minute@1";
         let before = owner
             .runtime()
@@ -484,6 +469,191 @@ mod tests {
             grants(&owner, Some(cap)).is_empty(),
             "all artifact bytes must still verify"
         );
+    }
+    fn installed_owned_calculation() -> (tempfile::TempDir, TradeAssemblyService) {
+        let path =
+            std::path::PathBuf::from(std::env::var_os("MANAGED_MINUTE_TEST_PACKAGE").unwrap());
+        let rule = &policy::compiled_policy().unwrap().packages[0];
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("eligibility.sqlite");
+        let owner = TradeAssemblyService::test_local(db.to_str().unwrap())
+            .for_authenticated_invocation("fixture", "calculation-owner", None, None);
+        let response = owner.handle_http("POST", "/plugins/packages", json!({
+            "source":{"type":"package","locator":path,"package":{"type":"file","locator":path}},
+            "integrity":{"packageSha256":rule.package_sha256,"manifestSha256":rule.manifest_sha256},
+            "offline":true,"idempotencyKey":"free-actual-install"
+        }));
+        assert_eq!(response.status, 200, "{}", response.body);
+        let response = owner.handle_http(
+            "POST",
+            "/plugins/instances",
+            json!({
+                "pluginRef":rule.plugin_ref,"instanceRef":"owned-calculation","enabled":false,
+                "configuration":{},"idempotencyKey":"free-actual-create"
+            }),
+        );
+        assert_eq!(response.status, 200, "{}", response.body);
+        let response = owner.handle_http(
+            "POST",
+            "/plugins/instances/owned-calculation:enable",
+            json!({"idempotencyKey":"free-actual-enable"}),
+        );
+        assert_eq!(response.status, 200, "{}", response.body);
+        (directory, owner)
+    }
+    #[test]
+    #[ignore = "requires exact MANAGED_MINUTE_TEST_PACKAGE; bounded43graph metadata profile, no financial actions"]
+    fn actual_package_graph_metadata_profile_and_live_invalidations() {
+        let (directory, owner) = installed_owned_calculation();
+        let caps: BTreeSet<String> = BTreeSet::from([
+            "indicator.ema.minute@1".into(),
+            "indicator.tsi.minute@1".into(),
+        ]);
+        let request = CapabilityGraphRequest {
+            requirements: caps
+                .iter()
+                .enumerate()
+                .map(|(index, capability)| CapabilityRequirement {
+                    requirement_id: format!("calculation{index}"),
+                    capability: capability.clone(),
+                    mode: "paper".into(),
+                    declaration: "required".into(),
+                    fallback_policy: "none".into(),
+                    plugin_instance_ref: Some("owned-calculation".into()),
+                    ..Default::default()
+                })
+                .collect(),
+            evaluation_epoch: "2026-11-02T00:00:00Z".into(),
+            ..Default::default()
+        };
+        let resolve = |s: &TradeAssemblyService| {
+            let catalog = super::super::providers::plugin_catalog(s);
+            let entitlements =
+                super::super::providers::entitlements_for_graph(s, &request, &catalog);
+            crate::capability::resolve_graph(
+                request.clone(),
+                CapabilityResolverCatalog {
+                    plugins: catalog,
+                    entitlements,
+                },
+            )
+        };
+        let measure = |s: &TradeAssemblyService| {
+            let start = std::time::Instant::now();
+            let mut graphs = Vec::new();
+            for _ in 0..43 {
+                let graph = resolve(s);
+                assert!(graph.ok, "{graph:?}");
+                graphs.push(graph);
+            }
+            (start.elapsed().as_micros(), graphs)
+        };
+        let (old_us, expected) = super::super::package_validation::with_round(&owner, |round| {
+            let mut reference = round.clone();
+            reference.graph_metadata = None;
+            Ok(measure(&reference))
+        })
+        .unwrap();
+        let (new_us, actual) =
+            super::super::package_validation::with_round(&owner, |round| Ok(measure(round)))
+                .unwrap();
+        eprintln!("GRAPH_METADATA_MEASURE reference_us={old_us} memo_us={new_us}");
+        assert_eq!(
+            expected, actual,
+            "pure reuse must preserve complete graph decisions and diagnostics"
+        );
+        let ctx = SideEffectContext::new(
+            AuthorityContext::local_cli(),
+            IdempotencyKey::new("metadata-invalidation").unwrap(),
+        );
+        super::super::package_validation::with_round(&owner, |round| {
+            assert!(resolve(round).ok);
+            let foreign =
+                round.for_authenticated_invocation("fixture", "foreign-owner", None, None);
+            assert!(grants_matching(&foreign, Some(&caps)).is_empty());
+            let instance = round
+                .runtime()
+                .plugins
+                .get_instance("owned-calculation")?
+                .unwrap();
+            let mut disabled = instance.clone();
+            disabled["enabled"] = serde_json::json!(false);
+            round
+                .runtime()
+                .plugins
+                .put_instance("owned-calculation", disabled, &ctx)?;
+            assert!(!resolve(round).ok, "enablement cannot be memoized");
+            let mut wrong_version = instance.clone();
+            wrong_version["activePackageSha256"] = serde_json::json!("f".repeat(64));
+            round
+                .runtime()
+                .plugins
+                .put_instance("owned-calculation", wrong_version, &ctx)?;
+            assert!(
+                grants_matching(round, Some(&caps)).is_empty(),
+                "changed package cannot reuse old purity"
+            );
+            round
+                .runtime()
+                .plugins
+                .put_instance("owned-calculation", instance, &ctx)?;
+            let rule = &policy::compiled_policy().unwrap().packages[0];
+            let record = round
+                .runtime()
+                .plugins
+                .get_manifest(&rule.plugin_ref)?
+                .unwrap();
+            let mut changed = record.clone();
+            changed["manifest"]["operations"][0]["effect"] = serde_json::json!("write");
+            round.runtime().storage.put_json(
+                "plugin_manifests",
+                &rule.plugin_ref,
+                changed,
+                &ctx,
+            )?;
+            assert!(
+                grants_matching(round, Some(&caps)).is_empty(),
+                "manifest tampering under old digest must refuse"
+            );
+            round
+                .runtime()
+                .storage
+                .put_json("plugin_manifests", &rule.plugin_ref, record, &ctx)?;
+            assert!(resolve(round).ok);
+            let generated = grants_matching(round, Some(&caps));
+            let mut revoked = generated[0].clone();
+            revoked.state = "revoked".into();
+            round.runtime().storage.put_json(
+                "entitlement_grants",
+                &revoked.grant_id,
+                serde_json::to_value(&revoked).unwrap(),
+                &ctx,
+            )?;
+            assert!(
+                !resolve(round).ok,
+                "stored revocation must still be read during cached round"
+            );
+            Ok(())
+        })
+        .unwrap();
+        let recreated = TradeAssemblyService::test_local(
+            directory
+                .path()
+                .join("eligibility.sqlite")
+                .to_str()
+                .unwrap(),
+        )
+        .for_authenticated_invocation("fixture", "calculation-owner", None, None);
+        assert!(recreated.graph_metadata.is_none());
+        assert!(
+            !resolve(&recreated).ok,
+            "revocation survives actual service recreation"
+        );
+        let report = serde_json::json!({"graphs":43,"referenceUs":old_us,"memoUs":new_us,"equalGraphs":true,"disabledPackageVersionTamperForeignAndRevocationRefuse":true,"serviceRecreationRevocationRefuses":true,"financialActions":0,"owningQualified":false});
+        eprintln!("GRAPH_METADATA_PROFILE {report}");
+        if let Some(path) = std::env::var_os("CORE_GRAPH_METADATA_BENCH_RESULT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
     }
     #[test]
     fn no_external_permission_or_host_api_is_inferred_from_missing_metadata() {

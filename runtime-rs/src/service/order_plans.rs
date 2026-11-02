@@ -443,6 +443,10 @@ fn timing_phase(stage: &'static str) -> bool {
             | "current_plan.read_owned"
             | "current_plan.total"
             | "graph.catalog"
+            | "graph.catalog.builtin"
+            | "graph.catalog.instances"
+            | "graph.catalog.manifest"
+            | "graph.catalog.decode"
             | "graph.entitlements"
             | "graph.resolve_total"
             | "graph.semantic_resolve"
@@ -1756,6 +1760,10 @@ mod financial_timing_tests {
             "current_plan.read_owned",
             "current_plan.total",
             "graph.catalog",
+            "graph.catalog.builtin",
+            "graph.catalog.instances",
+            "graph.catalog.manifest",
+            "graph.catalog.decode",
             "graph.entitlements",
             "graph.resolve_total",
             "graph.semantic_resolve",

@@ -3,7 +3,6 @@ use crate::capability::{
     local_full_entitlements, CAPABILITY_RESOLUTION_SCHEMA_VERSION, LOCAL_FULL_PROFILE,
 };
 use crate::instrument_packs;
-use crate::plugin_catalog::stored_plugin_entry as portable_stored_plugin_entry;
 use crate::ports::{
     AuthorityContext, CapabilityGraphRequest, CapabilityRequirement,
     CapabilityRequirementConstraints, CapabilityResolverCatalog, CredentialResolutionStatus,
@@ -807,8 +806,11 @@ fn plugin_operation_from_path(path: &str) -> Option<(String, String)> {
 }
 
 pub(crate) fn plugin_catalog(service: &TradeAssemblyService) -> Vec<PluginCatalogEntry> {
-    let mut catalog = builtin_plugin_catalog(service);
-    if let Ok(instances) = service.runtime().plugins.list_instances() {
+    let mut catalog =
+        super::order_plans::measured("graph.catalog.builtin", || builtin_plugin_catalog(service));
+    if let Ok(instances) = super::order_plans::measured("graph.catalog.instances", || {
+        service.runtime().plugins.list_instances()
+    }) {
         for instance in instances {
             if instance
                 .get("removedAtMs")
@@ -817,7 +819,9 @@ pub(crate) fn plugin_catalog(service: &TradeAssemblyService) -> Vec<PluginCatalo
                 continue;
             }
             let plugin_ref = string_field(&instance, &["pluginRef"]).unwrap_or_default();
-            let Ok(Some(manifest)) = service.runtime().plugins.get_manifest(&plugin_ref) else {
+            let Ok(Some(manifest)) = super::order_plans::measured("graph.catalog.manifest", || {
+                service.runtime().plugins.get_manifest(&plugin_ref)
+            }) else {
                 continue;
             };
             let instance_ref = string_field(&instance, &["instanceRef"]).unwrap_or_default();
@@ -827,11 +831,25 @@ pub(crate) fn plugin_catalog(service: &TradeAssemblyService) -> Vec<PluginCatalo
                     .unwrap_or(&instance_ref),
             );
             let health = plugin_lifecycle::effective_health_state(service, &instance);
-            let Some(entry) =
-                portable_stored_plugin_entry(&instance, &manifest, &credential_status, health)
-            else {
+            let _decode_timing = super::order_plans::financial_timing("graph.catalog.decode");
+            let decoded = if let Some(metadata) = &service.graph_metadata {
+                metadata.catalog.get(&plugin_ref, &manifest, || {
+                    crate::plugin_catalog::decode_manifest(&manifest)
+                })
+            } else {
+                crate::plugin_catalog::decode_manifest(&manifest).map(std::sync::Arc::new)
+            };
+            let Some(entry) = decoded.and_then(|decoded| {
+                crate::plugin_catalog::stored_plugin_entry_from_decoded(
+                    &instance,
+                    &decoded,
+                    &credential_status,
+                    health,
+                )
+            }) else {
                 continue;
             };
+            drop(_decode_timing);
             catalog.retain(|candidate| candidate.instance_ref != entry.instance_ref);
             catalog.push(entry);
         }

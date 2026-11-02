@@ -8,6 +8,74 @@ mod observations;
 pub(crate) mod reversal;
 use crate::service::{execution::typed_cycle, session_dispatch};
 
+// Explicit read-only native profiler. Keyed by isolated database, never enabled
+// in production, and terminal before the close child can be dispatched.
+#[cfg(test)]
+fn c5_profiles() -> &'static std::sync::Mutex<BTreeMap<String, Value>> {
+    static PROFILES: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, Value>>> =
+        std::sync::OnceLock::new();
+    PROFILES.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+#[cfg(test)]
+pub(crate) fn arm_c5_profile(s: &TradeAssemblyService) {
+    assert!(c5_profiles()
+        .lock()
+        .unwrap()
+        .insert(s.db().into(), Value::Null)
+        .is_none());
+}
+#[cfg(test)]
+pub(crate) fn take_c5_profile(s: &TradeAssemblyService) -> Option<Value> {
+    let mut profiles = c5_profiles().lock().unwrap();
+    if profiles.get(s.db()).is_some_and(|v| !v.is_null()) {
+        profiles.remove(s.db())
+    } else {
+        None
+    }
+}
+#[cfg(test)]
+fn profile_c5_before_dispatch(s: &TradeAssemblyService, body: &Value) -> Result<(), String> {
+    if !c5_profiles().lock().unwrap().contains_key(s.db()) {
+        return Ok(());
+    }
+    let result = (|| {
+        let command = serde_json::from_value(body["submission"].clone())
+            .map_err(|_| "c5_profile_command_invalid")?;
+        let started = std::time::Instant::now();
+        let (source, request, context) = super::super::transport::request(s, &command)?;
+        let request_us = started.elapsed().as_micros();
+        let namespaces = [
+            "execution_cash_reservations_v1",
+            "execution_order_plan_submissions_v2",
+        ];
+        let before = namespaces
+            .iter()
+            .map(|ns| s.runtime().storage.list_json(ns))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut profile =
+            crate::broker_submission::v2::profile_validation_round(&source, &request, &context)?;
+        let after = namespaces
+            .iter()
+            .map(|ns| s.runtime().storage.list_json(ns))
+            .collect::<Result<Vec<_>, _>>()?;
+        if before != after {
+            return Err("c5_profile_mutated_durable_state".into());
+        }
+        profile["requestConstructionUs"] = json!(request_us);
+        profile["requestAndComparisonsUs"] = json!(started.elapsed().as_micros());
+        profile["body"] = body.clone();
+        Ok::<_, String>(profile)
+    })();
+    c5_profiles().lock().unwrap().insert(
+        s.db().into(),
+        match result {
+            Ok(v) => v,
+            Err(code) => json!({"error":code}),
+        },
+    );
+    Err("management_c5_profile_complete_before_dispatch".into())
+}
+
 const STATE: &str = "execution_management_automation_v1";
 const CHILDREN: &str = "execution_management_automation_children_v1";
 const LEASE_MS: i64 = 120_000;
@@ -312,12 +380,13 @@ struct Binding {
     revision: String,
 }
 
-pub(crate) fn validate_reversal_config(
+pub(crate) fn validate_reversal_config_in_context(
     s: &TradeAssemblyService,
     scope: &data_plans::PlanScope,
     graph: &str,
     policy: Option<&ExitPolicy>,
     config: &Config,
+    context: Option<&crate::service::capability_graph::context::StructuralContext>,
 ) -> Result<(), String> {
     let Some(reversal) = &config.reversal_evaluation else {
         return Ok(());
@@ -326,7 +395,7 @@ pub(crate) fn validate_reversal_config(
         .filter(|p| p.rules.reversal_signal.as_deref() == Some("typed.exit"))
         .ok_or("management_reversal_policy_binding_invalid")?;
     reversal.validate_reversal_age(policy.max_reversal_age_ms)?;
-    reversal::validate_bindings(s, scope, graph, reversal)
+    reversal::validate_bindings_in_context(s, scope, graph, reversal, context)
 }
 pub(crate) fn validate_entry_reversal_sources(
     s: &TradeAssemblyService,
@@ -1758,6 +1827,10 @@ pub(crate) fn advance(
             )?;
         }
         drop(before_child_checks);
+        #[cfg(test)]
+        if matches!(pending.action, Action::Submit { .. }) {
+            profile_c5_before_dispatch(s, &pending.body)?;
+        }
         let phase = match &pending.action {
             Action::Advance {} => "manager.child.advance",
             Action::Submit { .. } => "manager.child.submit",

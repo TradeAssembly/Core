@@ -193,6 +193,15 @@ pub(crate) fn policy_binding(
     graph_revision: &str,
     trigger_ref: &str,
 ) -> Result<SessionTrigger, String> {
+    policy_binding_in_context(s, scope, graph_revision, trigger_ref, None)
+}
+pub(crate) fn policy_binding_in_context(
+    s: &TradeAssemblyService,
+    scope: &PlanScope,
+    graph_revision: &str,
+    trigger_ref: &str,
+    context: Option<&capability_graph::context::StructuralContext>,
+) -> Result<SessionTrigger, String> {
     if !text(trigger_ref) {
         return Err("management_window_trigger_missing".into());
     }
@@ -211,25 +220,31 @@ pub(crate) fn policy_binding(
     }
     let spec = StrategySpec::model_validate(version["spec"].clone())
         .map_err(|_| "management_window_spec_invalid")?;
-    let now = s.runtime().clock.trusted_now_ms()?;
-    let epoch = chrono::DateTime::from_timestamp_millis(now)
-        .ok_or("management_window_clock_invalid")?
-        .to_rfc3339();
-    let revision = capability_graph::revision_for_context(
-        s,
-        graph_revision,
-        &scope.strategy_id,
-        &scope.strategy_version_id,
-        "paper",
-        &epoch,
-    )
-    .map_err(|_| "management_window_graph_stale")?;
-    if revision["strategySpecHash"] != scope.strategy_spec_hash {
-        return Err("management_window_graph_mismatch".into());
-    }
-    let graph: CapabilityGraphResolution = serde_json::from_value(revision["graph"].clone())
-        .map_err(|_| "management_window_graph_invalid")?;
-    let (trigger, selected) = declared_execution_binding(&spec, &graph, trigger_ref)?;
+    let owned_graph: CapabilityGraphResolution;
+    let graph = if let Some(context) = context {
+        context.graph_for(s, scope, graph_revision)?
+    } else {
+        let now = s.runtime().clock.trusted_now_ms()?;
+        let epoch = chrono::DateTime::from_timestamp_millis(now)
+            .ok_or("management_window_clock_invalid")?
+            .to_rfc3339();
+        let revision = capability_graph::revision_for_context(
+            s,
+            graph_revision,
+            &scope.strategy_id,
+            &scope.strategy_version_id,
+            "paper",
+            &epoch,
+        )
+        .map_err(|_| "management_window_graph_stale")?;
+        if revision["strategySpecHash"] != scope.strategy_spec_hash {
+            return Err("management_window_graph_mismatch".into());
+        }
+        owned_graph = serde_json::from_value(revision["graph"].clone())
+            .map_err(|_| "management_window_graph_invalid")?;
+        &owned_graph
+    };
+    let (trigger, selected) = declared_execution_binding(&spec, graph, trigger_ref)?;
     let pin = super::data_binding::pin(s, &selected)?;
     let package = s
         .runtime()
@@ -549,7 +564,7 @@ pub(crate) fn with_reference_subject_check<T>(f: impl FnOnce() -> T) -> T {
         }
     }
     let _restore = Restore(PROFILE_REDUNDANT_SUBJECT.with(|flag| flag.replace(true)));
-    f()
+    super::capability_graph::context::with_reference_resolution(f)
 }
 fn current_in_round(s: &TradeAssemblyService, id: &str) -> Result<Current, String> {
     let r = {

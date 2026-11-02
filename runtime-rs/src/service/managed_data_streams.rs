@@ -196,6 +196,16 @@ pub(in crate::service) fn validate_automatic_binding(
     replay_node: &str,
     raw: &Value,
 ) -> Result<(), String> {
+    validate_automatic_binding_in_context(s, scope, graph, replay_node, raw, None)
+}
+pub(in crate::service) fn validate_automatic_binding_in_context(
+    s: &TradeAssemblyService,
+    scope: &data_plans::PlanScope,
+    graph: &str,
+    replay_node: &str,
+    raw: &Value,
+    context: Option<&super::capability_graph::context::StructuralContext>,
+) -> Result<(), String> {
     let source: Source =
         serde_json::from_value(raw.clone()).map_err(|_| "managed_stream_source_invalid")?;
     source.validate()?;
@@ -247,23 +257,29 @@ pub(in crate::service) fn validate_automatic_binding(
     if interval != Some(source.interval_ms) {
         return Err("managed_stream_interval_binding_invalid".into());
     }
-    let epoch = chrono::DateTime::from_timestamp_millis(s.runtime().clock.trusted_now_ms()?)
-        .ok_or("managed_stream_clock_invalid")?
-        .to_rfc3339();
-    let revision = super::capability_graph::revision_for_context(
-        s,
-        graph,
-        &scope.strategy_id,
-        &scope.strategy_version_id,
-        "paper",
-        &epoch,
-    )
-    .map_err(|_| "managed_stream_graph_not_current")?;
-    if revision["strategySpecHash"] != scope.strategy_spec_hash {
-        return Err("managed_stream_scope_mismatch".into());
-    }
-    let resolved: CapabilityGraphResolution = serde_json::from_value(revision["graph"].clone())
-        .map_err(|_| "managed_stream_graph_invalid")?;
+    let owned_graph: CapabilityGraphResolution;
+    let resolved = if let Some(context) = context {
+        context.graph_for(s, scope, graph)?
+    } else {
+        let epoch = chrono::DateTime::from_timestamp_millis(s.runtime().clock.trusted_now_ms()?)
+            .ok_or("managed_stream_clock_invalid")?
+            .to_rfc3339();
+        let revision = super::capability_graph::revision_for_context(
+            s,
+            graph,
+            &scope.strategy_id,
+            &scope.strategy_version_id,
+            "paper",
+            &epoch,
+        )
+        .map_err(|_| "managed_stream_graph_not_current")?;
+        if revision["strategySpecHash"] != scope.strategy_spec_hash {
+            return Err("managed_stream_scope_mismatch".into());
+        }
+        owned_graph = serde_json::from_value(revision["graph"].clone())
+            .map_err(|_| "managed_stream_graph_invalid")?;
+        &owned_graph
+    };
     let selection = |id: &str| {
         resolved
             .nodes

@@ -101,101 +101,100 @@ fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
         return Err("typed_execution_program_required".into());
     }
     let now = s.runtime().clock.trusted_now_ms()?;
-    let epoch = chrono::DateTime::from_timestamp_millis(now)
-        .ok_or("typed_execution_clock_invalid")?
-        .to_rfc3339();
-    let rev = capability_graph::revision_for_context(
+    capability_graph::context::with_current(
         s,
+        &c.scope,
         &c.capability_graph_revision,
-        &c.scope.strategy_id,
-        &c.scope.strategy_version_id,
-        "paper",
-        &epoch,
+        |rev, graph_context| {
+            if rev["strategySpecHash"] != c.scope.strategy_spec_hash || rev["graph"]["ok"] != true {
+                return Err("typed_execution_graph_stale".into());
+            }
+            if let Some(management) = c
+                .automatic_execution
+                .as_ref()
+                .and_then(|a| a.management.as_ref())
+            {
+                order_plans::management::automation::validate_reversal_config_in_context(
+                    s,
+                    &c.scope,
+                    &c.capability_graph_revision,
+                    managed_exit_policy.as_ref(),
+                    management,
+                    graph_context,
+                )?;
+            }
+            if let Some(rollover) = c
+                .automatic_execution
+                .as_ref()
+                .and_then(|automatic| automatic.management.as_ref())
+                .and_then(|management| management.calendar_rollover.as_ref())
+            {
+                crate::service::management_windows::policy_binding_in_context(
+                    s,
+                    &c.scope,
+                    &c.capability_graph_revision,
+                    &rollover.trigger_ref,
+                    graph_context,
+                )?;
+            }
+            let node = rev["graph"]["nodes"]
+                .as_array()
+                .and_then(|ns| ns.iter().find(|n| n["nodeId"] == c.broker_requirement_ref))
+                .ok_or("typed_execution_broker_unresolved")?;
+            let binding = &node["selected"];
+            if binding["operationId"] != crate::broker_submission::v2::SUBMIT_OPERATION
+                || binding["operation"]["capability"]
+                    != crate::broker_submission::v2::SUBMIT_CAPABILITY
+                || binding["operation"]["effect"] != "write"
+            {
+                return Err("typed_execution_v2_broker_required".into());
+            }
+            let witness = crate::broker_submission::account_identity::current(
+                s.runtime().plugins.as_ref(),
+                s.runtime().plugin_packages.as_ref(),
+                s.runtime().credentials.as_ref(),
+                binding,
+                now,
+                "paper",
+            )?;
+            let package = s
+                .runtime()
+                .plugin_packages
+                .get(text(
+                    &s.runtime()
+                        .plugins
+                        .get_instance(text(binding, "pluginInstanceRef")?)?
+                        .ok_or("typed_execution_instance_missing")?,
+                    "activePackageSha256",
+                )?)?
+                .ok_or("typed_execution_package_missing")?;
+            crate::broker_submission::v2::recovery_lookup_binding(
+                &package.manifest,
+                crate::broker_submission::v2::SUBMIT_OPERATION,
+            )
+            .map_err(|_| "typed_execution_lookup_required")?;
+            order_plans::management::validate_unsettled_provider(s, &c.scope, &package.manifest)?;
+            let health_pins = super::automatic_health::bootstrap(s, c, rev)?;
+            let id = config_id(
+                s,
+                c,
+                &serde_json::to_value(&witness.identity)
+                    .map_err(|_| "typed_execution_hash_invalid")?,
+                &witness.binding_sha256,
+                &policy,
+                health_pins.as_ref(),
+            )?;
+            let mut result = json!({"kind":"ExecutionConfig","configId":id,"executionContractVersion":VERSION,"typedExecution":c,"orchestrator":"typed_pipeline","strategyId":c.scope.strategy_id,"strategyVersionId":c.scope.strategy_version_id,"strategySpecHash":c.scope.strategy_spec_hash,"capabilityGraphRevisionId":c.capability_graph_revision,"capabilityGraphFingerprint":rev["graphFingerprint"],"mode":"paper","accountRef":witness.account_ref,"providerRef":binding["pluginRef"],"canonicalAccount":witness.identity,"brokerAccountBindingSha256":witness.binding_sha256,"orderPlanPolicySha256":typed_hash(&policy)?,"orderPlanBrokerNode":c.broker_requirement_ref,"selectionPolicy":if selected{"selected_receipt_head"}else{"published_static"},"symbol":Value::Null,"timeframe":Value::Null,"calendarRef":Value::Null,"dataFreshnessPolicy":{"maxAgeMs":policy.max_snapshot_age_ms},"riskLimits":{"typedPolicySha256":typed_hash(&policy)?},"schedulerIntervalSeconds":60,"warmup":{"source":"typed_data_plan_readiness"},"status":"configured"});
+            if let Some(p) = managed_exit_policy {
+                result["managedExitPolicySha256"] = json!(typed_hash(&p)?);
+            }
+            if let Some(pins) = health_pins {
+                result["accountHealthProviderPins"] =
+                    serde_json::to_value(pins).map_err(|_| "typed_execution_hash_invalid")?;
+            }
+            Ok(result)
+        },
     )
-    .map_err(|_| "typed_execution_graph_stale")?;
-    if rev["strategySpecHash"] != c.scope.strategy_spec_hash || rev["graph"]["ok"] != true {
-        return Err("typed_execution_graph_stale".into());
-    }
-    if let Some(management) = c
-        .automatic_execution
-        .as_ref()
-        .and_then(|a| a.management.as_ref())
-    {
-        order_plans::management::automation::validate_reversal_config(
-            s,
-            &c.scope,
-            &c.capability_graph_revision,
-            managed_exit_policy.as_ref(),
-            management,
-        )?;
-    }
-    if let Some(rollover) = c
-        .automatic_execution
-        .as_ref()
-        .and_then(|automatic| automatic.management.as_ref())
-        .and_then(|management| management.calendar_rollover.as_ref())
-    {
-        crate::service::management_windows::policy_binding(
-            s,
-            &c.scope,
-            &c.capability_graph_revision,
-            &rollover.trigger_ref,
-        )?;
-    }
-    let node = rev["graph"]["nodes"]
-        .as_array()
-        .and_then(|ns| ns.iter().find(|n| n["nodeId"] == c.broker_requirement_ref))
-        .ok_or("typed_execution_broker_unresolved")?;
-    let binding = &node["selected"];
-    if binding["operationId"] != crate::broker_submission::v2::SUBMIT_OPERATION
-        || binding["operation"]["capability"] != crate::broker_submission::v2::SUBMIT_CAPABILITY
-        || binding["operation"]["effect"] != "write"
-    {
-        return Err("typed_execution_v2_broker_required".into());
-    }
-    let witness = crate::broker_submission::account_identity::current(
-        s.runtime().plugins.as_ref(),
-        s.runtime().plugin_packages.as_ref(),
-        s.runtime().credentials.as_ref(),
-        binding,
-        now,
-        "paper",
-    )?;
-    let package = s
-        .runtime()
-        .plugin_packages
-        .get(text(
-            &s.runtime()
-                .plugins
-                .get_instance(text(binding, "pluginInstanceRef")?)?
-                .ok_or("typed_execution_instance_missing")?,
-            "activePackageSha256",
-        )?)?
-        .ok_or("typed_execution_package_missing")?;
-    crate::broker_submission::v2::recovery_lookup_binding(
-        &package.manifest,
-        crate::broker_submission::v2::SUBMIT_OPERATION,
-    )
-    .map_err(|_| "typed_execution_lookup_required")?;
-    order_plans::management::validate_unsettled_provider(s, &c.scope, &package.manifest)?;
-    let health_pins = super::automatic_health::bootstrap(s, c, &rev)?;
-    let id = config_id(
-        s,
-        c,
-        &serde_json::to_value(&witness.identity).map_err(|_| "typed_execution_hash_invalid")?,
-        &witness.binding_sha256,
-        &policy,
-        health_pins.as_ref(),
-    )?;
-    let mut result = json!({"kind":"ExecutionConfig","configId":id,"executionContractVersion":VERSION,"typedExecution":c,"orchestrator":"typed_pipeline","strategyId":c.scope.strategy_id,"strategyVersionId":c.scope.strategy_version_id,"strategySpecHash":c.scope.strategy_spec_hash,"capabilityGraphRevisionId":c.capability_graph_revision,"capabilityGraphFingerprint":rev["graphFingerprint"],"mode":"paper","accountRef":witness.account_ref,"providerRef":binding["pluginRef"],"canonicalAccount":witness.identity,"brokerAccountBindingSha256":witness.binding_sha256,"orderPlanPolicySha256":typed_hash(&policy)?,"orderPlanBrokerNode":c.broker_requirement_ref,"selectionPolicy":if selected{"selected_receipt_head"}else{"published_static"},"symbol":Value::Null,"timeframe":Value::Null,"calendarRef":Value::Null,"dataFreshnessPolicy":{"maxAgeMs":policy.max_snapshot_age_ms},"riskLimits":{"typedPolicySha256":typed_hash(&policy)?},"schedulerIntervalSeconds":60,"warmup":{"source":"typed_data_plan_readiness"},"status":"configured"});
-    if let Some(p) = managed_exit_policy {
-        result["managedExitPolicySha256"] = json!(typed_hash(&p)?);
-    }
-    if let Some(pins) = health_pins {
-        result["accountHealthProviderPins"] =
-            serde_json::to_value(pins).map_err(|_| "typed_execution_hash_invalid")?;
-    }
-    Ok(result)
 }
 pub(super) fn save(s: &TradeAssemblyService, body: &Value) -> Value {
     let result = (|| {
@@ -233,6 +232,8 @@ pub(in crate::service) fn current(
     if fresh != *config {
         return Err("typed_execution_config_stale".into());
     }
+    s.require_object("execution_config", text(config, "configId")?)
+        .map_err(|_| "typed_execution_not_available")?;
     Ok(fresh)
 }
 pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {

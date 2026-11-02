@@ -1,5 +1,6 @@
 // Generic host-flow qualification with a separately declared synthetic 1-second
 // counter package. This does not qualify the real pack's daily EMA/TSI formulas.
+const STREAM_C5_PROFILE_CASE: &str = "financial_screen_auto_stream_c5_profile";
 const AUTOMATIC_STREAM_CASE: &str = "financial_screen_auto_stream";
 const STREAM_REBUILD_VALIDATION_CASE: &str = "financial_screen_auto_stream_validation";
 const STREAM_WARMUP_VALIDATION_CASE: &str = "financial_screen_auto_stream_warmup";
@@ -502,6 +503,13 @@ fn exercise_native_automatic_stream(
     // the original 30-second input budget before this regression's entry.
     // Preserve that failed root and every financial age/deadline unchanged.
     let configured = s.runtime().storage.list_json("execution_configs").unwrap();
+    let profile_case = s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap()["configuration"]["scenario"] == STREAM_C5_PROFILE_CASE;
+    if profile_case {
+        assert!(configured.iter().any(|(_,c)| c["typedExecution"]["automaticExecution"]["management"]["calendarRollover"]["refreshIntervalMs"] == 1000
+            && c["typedExecution"]["automaticExecution"]["management"]["reversalEvaluation"]["sourceBindings"].is_object()));
+        crate::service::order_plans::management::automation::arm_c5_profile(s);
+    }
+
     assert!(configured.iter().any(|(_,c)| c["typedExecution"]["automaticExecution"]["observationAcquisition"] == "bounded_independent_reads_v1"));
     let seed = prepared["capture"]["captureId"].as_str().unwrap();
     let seed = crate::service::data_captures::current(s, seed).unwrap();
@@ -562,6 +570,20 @@ fn exercise_native_automatic_stream(
             .get_json("session_dispatch_jobs_v1", id)
             .unwrap()
             .unwrap();
+        if profile_case {
+            if let Some(profile) = crate::service::order_plans::management::automation::take_c5_profile(s) {
+                dispatch::halt_worker_for_test(s, id);
+                native_health_wait_worker_stopped(s, id);
+                let calls=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
+                assert_eq!(calls.lines().filter(|line| *line=="submit").count(),1,"only supported synthetic entry");
+                assert!(!s.runtime().storage.list_json("managed_capture_stream_heads_v1").unwrap().is_empty());
+                write_screen_interface_evidence("c5_validation","automatic-stream-calendar-pre-submit.json",&profile);
+                eprintln!("AUTOMATIC_STREAM_CALENDAR_C5_PROFILE {profile}");
+                assert!(profile["error"].is_null(),"{profile}");
+                assert_eq!(profile["samePlanAndIntent"],true);
+                return;
+            }
+        }
         assert_ne!(
             persisted_job["status"], "failed",
             "automatic job refused: {}",
@@ -1073,4 +1095,11 @@ fn assert_entry_warmup_continuation(s: &crate::service::TradeAssemblyService, id
         "contradictoryEntrySourceFactRefused":true,"refusalNoCheckpointOrPluginChanges":true,
         "originalAvailabilityRetained":seeded["checkpoint"]["stateAvailability"],"warmupOrigin":seeded["checkpoint"]["warmupOrigin"],
         "realProviderCalls":0,"financialSubmissions":0,"qualification":"native synthetic calculation continuation only; not current signal or OS process restart qualification"}));
+}
+
+#[test]
+#[ignore = "explicit representative automatic stream/calendar pure C5 comparison; one synthetic entry and no close dispatch"]
+fn native_automatic_stream_calendar_c5_profile() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some(STREAM_C5_PROFILE_CASE));
 }

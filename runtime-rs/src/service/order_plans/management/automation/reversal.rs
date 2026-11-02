@@ -1022,11 +1022,12 @@ fn context_aliases(
     }
     context_aliases
 }
-pub(super) fn validate_bindings(
+pub(super) fn validate_bindings_in_context(
     s: &TradeAssemblyService,
     scope: &data_plans::PlanScope,
     graph: &str,
     config: &Config,
+    context: Option<&crate::service::capability_graph::context::StructuralContext>,
 ) -> Result<(), String> {
     config.validate()?;
     let (spec, template) = crate::service::selection_plans::template(s, scope)?
@@ -1053,10 +1054,15 @@ pub(super) fn validate_bindings(
             return Err("management_reversal_screened_context_continuity_unsupported".into());
         }
     }
-    let revision = crate::service::capability_graph::get_revision(s, graph);
-    let resolved_graph: crate::ports::CapabilityGraphResolution =
-        serde_json::from_value(revision["revision"]["graph"].clone())
+    let owned_graph: crate::ports::CapabilityGraphResolution;
+    let resolved_graph = if let Some(context) = context {
+        context.graph_for(s, scope, graph)?
+    } else {
+        let revision = crate::service::capability_graph::get_revision(s, graph);
+        owned_graph = serde_json::from_value(revision["revision"]["graph"].clone())
             .map_err(|_| "management_reversal_graph_invalid")?;
+        &owned_graph
+    };
     let intervals = config
         .source_bindings
         .values()
@@ -1123,12 +1129,13 @@ pub(super) fn validate_bindings(
     // The producer is the one registry for verified package/contract/pin rules.
     // Its helper independently requires exact root source binding and schema.
     for (root, source) in &config.source_bindings {
-        crate::service::managed_data_streams::validate_automatic_binding(
+        crate::service::managed_data_streams::validate_automatic_binding_in_context(
             s,
             scope,
             graph,
             root,
             &binding_value(source)?,
+            context,
         )?;
     }
     Ok(())

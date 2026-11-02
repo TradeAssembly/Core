@@ -1361,16 +1361,20 @@ pub(super) fn next_child(
     .map(Step::Wait)
 }
 
-// The managed-plan route has a typed command envelope; the other reversal
-// routes retain their existing outer scope. Never fall back between shapes.
+// Read scope from each finite route's authoritative command envelope.
+// Persisted capture and managed-plan bodies use nested scope; never fall back.
 fn response_child_scope(body: &Value, action: &Action) -> Result<data_plans::PlanScope, String> {
     let raw = match action {
         Action::PreparePlan {} => &body["managedPositionPlan"]["scope"],
+        Action::CaptureSegment { .. } => &body["capture"]["policy"]["scope"],
         _ => &body["scope"],
     };
     let scope: data_plans::PlanScope =
         serde_json::from_value(raw.clone()).map_err(|_| "management_reversal_scope_invalid")?;
-    if matches!(action, Action::PreparePlan {}) {
+    if matches!(
+        action,
+        Action::PreparePlan {} | Action::CaptureSegment { .. }
+    ) {
         if let Some(outer) = body.get("scope") {
             let outer: data_plans::PlanScope = serde_json::from_value(outer.clone())
                 .map_err(|_| "management_reversal_scope_invalid")?;
@@ -1844,10 +1848,58 @@ mod response_scope_tests {
         );
     }
     #[test]
+    fn capture_response_uses_retained_policy_scope_without_outer_fallback() {
+        let action = Action::CaptureSegment {
+            source: "exec_signal".into(),
+        };
+        let expected: data_plans::PlanScope = serde_json::from_value(scope()).unwrap();
+        let body = json!({"capture":{"receiptVersion":"tradeassembly.data_capture_receipt.v2", "policy":{"scope":scope()}},"accountMode":"paper","idempotencyKey":"original-capture-key"});
+        let original = body.clone();
+        assert_eq!(response_child_scope(&body, &action).unwrap(), expected);
+        assert_eq!(
+            body, original,
+            "scope inspection must preserve retained bytes/key"
+        );
+        for wrong in [
+            json!({"scope":scope()}),
+            json!({"managedPositionPlan":{"scope":scope()}}),
+            json!({"scope":scope(),"capture":{"policy":{}}}),
+        ] {
+            assert_eq!(
+                response_child_scope(&wrong, &action).unwrap_err(),
+                "management_reversal_scope_invalid"
+            );
+        }
+        let mut other = scope();
+        other["strategyId"] = json!("foreign");
+        assert_eq!(
+            response_child_scope(
+                &json!({"scope":other,"capture":{"policy":{"scope":scope()}}}),
+                &action
+            )
+            .unwrap_err(),
+            "management_reversal_child_scope_mismatch"
+        );
+        assert_eq!(
+            response_child_scope(
+                &json!({"scope":scope(),"capture":{"policy":{"scope":scope()}}}),
+                &action
+            )
+            .unwrap(),
+            expected
+        );
+        let mut malformed = scope();
+        malformed["unexpected"] = json!(true);
+        assert_eq!(
+            response_child_scope(&json!({"capture":{"policy":{"scope":malformed}}}), &action)
+                .unwrap_err(),
+            "management_reversal_scope_invalid"
+        );
+    }
+    #[test]
     fn other_reversal_children_still_require_their_original_outer_scope() {
         for action in [
             Action::CreateStream { source: "s".into() },
-            Action::CaptureSegment { source: "s".into() },
             Action::AppendSegment { source: "s".into() },
             Action::Evaluate {},
         ] {

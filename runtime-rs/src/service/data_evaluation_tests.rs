@@ -1251,47 +1251,76 @@ fn data_evaluation_step_schema_reuse_cannot_commit_changed_artifacts_or_authorit
 
 #[test]
 fn request_plan_handoff_is_local_and_rechecks_before_dispatch() {
-    let (_dir, service, plan, operations) = rig();
-    let request = request(&plan, "request-handoff", 10, 11, None);
-    let scoped = request_service(&service);
-    let verified = request_plan(&scoped, &request).unwrap();
-    remember_request_plan(&scoped, &request, &verified).unwrap();
-    assert!(service.data_step_request.is_none());
-    assert!(request_service(&service)
-        .data_step_request
-        .unwrap()
-        .verified
-        .lock()
-        .unwrap()
-        .is_none());
-    assert_eq!(request_plan(&scoped, &request).unwrap(), verified);
-    let mut instance = service
-        .runtime()
-        .plugins
-        .get_instance("instance.derive")
-        .unwrap()
-        .unwrap();
-    instance["enabled"] = json!(false);
-    service
-        .runtime()
-        .plugins
-        .put_instance(
-            "instance.derive",
-            instance,
-            &context("revoke-after-preflight"),
-        )
-        .unwrap();
-    // The immutable handoff is reusable, but is never dispatch authorization.
-    let error = step(&scoped, request, &context("request-handoff")).unwrap_err();
-    assert_eq!(error, "data_plan_graph_stale");
-    assert!(operations.requests.lock().unwrap().is_empty());
-    for namespace in [RUNS, SOURCES, RECEIPTS] {
-        assert!(service
-            .runtime()
-            .storage
-            .list_json(namespace)
+    for case in ["revocation", "configuration", "schema", "executable"] {
+        let (_dir, service, plan, operations) = rig();
+        let request = request(&plan, "request-handoff", 10, 11, None);
+        let scoped = request_service(&service);
+        let verified = request_plan(&scoped, &request).unwrap();
+        remember_request_plan(&scoped, &request, &verified).unwrap();
+        assert!(service.data_step_request.is_none());
+        assert!(request_service(&service)
+            .data_step_request
             .unwrap()
-            .is_empty());
+            .verified
+            .lock()
+            .unwrap()
+            .is_none());
+        assert_eq!(request_plan(&scoped, &request).unwrap(), verified);
+        let mut instance = service
+            .runtime()
+            .plugins
+            .get_instance("instance.derive")
+            .unwrap()
+            .unwrap();
+        match case {
+            "revocation" => instance["enabled"] = json!(false),
+            "configuration" => instance["configuration"] = json!({"changedAfterPreflight":true}),
+            "schema" | "executable" => {
+                let package = service
+                    .runtime()
+                    .plugin_packages
+                    .get(&plan.content.package_sha256["derived"])
+                    .unwrap()
+                    .unwrap();
+                let path = if case == "schema" {
+                    package.install_root.join("state.json")
+                } else {
+                    package.executable_path
+                };
+                std::fs::write(path, b"changed-after-preflight").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        service
+            .runtime()
+            .plugins
+            .put_instance(
+                "instance.derive",
+                instance,
+                &context("revoke-after-preflight"),
+            )
+            .unwrap();
+        // The immutable handoff is reusable, but is never dispatch authorization.
+        let error = step(&scoped, request, &context("request-handoff")).unwrap_err();
+        assert_eq!(
+            error,
+            match case {
+                "configuration" => "data_plan_stale",
+                "schema" => "plugin_data_artifact_digest_mismatch",
+                "executable" => "plugin_package_integrity_invalid",
+                _ => "data_plan_graph_stale",
+            },
+            "{case}"
+        );
+        assert!(operations.requests.lock().unwrap().is_empty());
+        for namespace in [RUNS, SOURCES, RECEIPTS] {
+            assert!(service
+                .runtime()
+                .storage
+                .list_json(namespace)
+                .unwrap()
+                .is_empty());
+        }
     }
 }
 

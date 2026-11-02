@@ -85,19 +85,20 @@ fn context(s: &TradeAssemblyService, body: &Value) -> Result<SideEffectContext, 
     )
     .with_agent_execution(s.agent_mcp_execution_context()))
 }
-fn prepared(
-    s: &TradeAssemblyService,
-    body: &Value,
-) -> Result<
-    (
-        Command,
-        data_plans::StoredDataPlan,
-        managed_data_streams::Snapshot,
-        SideEffectContext,
-    ),
-    String,
-> {
+type Prepared = (
+    Command,
+    data_plans::StoredDataPlan,
+    managed_data_streams::Snapshot,
+    SideEffectContext,
+);
+fn prepared(s: &TradeAssemblyService, body: &Value) -> Result<Prepared, String> {
     let _timing = super::order_plans::financial_timing("managed_eval.prepared");
+    // Pure owned-plan/source validation only. The returned values carry no
+    // scoped runtime. Preflight and handler start independent rounds; snapshot
+    // retention, plugin invocation and atomic commitment use the original ports.
+    super::package_validation::with_round(s, |s| prepared_round(s, body))
+}
+fn prepared_round(s: &TradeAssemblyService, body: &Value) -> Result<Prepared, String> {
     let (scope, c) = command(body)?;
     s.require_object("strategy", &scope.strategy_id)
         .map_err(|_| "managed_stream_step_not_available")?;

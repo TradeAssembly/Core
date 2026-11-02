@@ -590,6 +590,16 @@ pub(crate) fn validate_snapshot_plan(
     plan: &data_plans::StoredDataPlan,
     snapshot: &Snapshot,
 ) -> Result<(), String> {
+    // One pure validation shares immutable package metadata only. Every call
+    // still reads current ownership, stream heads, registry/configuration,
+    // grants and clock through the original ports. Drop before any effect.
+    super::package_validation::with_round(s, |s| validate_snapshot_plan_round(s, plan, snapshot))
+}
+fn validate_snapshot_plan_round(
+    s: &TradeAssemblyService,
+    plan: &data_plans::StoredDataPlan,
+    snapshot: &Snapshot,
+) -> Result<(), String> {
     let mut check = snapshot.clone();
     seal_snapshot(&mut check)?;
     let roots = plan_roots(plan);

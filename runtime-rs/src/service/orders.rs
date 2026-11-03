@@ -249,6 +249,12 @@ pub(crate) fn run_once(service: &TradeAssemblyService, body: Value) -> Value {
             Err(error) if error == "plugin_order_reconciliation_required" => {
                 order["status"] = json!("reconciliation_required");
                 order["pluginError"] = json!("plugin_order_reconciliation_required");
+                if let Some(failure) = crate::adapters::plugin_submission_failure::read(
+                    service.runtime().storage.as_ref(),
+                    context.idempotency_key.as_str(),
+                ) {
+                    order["pluginFailure"] = failure;
+                }
                 order["secretsRedacted"] = json!(true);
                 persist_with_body(
                     service,
@@ -347,15 +353,15 @@ fn correlation_id(body: &Value) -> Value {
 }
 
 #[derive(Debug)]
-struct CanonicalOrderReceipt {
-    status: String,
-    provider_order_id: String,
-    client_order_id: String,
-    filled_quantity: f64,
-    fill_price: Option<f64>,
+pub(super) struct CanonicalOrderReceipt {
+    pub(super) status: String,
+    pub(super) provider_order_id: String,
+    pub(super) client_order_id: String,
+    pub(super) filled_quantity: f64,
+    pub(super) fill_price: Option<f64>,
 }
 
-fn canonical_order_receipt(
+pub(super) fn canonical_order_receipt(
     receipt: &PluginOperationResponse,
     expected_client_order_id: &str,
     expected_symbol: &str,
@@ -716,7 +722,7 @@ fn sample_order() -> Value {
     json!({"id": "order_local_0001", "order_id": "order_local_0001", "status": "filled", "symbol": "BTC/USD", "side": "buy", "qty": 0.0002})
 }
 
-fn slug(value: &str) -> String {
+pub(super) fn slug(value: &str) -> String {
     value
         .chars()
         .map(|ch| {

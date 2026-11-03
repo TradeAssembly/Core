@@ -2,6 +2,14 @@ use serde_json::{Map, Value};
 
 const MICROS_PER_UNIT: i128 = 1_000_000;
 
+pub(crate) fn validate_order_limits(limits: &Value) -> Result<(), String> {
+    let object = limits.as_object().ok_or("missing_risk_limits")?;
+    reject_unsupported_controls(object)?;
+    parse_limit(object, "max_order_quantity")?;
+    parse_limit(object, "max_notional")?;
+    Ok(())
+}
+
 /// Enforce the explicit, bounded pre-trade controls for one order.
 ///
 /// This is a deterministic estimate. It does not make a fill guarantee.

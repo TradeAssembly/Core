@@ -1104,7 +1104,7 @@ fn check_contexts(root: &Path, report: &mut ReportBuilder) {
             "runtime-rs/src/marketdata.rs",
             "runtime-rs/src/mcp.rs",
             "runtime-rs/src/risk.rs",
-            "runtime-rs/src/spec.rs",
+            "strategy/src/spec.rs",
             "runtime-rs/src/storage.rs",
         ] {
             report.require(root.join(module).exists(), format!("missing {module}"));

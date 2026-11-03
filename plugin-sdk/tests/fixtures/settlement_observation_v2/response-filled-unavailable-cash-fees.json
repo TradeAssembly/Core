@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "tradeassembly.settlement_observation.v2",
+  "requestSha256": "714ca8eada9ca7aaa6ecbb1b00acf27fbd3cae09ad8ec769c8efa715dab501e7",
+  "status": "provisional",
+  "coherence": "non_atomic",
+  "order": {
+    "schemaVersion": "tradeassembly.broker_order_observation.v2",
+    "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+    "order": {
+      "schemaVersion": "tradeassembly.broker_order.v2",
+      "instrument": {
+        "instrumentId": "opaque.host",
+        "providerSymbol": "FIX",
+        "assetClass": "equity",
+        "instrumentFamily": "equity",
+        "quantityUnit": "shares",
+        "multiplier": "1",
+        "quoteCurrency": "USD"
+      },
+      "positionAction": "sell_to_close",
+      "quantity": "0.123456789012",
+      "pricing": {
+        "kind": "limit",
+        "limitPrice": "12.000000000001"
+      },
+      "timeInForce": "day",
+      "clientOrderId": "original.client"
+    },
+    "providerOrderId": "provider-order",
+    "status": "filled",
+    "filledQuantity": {
+      "status": "available",
+      "value": "0.123456789012"
+    },
+    "cashSpent": {
+      "status": "unavailable",
+      "reason": "not_evidenced"
+    },
+    "observedAtMs": 1000,
+    "knownAtMs": 1001
+  },
+  "averageFillPrice": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "feeCash": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "feeFinality": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "account": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "evidence": [
+    {
+      "id": "order",
+      "kind": "order",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_evidenced"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "startedAtMs": 1000,
+      "completedAtMs": 1100
+    }
+  ]
+}

@@ -6,12 +6,15 @@ use crate::backtest_accounting::{
 use crate::backtest_contracts::{
     canonical_hash, AccountModel, BacktestDiagnostic, BacktestResult, BacktestResultContent,
     BacktestRunManifest, DiagnosticSeverity, EndOfDataPolicy, FillPolicy, FillTiming, PriceSource,
-    BACKTEST_RESULT_SCHEMA,
+    TypedBacktestEvidence, TypedEquityPoint, BACKTEST_RESULT_SCHEMA, BACKTEST_RESULT_SCHEMA_V2,
 };
 use crate::historical_data::{DatasetSnapshot, HistoricalDataKind, HistoricalObservationData};
 use crate::strategy_kernel::{
-    calculate_fee_micros, run, CompiledStrategy, ExecutionTiming, KernelMode, MarketObservation,
-    OrderSide, PartialFillPolicy, SimulationConfig,
+    calculate_fee_micros, run, ExecutionTiming, KernelMode, MarketObservation, OrderSide,
+    PartialFillPolicy, SimulationConfig,
+};
+use crate::strategy_kernel::{
+    portfolio_program::ResearchProgram, portfolio_vwap, timeline::BarTime,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -26,6 +29,9 @@ pub fn execute(
 ) -> Result<BacktestResult, String> {
     manifest.verify()?;
     snapshot.verify()?;
+    if manifest.content.configuration.typed_evaluation.is_some() {
+        return Err("typed_backtest_owned_evaluator_required".into());
+    }
     let configuration = &manifest.content.configuration;
     verify_strategy_version(strategy_version, manifest)?;
     verify_dataset(snapshot, manifest)?;
@@ -33,10 +39,11 @@ pub fn execute(
         || configuration.capital.maximum_leverage_micros != UNIT
         || !configuration.execution.reject_on_insufficient_capital
         || !configuration.execution.reject_on_insufficient_liquidity
-        || configuration.instruments.len() != 1
-        || configuration.risk.maximum_open_positions != 1
         || configuration.risk.maximum_loss_micros < configuration.capital.starting_cash_micros
-        || configuration.instruments[0].contract_multiplier_micros != UNIT
+        || configuration
+            .instruments
+            .iter()
+            .any(|instrument| instrument.contract_multiplier_micros != UNIT)
     {
         return Err("backtest_account_model_unsupported".to_string());
     }
@@ -44,17 +51,278 @@ pub fn execute(
     let spec = strategy_version
         .get("spec")
         .ok_or_else(|| "backtest_strategy_version_required".to_string())?;
-    let compiled = CompiledStrategy::compile_json(spec).map_err(kernel_error)?;
-    let observations = normalized_bars(snapshot, configuration.liquidity.minimum_volume_micros)?;
+    let compiled = ResearchProgram::compile_json(spec).map_err(kernel_error)?;
+    let portfolio = matches!(&compiled, ResearchProgram::Portfolio(..));
     let simulation = simulation_config(manifest)?;
-    let kernel =
-        run(KernelMode::Backtest, &compiled, &observations, simulation).map_err(kernel_error)?;
+    let (kernel, observations) = match compiled {
+        ResearchProgram::Price(compiled) => {
+            if configuration.instruments.len() != 1
+                || configuration.risk.maximum_open_positions != 1
+            {
+                return Err("backtest_account_model_unsupported".into());
+            }
+            let observations =
+                normalized_bars(snapshot, configuration.liquidity.minimum_volume_micros)?;
+            (
+                run(KernelMode::Backtest, &compiled, &observations, simulation)
+                    .map_err(kernel_error)?,
+                observations,
+            )
+        }
+        ResearchProgram::Portfolio(compiled, instruments) => {
+            let preserved = spec
+                .pointer("/stages/exit_policy/policy/end_of_data")
+                .and_then(Value::as_str);
+            let end_matches = matches!(
+                (preserved, &configuration.end_of_data),
+                (
+                    Some("preserve_open_positions"),
+                    EndOfDataPolicy::MarkToMarket
+                ) | (
+                    Some("close_synthetic_positions"),
+                    EndOfDataPolicy::ForceClose
+                )
+            );
+            if configuration.risk.maximum_open_positions as usize
+                != compiled.policy.maximum_positions
+                || configuration.execution.evaluation_timing
+                    != crate::backtest_contracts::EvaluationTiming::BarClose
+                || configuration
+                    .instruments
+                    .iter()
+                    .any(|i| !matches!(i.instrument_family.as_str(), "equity" | "etf"))
+                || !configuration.variable_overrides.is_empty()
+                || !end_matches
+                || snapshot
+                    .content
+                    .instruments
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    != instruments
+            {
+                return Err("backtest_portfolio_policy_mismatch".into());
+            }
+            let bars = portfolio_bars(snapshot, configuration.liquidity.minimum_volume_micros)?;
+            let result = portfolio_vwap::simulate(&bars, &compiled.policy, simulation)
+                .map_err(kernel_error)?;
+            (result, bars.into_iter().map(|bar| bar.market).collect())
+        }
+    };
 
+    finish(
+        manifest,
+        snapshot,
+        kernel,
+        observations,
+        portfolio,
+        created_at_ms,
+        None,
+    )
+}
+
+/// Typed signals are admitted by the owned normal evaluator, never compiled or
+/// approximated by this module. Fill/mark observations remain a separate input.
+pub(crate) fn execute_typed(
+    manifest: &BacktestRunManifest,
+    strategy_version: &Value,
+    snapshot: &DatasetSnapshot,
+    signals: &[crate::strategy_kernel::BooleanSignal],
+    evidence: TypedBacktestEvidence,
+    created_at_ms: i64,
+) -> Result<BacktestResult, String> {
+    manifest.verify()?;
+    snapshot.verify()?;
+    verify_strategy_version(strategy_version, manifest)?;
+    verify_dataset(snapshot, manifest)?;
+    let c = &manifest.content.configuration;
+    let binding = c
+        .typed_evaluation
+        .as_ref()
+        .ok_or("typed_backtest_binding_required")?;
+    validate_typed_model(c)?;
+    validate_typed_crypto_precision(c, snapshot)?;
+    let observations = normalized_typed_bars(snapshot, c.liquidity.minimum_volume_micros)?;
+    let kernel = crate::strategy_kernel::run_with_signals_after_warmup(
+        &observations,
+        signals,
+        binding.quantity_micros,
+        simulation_config(manifest)?,
+        binding.no_trade_warmup_observations(),
+    )
+    .map_err(kernel_error)?;
+    finish(
+        manifest,
+        snapshot,
+        kernel,
+        observations,
+        false,
+        created_at_ms,
+        Some(evidence),
+    )
+}
+
+pub(crate) fn validate_typed_model(
+    c: &crate::backtest_contracts::BacktestConfiguration,
+) -> Result<(), String> {
+    if c.capital.account_model != AccountModel::Cash
+        || c.capital.maximum_leverage_micros != UNIT
+        || c.capital.margin_policy != "none"
+        || c.risk.maximum_open_positions != 1
+        || c.instruments.len() != 1
+        || c.instruments[0].contract_multiplier_micros != UNIT
+        || c.instruments[0].quantity_scale != 6
+        || c.instruments[0].price_scale != 6
+        || c.instruments[0].settlement != "cash"
+        || !typed_family_unit_supported(
+            &c.instruments[0].instrument_family,
+            &c.instruments[0].quantity_unit,
+        )
+        || c.execution.time_in_force != "day"
+        || (c.instruments[0].instrument_family == "crypto_spot"
+            && c.execution.fill_policy != FillPolicy::Full)
+        || c.risk.maximum_loss_micros < c.capital.starting_cash_micros
+        || !c.execution.reject_on_insufficient_capital
+        || !c.execution.reject_on_insufficient_liquidity
+        || c.execution.fill_timing != FillTiming::NextBar
+        || c.execution.fill_price_source != PriceSource::Open
+        || c.execution.missing_data_policy != crate::backtest_contracts::MissingDataPolicy::Reject
+        || c.execution.stale_data_policy != crate::backtest_contracts::MissingDataPolicy::Reject
+        || c.dataset.benchmark.is_some()
+    {
+        return Err("typed_backtest_model_unsupported".into());
+    }
+    Ok(())
+}
+
+fn typed_family_unit_supported(family: &str, unit: &str) -> bool {
+    matches!(
+        (family, unit),
+        ("equity" | "etf" | "fund", "shares" | "units") | ("crypto_spot", "base_asset")
+    )
+}
+/// This initial cash-micro crypto profile refuses rounding rather than changing
+/// the established shared kernel arithmetic or silently accepting finer units.
+pub(crate) fn validate_typed_crypto_precision(
+    c: &crate::backtest_contracts::BacktestConfiguration,
+    snapshot: &DatasetSnapshot,
+) -> Result<(), String> {
+    if c.instruments
+        .first()
+        .is_none_or(|i| i.instrument_family != "crypto_spot")
+    {
+        return Ok(());
+    }
+    if snapshot.content.asset_classes != [crate::historical_data::AssetClass::CryptoSpot] {
+        return Err("typed_backtest_crypto_asset_class_mismatch".into());
+    }
+    let binding = c
+        .typed_evaluation
+        .as_ref()
+        .ok_or("typed_backtest_binding_required")?;
+    let adverse = i64::from(c.costs.spread_bps) + i64::from(c.costs.slippage_bps);
+    for row in &snapshot.content.observations {
+        let HistoricalObservationData::Bar(bar) = &row.data else {
+            return Err("typed_backtest_data_kind_unsupported".into());
+        };
+        exact_typed_micros(bar.volume)
+            .map_err(|_| "typed_backtest_crypto_volume_precision_unsupported")?;
+        for price in [bar.open, bar.close] {
+            exact_crypto_cash_values(
+                binding.quantity_micros,
+                exact_typed_micros(price)?,
+                adverse,
+                c.costs.per_unit_fee_micros,
+                i64::from(c.costs.notional_fee_bps),
+            )?;
+        }
+    }
+    Ok(())
+}
+fn exact_crypto_cash_values(
+    quantity: i64,
+    base: i64,
+    adverse_bps: i64,
+    unit_fee: i64,
+    notional_bps: i64,
+) -> Result<(), String> {
+    let bad = || "typed_backtest_crypto_cash_precision_unsupported".to_string();
+    if base <= 0 {
+        return Err("typed_backtest_crypto_price_nonpositive".into());
+    }
+    if quantity <= 0 || !(0..=10000).contains(&adverse_bps) || unit_fee < 0 || notional_bps < 0 {
+        return Err(bad());
+    }
+    let unit = i128::from(UNIT);
+    if i128::from(quantity) * i128::from(unit_fee) % unit != 0 {
+        return Err(bad());
+    }
+    for factor in [10000, 10000 + adverse_bps, 10000 - adverse_bps] {
+        let numerator = base.checked_mul(factor).ok_or_else(bad)?;
+        if numerator % 10000 != 0 {
+            return Err(bad());
+        }
+        let price = numerator / 10000;
+        let notional = i128::from(quantity) * i128::from(price);
+        if notional % unit != 0 {
+            return Err(bad());
+        }
+        let gross = i64::try_from(notional / unit).map_err(|_| bad())?;
+        if i128::from(gross) * i128::from(notional_bps) % 10000 != 0 {
+            return Err(bad());
+        }
+    }
+    Ok(())
+}
+
+fn finish(
+    manifest: &BacktestRunManifest,
+    snapshot: &DatasetSnapshot,
+    kernel: crate::strategy_kernel::KernelResult,
+    observations: Vec<MarketObservation>,
+    portfolio: bool,
+    created_at_ms: i64,
+    mut typed_evidence: Option<TypedBacktestEvidence>,
+) -> Result<BacktestResult, String> {
+    let configuration = &manifest.content.configuration;
+    let simulation = simulation_config(manifest)?;
     let timestamps = snapshot
         .content
         .observations
         .iter()
         .map(|row| row.timestamp.as_str())
+        .collect::<Vec<_>>();
+    let decision_times = timestamps
+        .iter()
+        .map(|value| {
+            if let Some(binding) = configuration.typed_evaluation.as_ref() {
+                return typed_fill_times(value, binding).map(|(_, end)| end);
+            }
+            if !portfolio {
+                return Ok((*value).to_string());
+            }
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .and_then(|time| time.checked_add_signed(chrono::Duration::minutes(1)))
+                .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .ok_or_else(|| "backtest_decision_time_invalid".to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let decision_times = decision_times
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let execution_timestamps = if let Some(binding) = configuration.typed_evaluation.as_ref() {
+        timestamps
+            .iter()
+            .map(|stamp| typed_fill_times(stamp, binding).map(|(start, _)| start))
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        timestamps.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    };
+    let execution_times = execution_timestamps
+        .iter()
+        .map(String::as_str)
         .collect::<Vec<_>>();
     let mut fills = kernel
         .fills
@@ -89,41 +357,75 @@ pub fn execute(
     })
     .map_err(accounting_error)?;
 
-    let decisions = kernel
+    let mut decisions: Vec<Value> = kernel
         .decisions
         .iter()
         .map(|decision| match decision {
             crate::strategy_kernel::Decision::NoSignal { bar_index } => json!({
                 "kind": "no_signal",
                 "barIndex": bar_index,
-                "timestamp": timestamp(&timestamps, *bar_index),
+                "timestamp": timestamp(&decision_times, *bar_index),
             }),
-            crate::strategy_kernel::Decision::OrderIntent(intent) => json!({
-                "kind": "order_intent",
-                "barIndex": intent.decision_bar_index,
-                "timestamp": timestamp(&timestamps, intent.decision_bar_index),
-                "symbol": intent.symbol,
-                "side": side_name(intent.side),
-                "quantityMicros": intent.quantity,
-            }),
+            crate::strategy_kernel::Decision::OrderIntent(intent) => with_notional(
+                json!({
+                    "kind": "order_intent",
+                    "barIndex": intent.decision_bar_index,
+                    "timestamp": timestamp(&decision_times, intent.decision_bar_index),
+                    "symbol": intent.symbol,
+                    "side": side_name(intent.side),
+                    "quantityMicros": intent.quantity,
+                }),
+                intent.notional_micros,
+            ),
         })
         .collect();
+    if let Some(evidence) = typed_evidence.as_ref() {
+        for (decision, signal) in decisions.iter_mut().zip(&evidence.signals) {
+            if signal["entry"]["status"] == "warming_up" || signal["exit"]["status"] == "warming_up"
+            {
+                decision["kind"] = json!("signal_unavailable");
+                decision["entry"] = signal["entry"].clone();
+                decision["exit"] = signal["exit"].clone();
+            }
+        }
+    }
     let orders = kernel
         .orders
         .iter()
         .map(|order| {
-            json!({
-                "decisionBarIndex": order.intent.decision_bar_index,
-                "decisionTimestamp": timestamp(&timestamps, order.intent.decision_bar_index),
-                "executionBarIndex": order.execution_bar_index,
-                "executionTimestamp": timestamp(&timestamps, order.execution_bar_index),
-                "symbol": order.intent.symbol,
-                "side": side_name(order.intent.side),
-                "quantityMicros": order.intent.quantity,
-            })
+            with_notional(
+                json!({
+                    "decisionBarIndex": order.intent.decision_bar_index,
+                    "decisionTimestamp": timestamp(&decision_times, order.intent.decision_bar_index),
+                    "executionBarIndex": order.execution_bar_index,
+                    "executionTimestamp": timestamp(&execution_times, order.execution_bar_index),
+                    "symbol": order.intent.symbol,
+                    "side": side_name(order.intent.side),
+                    "quantityMicros": order.intent.quantity,
+                }),
+                order.intent.notional_micros,
+            )
         })
         .collect();
-    let result_fills = kernel
+    if let Some(evidence) = typed_evidence.as_mut() {
+        let binding = configuration
+            .typed_evaluation
+            .as_ref()
+            .ok_or("typed_backtest_binding_required")?;
+        let (equity, drawdown) = typed_equity(
+            &kernel,
+            &fills,
+            &observations,
+            configuration.capital.starting_cash_micros,
+            binding,
+        )?;
+        if equity.last().map(|v| v.equity_micros) != Some(accounting.ending_equity_micros) {
+            return Err("typed_backtest_equity_reconciliation_failed".into());
+        }
+        evidence.equity = equity;
+        evidence.max_drawdown_bps = drawdown;
+    }
+    let mut result_fills:Vec<Value> = kernel
         .fills
         .iter()
         .enumerate()
@@ -131,9 +433,9 @@ pub fn execute(
             json!({
                 "fillId": fills[index].fill_id,
                 "decisionBarIndex": fill.order.intent.decision_bar_index,
-                "decisionTimestamp": timestamp(&timestamps, fill.order.intent.decision_bar_index),
+                "decisionTimestamp": timestamp(&decision_times, fill.order.intent.decision_bar_index),
                 "executionBarIndex": fill.order.execution_bar_index,
-                "executionTimestamp": timestamp(&timestamps, fill.order.execution_bar_index),
+                "executionTimestamp": timestamp(&execution_times, fill.order.execution_bar_index),
                 "symbol": fill.order.intent.symbol,
                 "side": side_name(fill.order.intent.side),
                 "quantityMicros": fill.quantity,
@@ -153,6 +455,15 @@ pub fn execute(
             })
         }))
         .collect();
+    if let Some(binding) = configuration.typed_evaluation.as_ref() {
+        for value in &mut result_fills {
+            if let Some(index) = value["executionBarIndex"].as_u64() {
+                value["executionSourceBarTimestamp"] =
+                    json!(timestamp(&timestamps, index as usize));
+                value["executionSourceTimestampBasis"] = json!(binding.fill_timestamp_basis);
+            }
+        }
+    }
     let diagnostics = kernel
         .rejects
         .iter()
@@ -165,7 +476,13 @@ pub fn execute(
         .collect();
     BacktestResult::build(
         BacktestResultContent {
-            schema: BACKTEST_RESULT_SCHEMA.to_string(),
+            schema: if typed_evidence.is_some() {
+                BACKTEST_RESULT_SCHEMA_V2
+            } else {
+                BACKTEST_RESULT_SCHEMA
+            }
+            .to_string(),
+            typed_evaluation: typed_evidence,
             run_id: manifest.content.run_id.clone(),
             manifest_hash: manifest.manifest_hash.clone(),
             evaluator_version: configuration.evaluator_version.clone(),
@@ -191,6 +508,85 @@ pub fn execute(
         },
         created_at_ms,
     )
+}
+
+fn typed_equity(
+    kernel: &crate::strategy_kernel::KernelResult,
+    fills: &[AccountingFill],
+    observations: &[MarketObservation],
+    starting_cash: i64,
+    binding: &crate::backtest_contracts::TypedBacktestBinding,
+) -> Result<(Vec<TypedEquityPoint>, i64), String> {
+    let mut cash = starting_cash;
+    let mut quantity = 0_i64;
+    let mut peak = starting_cash;
+    let mut drawdown = 0_i64;
+    let mut equity = Vec::new();
+    for (index, bar) in observations.iter().enumerate() {
+        for (ordinal, fill) in fills.iter().enumerate() {
+            let at = kernel
+                .fills
+                .get(ordinal)
+                .map(|f| f.order.execution_bar_index)
+                .unwrap_or(observations.len() - 1);
+            if at != index {
+                continue;
+            }
+            let gross = i64::try_from(
+                i128::from(fill.quantity) * i128::from(fill.price_micros) / i128::from(UNIT),
+            )
+            .map_err(|_| "typed_backtest_equity_overflow")?;
+            match fill.side {
+                FillSide::Buy => {
+                    cash = cash
+                        .checked_sub(gross)
+                        .and_then(|v| v.checked_sub(fill.fee_micros))
+                        .ok_or("typed_backtest_equity_overflow")?;
+                    quantity = quantity
+                        .checked_add(fill.quantity)
+                        .ok_or("typed_backtest_equity_overflow")?;
+                }
+                FillSide::Sell => {
+                    cash = cash
+                        .checked_add(gross)
+                        .and_then(|v| v.checked_sub(fill.fee_micros))
+                        .ok_or("typed_backtest_equity_overflow")?;
+                    quantity = quantity
+                        .checked_sub(fill.quantity)
+                        .ok_or("typed_backtest_equity_overflow")?;
+                }
+            }
+        }
+        if cash < 0 || quantity < 0 {
+            return Err("typed_backtest_equity_invalid".into());
+        }
+        let mark = i64::try_from(i128::from(quantity) * i128::from(bar.close) / i128::from(UNIT))
+            .map_err(|_| "typed_backtest_equity_overflow")?;
+        let total = cash
+            .checked_add(mark)
+            .ok_or("typed_backtest_equity_overflow")?;
+        peak = peak.max(total);
+        drawdown = drawdown.max(
+            i64::try_from(i128::from(peak - total) * 10000 / i128::from(peak))
+                .map_err(|_| "typed_backtest_equity_overflow")?,
+        );
+        let event_end_ms = binding
+            .event_start_ms
+            .checked_add(
+                (index as i64 + 1)
+                    .checked_mul(binding.interval_ms as i64)
+                    .ok_or("typed_backtest_equity_overflow")?,
+            )
+            .ok_or("typed_backtest_equity_overflow")?;
+        equity.push(TypedEquityPoint {
+            event_end_ms,
+            cash_micros: cash,
+            position_quantity_micros: quantity,
+            mark_micros: bar.close,
+            equity_micros: total,
+        });
+    }
+    Ok((equity, drawdown))
 }
 
 pub fn replay(
@@ -232,7 +628,13 @@ fn verify_dataset(
     snapshot: &DatasetSnapshot,
     manifest: &BacktestRunManifest,
 ) -> Result<(), String> {
-    let binding = &manifest.content.configuration.dataset;
+    verify_dataset_configuration(snapshot, &manifest.content.configuration)
+}
+pub(crate) fn verify_dataset_configuration(
+    snapshot: &DatasetSnapshot,
+    configuration: &crate::backtest_contracts::BacktestConfiguration,
+) -> Result<(), String> {
+    let binding = &configuration.dataset;
     let source = &snapshot.content.source;
     let source_class = serde_json::to_value(&source.source_class)
         .ok()
@@ -241,7 +643,7 @@ fn verify_dataset(
         || snapshot.snapshot_ref != binding.snapshot_ref
         || snapshot.content_hash != binding.content_hash
         || snapshot.content.schema != binding.schema
-        || snapshot.content.strategy_id != manifest.content.configuration.strategy.strategy_id
+        || snapshot.content.strategy_id != configuration.strategy.strategy_id
         || source.plugin_ref != binding.source_plugin_ref
         || source.plugin_instance_ref != binding.source_plugin_instance_ref
         || source.operation_id != binding.source_operation_id
@@ -262,6 +664,71 @@ fn verify_dataset(
     Ok(())
 }
 
+fn typed_fill_times(
+    stamp: &str,
+    binding: &crate::backtest_contracts::TypedBacktestBinding,
+) -> Result<(String, String), String> {
+    let raw = chrono::DateTime::parse_from_rfc3339(stamp)
+        .map_err(|_| "typed_backtest_fill_time_invalid")?
+        .timestamp_millis();
+    let (start, end) = binding.fill_bounds(raw)?;
+    let format = |ms| {
+        chrono::DateTime::from_timestamp_millis(ms)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            .ok_or_else(|| "typed_backtest_fill_time_invalid".to_string())
+    };
+    Ok((format(start)?, format(end)?))
+}
+
+fn exact_typed_micros(value: f64) -> Result<i64, String> {
+    use tradeassembly_plugin_sdk::execution::{Decimal, Rounding};
+    if !value.is_finite() || value < 0.0 {
+        return Err("typed_backtest_numeric_invalid".into());
+    }
+    let decimal: Decimal = value.to_string().parse()?;
+    decimal
+        .multiply("1000000".parse()?)?
+        .round(0, Rounding::Exact)?
+        .to_string()
+        .parse()
+        .map_err(|_| "typed_backtest_numeric_out_of_range".into())
+}
+pub(crate) fn validate_typed_precision(snapshot: &DatasetSnapshot) -> Result<(), String> {
+    for row in &snapshot.content.observations {
+        let HistoricalObservationData::Bar(bar) = &row.data else {
+            return Err("typed_backtest_data_kind_unsupported".into());
+        };
+        for value in [bar.open, bar.high, bar.low, bar.close, bar.volume] {
+            exact_typed_micros(value)?;
+        }
+    }
+    Ok(())
+}
+fn normalized_typed_bars(
+    snapshot: &DatasetSnapshot,
+    minimum_volume: i64,
+) -> Result<Vec<MarketObservation>, String> {
+    validate_typed_precision(snapshot)?;
+    snapshot
+        .content
+        .observations
+        .iter()
+        .enumerate()
+        .map(|(bar_index, row)| {
+            let HistoricalObservationData::Bar(bar) = &row.data else {
+                return Err("typed_backtest_data_kind_unsupported".into());
+            };
+            let volume = exact_typed_micros(bar.volume)?;
+            Ok(MarketObservation {
+                bar_index,
+                symbol: row.instrument_id.clone(),
+                open: exact_typed_micros(bar.open)?,
+                close: exact_typed_micros(bar.close)?,
+                volume: if volume < minimum_volume { 0 } else { volume },
+            })
+        })
+        .collect()
+}
 fn normalized_bars(
     snapshot: &DatasetSnapshot,
     minimum_volume_micros: i64,
@@ -289,6 +756,75 @@ fn normalized_bars(
             })
         })
         .collect()
+}
+
+fn with_notional(mut value: Value, notional: Option<i64>) -> Value {
+    if let Some(notional) = notional {
+        value
+            .as_object_mut()
+            .expect("order evidence object")
+            .remove("quantityMicros");
+        value["notionalMicros"] = json!(notional);
+    }
+    value
+}
+
+fn portfolio_bars(
+    snapshot: &DatasetSnapshot,
+    minimum_volume: i64,
+) -> Result<Vec<portfolio_vwap::Bar>, String> {
+    if !matches!(snapshot.content.granularity.as_str(), "1m" | "1min")
+        || snapshot.content.calendar != "XNYS"
+        || snapshot.content.timezone != "America/New_York"
+    {
+        return Err("backtest_portfolio_dataset_unsupported".into());
+    }
+    let markets = normalized_bars(snapshot, 0)?;
+    let mut result = Vec::new();
+    for (row, market) in snapshot.content.observations.iter().zip(markets) {
+        let HistoricalObservationData::Bar(bar) = &row.data else {
+            return Err("backtest_data_kind_unsupported".into());
+        };
+        let session = bar
+            .session
+            .as_ref()
+            .ok_or("backtest_session_evidence_required")?;
+        let parse = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|_| "backtest_session_evidence_invalid".to_string())
+        };
+        let time = parse(&row.timestamp)?;
+        let start = parse(&session.start)?;
+        let end = parse(&session.end)?;
+        if time.with_timezone(start.offset()).date_naive() != start.date_naive()
+            || start.date_naive() != end.with_timezone(start.offset()).date_naive()
+        {
+            return Err("backtest_session_evidence_invalid".into());
+        }
+        if time < start || time >= end {
+            continue;
+        }
+        let vwap = bar.vwap.ok_or("backtest_provider_vwap_required")?;
+        result.push(portfolio_vwap::Bar {
+            time: BarTime {
+                symbol: row.instrument_id.clone(),
+                start_ms: time.timestamp_millis(),
+                session_start_ms: start.timestamp_millis(),
+                session_end_ms: end.timestamp_millis(),
+            },
+            available_volume_micros: if market.volume < minimum_volume {
+                0
+            } else {
+                market.volume
+            },
+            market,
+            provider_vwap_micros: micros(vwap, "backtest_provider_vwap_invalid")?,
+        });
+    }
+    if result.is_empty() {
+        return Err("backtest_regular_session_data_required".into());
+    }
+    Ok(result)
 }
 
 fn simulation_config(manifest: &BacktestRunManifest) -> Result<SimulationConfig, String> {
@@ -399,4 +935,47 @@ fn kernel_error(error: crate::strategy_kernel::KernelError) -> String {
 
 fn accounting_error(error: crate::backtest_accounting::AccountingError) -> String {
     format!("backtest_accounting_{error:?}").to_lowercase()
+}
+
+#[cfg(test)]
+mod typed_precision_tests {
+    #[test]
+    fn typed_crypto_profile_has_exact_units_and_no_implicit_cash_or_cost_rounding() {
+        assert!(super::typed_family_unit_supported(
+            "crypto_spot",
+            "base_asset"
+        ));
+        for (family, unit) in [
+            ("crypto_spot", "shares"),
+            ("crypto_spot", "units"),
+            ("crypto_perpetual", "base_asset"),
+            ("equity", "base_asset"),
+        ] {
+            assert!(!super::typed_family_unit_supported(family, unit));
+        }
+        super::exact_crypto_cash_values(1000, 90_000_000_000, 30, 0, 10).unwrap();
+        assert_eq!(
+            super::exact_crypto_cash_values(1000, 0, 0, 0, 0).unwrap_err(),
+            "typed_backtest_crypto_price_nonpositive"
+        );
+        for args in [
+            (1, 90_123_123_456, 0, 0, 0),
+            (1_000_000, 1_000_001, 1, 0, 0),
+            (1, 90_000_000_000, 0, 1, 0),
+            (1000, 90_000_001_000, 0, 0, 1),
+        ] {
+            assert!(
+                super::exact_crypto_cash_values(args.0, args.1, args.2, args.3, args.4).is_err(),
+                "{args:?}"
+            );
+        }
+    }
+    #[test]
+    fn typed_fill_precision_is_exact_and_does_not_relabel_finer_prices_or_quantities() {
+        assert_eq!(super::exact_typed_micros(90.27).unwrap(), 90270000);
+        assert_eq!(super::exact_typed_micros(0.000001).unwrap(), 1);
+        for value in [0.00000001, 90.12345678, f64::INFINITY, f64::NAN, -1.0, 1e30] {
+            assert!(super::exact_typed_micros(value).is_err(), "{value}");
+        }
+    }
 }

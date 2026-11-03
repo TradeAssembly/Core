@@ -17,12 +17,19 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 
 pub const BACKTEST_REPORT_SCHEMA: &str = "tradeassembly.backtest-report.v2";
+pub const BACKTEST_REPORT_SCHEMA_V3: &str = "tradeassembly.backtest-report.v3";
 pub const BACKTEST_EXPORT_SCHEMA: &str = "tradeassembly.backtest-export.v1";
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BacktestReport {
     pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::backtest_contracts::present_typed_value"
+    )]
+    pub typed_evaluation: Option<crate::backtest_contracts::TypedBacktestEvidence>,
     pub report_hash: String,
     pub run: BacktestReportRun,
     pub assumptions: BacktestReportAssumptions,
@@ -38,6 +45,146 @@ pub struct BacktestReport {
     pub diagnostics: Vec<BacktestReportDiagnostic>,
     pub metadata: BacktestReportMetadata,
     pub provenance: BacktestReportProvenance,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BacktestReportWire {
+    pub schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::backtest_contracts::present_typed_value"
+    )]
+    pub typed_evaluation: Option<crate::backtest_contracts::TypedBacktestEvidence>,
+    pub report_hash: String,
+    pub run: BacktestReportRun,
+    pub assumptions: BacktestReportAssumptions,
+    pub overview: BacktestReportOverview,
+    pub chart: BacktestReportChart,
+    pub trades: Vec<BacktestTrade>,
+    pub journal: Vec<BacktestJournalEvent>,
+    pub orders: Vec<Value>,
+    pub fills: Vec<Value>,
+    pub positions: Vec<Value>,
+    pub ledger: Vec<Value>,
+    pub costs_and_risk: BacktestCostsAndRisk,
+    pub diagnostics: Vec<BacktestReportDiagnostic>,
+    pub metadata: BacktestReportMetadata,
+    pub provenance: BacktestReportProvenance,
+}
+impl<'de> Deserialize<'de> for BacktestReport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let typed = raw.get("typedEvaluation");
+        if !matches!(
+            (raw["schema"].as_str(), typed),
+            (Some(BACKTEST_REPORT_SCHEMA), None)
+        ) && !matches!((raw["schema"].as_str(),typed),(Some(BACKTEST_REPORT_SCHEMA_V3),Some(value)) if value.is_object())
+        {
+            return Err(serde::de::Error::custom(
+                "backtest_report_version_binding_mismatch",
+            ));
+        }
+        let wire: BacktestReportWire =
+            serde_json::from_value(raw).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            schema: wire.schema,
+            typed_evaluation: wire.typed_evaluation,
+            report_hash: wire.report_hash,
+            run: wire.run,
+            assumptions: wire.assumptions,
+            overview: wire.overview,
+            chart: wire.chart,
+            trades: wire.trades,
+            journal: wire.journal,
+            orders: wire.orders,
+            fills: wire.fills,
+            positions: wire.positions,
+            ledger: wire.ledger,
+            costs_and_risk: wire.costs_and_risk,
+            diagnostics: wire.diagnostics,
+            metadata: wire.metadata,
+            provenance: wire.provenance,
+        })
+    }
+}
+
+impl BacktestReport {
+    /// Validates the bounded V3 evidence series without acquiring data or
+    /// claiming ownership. Durable consumers additionally bind the whole report
+    /// to the verified original manifest/result and current object owner.
+    pub fn verified_typed_series(
+        &self,
+    ) -> Result<Option<&crate::backtest_contracts::TypedBacktestEvidence>, String> {
+        let bad = || "backtest_report_typed_series_invalid".to_string();
+        let Some(evidence) = self.typed_evaluation.as_ref() else {
+            return if self.schema == BACKTEST_REPORT_SCHEMA {
+                Ok(None)
+            } else {
+                Err(bad())
+            };
+        };
+        let digest = |v: &str| {
+            v.len() == 64
+                && v.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        };
+        if self.schema != BACKTEST_REPORT_SCHEMA_V3
+            || evidence.schema_version != "tradeassembly.typed-backtest-evidence.v1"
+            || evidence.point_in_time_qualified
+            || evidence.knowledge_policy != "retrospective_capture_cutoff"
+            || evidence.plan_revision_id.is_empty()
+            || !digest(&evidence.plan_revision_sha256)
+            || !digest(&evidence.semantic_sha256)
+            || !digest(&evidence.final_checkpoint_sha256)
+            || evidence.evaluation_receipts.is_empty()
+            || evidence.evaluation_receipts.len() > 256
+            || evidence.evaluation_receipts.iter().any(|v| !digest(v))
+            || evidence.frames_processed == 0
+            || evidence.frames_processed > 256
+            || evidence.equity.len() as u64 != evidence.frames_processed
+            || evidence.signals.len() != evidence.equity.len()
+            || evidence.warming_frames > evidence.frames_processed
+            || self.overview.starting_equity_micros <= 0
+            || evidence.equity.last().map(|p| p.equity_micros)
+                != Some(self.overview.ending_equity_micros)
+        {
+            return Err(bad());
+        }
+        let mut previous = None;
+        let mut peak = self.overview.starting_equity_micros;
+        let mut max_drawdown = 0;
+        for (point, signal) in evidence.equity.iter().zip(&evidence.signals) {
+            if point.event_end_ms <= 0
+                || previous.is_some_and(|time| point.event_end_ms <= time)
+                || point.cash_micros < 0
+                || point.position_quantity_micros < 0
+                || point.mark_micros < 0
+                || point.equity_micros < 0
+                || signal["eventEndMs"].as_i64() != Some(point.event_end_ms)
+                || i128::from(point.cash_micros)
+                    + i128::from(point.position_quantity_micros) * i128::from(point.mark_micros)
+                        / 1_000_000
+                    != i128::from(point.equity_micros)
+            {
+                return Err(bad());
+            }
+            peak = peak.max(point.equity_micros);
+            max_drawdown = max_drawdown.max(
+                i64::try_from(i128::from(peak - point.equity_micros) * 10_000 / i128::from(peak))
+                    .map_err(|_| bad())?,
+            );
+            previous = Some(point.event_end_ms);
+        }
+        let first = &evidence.equity[0];
+        if first.position_quantity_micros != 0
+            || first.cash_micros != self.overview.starting_equity_micros
+            || evidence.max_drawdown_bps != max_drawdown
+        {
+            return Err(bad());
+        }
+        Ok(Some(evidence))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -294,7 +441,13 @@ pub fn project_with_strategy_spec(
         events,
     );
     let mut report = BacktestReport {
-        schema: BACKTEST_REPORT_SCHEMA.to_string(),
+        schema: if result.content.typed_evaluation.is_some() {
+            BACKTEST_REPORT_SCHEMA_V3
+        } else {
+            BACKTEST_REPORT_SCHEMA
+        }
+        .to_string(),
+        typed_evaluation: result.content.typed_evaluation.clone(),
         report_hash: String::new(),
         run: BacktestReportRun {
             run_id: run.run_id.clone(),
@@ -425,6 +578,78 @@ pub fn project_with_strategy_spec(
             ),
         ),
     };
+    if let Some(typed) = &report.typed_evaluation {
+        let binding = manifest
+            .content
+            .configuration
+            .typed_evaluation
+            .as_ref()
+            .ok_or("backtest_report_typed_binding_invalid")?;
+        if typed.plan_revision_id != binding.plan_revision_id
+            || typed.plan_revision_sha256 != binding.plan_revision_sha256
+            || typed.equity.len() != snapshot.content.observations.len()
+            || typed.equity.last().map(|p| p.equity_micros)
+                != Some(report.overview.ending_equity_micros)
+        {
+            return Err("backtest_report_typed_binding_invalid".into());
+        }
+        report
+            .costs_and_risk
+            .unavailable
+            .retain(|metric| metric.metric != "max_drawdown_bps");
+        if let Some(metric) = report
+            .costs_and_risk
+            .unavailable
+            .iter_mut()
+            .find(|metric| metric.metric == "sharpe_ratio")
+        {
+            metric.reason = "return-sampling and annualization policies are not qualified for this typed research version".into();
+        }
+        report.costs_and_risk.unavailable.push(unavailable("benchmark","no explicit verified benchmark series/model is supported by this typed research version"));
+        if manifest
+            .content
+            .configuration
+            .instruments
+            .first()
+            .is_some_and(|instrument| instrument.instrument_family == "crypto_spot")
+        {
+            report.metadata.warnings.push("Crypto spot cash profile: unit multiplier, base_asset quantity, exact six-decimal price/quantity/volume and cash-representable costs only. Finer volume or fractional cash products refuse; no production-provider, venue precision, entitlement or historical coverage qualification is implied.".into());
+        }
+        report.metadata.warnings.push("Fixed-quantity typed signal simulation with a separately bound fill/mark series; this is not full published sizing, risk, stop or screened-selection parity. Retrospective captured-data replay leaves historical point-in-time availability unqualified. Fills and equity are simulated, not broker observations.".into());
+        report.provenance.strategy_execution_summary = json!({"status":"available","engine":crate::backtest_contracts::TYPED_BACKTEST_ENGINE,
+            "planRevisionId":typed.plan_revision_id,"planRevisionSha256":typed.plan_revision_sha256,"semanticSha256":typed.semantic_sha256,
+            "evaluationReceiptSha256":typed.evaluation_receipts,"initialPosition":"flat","knowledgePolicy":typed.knowledge_policy,"pointInTimeQualified":false});
+        if let Some(calendar) = &binding.calendar_evidence {
+            let declared = calendar.kind
+                == crate::backtest_contracts::TypedCalendarEvidenceKind::DeclaredDatasetCalendar;
+            report.provenance.strategy_execution_summary["calendarEvidence"] = json!({
+                "binding":calendar,
+                "eligibilityBasis":if declared { "explicit_research_model" } else { "provider_bar_sessions" },
+                "tradingEligibilityGranted":false,
+                "providerBarSessionsUsed":!declared,
+                "venueEligibilityQualified":false
+            });
+            if declared {
+                report.metadata.warnings.push("Explicit declared-dataset research calendar assumption (crypto_24x7/UTC daily); source bars are unchanged and no provider sessions are synthesized. This is not venue availability, trading eligibility or historical point-in-time qualification.".into());
+            }
+        }
+        if let Some(warmup) = binding.warmup_observations {
+            report.provenance.strategy_execution_summary["noTradeWarmup"] = json!({
+                "bindingSchemaVersion":binding.schema_version,
+                "observations":warmup,
+                "firstEligibleDecisionBarIndex":warmup,
+                "firstPossibleExecutionBarIndex":warmup + 1,
+                "publisherSignalsRetained":true,
+                "allFramesEvaluatedAndCheckpointed":true,
+                "eligibilityBasis":"explicit_research_model",
+                "tradingEligibilityGranted":false
+            });
+            report.metadata.warnings.push(format!("Explicit research no-trade warmup: first {warmup} observations are evaluated and checkpointed but cannot generate simulated orders; publisher warmingFrames remains a separate count."));
+        }
+    } else if manifest.content.configuration.typed_evaluation.is_some() {
+        return Err("backtest_report_typed_evidence_required".into());
+    }
+    report.verified_typed_series()?;
     report.report_hash =
         canonical_hash(&report_without_hash(&report), "backtest_report_hash_failed")?;
     Ok(report)
@@ -1257,9 +1482,17 @@ fn trades_csv(report: &BacktestReport) -> String {
     output
 }
 fn orders_fills_csv(report: &BacktestReport) -> String {
-    let mut output = "record_type,fill_id,symbol,side,quantity_micros,price_micros,fee_micros,execution_timestamp\n".to_string();
+    let has_notional = report
+        .orders
+        .iter()
+        .any(|order| order.get("notionalMicros").is_some());
+    let mut output = "record_type,fill_id,symbol,side,quantity_micros,price_micros,fee_micros,execution_timestamp".to_string();
+    if has_notional {
+        output.push_str(",notional_micros");
+    }
+    output.push('\n');
     for order in &report.orders {
-        output.push_str(&csv_row(&[
+        let mut row = vec![
             "order".to_string(),
             String::new(),
             csv_value(&order["symbol"]),
@@ -1268,10 +1501,14 @@ fn orders_fills_csv(report: &BacktestReport) -> String {
             String::new(),
             String::new(),
             csv_value(&order["executionTimestamp"]),
-        ]));
+        ];
+        if has_notional {
+            row.push(csv_value(&order["notionalMicros"]));
+        }
+        output.push_str(&csv_row(&row));
     }
     for fill in &report.fills {
-        output.push_str(&csv_row(&[
+        let mut row = vec![
             "fill".to_string(),
             csv_value(&fill["fillId"]),
             csv_value(&fill["symbol"]),
@@ -1280,7 +1517,11 @@ fn orders_fills_csv(report: &BacktestReport) -> String {
             csv_value(&fill["priceMicros"]),
             csv_value(&fill["feeMicros"]),
             csv_value(&fill["executionTimestamp"]),
-        ]));
+        ];
+        if has_notional {
+            row.push(String::new());
+        }
+        output.push_str(&csv_row(&row));
     }
     output
 }
@@ -1318,6 +1559,20 @@ fn positions_ledger_csv(report: &BacktestReport) -> String {
 }
 fn equity_csv(report: &BacktestReport) -> String {
     let mut output = "timestamp,ending_cash_micros,market_value_micros,ending_equity_micros,reconciliation_residual_micros\n".to_string();
+    if let Some(typed) = &report.typed_evaluation {
+        for point in &typed.equity {
+            output.push_str(&csv_row(&[
+                chrono::DateTime::from_timestamp_millis(point.event_end_ms)
+                    .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                    .unwrap_or_default(),
+                point.cash_micros.to_string(),
+                (point.equity_micros - point.cash_micros).to_string(),
+                point.equity_micros.to_string(),
+                "0".into(),
+            ]));
+        }
+        return output;
+    }
     output.push_str(&csv_row(&[
         report.chart.range["end"]
             .as_str()
@@ -1387,6 +1642,8 @@ mod tests {
                     low: 99.0,
                     close: 100.5,
                     volume: 10.0,
+                    vwap: None,
+                    session: None,
                 }),
             }],
         );

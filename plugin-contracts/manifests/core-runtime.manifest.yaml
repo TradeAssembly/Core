@@ -33,6 +33,20 @@ capabilities:
     description: Normalize bar inputs for indicator calculations.
   - id: indicator.stateful.calculate@1
     description: Calculate deterministic stateful indicators.
+  - id: universe.static.select@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
+  - id: signal.rule.evaluate@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
+  - id: intent.trade.build@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
+  - id: sizing.relative.apply@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
+  - id: risk.strategy.guard@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
+  - id: exit.policy.evaluate@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
+  - id: price.snapshot.select@1
+    description: Evaluate owner-defined portfolio research with deterministic inputs.
 permissions:
   - id: local.state.read
     description: Read immutable local StrategySpec and run inputs.
@@ -260,7 +274,7 @@ operations:
     contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
     policyRefs: [apf.finance.default, tradeassembly.local_full]
     traits:
-      modes: [paper, live]
+      modes: [research, backtest, paper, live]
       instrumentFamilies: [equity, crypto_spot, option_contract, future_contract]
       dataShapes: [order_intent]
       operations: [build]
@@ -277,7 +291,7 @@ operations:
     receiptClass: runtime_evidence
     redaction: hash_or_ref
     noAdvice: true
-    supportedProtocols: [mcp, graphql, local-rust, "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot", "asset:option_contract", "asset:future_contract"]
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot", "asset:option_contract", "asset:future_contract"]
     inputSchema: json-schema
     outputSchema: json-schema
   - id: order.option.submit_v1
@@ -430,6 +444,307 @@ operations:
     redaction: hash_or_ref
     noAdvice: true
     supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "mode:simulation", "mode:paper", "mode:live", "asset:equity", "asset:crypto_spot"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: universe.static.select_v1
+    capability: universe.static.select@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: signal.rule.evaluate_v1
+    capability: signal.rule.evaluate@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: intent.trade.build_v1
+    capability: intent.trade.build@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: sizing.relative.apply_v1
+    capability: sizing.relative.apply@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: risk.strategy.guard_v1
+    capability: risk.strategy.guard@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: exit.policy.evaluate_v1
+    capability: exit.policy.evaluate@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
+    inputSchema: json-schema
+    outputSchema: json-schema
+  - id: price.snapshot.select_v1
+    capability: price.snapshot.select@1
+    protocol: local-rust
+    effect: research
+    riskClass: low
+    resourceType: strategy_runtime
+    credentialGrantRequired: false
+    accountBindingRequired: false
+    financeAction:
+      actionId: strategy.runtime.evaluate
+      resourceType: strategy_runtime
+    mandateRequired: true
+    purpose: strategy_execution
+    sessionAdmission:
+      mode: user_or_agent_session
+    approval:
+      mode: policy_configured
+    supervision:
+      mode: automated_policy
+    detectors: [no_advice, capability_scope]
+    contextProviders: [sightline.session_context, tradeassembly.strategy_context, tradeassembly.plugin_context]
+    policyRefs: [apf.finance.default, tradeassembly.local_full]
+    traits:
+      modes: [research, backtest]
+      instrumentFamilies: [equity]
+      dataShapes: [strategy_envelope]
+      operations: [evaluate]
+      fields: []
+      inputSchemaRefs: [schema://strategy/envelope@1]
+      outputSchemaRefs: [schema://strategy/envelope@1]
+      timeframes: []
+      deterministic: true
+      replayable: true
+    dependencies: []
+    evidence: [request_hash, strategy_version_hash, plugin_manifest_hash]
+    pepCoverage: c2
+    checkPacks: [deterministic_runtime, capability_scope]
+    receiptClass: runtime_evidence
+    redaction: hash_or_ref
+    noAdvice: true
+    supportedProtocols: [mcp, graphql, local-rust, "mode:research", "mode:backtest", "asset:equity"]
     inputSchema: json-schema
     outputSchema: json-schema
 configuration:

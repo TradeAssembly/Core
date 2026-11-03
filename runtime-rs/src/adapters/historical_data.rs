@@ -261,6 +261,8 @@ fn fixture_observations_page(
                         low: base - 1.0,
                         close: base + 0.5,
                         volume: 1_000.0 + row as f64,
+                        vwap: None,
+                        session: None,
                     }),
                 });
             }

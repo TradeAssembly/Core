@@ -1,0 +1,127 @@
+# Shared bounded data evaluation
+
+The host-only `service::data_evaluation::step` evaluates a verified saved plan.
+It has no HTTP/MCP route or strategy activation integration in this slice. The
+same step function accepts a historical batch or successive event windows. The
+host owns scheduling, package validation, invocation authority, leases and atomic
+progress. Calculations remain in separate plugins.
+
+## Composition and compatibility
+
+Operation data contract V1 retains its exact declared plugin-dependency binding
+rules. V2 introduces explicit named data bindings between independently admitted
+operation nodes in the existing capability graph. Invocation prerequisites remain
+ordinary operation dependencies; data edges are not recursively expanded as
+operation definitions. This permits shared producers and repeated calculations
+with separate parameters/state, without treating `EMA(EMA(x))` as a definition
+cycle. The compiler still rejects actual node cycles, incompatible schemas and
+incompatible time/instrument contexts. Plans containing V2 contracts use plan V2;
+V1 plans, package V1, wire V1 and legacy checkpoints retain their versions.
+
+## Evaluation protocol
+
+Plugins declare `schema://tradeassembly/data-evaluation-response@1` as an output
+schema and receive `tradeassembly.data_evaluation.v1` inside the existing bounded
+invocation envelope. Sources receive a bounded acquisition window. Calculations
+receive only the current complete event frame and their own preceding state.
+Inputs and outputs carry a schema/shape, instrument, source event identity,
+event interval, known time, arrival time, completion flag and provenance. A
+series/table schema validates the array of ready values; a scalar schema validates
+one ready value. `warming_up` has no fabricated numeric or boolean value.
+
+The host revalidates package/schema bindings and current plan admission. It
+allows data read operations only; broker/order effects are rejected. Calculation
+operations cannot request credentials, account binding or outbound network
+permission. Every invocation continues through the existing invocation port and
+its authority checks. Transform responses must be deterministic and replayable.
+Data read invocation receipts can be reused across checkpoint lease generations;
+checkpoint writes retain their own fencing and compare-and-swap protection.
+
+Sources must be ordered, complete, schema-valid and available by the requested
+as-of time. Duplicates are no-ops. Changed committed observations require explicit
+replay; out-of-order and unexplained gaps fail. A complete common frame barrier
+prevents one source/instrument advancing while another is missing. No implicit
+fill, provider substitution, time aggregation or error-to-false conversion occurs.
+The host counts valid required inputs and rejects ready results before declared
+warmup. Derived identities include semantics and upstream/prior-state hashes;
+arrival time is excluded from semantic content identity.
+
+State, output receipt, source ledger and cursor are committed in one atomic
+storage transaction, with checkpoint/receipt/fence expectations. Failed plugin
+calls, rejected responses, stale workers and failed commits do not advance them.
+Retry keys cannot change inputs; cached receipts are integrity checked and still
+require a current plan. Leases are released only using the acquired claim.
+
+A step accepts at most 32 nodes, 64 common frames, 256 points per batch, 256 KiB
+state per operation and 8 MiB accumulated results. Each invocation is bounded to
+15 seconds. A 45-second monotonic step budget is checked between calls, frames
+and before commit; a call already running may finish within its invocation
+budget before the step rejects. There is no partial checkpoint on budget failure.
+
+## Remaining integration
+
+Package verification, graph/storage and controlled invocation fixtures cover the
+host contracts. Opt-in proofs below also exercise installed calculation processes
+with an explicit synthetic source. Real provider acquisition, product routes,
+strategy/research wiring and paper execution still need integration and actual
+product exercise. The separate local default pack is unreleased.
+Provider state and activation-partitioned state are rejected until their owning
+lifecycle is integrated. Instrument/research-run calculation state is supported.
+Fixed equal-interval event frames are supported; session calendars, resampling,
+explicit gap policies and revision replay orchestration remain separate work.
+No provider coverage, brokerage eligibility or research result is inferred from
+this host interface alone.
+
+## Credential-free host integration
+
+Data read operations that explicitly require neither credentials nor an account
+can prepare without a credential reference. Credential-requiring reads and other
+operation classes retain the established requirement. No credential is created
+or resolved for the credential-free case. The SDK's `decode_operation_payload`
+separates the existing host-injected `config` object from the closed evaluation
+request; it does not permit undeclared evaluation fields or grant authority.
+
+Prepared plan content also pins hashed instance configuration, account and
+credential reference/revision facts. Changing that context invalidates the old
+plan before cached evaluation receipts can be used. Older prepared records can
+be read for identity validation but require explicit preparation before execution;
+no legacy strategy checkpoint migration is performed.
+
+The opt-in `real_data_calculation_package_installs_prepares_and_executes_without_credentials`
+test accepts `DATA_CALCULATION_TEST_PACKAGE`, verifies and installs its actual
+archive, then executes separate JSONL processes through ExternalPluginHost and
+checks stateful EMA results. It uses a test process sandbox and synthetic numeric
+observations; it does not qualify the production OS sandbox, a market-data
+provider, the shared evaluator's product wiring or trading behavior.
+
+The separate opt-in `saved_plan_evaluator_composes_real_repeated_operations_with_batch_incremental_parity`
+proof installs the actual calculation package, saves a graph through the existing
+HTTP graph route, prepares an immutable typed plan, and evaluates a two-node EMA
+composition through LocalPluginOperations/ExternalPluginHost. Batch and incremental
+runs match values, semantic point hashes and final state. Acquisition is an
+explicit synthetic source fixture; this is not real provider/strategy/trading
+acceptance. The proof also checks that no broker dispatch claim was created.
+
+## Causal state availability and research state slots
+
+Every evaluated calculation node persists host-owned state availability beside
+its plugin state and warmup counters in the same checkpoint transaction. Later
+frames use the maximum known and arrival times of current inputs and preceding
+state when invoking a plugin and stamping outputs. This also applies when plugin
+state is unchanged or empty: the host's readiness decision has causal inputs.
+A request cutoff earlier than the retained state's availability is rejected.
+Unreleased data-evaluation checkpoints/receipts missing required availability
+metadata require explicit replay; no availability time is guessed. Existing
+strategy checkpoints and old wire versions are unchanged.
+
+ResearchRun-partitioned plugins read and return their state under the SDK's
+`RESEARCH_RUN_STATE_SLOT` (`__research_run__`). The host scopes this stable slot by
+saved plan, research run and graph node. Raw caller run IDs need not be exposed
+to the plugin; distinct runs retain independent state and resume independently.
+
+
+The provider-contract proof extends acquisition to the SDK's typed OHLCV fixture
+and adds a real plugin field projection before the repeated EMA operations. It
+uses bounded two-bar batches and single-bar steps. See provider-bar-contract.md
+for the exact provider boundary, availability requirements and remaining real
+provider/authentication acceptance.

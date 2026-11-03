@@ -19,8 +19,38 @@ fn context() -> SideEffectContext {
     )
 }
 
+#[test]
+fn mcp_backtest_schema_validates_nested_contract_without_source_inspection() {
+    let tools = tradeassembly_runtime::mcp::tool_definitions();
+    let schema = &tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "tradeassembly.backtest.run")
+        .unwrap()["inputSchema"];
+    let validator =
+        jsonschema::validator_for(schema).expect("all nested schema references resolve");
+    let mut request =
+        json!({"idempotency_key":"schema-test", "request":{"configuration":configuration()}});
+    assert!(validator.is_valid(&request));
+    request["request"]["configuration"]["instruments"][0]["metadata"] =
+        json!({"testAssumption":true});
+    assert!(
+        !validator.is_valid(&request),
+        "metadata values must be strings"
+    );
+    request["request"]["configuration"]["instruments"][0]["metadata"] =
+        json!({"testAssumption":"true"});
+    request["request"]["configuration"]["execution"]["fillTiming"] = json!("invented");
+    assert!(
+        !validator.is_valid(&request),
+        "fill timing must match the typed enum"
+    );
+}
+
 fn configuration() -> BacktestConfiguration {
     BacktestConfiguration {
+        typed_evaluation: None,
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),
         strategy: StrategyVersionBinding {
             strategy_id: "strategy_fixture".to_string(),
@@ -198,6 +228,7 @@ fn repository_keeps_manifest_and_result_immutable_across_restart() {
 
     let result = BacktestResult::build(
         BacktestResultContent {
+            typed_evaluation: None,
             schema: BACKTEST_RESULT_SCHEMA.to_string(),
             run_id: run.run_id.clone(),
             manifest_hash: manifest.manifest_hash.clone(),
@@ -277,5 +308,58 @@ fn repository_keeps_manifest_and_result_immutable_across_restart() {
             .get_manifest("run_fixture")
             .expect_err("tamper rejected"),
         "backtest_manifest_integrity_failed"
+    );
+}
+
+#[test]
+fn typed_backtest_versioned_fields_preserve_v1_omission_and_refuse_null_or_version_mix() {
+    let original = serde_json::to_value(configuration()).unwrap();
+    assert!(original.get("typedEvaluation").is_none());
+    let bytes = serde_json_canonicalizer::to_vec(&original).unwrap();
+    let decoded: BacktestConfiguration = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(serde_json_canonicalizer::to_vec(&decoded).unwrap(), bytes);
+    for field in [
+        serde_json::Value::Null,
+        json!({"caller":"cannot-enable-v2"}),
+    ] {
+        let mut altered = original.clone();
+        altered["typedEvaluation"] = field;
+        assert!(serde_json::from_value::<BacktestConfiguration>(altered)
+            .unwrap_err()
+            .to_string()
+            .contains("version_binding_mismatch"));
+    }
+    let raw = json!({"schema":BACKTEST_RESULT_SCHEMA,"runId":"old","manifestHash":"old","evaluatorVersion":"old","compilerVersion":"old","decisions":[],"orders":[],"fills":[],"positions":[],"ledger":[],"accounting":{},"diagnostics":[]});
+    let decoded: BacktestResultContent = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(
+        serde_json_canonicalizer::to_vec(&decoded).unwrap(),
+        serde_json_canonicalizer::to_vec(&raw).unwrap()
+    );
+    for field in [serde_json::Value::Null, json!({})] {
+        let mut altered = raw.clone();
+        altered["typedEvaluation"] = field;
+        assert!(serde_json::from_value::<BacktestResultContent>(altered)
+            .unwrap_err()
+            .to_string()
+            .contains("version_binding_mismatch"));
+    }
+    for field in [serde_json::Value::Null, json!({})] {
+        let altered = json!({"schema":tradeassembly_runtime::backtest_report::BACKTEST_REPORT_SCHEMA,"typedEvaluation":field});
+        assert!(
+            serde_json::from_value::<tradeassembly_runtime::backtest_report::BacktestReport>(
+                altered
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("version_binding_mismatch")
+        );
+    }
+    let mut ignored = configuration();
+    ignored
+        .variable_overrides
+        .insert("ignored".into(), json!(1));
+    assert!(
+        !ignored.validate().ready,
+        "unused parameter labels must not qualify as executed overrides"
     );
 }

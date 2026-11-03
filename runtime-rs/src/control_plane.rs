@@ -1,30 +1,16 @@
 // Copyright (c) 2026 OptionLab LLC. All rights reserved.
 
+use crate::control_plane_redaction::{is_sensitive_text, redact_sensitive_payload};
 use crate::finance_authority::FinanceAuthorityPort;
 use crate::ports::{AuthorityContext, IdempotencyKey, SideEffectContext, StoragePort};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const COMMAND_NS: &str = "control_plane_commands";
 pub const SEQUENCE_NS: &str = "control_plane_sequences";
 const SCHEMA_VERSION: &str = "tradeassembly.control_plane.command.v1";
-
-const SENSITIVE_KEYS: &[&str] = &[
-    "access_token",
-    "api_key",
-    "api_secret",
-    "authorization",
-    "bearer",
-    "client_secret",
-    "code_verifier",
-    "password",
-    "private_key",
-    "refresh_token",
-    "secret",
-    "token",
-];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlPlaneCommandEnvelope {
@@ -109,6 +95,22 @@ pub fn graphql_envelope(request: &Value) -> Result<ControlPlaneCommandEnvelope, 
 }
 
 pub fn mcp_envelope(name: &str, arguments: &Value) -> Result<ControlPlaneCommandEnvelope, String> {
+    // Each implicit OAuth poll must observe the provider again. It remains a
+    // protected credential command because a ready handoff installs credentials.
+    // The OAuth attempt lock/receipt makes that installation duplicate-safe;
+    // explicit caller keys still replay the exact invocation they identify.
+    let mut poll_arguments;
+    let arguments = if name == "tradeassembly.plugin.oauth.status"
+        && arguments.get("idempotency_key").is_none()
+        && arguments.get("idempotencyKey").is_none()
+    {
+        poll_arguments = arguments.clone();
+        poll_arguments["idempotency_key"] =
+            json!(format!("oauth-poll:{:032x}", rand::random::<u128>()));
+        &poll_arguments
+    } else {
+        arguments
+    };
     let command_name = mcp_command_name(name);
     let route_path = mcp_route_path(name, &command_name);
     let side_effect_class = if mcp_is_read(name) {
@@ -399,6 +401,73 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", "/product/sightline/events") => "sightline.events.list".to_string(),
         ("POST", "/product/strategies/publish") => "strategy.version.publish".to_string(),
         ("POST", "/capabilities/graph/resolve") => "capability.graph.resolve".to_string(),
+        ("POST", "/product/strategies/option-selections/create") => {
+            "strategy.option_selection.create".into()
+        }
+        (
+            "POST",
+            "/product/strategies/positions/inspect"
+            | "/product/strategies/provider-positions/inspect",
+        ) => "strategy.position.inspect".into(),
+        ("POST", "/product/strategies/positions/register") => "strategy.position.register".into(),
+        ("POST", "/product/strategies/positions/advance") => "strategy.position.advance".into(),
+        ("POST", "/product/strategies/order-plans/prepare") => "strategy.order_plan.prepare".into(),
+        ("POST", "/product/strategies/order-plans/reserve") => "strategy.order_plan.reserve".into(),
+        ("POST", "/product/strategies/order-plans/release") => "strategy.order_plan.release".into(),
+        ("POST", "/product/strategies/order-plans/decide")
+        | ("POST", "/product/strategies/order-plans/select")
+        | ("POST", "/product/strategies/order-plans/submit") => "strategy.order_plan.submit".into(),
+        ("POST", "/product/strategies/order-plans/settle") => "strategy.order_plan.settle".into(),
+        ("POST", "/product/strategies/order-plans/reconcile") => {
+            "strategy.order_plan.reconcile".into()
+        }
+        ("POST", "/product/strategies/managed-position-plans/prepare")
+        | ("POST", "/product/strategies/selection-plans/prepare") => {
+            "strategy.selection_plan.prepare".into()
+        }
+        ("POST", "/product/strategies/management-windows/prepare")
+        | ("POST", "/product/strategies/session-schedules/prepare") => {
+            "strategy.session_schedule.prepare".into()
+        }
+        ("POST", "/product/strategies/session-schedules/get") => {
+            "strategy.session_schedule.get".into()
+        }
+        ("POST", "/product/strategies/instrument-screens/create") => {
+            "strategy.instrument_screen.create".into()
+        }
+        ("POST", "/product/strategies/instrument-screens/get") => {
+            "strategy.instrument_screen.get".into()
+        }
+        ("POST", "/product/strategies/data-collections/create") => {
+            "strategy.data_collection.create".into()
+        }
+        ("POST", "/product/strategies/data-collections/get") => {
+            "strategy.data_collection.get".into()
+        }
+        ("POST", "/product/strategies/data-captures/create")
+        | ("POST", "/product/strategies/managed-data-streams/create")
+        | ("POST", "/product/strategies/managed-data-streams/append") => {
+            "strategy.data_capture.create".to_string()
+        }
+        ("POST", "/product/strategies/data-captures/get") => {
+            "strategy.data_capture.get".to_string()
+        }
+        ("POST", "/product/strategies/indicator-context/inspect") => {
+            "strategy.indicator_context.inspect".to_string()
+        }
+        ("POST", "/product/strategies/data-recipes/step") => {
+            "strategy.data_recipe.step".to_string()
+        }
+        ("POST", "/product/strategies/data-recipes/prepare") => {
+            "strategy.data_recipe.prepare".to_string()
+        }
+        ("POST", "/product/strategies/data-plans/prepare") => {
+            "strategy.data_plan.prepare".to_string()
+        }
+        ("POST", "/product/strategies/data-runs/step")
+        | ("POST", "/product/strategies/managed-data-runs/step") => {
+            "strategy.data_run.step".to_string()
+        }
         ("POST", "/capability-graph-revisions") => "capability.binding.revision.save".to_string(),
         ("POST", "/capability-graph-revisions/currentness") => {
             "capability.graph.currentness.check".to_string()
@@ -470,9 +539,22 @@ fn http_command_name(method: &str, path: &str) -> String {
         ("GET", path) if path.starts_with("/research-comparisons/") => {
             "research.comparison.read".to_string()
         }
+        ("POST", "/dataset-projections") => "research.dataset.project.create".to_string(),
+        ("POST", path)
+            if path.starts_with("/dataset-projections/") && path.ends_with("/advance") =>
+        {
+            "research.dataset.project.advance".to_string()
+        }
         ("POST", "/dataset-ingestions") => "research.dataset.create".to_string(),
         ("POST", path) if path.starts_with("/dataset-ingestions/") && path.ends_with("/cancel") => {
             "research.dataset.cancel".to_string()
+        }
+        ("POST", path)
+            if path.starts_with("/backtests/")
+                && (path.ends_with("/recomputations") || path.ends_with("/advance"))
+                && path.contains("/recomputations") =>
+        {
+            "backtest.run.execute".to_string()
         }
         ("POST", "/product/strategies/backtests/run")
         | ("POST", "/backtests")
@@ -677,6 +759,59 @@ fn mcp_command_name(name: &str) -> String {
         "tradeassembly.plugin.capability_graph_resolve" => {
             return "capability.graph.resolve".to_string();
         }
+        "tradeassembly.strategy.option_selection.create" => {
+            return "strategy.option_selection.create".into()
+        }
+        "tradeassembly.strategy.order_plan.prepare" => return "strategy.order_plan.prepare".into(),
+        "tradeassembly.strategy.order_plan.reserve" => return "strategy.order_plan.reserve".into(),
+        "tradeassembly.strategy.order_plan.release" => return "strategy.order_plan.release".into(),
+        "tradeassembly.strategy.order_plan.submit"
+        | "tradeassembly.strategy.order_plan.decide"
+        | "tradeassembly.strategy.order_plan.select" => return "strategy.order_plan.submit".into(),
+        "tradeassembly.strategy.order_plan.settle" => return "strategy.order_plan.settle".into(),
+        "tradeassembly.strategy.order_plan.reconcile" => {
+            return "strategy.order_plan.reconcile".into()
+        }
+        "tradeassembly.strategy.selection_plan.prepare" => {
+            return "strategy.selection_plan.prepare".into()
+        }
+        "tradeassembly.strategy.session_schedule.prepare" => {
+            return "strategy.session_schedule.prepare".into()
+        }
+        "tradeassembly.strategy.session_schedule.get" => {
+            return "strategy.session_schedule.get".into()
+        }
+        "tradeassembly.strategy.instrument_screen.create" => {
+            return "strategy.instrument_screen.create".into()
+        }
+        "tradeassembly.strategy.instrument_screen.get" => {
+            return "strategy.instrument_screen.get".into()
+        }
+        "tradeassembly.strategy.data_collection.create" => {
+            return "strategy.data_collection.create".into()
+        }
+        "tradeassembly.strategy.data_collection.get" => {
+            return "strategy.data_collection.get".into()
+        }
+        "tradeassembly.strategy.data_capture.create" => {
+            return "strategy.data_capture.create".to_string()
+        }
+        "tradeassembly.strategy.data_capture.get" => {
+            return "strategy.data_capture.get".to_string()
+        }
+        "tradeassembly.strategy.indicator_context.inspect" => {
+            return "strategy.indicator_context.inspect".to_string()
+        }
+        "tradeassembly.strategy.data_recipe.step" => {
+            return "strategy.data_recipe.step".to_string()
+        }
+        "tradeassembly.strategy.data_recipe.prepare" => {
+            return "strategy.data_recipe.prepare".to_string()
+        }
+        "tradeassembly.strategy.data_plan.prepare" => {
+            return "strategy.data_plan.prepare".to_string()
+        }
+        "tradeassembly.strategy.data_run.step" => return "strategy.data_run.step".to_string(),
         "tradeassembly.plugin.capability_revision_save" => {
             return "capability.binding.revision.save".to_string();
         }
@@ -706,6 +841,9 @@ fn mcp_command_name(name: &str) -> String {
         }
         "tradeassembly.sightline.list_events" => {
             return "sightline.events.list".to_string();
+        }
+        "tradeassembly.backtest.recompute.start" | "tradeassembly.backtest.recompute.advance" => {
+            return "backtest.run.execute".to_string()
         }
         "tradeassembly.backtest.run" => {
             return "backtest.run.execute".to_string();
@@ -798,6 +936,30 @@ fn mcp_uses_route_classification(name: &str, command_name: &str) -> bool {
 
 fn mcp_route_path(name: &str, command_name: &str) -> String {
     match name {
+        "tradeassembly.strategy.order_plan.prepare" => {
+            "/product/strategies/order-plans/prepare".into()
+        }
+        "tradeassembly.strategy.order_plan.reserve" => {
+            "/product/strategies/order-plans/reserve".into()
+        }
+        "tradeassembly.strategy.order_plan.release" => {
+            "/product/strategies/order-plans/release".into()
+        }
+        "tradeassembly.strategy.order_plan.submit" => {
+            "/product/strategies/order-plans/submit".into()
+        }
+        "tradeassembly.strategy.order_plan.decide" => {
+            "/product/strategies/order-plans/decide".into()
+        }
+        "tradeassembly.strategy.order_plan.select" => {
+            "/product/strategies/order-plans/select".into()
+        }
+        "tradeassembly.strategy.order_plan.settle" => {
+            "/product/strategies/order-plans/settle".into()
+        }
+        "tradeassembly.strategy.order_plan.reconcile" => {
+            "/product/strategies/order-plans/reconcile".into()
+        }
         "tradeassembly.plugin.oauth.start" => "/plugins/oauth/start".to_string(),
         "tradeassembly.plugin.oauth.status" => "/plugins/oauth/status".to_string(),
         "tradeassembly.plugin.oauth.disconnect" => "/plugins/oauth/disconnect".to_string(),
@@ -866,6 +1028,15 @@ fn mcp_route_path(name: &str, command_name: &str) -> String {
         "tradeassembly.execution.scheduler.start" => "/product/scheduler/start".to_string(),
         "tradeassembly.execution.scheduler.run" => "/scheduler/run".to_string(),
         "tradeassembly.execution.scheduler.stop" => "/product/scheduler/stop".to_string(),
+        "tradeassembly.backtest.recompute.start" => {
+            "/backtests/{run_id}/recomputations".to_string()
+        }
+        "tradeassembly.backtest.recompute.advance" => {
+            "/backtests/{run_id}/recomputations/{recomputation_id}/advance".to_string()
+        }
+        "tradeassembly.backtest.recompute.inspect" => {
+            "/backtests/{run_id}/recomputations/{recomputation_id}".to_string()
+        }
         "tradeassembly.backtest.run" => "/product/strategies/backtests/run".to_string(),
         "tradeassembly.backtest.get" => "/backtests/{run_id}".to_string(),
         "tradeassembly.backtest.list" => "/backtests".to_string(),
@@ -1214,6 +1385,7 @@ fn mcp_is_read(name: &str) -> bool {
         || name.ends_with(".report")
         || name.ends_with(".replay")
         || name == "tradeassembly.health"
+        || name == "tradeassembly.strategy.schema"
         || name == "tradeassembly.setup.status"
         || name == "tradeassembly.studio.link"
 }
@@ -1221,6 +1393,26 @@ fn mcp_is_read(name: &str) -> bool {
 fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
     if is_read_http_route(method, path) {
         return "read".to_string();
+    }
+    if path == "/product/strategies/positions/inspect"
+        || path == "/product/strategies/provider-positions/inspect"
+        || path == "/product/strategies/session-schedules/get"
+        || path == "/product/strategies/instrument-screens/get"
+        || path == "/product/strategies/data-captures/get"
+        || path == "/product/strategies/data-collections/get"
+    {
+        return "read".into();
+    }
+    if path == "/product/strategies/management-windows/prepare"
+        || path == "/product/strategies/session-schedules/prepare"
+        || path == "/product/strategies/instrument-screens/create"
+        || path == "/product/strategies/data-collections/create"
+        || path == "/product/strategies/data-captures/create"
+        || path == "/product/strategies/managed-data-streams/create"
+        || path == "/product/strategies/managed-data-streams/append"
+        || path == "/product/strategies/option-selections/create"
+    {
+        return "research".into();
     }
     if path == "/product/sightline/context/get" {
         return "read".to_string();
@@ -1254,12 +1446,27 @@ fn classify_side_effect(method: &str, path: &str, body: &Value) -> String {
             "paper".to_string()
         };
     }
+    if matches!(
+        path,
+        "/product/strategies/data-plans/prepare" | "/product/strategies/data-recipes/prepare"
+    ) {
+        return "mutation".to_string();
+    }
+    if matches!(
+        path,
+        "/product/strategies/data-runs/step"
+            | "/product/strategies/data-recipes/step"
+            | "/product/strategies/managed-data-runs/step"
+    ) {
+        return "research".to_string();
+    }
     if path.contains("strategy-execution-configs") {
         return "mutation".to_string();
     }
     if path.contains("backtest")
         || path.contains("research")
         || path.contains("dataset-ingestion")
+        || path.contains("dataset-projection")
         || path.contains("monte-carlo")
         || path.contains("portfolio-risk")
     {
@@ -1319,7 +1526,8 @@ fn is_read_http_route(method: &str, path: &str) -> bool {
     }
     matches!(
         path,
-        "/capabilities/resolve"
+        "/product/strategies/indicator-context/inspect"
+            | "/capabilities/resolve"
             | "/product/live-mandates/status"
             | "/capabilities/graph/resolve"
             | "/capability-graph-revisions/currentness"
@@ -1373,6 +1581,61 @@ fn command_group(command_name: &str) -> &str {
 }
 
 fn target_object(path: &str, body: &Value) -> Option<String> {
+    if path == "/dataset-projections" {
+        return body
+            .pointer("/projection/scope/strategyId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+    if path.starts_with("/dataset-projections/") && path.ends_with("/advance") {
+        return body
+            .pointer("/projection/projectionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+
+    if path.starts_with("/backtests/") && path.contains("/recomputations") {
+        return body
+            .get("request")
+            .and_then(|r| r.get("runId"))
+            .or_else(|| body.get("runId"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+    }
+
+    let scope = match path {
+        "/product/strategies/management-windows/prepare" => {
+            Some("/managementWindow/scope/strategyId")
+        }
+        "/product/strategies/managed-position-plans/prepare" => {
+            Some("/managedPositionPlan/scope/strategyId")
+        }
+        "/product/strategies/order-plans/prepare" => Some("/orderPlan/scope/strategyId"),
+        "/product/strategies/managed-data-streams/create"
+        | "/product/strategies/managed-data-streams/append"
+        | "/product/strategies/managed-data-runs/step"
+        | "/product/strategies/positions/register"
+        | "/product/strategies/positions/advance"
+        | "/product/strategies/positions/inspect"
+        | "/product/strategies/provider-positions/inspect"
+        | "/product/strategies/order-plans/reserve"
+        | "/product/strategies/order-plans/release"
+        | "/product/strategies/order-plans/decide"
+        | "/product/strategies/order-plans/select"
+        | "/product/strategies/order-plans/submit"
+        | "/product/strategies/order-plans/reconcile"
+        | "/product/strategies/order-plans/settle" => Some("/scope/strategyId"),
+        _ => None,
+    };
+    if let Some(pointer) = scope {
+        return body
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
+    }
+
     if path.starts_with("/plugins/oauth/") {
         if let Some(instance) = nested_value(body, "instanceRef")
             .or_else(|| nested_value(body, "instance_ref"))
@@ -1603,56 +1866,6 @@ fn graphql_is_mutation(request: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn redact_sensitive_payload(value: Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, value)| {
-                    if is_sensitive_key(&key) {
-                        (key, Value::String("[REDACTED]".to_string()))
-                    } else {
-                        (key, redact_sensitive_payload(value))
-                    }
-                })
-                .collect::<Map<_, _>>(),
-        ),
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(redact_sensitive_payload).collect())
-        }
-        Value::String(text) if is_sensitive_text(&text) => Value::String("[REDACTED]".to_string()),
-        other => other,
-    }
-}
-
-fn is_sensitive_key(key: &str) -> bool {
-    let normalized = key.replace('-', "_").to_ascii_lowercase();
-    let compact = normalized.replace('_', "");
-    SENSITIVE_KEYS.contains(&normalized.as_str())
-        || normalized.ends_with("_token")
-        || normalized.ends_with("_secret")
-        || compact.contains("token")
-        || compact.contains("secret")
-        || compact == "apikey"
-        || compact == "privatekey"
-        || compact == "authorizationurl"
-        || compact == "handoffverifier"
-        || compact == "verifier"
-}
-
-fn is_sensitive_text(value: &str) -> bool {
-    let normalized = value.to_ascii_lowercase();
-    normalized.contains("api_secret")
-        || normalized.contains("apisecret")
-        || normalized.contains("api_key")
-        || normalized.contains("apikey")
-        || normalized.contains("access_key")
-        || normalized.contains("private_key")
-        || normalized.contains("password")
-        || normalized.contains("secret")
-        || normalized.contains("token")
-        || normalized.contains("bearer ")
-}
-
 fn hash_json(value: &Value) -> Result<String, String> {
     let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     Ok(hash_bytes(&bytes))
@@ -1681,6 +1894,44 @@ mod tests {
     use crate::finance_authority::TestFinanceAuthority;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn oauth_status_poll_does_not_replay_pending_response() {
+        let directory = tempdir().unwrap();
+        let storage = LocalSqliteStorage::new(directory.path().join("poll.db").to_string_lossy());
+        let args = json!({"instanceRef":"alpaca-paper","connectionId":"connection"});
+        let first = mcp_envelope("tradeassembly.plugin.oauth.status", &args).unwrap();
+        assert_eq!(first.command_name, "credential.store");
+        assert_ne!(first.side_effect_class, "read");
+        prepare_command(&storage, &TestFinanceAuthority, first.clone()).unwrap();
+        complete_command_with_body(
+            &storage,
+            &TestFinanceAuthority,
+            &first,
+            200,
+            Some(json!({"status":"pending"})),
+        )
+        .unwrap();
+        let next = mcp_envelope("tradeassembly.plugin.oauth.status", &args).unwrap();
+        assert_eq!(first.authority, next.authority);
+        let next = prepare_command(&storage, &TestFinanceAuthority, next).unwrap();
+        assert!(
+            !next.duplicate,
+            "a fresh poll must reach the relay instead of replaying pending"
+        );
+        for key in ["idempotency_key", "idempotencyKey"] {
+            let mut explicit = args.clone();
+            explicit[key] = json!("explicit-poll");
+            assert_eq!(
+                mcp_envelope("tradeassembly.plugin.oauth.status", &explicit)
+                    .unwrap()
+                    .command_id,
+                mcp_envelope("tradeassembly.plugin.oauth.status", &explicit)
+                    .unwrap()
+                    .command_id
+            );
+        }
+    }
 
     fn plugin_package_body(locator: &str, offline: bool) -> Value {
         json!({
@@ -2100,5 +2351,53 @@ mod tests {
             first_read.idempotency_key.as_str(),
             second_read.idempotency_key.as_str()
         );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn execution_plan_c3_target_comes_from_actual_scope_not_top_level_hint() {
+    let body = json!({"strategyId":"forged-other","orderPlan":{"scope":{"strategyId":"actual-owned"}},"scope":{"strategyId":"actual-owned"},"idempotencyKey":"fixture-target","accountMode":"paper"});
+    for (path, tool) in [
+        (
+            "/product/strategies/order-plans/prepare",
+            "tradeassembly.strategy.order_plan.prepare",
+        ),
+        (
+            "/product/strategies/order-plans/reserve",
+            "tradeassembly.strategy.order_plan.reserve",
+        ),
+        (
+            "/product/strategies/order-plans/release",
+            "tradeassembly.strategy.order_plan.release",
+        ),
+        (
+            "/product/strategies/order-plans/decide",
+            "tradeassembly.strategy.order_plan.decide",
+        ),
+        (
+            "/product/strategies/order-plans/select",
+            "tradeassembly.strategy.order_plan.select",
+        ),
+    ] {
+        assert_eq!(
+            http_envelope("http", "POST", path, &body)
+                .unwrap()
+                .target_object
+                .as_deref(),
+            Some("actual-owned")
+        );
+        assert_eq!(
+            mcp_envelope(tool, &body).unwrap().target_object.as_deref(),
+            Some("actual-owned")
+        );
+        if tool.ends_with(".decide") || tool.ends_with(".select") {
+            let envelope = mcp_envelope(tool, &body).unwrap();
+            assert_eq!(envelope.command_name, "strategy.order_plan.submit");
+            let action = crate::finance_authority::authority_definition(&envelope).unwrap();
+            assert_eq!(action.action, "strategy.order_plan.submit");
+            assert_eq!(action.resource_kind, "strategy_order_plan");
+            assert_eq!(action.purpose, "order_submission_request");
+        }
     }
 }

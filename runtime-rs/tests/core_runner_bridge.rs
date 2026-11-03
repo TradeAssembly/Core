@@ -96,6 +96,7 @@ impl CoreRunnerBridgePort for ReferenceBridge {
 
 fn configuration() -> BacktestConfiguration {
     BacktestConfiguration {
+        typed_evaluation: None,
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),
         strategy: StrategyVersionBinding {
             strategy_id: "strategy_fixture".to_string(),
@@ -327,33 +328,44 @@ fn live_credentials_and_unbounded_payloads_are_rejected_without_echo() {
 }
 
 #[test]
-fn safe_variable_overrides_remain_supported_and_semantically_bound() {
-    let mut command = command();
-    command
-        .backtest_manifest
-        .content
-        .configuration
-        .variable_overrides
-        .insert("entryThreshold".to_string(), json!(42));
-    let rebuilt = BacktestRunManifest::build(
-        command.backtest_manifest.content.clone(),
-        command.backtest_manifest.created_at_ms,
-    )
-    .expect("rebuilt manifest");
-    command.backtest_manifest = rebuilt;
-    command.validate(CORE_RELEASE).expect("safe override");
-    let first = command.canonical_hash().expect("first hash");
-    command
-        .backtest_manifest
-        .content
-        .configuration
-        .variable_overrides
-        .insert("entryThreshold".to_string(), json!(43));
-    let rebuilt = BacktestRunManifest::build(
-        command.backtest_manifest.content.clone(),
-        command.backtest_manifest.created_at_ms,
-    )
-    .expect("rebuilt manifest");
-    command.backtest_manifest = rebuilt;
-    assert_ne!(first, command.canonical_hash().expect("changed hash"));
+fn variable_overrides_require_implemented_immutable_parameter_binding() {
+    let original = command();
+    original.validate(CORE_RELEASE).expect("baseline command");
+    let original_hash = original.canonical_hash().expect("baseline hash");
+    let bridge = ReferenceBridge::default();
+    for threshold in [42, 43] {
+        let mut candidate = original.clone();
+        candidate
+            .backtest_manifest
+            .content
+            .configuration
+            .variable_overrides
+            .insert("entryThreshold".to_string(), json!(threshold));
+        let validation = candidate.backtest_manifest.content.configuration.validate();
+        assert!(!validation.ready);
+        assert!(validation.diagnostics.iter().any(|d| {
+            d.field.as_deref() == Some("/variableOverrides")
+                && d.detail == "parameter overrides require an implemented immutable typed parameter binding"
+        }));
+        assert_eq!(
+            BacktestRunManifest::build(
+                candidate.backtest_manifest.content.clone(),
+                candidate.backtest_manifest.created_at_ms,
+            )
+            .expect_err("unsupported override must not admit a manifest"),
+            "backtest_manifest_invalid"
+        );
+        assert_eq!(
+            bridge
+                .dispatch(&candidate)
+                .expect_err("bridge must reject invalid override")
+                .code,
+            RunnerBridgeErrorCode::PayloadOutOfBounds
+        );
+        assert_eq!(bridge.executions(), 0);
+    }
+    assert_eq!(
+        original.canonical_hash().expect("original hash"),
+        original_hash
+    );
 }

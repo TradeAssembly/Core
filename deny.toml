@@ -1,7 +1,8 @@
 [advisories]
 version = 2
 yanked = "warn"
-# openidconnect 4.0.1 unconditionally depends on rsa 0.9. TradeAssembly only uses
+# openidconnect 4.x (including the pinned 4.1 snapshot) depends on rsa 0.9.
+# TradeAssembly only uses
 # that path to verify provider ID-token signatures; the only private-key use is
 # the loopback mock issuer in tests. Reassess when either crate ships a fix.
 ignore = ["RUSTSEC-2023-0071"]
@@ -36,3 +37,7 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Official upstream advisory fix, immutably pinned in each consumer manifest.
+# Unknown Git sources remain denied; this is not an advisory exception.
+allow-git = ["https://github.com/ramosbugs/openidconnect-rs"]

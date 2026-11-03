@@ -1,0 +1,84 @@
+{
+  "schemaVersion": "tradeassembly.settlement_observation.v2",
+  "requestSha256": "9041b2e0a56d8fdd9c9e79d81c77e11df69ef7ccafdc4eb84d91861ed0dccae3",
+  "status": "pending",
+  "coherence": "non_atomic",
+  "order": {
+    "schemaVersion": "tradeassembly.broker_order_observation.v2",
+    "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+    "order": {
+      "schemaVersion": "tradeassembly.broker_order.v2",
+      "instrument": {
+        "instrumentId": "opaque.host",
+        "providerSymbol": "FIX",
+        "assetClass": "equity",
+        "instrumentFamily": "equity",
+        "quantityUnit": "shares",
+        "multiplier": "1",
+        "quoteCurrency": "USD"
+      },
+      "positionAction": "buy_to_open",
+      "quantity": "0.123456789012",
+      "pricing": {
+        "kind": "limit",
+        "limitPrice": "12.000000000001"
+      },
+      "timeInForce": "day",
+      "clientOrderId": "original.client"
+    },
+    "providerOrderId": null,
+    "status": "unknown",
+    "filledQuantity": {
+      "status": "unavailable",
+      "reason": "not_evidenced"
+    },
+    "cashSpent": {
+      "status": "unavailable",
+      "reason": "not_evidenced"
+    },
+    "observedAtMs": 1000,
+    "knownAtMs": 1001
+  },
+  "averageFillPrice": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "feeCash": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "feeFinality": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "account": {
+    "status": "unavailable",
+    "reason": "not_evidenced"
+  },
+  "evidence": [
+    {
+      "id": "duplicate",
+      "kind": "order",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_evidenced"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "startedAtMs": 1000,
+      "completedAtMs": 1100
+    },
+    {
+      "id": "duplicate",
+      "kind": "fees",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_evidenced"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "startedAtMs": 1000,
+      "completedAtMs": 1100
+    }
+  ]
+}

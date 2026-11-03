@@ -12,9 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod agent_deployment;
+mod agent_orders;
 mod attribution_journal;
 mod backtest;
 pub mod backtest_lifecycle;
+pub(crate) mod backtest_recomputations;
 mod broker_onboarding;
 mod broker_recovery;
 mod capability_graph;
@@ -23,25 +25,50 @@ pub mod connected_runner;
 mod contracts;
 pub mod core_runner;
 mod credentials;
+pub(crate) mod data_binding;
+pub mod data_captures;
+pub mod data_collections;
+pub mod data_evaluation;
+pub mod data_plans;
+pub mod data_recipes;
+pub mod data_runner;
+pub mod data_strategy;
 mod dataset_ingestion;
+mod dataset_projections;
+mod default_free_plugins;
 mod derivatives;
 mod execution;
+mod external_agent_session;
 mod external_broker_evidence;
 mod fill_quality;
+mod graph_metadata;
+pub(crate) mod indicator_context;
+pub mod instrument_screens;
 mod journal_view;
 mod lifecycle_calendar;
 mod live_authorization;
+pub(crate) mod managed_data_streams;
+pub(crate) mod managed_stream_evaluation;
+pub mod management_windows;
 mod marketdata;
 mod object_authorization;
 mod onboarding;
+pub mod option_selections;
 mod options;
+pub mod order_plans;
 mod orders;
+mod original_cycle_recovery;
+mod package_validation;
 pub mod paper_runner;
 mod plugin_lifecycle;
 mod plugin_oauth;
 mod positions;
 mod providers;
+pub mod public_workspace;
 pub mod reach;
+pub mod reach_data;
+pub mod reach_data_consumer;
+pub mod reach_data_proofs;
 mod replay;
 mod research;
 mod research_notebook;
@@ -49,8 +76,12 @@ mod risk;
 mod robustness;
 pub mod robustness_lifecycle;
 mod scheduler;
+pub mod selection_plans;
+pub mod session_dispatch;
+pub mod session_schedules;
 mod sightline;
 mod strategy;
+pub(crate) mod typed_backtest;
 mod workers;
 mod workspace;
 
@@ -253,8 +284,17 @@ pub struct TradeAssemblyService {
     runtime_manifest: Option<ResolvedRuntimeManifest>,
     invocation_principal: Option<auth::SessionPrincipal>,
     oauth_config: Option<RuntimeConfig>,
+    connection_profile: Option<crate::connection_profile::ConnectionProfile>,
+    hosted_oauth_actor: Option<String>,
     invocation_actor_kind: &'static str,
     agent_mcp_execution_context: Option<crate::agent_runner::VerifiedAgentMcpExecutionContext>,
+    // Private, one-public-request lifetime; never serialized or shared by roots.
+    data_step_request: Option<Arc<data_evaluation::DataStepRequest>>,
+    // Immutable package metadata only, scoped to one pure validation callback.
+    package_validation_round: bool,
+    graph_metadata: Option<Arc<graph_metadata::GraphMetadata>>,
+    // Restrictive, in-memory worker provenance; never caller supplied or stored.
+    background_worker_job: Option<String>,
 }
 
 impl fmt::Debug for TradeAssemblyService {
@@ -273,6 +313,35 @@ impl Default for TradeAssemblyService {
 }
 
 impl TradeAssemblyService {
+    pub(crate) fn cancel_broker_connection_attempt(
+        &self,
+        instance: &str,
+        connection: &str,
+    ) -> Result<(), String> {
+        plugin_oauth::cancel_attempt(self, instance, connection)
+    }
+    pub(crate) fn broker_connection_descriptor(&self, instance: &str) -> Result<Value, String> {
+        let record = plugin_lifecycle::require_instance(self, instance)
+            .map_err(|_| "onboarding_instance_unavailable")?;
+        let manifest = plugin_lifecycle::get_manifest(
+            self,
+            record["pluginRef"]
+                .as_str()
+                .ok_or("onboarding_plugin_unavailable")?,
+        );
+        Ok(manifest.body["manifest"]["configuration"]["oauth"].clone())
+    }
+    pub(crate) fn with_hosted_connection(
+        mut self,
+        config: RuntimeConfig,
+        actor: String,
+        profile: Option<crate::connection_profile::ConnectionProfile>,
+    ) -> Self {
+        self.oauth_config = Some(config);
+        self.hosted_oauth_actor = Some(actor);
+        self.connection_profile = profile;
+        self
+    }
     pub fn new(db: impl Into<String>) -> Self {
         Self::local(db)
     }
@@ -307,11 +376,18 @@ impl TradeAssemblyService {
             db,
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
+            package_validation_round: false,
+            graph_metadata: None,
+            background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
+        session_dispatch::resume_local_workers(&service);
         service
     }
 
@@ -333,7 +409,7 @@ impl TradeAssemblyService {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let identity = test_database_identity(&metadata);
+        let identity = test_database_identity(&metadata, &path);
         if registry.get(&path) != Some(&identity) {
             return Err("test_database_handoff_requires_owned_fixture".to_string());
         }
@@ -391,7 +467,7 @@ impl TradeAssemblyService {
         let expected = format!("sha256:{:x}", Sha256::digest(token.as_ref().as_bytes()));
         if record["dbPath"] != path.to_string_lossy().to_string()
             || record["tokenHash"] != expected
-            || record["identity"] != json!(test_database_identity(&metadata))
+            || record["identity"] != json!(test_database_identity(&metadata, &path))
         {
             return Err("test_database_handoff_invalid".to_string());
         }
@@ -399,7 +475,8 @@ impl TradeAssemblyService {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        registry.insert(path, test_database_identity(&metadata));
+        let identity = test_database_identity(&metadata, &path);
+        registry.insert(path, identity);
         drop(registry);
         Ok(Self::test_local(db))
     }
@@ -441,9 +518,15 @@ impl TradeAssemblyService {
             db,
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
+            package_validation_round: false,
+            graph_metadata: None,
+            background_worker_job: None,
         };
         execution::resume_local_scheduler_workers(&service);
         service
@@ -453,6 +536,12 @@ impl TradeAssemblyService {
         let service = Self::from_config_without_local_scheduler_resume(config)?;
         service.resume_local_scheduler_workers();
         Ok(service)
+    }
+
+    /// Explicit bounded-computation host: opening it does not resume existing
+    /// scheduler workers. This factory does not authenticate or grant permission.
+    pub fn from_config_data_only(config: RuntimeConfig) -> Result<Self, String> {
+        Self::from_config_without_local_scheduler_resume(config)
     }
 
     pub(crate) fn from_config_without_local_scheduler_resume(
@@ -472,9 +561,15 @@ impl TradeAssemblyService {
             runtime: Arc::new(runtime),
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
+            package_validation_round: false,
+            graph_metadata: None,
+            background_worker_job: None,
         })
     }
 
@@ -485,6 +580,7 @@ impl TradeAssemblyService {
             .is_some_and(|manifest| manifest.profile == "local")
         {
             execution::resume_local_scheduler_workers(self);
+            session_dispatch::resume_local_workers(self);
         }
     }
 
@@ -495,10 +591,22 @@ impl TradeAssemblyService {
             runtime: Arc::new(runtime),
             runtime_manifest: None,
             oauth_config: None,
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
+            package_validation_round: false,
+            graph_metadata: None,
+            background_worker_job: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_runtime(mut self, runtime: ServiceRuntime) -> Self {
+        self.runtime = Arc::new(runtime);
+        self
     }
 
     pub fn for_authenticated_invocation(
@@ -818,6 +926,167 @@ impl TradeAssemblyService {
         Ok((service, session))
     }
 
+    /// The browser operation is bound by durable, non-secret intent. Credential
+    /// values go only to the owning custody adapter, never into a command hash.
+    pub(crate) fn store_browser_onboarding_credentials(
+        &self,
+        instance_ref: &str,
+        onboarding_id: &str,
+        package_sha256: &str,
+        prior_revision_ref: &str,
+        credentials: Value,
+    ) -> ServiceResponse {
+        self.store_browser_local_credentials(
+            instance_ref,
+            onboarding_id,
+            package_sha256,
+            prior_revision_ref,
+            credentials,
+            "api-keys",
+        )
+    }
+
+    /// Serialize restoration with normal OAuth handoffs. Even expired or
+    /// ambiguous unacknowledged handoffs require explicit cancellation first.
+    pub(crate) fn saved_paper_token_lock(
+        &self,
+        instance_ref: &str,
+    ) -> Result<std::fs::File, String> {
+        let lock = plugin_oauth::oauth_lock(self).map_err(str::to_owned)?;
+        let attempts = self
+            .runtime
+            .storage
+            .list_json("plugin_oauth_attempts")
+            .map_err(|_| "onboarding_oauth_state_unavailable")?;
+        if attempts.iter().any(|(_, attempt)| {
+            attempt["instanceRef"] == instance_ref
+                && attempt["invalidated"] != true
+                && attempt["acknowledged"] != true
+        }) {
+            return Err("onboarding_oauth_pending".into());
+        }
+        Ok(lock)
+    }
+
+    pub(crate) fn store_browser_saved_paper_token(
+        &self,
+        instance_ref: &str,
+        onboarding_id: &str,
+        package_sha256: &str,
+        prior_revision_ref: &str,
+        access_token: String,
+    ) -> ServiceResponse {
+        self.store_browser_local_credentials(
+            instance_ref,
+            onboarding_id,
+            package_sha256,
+            prior_revision_ref,
+            json!({"access_token":access_token}),
+            "saved-paper-token",
+        )
+    }
+
+    fn store_browser_local_credentials(
+        &self,
+        instance_ref: &str,
+        onboarding_id: &str,
+        package_sha256: &str,
+        prior_revision_ref: &str,
+        credentials: Value,
+        operation: &str,
+    ) -> ServiceResponse {
+        let Some(principal) = self
+            .invocation_principal
+            .as_ref()
+            .filter(|p| p.issuer == "local-owner")
+        else {
+            return ServiceResponse::forbidden("onboarding_local_owner_required");
+        };
+        let source = "browser_onboarding_ui";
+        let path = format!("/plugins/instances/{instance_ref}/credentials");
+        let binding = bind_authenticated_invocation_value(
+            json!({"instanceRef":instance_ref,"onboardingId":onboarding_id,
+                "packageSha256":package_sha256,"priorRevisionRef":prior_revision_ref,
+                "idempotency_key":format!("{onboarding_id}:{operation}")}),
+            principal,
+            source,
+            self.invocation_actor_kind,
+            false,
+            None,
+        );
+        if let Some(response) =
+            object_authorization::authorize_private_request(self, "POST", &path, &binding)
+        {
+            return response;
+        }
+        let envelope = match control_plane::http_envelope(source, "POST", &path, &binding) {
+            Ok(envelope) => envelope,
+            Err(_) => return ServiceResponse::bad_request("invalid_command_envelope"),
+        };
+        let prepared = match control_plane::prepare_command(
+            self.runtime.storage.as_ref(),
+            self.runtime.finance_authority.as_ref(),
+            envelope.clone(),
+        ) {
+            Ok(record) => record,
+            Err(_) => return ServiceResponse::conflict("onboarding_credentials_command_failed"),
+        };
+        if prepared.duplicate {
+            return prepared.response_body.map_or_else(
+                || ServiceResponse::conflict("onboarding_credentials_outcome_unknown"),
+                |body| {
+                    ServiceResponse::duplicate_with_body(
+                        prepared.response_status.unwrap_or(409),
+                        &envelope.command_id,
+                        body,
+                    )
+                },
+            );
+        }
+        // Reject unrelated or ambiguous writes before entering the custody adapter.
+        let current = plugin_lifecycle::get_instance(self, instance_ref);
+        let status = plugin_lifecycle::credential_status_for(self, instance_ref);
+        if current.status != 200
+            || status.status != 200
+            || current.body["activePackageSha256"] != package_sha256
+            || status.body["credentialStatus"]["configured"] == true
+            || status.body["credentialStatus"]["revisionRef"] != prior_revision_ref
+        {
+            return ServiceResponse::conflict("onboarding_credentials_outcome_unknown");
+        }
+        let response = plugin_lifecycle::store_credentials(
+            self,
+            instance_ref,
+            json!({"credentials":credentials}),
+        );
+        if response.status != 200 {
+            // An unsuccessful cross-store write can have an unknown outcome.
+            // Preserve the prepared receipt and require reconciliation to prove it.
+            return response;
+        }
+        if control_plane::complete_command_with_body(
+            self.runtime.storage.as_ref(),
+            self.runtime.finance_authority.as_ref(),
+            &envelope,
+            response.status,
+            Some(response.body.clone()),
+        )
+        .is_err()
+        {
+            return ServiceResponse::internal_error("onboarding_credentials_receipt_failed");
+        }
+        response
+    }
+
+    /// Restricts a worker clone after every potentially long nested phase.
+    /// Manual invocations have no worker context and retain normal authority.
+    pub(super) fn require_background_worker_current(&self) -> Result<(), String> {
+        if let Some(job) = &self.background_worker_job {
+            session_dispatch::health_worker_intent_current(self, job)?;
+        }
+        Ok(())
+    }
+
     pub fn handle_http_from_source(
         &self,
         source_interface: &str,
@@ -825,8 +1094,54 @@ impl TradeAssemblyService {
         path: &str,
         body: Value,
     ) -> ServiceResponse {
+        if matches!(
+            backtest_recomputations::route(method, path),
+            Some(backtest_recomputations::Route::Inspect(..))
+        ) {
+            return backtest_recomputations::dispatch(self, method, path, &body)
+                .expect("matched finite inspect route");
+        }
+        let recompute_request = match backtest_recomputations::capture_http(method, path, &body) {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let timing_route = method.eq_ignore_ascii_case("POST")
+            && (matches!(
+                path,
+                "/scheduler/run"
+                    | "/product/strategies/positions/advance"
+                    | "/product/strategies/order-plans/prepare"
+                    | "/product/strategies/order-plans/decide"
+                    | "/product/strategies/order-plans/submit"
+                    | "/product/strategies/data-collections/create"
+            ) || (path.starts_with("/plugins/instances/")
+                && path.ends_with("/health:refresh")));
+        let _timing = order_plans::financial_timing(if timing_route { "c3.http" } else { "" });
+        if let Err(code) = self.require_background_worker_current() {
+            return ServiceResponse::conflict(&code);
+        }
+        if method.eq_ignore_ascii_case("POST") && normalize_path(path) == indicator_context::PATH {
+            // Closed owned read: preserve exact request bytes, perform no C3
+            // mutation/audit write, and let the reader enforce current ownership.
+            return indicator_context::inspect(self, &body);
+        }
         if method.eq_ignore_ascii_case("POST")
-            && normalize_path(path) == "/orders/broker-recovery"
+            && matches!(
+                normalize_path(path).as_str(),
+                "/product/strategies/data-recipes/step"
+                    | "/product/strategies/data-runs/step"
+                    | "/product/strategies/managed-data-runs/step"
+            )
+            && self.data_step_request.is_none()
+        {
+            let scoped = data_evaluation::request_service(self);
+            return scoped.handle_http_from_source(source_interface, method, path, body);
+        }
+        if method.eq_ignore_ascii_case("POST")
+            && matches!(
+                normalize_path(path).as_str(),
+                "/orders/broker-recovery" | "/execution/recover-original"
+            )
             && !broker_recovery::valid_request(&body)
         {
             return ServiceResponse::error(400, "broker_recovery_request_invalid", false);
@@ -835,7 +1150,8 @@ impl TradeAssemblyService {
         // order. Do not silently rewrite a requested Live config to Paper.
         let preserve_config_mode = method.eq_ignore_ascii_case("POST")
             && normalize_path(path) == "/product/strategy-execution-configs/save";
-        let body = self
+        let backtest_context = readonly_backtest_path(method, path, &body);
+        let mut body = self
             .invocation_principal
             .as_ref()
             .map_or(body.clone(), |principal| {
@@ -848,11 +1164,74 @@ impl TradeAssemblyService {
                     None,
                 )
             });
+        if backtest_context {
+            // Evaluation context is not financial account authority. All
+            // authenticated actor/account/authority fields remain bound above.
+            body["mode"] = json!("backtest");
+        }
+        if let Some(request) = recompute_request {
+            backtest_recomputations::bind_body(&mut body, request);
+        }
         let normalized_method = method.to_ascii_uppercase();
         let normalized_path = normalize_path(path);
         if let Some(response) =
             object_authorization::authorize_private_request(self, method, path, &body)
         {
+            return response;
+        }
+        if let Some(response) =
+            backtest::preflight(self, &normalized_method, &normalized_path, &body)
+        {
+            return response;
+        }
+        if let Some(response) = option_selections::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = order_plans::management::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = order_plans::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = managed_data_streams::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = managed_stream_evaluation::preflight(self, &normalized_path, &body)
+        {
+            return response;
+        }
+        if let Some(response) = selection_plans::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) =
+            backtest_recomputations::preflight(self, &normalized_method, &normalized_path, &body)
+        {
+            return response;
+        }
+        if let Some(response) = management_windows::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = session_schedules::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = instrument_screens::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_collections::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) =
+            dataset_projections::preflight(self, &normalized_method, &normalized_path, &body)
+        {
+            return response;
+        }
+        if let Some(response) = data_captures::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_recipes::preflight(self, &normalized_path, &body) {
+            return response;
+        }
+        if let Some(response) = data_strategy::preflight(self, &normalized_path, &body) {
             return response;
         }
         if normalized_method == "POST"
@@ -877,16 +1256,41 @@ impl TradeAssemblyService {
             return self.dispatch_http(method, path, body);
         }
 
+        // Observer authentication and immutable original authority are rechecked by
+        // this continuation. Its atomic result is the retry boundary; a generic
+        // in-progress command must not strand a crash between lookup and commit.
+        if normalized_method == "POST" && normalized_path == "/execution/recover-original" {
+            return self.dispatch_http(method, path, body);
+        }
         let body = self.enrich_control_plane_body(&normalized_path, body);
         let envelope = match control_plane::http_envelope(source_interface, method, path, &body) {
             Ok(envelope) => inherit_trusted_correlation(envelope, &body),
             Err(_) => return ServiceResponse::bad_request("invalid_command_envelope"),
         };
-        match control_plane::prepare_command(
-            self.runtime.storage.as_ref(),
-            self.runtime.finance_authority.as_ref(),
-            envelope.clone(),
+        match research::cached_metadata_projection(
+            self,
+            "http",
+            &format!("{normalized_method} {normalized_path}"),
+            &body,
+            &envelope,
         ) {
+            Ok(Some(projected)) => {
+                return ServiceResponse::duplicate_with_body(
+                    projected.status,
+                    &envelope.command_id,
+                    projected.body,
+                )
+            }
+            Ok(None) => {}
+            Err(response) => return response,
+        }
+        match order_plans::measured(if timing_route { "c3.prepare" } else { "" }, || {
+            control_plane::prepare_command(
+                self.runtime.storage.as_ref(),
+                self.runtime.finance_authority.as_ref(),
+                envelope.clone(),
+            )
+        }) {
             Ok(record) if record.duplicate => {
                 return record
                     .response_status
@@ -923,17 +1327,21 @@ impl TradeAssemblyService {
             Err(_) => return ServiceResponse::internal_error("control plane persistence failed"),
         }
         let dispatch_body = with_control_plane_metadata(body, &envelope);
-        let response = self.dispatch_http(method, path, dispatch_body);
+        let response = order_plans::measured(if timing_route { "c3.dispatch" } else { "" }, || {
+            self.dispatch_http(method, path, dispatch_body)
+        });
         if response.status == 503 && response.body["error"]["retryable"].as_bool() == Some(true) {
             return response;
         }
-        if control_plane::complete_command_with_body(
-            self.runtime.storage.as_ref(),
-            self.runtime.finance_authority.as_ref(),
-            &envelope,
-            response.status,
-            Some(response.body.clone()),
-        )
+        if order_plans::measured(if timing_route { "c3.complete" } else { "" }, || {
+            control_plane::complete_command_with_body(
+                self.runtime.storage.as_ref(),
+                self.runtime.finance_authority.as_ref(),
+                &envelope,
+                response.status,
+                Some(response.body.clone()),
+            )
+        })
         .is_err()
         {
             return ServiceResponse::internal_error("control plane persistence failed");
@@ -1023,13 +1431,19 @@ impl TradeAssemblyService {
                 map.insert("activationId".to_string(), json!(activation_id));
             }
         }
-        if let Some(config_id) = map_string(map, &["configId", "config_id"]) {
-            if let Ok(Some(config)) = self
-                .runtime
-                .storage
-                .get_json("execution_configs", &config_id)
-            {
-                copy_execution_context(map, &config);
+        // Configuration authoring hashes the caller's intent. Inheriting the
+        // configuration written by the first call would change an identical
+        // retry's payload and reject its original idempotency key. Runtime
+        // actions still inherit the saved configuration's authority context.
+        if path != "/product/strategy-execution-configs/save" {
+            if let Some(config_id) = map_string(map, &["configId", "config_id"]) {
+                if let Ok(Some(config)) = self
+                    .runtime
+                    .storage
+                    .get_json("execution_configs", &config_id)
+                {
+                    copy_execution_context(map, &config);
+                }
             }
         }
         if path != "/product/strategy-execution-activations/activate" {
@@ -1049,6 +1463,9 @@ impl TradeAssemblyService {
     }
 
     fn dispatch_http(&self, method: &str, path: &str, body: Value) -> ServiceResponse {
+        if let Some(response) = backtest_recomputations::dispatch(self, method, path, &body) {
+            return response;
+        }
         let normalized_method = method.to_ascii_uppercase();
         let normalized_path = normalize_path(path);
         if let Some(response) =
@@ -1057,6 +1474,108 @@ impl TradeAssemblyService {
             return response;
         }
         match (normalized_method.as_str(), normalized_path.as_str()) {
+            ("POST", "/product/strategies/option-selections/create") => {
+                option_selections::create(self, body)
+            }
+            ("POST", "/product/strategies/provider-positions/inspect") => {
+                order_plans::management::provider_remote::inspect_response(self, &body)
+            }
+            ("POST", "/product/strategies/positions/inspect") => {
+                order_plans::management::remote::inspect_response(self, &body)
+            }
+            (
+                "POST",
+                "/product/strategies/positions/register" | "/product/strategies/positions/advance",
+            ) => order_plans::management::response(self, &normalized_path, body),
+            ("GET", path) if path.starts_with("/product/strategies/positions/") => {
+                match order_plans::management::inspect(
+                    self,
+                    path.trim_start_matches("/product/strategies/positions/"),
+                ) {
+                    Ok(v) => ServiceResponse::ok(v),
+                    Err(_) => ServiceResponse::object_unavailable(),
+                }
+            }
+            ("POST", "/product/strategies/order-plans/prepare") => {
+                order_plans::response(self, order_plans::PREPARE, body)
+            }
+            ("POST", "/product/strategies/order-plans/reserve") => {
+                order_plans::response(self, order_plans::RESERVE, body)
+            }
+            ("POST", "/product/strategies/order-plans/release") => {
+                order_plans::response(self, order_plans::RELEASE, body)
+            }
+            ("POST", "/product/strategies/order-plans/decide") => {
+                order_plans::response(self, order_plans::DECIDE, body)
+            }
+            ("POST", "/product/strategies/order-plans/select") => {
+                order_plans::response(self, order_plans::SELECT, body)
+            }
+            ("POST", "/product/strategies/order-plans/submit") => {
+                order_plans::response(self, order_plans::SUBMIT, body)
+            }
+            ("POST", "/product/strategies/order-plans/settle") => {
+                order_plans::response(self, order_plans::SETTLE, body)
+            }
+            ("POST", "/product/strategies/order-plans/reconcile") => {
+                order_plans::response(self, order_plans::RECONCILE, body)
+            }
+            ("GET", path) if path.starts_with("/product/strategies/order-plans/") => {
+                match order_plans::transport::status(
+                    self,
+                    path.trim_start_matches("/product/strategies/order-plans/"),
+                ) {
+                    Ok(v) => ServiceResponse::ok(v),
+                    Err(_) => ServiceResponse::object_unavailable(),
+                }
+            }
+            ("POST", managed_data_streams::CREATE | managed_data_streams::APPEND) => {
+                managed_data_streams::response(self, path, body)
+            }
+            ("POST", managed_stream_evaluation::PATH) => {
+                managed_stream_evaluation::response(self, body)
+            }
+            ("POST", "/product/strategies/managed-position-plans/prepare") => {
+                selection_plans::prepare_managed_response(self, body)
+            }
+            ("POST", "/product/strategies/selection-plans/prepare") => {
+                selection_plans::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/management-windows/prepare") => {
+                management_windows::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/session-schedules/prepare") => {
+                session_schedules::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/session-schedules/get") => {
+                session_schedules::get_response(self, body)
+            }
+            ("POST", "/product/strategies/instrument-screens/create") => {
+                instrument_screens::create_response(self, body)
+            }
+            ("POST", "/product/strategies/instrument-screens/get") => {
+                instrument_screens::read_response(self, body)
+            }
+            ("POST", "/product/strategies/data-collections/create") => {
+                data_collections::create_response(self, body)
+            }
+            ("POST", "/product/strategies/data-collections/get") => {
+                data_collections::read_response(self, body)
+            }
+            ("POST", "/product/strategies/data-captures/create") => {
+                data_captures::create(self, body)
+            }
+            ("POST", "/product/strategies/data-captures/get") => data_captures::read(self, body),
+            ("POST", "/product/strategies/data-recipes/step") => {
+                data_recipes::step_response(self, body)
+            }
+            ("POST", "/product/strategies/data-recipes/prepare") => {
+                data_recipes::prepare_response(self, body)
+            }
+            ("POST", "/product/strategies/data-plans/prepare") => {
+                data_strategy::prepare(self, body)
+            }
+            ("POST", "/product/strategies/data-runs/step") => data_strategy::evaluate(self, body),
             ("POST", "/product/live-mandates/issue") => live_authorization::issue(self, body),
             ("POST", "/product/live-mandates/revoke") => live_authorization::revoke(self, body),
             ("POST", "/product/live-mandates/status") => live_authorization::status(self, body),
@@ -1427,6 +1946,15 @@ impl TradeAssemblyService {
             ("POST", "/product/strategies/research-runs/create") => {
                 backtest_lifecycle::create(self, body)
             }
+            ("POST", "/dataset-projections") => dataset_projections::create(self, body),
+            ("POST", path)
+                if path.starts_with("/dataset-projections/") && path.ends_with("/advance") =>
+            {
+                dataset_projections::advance(self, path, body)
+            }
+            ("GET", path) if path.starts_with("/dataset-projections/") => {
+                dataset_projections::read(self, path.trim_start_matches("/dataset-projections/"))
+            }
             ("POST", "/dataset-ingestions") => {
                 dataset_ingestion_response(dataset_ingestion::create(self, body), 201)
             }
@@ -1600,7 +2128,7 @@ impl TradeAssemblyService {
                 ServiceResponse::ok(json!(research::list_universes(self)))
             }
             ("POST", "/research/jobs") | ("POST", "/product/strategies/research/jobs/create") => {
-                ServiceResponse::ok(api_result(research::create_job(self, body)))
+                research::create_job(self, body)
             }
             ("GET", "/research/jobs") => ServiceResponse::ok(json!(research::list_jobs(self))),
             ("POST", "/product/strategies/research/jobs/status") => {
@@ -1628,6 +2156,7 @@ impl TradeAssemblyService {
             }
             ("POST", "/orders/reconcile") => ServiceResponse::ok(json!(orders::reconcile(self))),
             ("POST", "/orders/broker-recovery") => broker_recovery::recover(self, body),
+            ("POST", "/execution/recover-original") => original_cycle_recovery::recover(self, body),
             ("GET", "/exit-watches") => ServiceResponse::ok(json!([])),
             ("POST", "/exit-watches/process") => ServiceResponse::ok(
                 json!({"processed": 0, "submit_orders": body.get("submit_orders").and_then(Value::as_bool).unwrap_or(false)}),
@@ -1747,6 +2276,7 @@ impl TradeAssemblyService {
                 Ok(events) => ServiceResponse::ok(json!(events)),
                 Err(response) => response,
             },
+            ("GET", "/journal/cursor") => journal_view::cursor(self),
             ("GET", "/journal/export") => journal_view::export(self),
             ("POST", "/journal/replay") => replay::journal_replay(self),
             ("POST", "/journal/replay-report") => replay::journal_replay(self),
@@ -1902,15 +2432,18 @@ impl TradeAssemblyService {
                         self.lifecycle_calendar(lifecycle_calendar_body_from(&body)),
                     )
                 } else {
-                    ServiceResponse::ok(report_envelope::report_envelope(
-                        kind,
-                        &strategy_id_from(&body),
-                        body.get("backtestId")
-                            .or_else(|| body.get("backtest_id"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("backtest-local"),
-                        "http://127.0.0.1:3001",
-                    ))
+                    ServiceResponse {
+                        status: 501,
+                        body: report_envelope::report_envelope(
+                            kind,
+                            &strategy_id_from(&body),
+                            body.get("backtestId")
+                                .or_else(|| body.get("backtest_id"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("backtest-local"),
+                            "http://127.0.0.1:3001",
+                        ),
+                    }
                 }
             }
             ("POST", "/product/strategies/scenario-valuation") => derivatives::create(self, body),
@@ -1970,9 +2503,51 @@ impl TradeAssemblyService {
                 return response.body;
             }
         }
-        let command_envelope = match control_plane::graphql_envelope(&request)
-            .map(|envelope| inherit_trusted_graphql_correlation(envelope, &request))
-        {
+        // Retired constructed research cannot replay an old completed C3 body.
+        // Ownership above still applies; this path grants no execution effect.
+        if matches!(
+            op.as_str(),
+            "QueueStrategyResearchJob" | "StrategyResearchJobStatus"
+        ) {
+            let path = if op == "QueueStrategyResearchJob" {
+                "/product/strategies/research/jobs/create"
+            } else {
+                "/product/strategies/research/jobs/status"
+            };
+            let variables = request
+                .get("variables")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            if let Some(response) = backtest::preflight(self, "POST", path, &variables) {
+                if response.status >= 400 {
+                    return json!({"errors":[{"message":graphql_error_code(&response.body)}]});
+                }
+                let field = graphql_field(&op);
+                return json!({"data":{field:response.body}});
+            }
+        }
+        let current_envelope = control_plane::graphql_envelope(&request)
+            .map(|envelope| inherit_trusted_graphql_correlation(envelope, &request));
+        if let Ok(envelope) = &current_envelope {
+            match research::cached_metadata_projection(
+                self,
+                "graphql",
+                &op,
+                &request["variables"],
+                envelope,
+            ) {
+                Ok(Some(projected)) => {
+                    return json!({"data": {
+                        graphql_field(&op): projected.body, "_duplicate": true,
+                    }})
+                }
+                Ok(None) => {}
+                Err(response) => {
+                    return json!({"errors":[{"message":graphql_error_code(&response.body)}]})
+                }
+            }
+        }
+        let command_envelope = match current_envelope {
             Ok(envelope) => match control_plane::prepare_command(
                 self.runtime.storage.as_ref(),
                 self.runtime.finance_authority.as_ref(),
@@ -3002,9 +3577,37 @@ impl TradeAssemblyService {
     }
 
     pub fn call_mcp_tool(&self, name: &str, arguments: Value) -> Value {
+        // Authenticated-variable enrichment is for invocation authority, not this
+        // closed data selector. Keep the exact request but still run the normal
+        // agent allowlist/current-lease binding below before dispatching it.
+        let recompute_request = match backtest_recomputations::capture_mcp(self, name, &arguments) {
+            Ok(request) => request,
+            Err(response) => {
+                return mcp::tool_error(
+                    name,
+                    service_error_code(&response.body)
+                        .as_deref()
+                        .unwrap_or("typed_recompute_command_invalid"),
+                    "Typed recompute command refused.",
+                    Some(json!({"httpStatus":response.status})),
+                )
+            }
+        };
+        let indicator_request =
+            (name == indicator_context::TOOL).then(|| arguments["request"].clone());
+        if matches!(
+            name,
+            "tradeassembly.strategy.data_recipe.step" | "tradeassembly.strategy.data_run.step"
+        ) && self.data_step_request.is_none()
+        {
+            return data_evaluation::request_service(self).call_mcp_tool(name, arguments);
+        }
         if matches!(
             name,
             "tradeassembly.account.login"
+                | "tradeassembly.onboarding.start"
+                | "tradeassembly.onboarding.status"
+                | "tradeassembly.onboarding.cancel"
                 | "tradeassembly.account.login.status"
                 | "tradeassembly.account.status"
                 | "tradeassembly.setup.inspect"
@@ -3059,6 +3662,23 @@ impl TradeAssemblyService {
             }
         }
         let arguments = self.enrich_mcp_arguments(name, arguments);
+        // Capability queries select an evaluation mode, not broker authority.
+        // Keep that selector separate from the trusted account mode below.
+        let capability_query_mode = matches!(
+            name,
+            "tradeassembly.plugin.capability_graph_resolve"
+                | "tradeassembly.plugin.capability_revision_save"
+                | "tradeassembly.plugin.capability_resolve"
+        )
+        .then(|| {
+            arguments
+                .get("mode")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten();
+        let backtest_plan_context =
+            name == "tradeassembly.strategy.data_plan.prepare" && arguments["mode"] == "backtest";
         let trusted_runner_mode = self
             .agent_mcp_execution_context
             .as_ref()
@@ -3082,7 +3702,7 @@ impl TradeAssemblyService {
                     trusted_runner_mode.as_deref(),
                 )
             });
-        let arguments = if let Some(context) = &self.agent_mcp_execution_context {
+        let mut arguments = if let Some(context) = &self.agent_mcp_execution_context {
             match crate::agent_runner::bind_mcp_execution_context(
                 self.runtime.as_ref(),
                 context,
@@ -3102,6 +3722,65 @@ impl TradeAssemblyService {
         } else {
             arguments
         };
+        if let Some(request) = recompute_request {
+            if name == backtest_recomputations::INSPECT_TOOL {
+                arguments["request"] = request;
+                let response = backtest_recomputations::mcp_response(self, name, &arguments)
+                    .expect("finite recompute inspect");
+                return if response.status >= 400 {
+                    mcp::tool_error(
+                        name,
+                        service_error_code(&response.body)
+                            .as_deref()
+                            .unwrap_or("typed_recompute_refused"),
+                        "Typed recompute inspection refused.",
+                        Some(json!({"httpStatus":response.status})),
+                    )
+                } else {
+                    mcp::call_tool_with_payload(name, response.body)
+                };
+            }
+            backtest_recomputations::bind_body(&mut arguments, request);
+            if let Some(response) = backtest_recomputations::mcp_preflight(self, name, &arguments) {
+                return mcp::tool_error(
+                    name,
+                    service_error_code(&response.body)
+                        .as_deref()
+                        .unwrap_or("typed_recompute_refused"),
+                    "Typed recompute command refused.",
+                    Some(json!({"httpStatus":response.status})),
+                );
+            }
+        }
+        if let Some(request) = indicator_request {
+            if let Err(code) = self.require_background_worker_current() {
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Background worker is no longer current.",
+                    None,
+                );
+            }
+            let response = indicator_context::inspect(self, &request);
+            return if response.status == 200 {
+                mcp::call_tool_with_payload(name, response.body)
+            } else {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "indicator_context_inspection_failed".into());
+                mcp::tool_error(
+                    name,
+                    &code,
+                    "Owned contextual evidence is not available.",
+                    None,
+                )
+            };
+        }
+        if let Some(mode) = capability_query_mode {
+            arguments["mode"] = json!(mode);
+        }
+        if backtest_plan_context {
+            arguments["mode"] = json!("backtest");
+        }
         if broker_onboarding_call {
             if let Some(code) = broker_onboarding::validate_mcp_arguments(name, &arguments) {
                 return mcp::tool_error(name, code, "Broker setup requires explicit account mode and authority. Enter credentials only in the browser connection screen.", None);
@@ -3119,8 +3798,129 @@ impl TradeAssemblyService {
             if let Some(response) =
                 object_authorization::authorize_private_request(self, "POST", path, &arguments)
             {
+                if matches!(
+                    name,
+                    "tradeassembly.strategy.option_selection.create"
+                        | "tradeassembly.strategy.data_collection.create"
+                        | "tradeassembly.strategy.order_plan.prepare"
+                        | "tradeassembly.strategy.order_plan.reserve"
+                        | "tradeassembly.strategy.order_plan.release"
+                        | "tradeassembly.strategy.order_plan.decide"
+                        | "tradeassembly.strategy.order_plan.select"
+                        | "tradeassembly.strategy.order_plan.submit"
+                        | "tradeassembly.strategy.order_plan.reconcile"
+                        | "tradeassembly.strategy.order_plan.settle"
+                        | "tradeassembly.strategy.order_plan.status"
+                        | "tradeassembly.strategy.instrument_screen.create"
+                        | "tradeassembly.strategy.data_recipe.prepare"
+                        | "tradeassembly.strategy.data_recipe.step"
+                        | "tradeassembly.strategy.session_schedule.prepare"
+                        | "tradeassembly.strategy.selection_plan.prepare"
+                        | "tradeassembly.strategy.data_capture.create"
+                        | "tradeassembly.strategy.data_plan.prepare"
+                        | "tradeassembly.strategy.data_run.step"
+                ) {
+                    let code = service_error_code(&response.body)
+                        .unwrap_or_else(|| "option_selection_not_available".into());
+                    return mcp::tool_error(
+                        name,
+                        &code,
+                        "Owned strategy data operation is not available.",
+                        None,
+                    );
+                }
                 return response.body;
             }
+        }
+        if let Some(path) = mcp_object_authorization_route(name) {
+            if let Some(response) = option_selections::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "option_selection_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Option selection failed closed.", None);
+            }
+            if let Some(response) = order_plans::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "order_plan_preflight_failed".into());
+                return mcp::tool_error(name, &code, &code, None);
+            }
+            if let Some(response) = selection_plans::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "selection_plan_preflight_failed".into());
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Selection-bound plan preparation failed closed.",
+                    None,
+                );
+            }
+            if let Some(response) = session_schedules::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "session_schedule_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Session scheduling failed closed.", None);
+            }
+            if let Some(response) = instrument_screens::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "instrument_screen_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Instrument screening failed closed.", None);
+            }
+            if let Some(response) = data_collections::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_collection_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Collection admission failed closed.", None);
+            }
+            if let Some(response) = data_captures::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_capture_preflight_failed".into());
+                return mcp::tool_error(name, &code, "Data capture failed closed.", None);
+            }
+            if let Some(response) = data_recipes::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_recipe_preflight_failed".into());
+                let details = response
+                    .body
+                    .get("diagnostics")
+                    .filter(|value| value.is_array())
+                    .map(|diagnostics| json!({"diagnostics":diagnostics}));
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Recipe data operation failed closed.",
+                    details,
+                );
+            }
+            if let Some(response) = data_strategy::preflight(self, path, &arguments) {
+                let code = service_error_code(&response.body)
+                    .unwrap_or_else(|| "data_strategy_preflight_failed".into());
+                return mcp::tool_error(
+                    name,
+                    &code,
+                    "Strategy data evaluation failed closed.",
+                    None,
+                );
+            }
+        }
+        if name == "tradeassembly.report.envelope"
+            && report_envelope::requires_verified_report(
+                arguments["kind"].as_str().unwrap_or("backtest"),
+            )
+        {
+            // The ordinary MCP invocation/agent and object guards above still
+            // run. An old cached generic placeholder is never a current report.
+            return mcp::tool_error(
+                name,
+                "durable_backtest_report_required",
+                "Read an integrity-verified canonical backtest report.",
+                Some(report_envelope::report_envelope(
+                    arguments["kind"].as_str().unwrap_or("backtest"),
+                    &strategy_id_from(&arguments),
+                    arguments["backtest_id"]
+                        .as_str()
+                        .unwrap_or("backtest-local"),
+                    arguments["studio_base_url"]
+                        .as_str()
+                        .unwrap_or(mcp::DEFAULT_STUDIO_BASE_URL),
+                )),
+            );
         }
         // Export remains a protected action, but an implicit retry must observe
         // a newly completed run instead of replaying a cached pre-completion error.
@@ -3140,60 +3940,92 @@ impl TradeAssemblyService {
                 }
             }
         }
-        let command_envelope = match control_plane::mcp_envelope(name, &arguments)
-            .map(|envelope| inherit_trusted_correlation(envelope, &arguments))
-        {
-            Ok(envelope) => match control_plane::prepare_command(
-                self.runtime.storage.as_ref(),
-                self.runtime.finance_authority.as_ref(),
-                envelope.clone(),
-            ) {
-                Ok(record) if record.duplicate => {
-                    return record
-                        .response_status
-                        .map(|status| {
-                            record.response_body.clone().map_or_else(
-                                || mcp_duplicate_response(name, status),
-                                |body| mcp_duplicate_response_with_body(name, status, body),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            mcp::tool_error(
-                                name,
-                                "idempotency_in_progress",
-                                "MCP command is already in progress for this idempotency key.",
-                                None,
-                            )
-                        });
+        // Broker order tools have their own durable request/dispatch claims and
+        // mandatory C5 Warden admission. A second generic MCP command would
+        // misclassify the request before those exact authority bindings exist.
+        // Only the explicit bound handlers below may use this path.
+        let broker_order_tool = matches!(
+            name,
+            "tradeassembly.order.submit" | "tradeassembly.order.reconcile"
+        );
+        let command_envelope = if broker_order_tool {
+            None
+        } else {
+            let current_envelope = control_plane::mcp_envelope(name, &arguments)
+                .map(|envelope| inherit_trusted_correlation(envelope, &arguments));
+            if let Ok(envelope) = &current_envelope {
+                match research::cached_metadata_projection(self, "mcp", name, &arguments, envelope)
+                {
+                    Ok(Some(projected)) => {
+                        let mut body = projected.body;
+                        body["duplicate"] = json!(true);
+                        return mcp::call_tool_with_payload(name, body);
+                    }
+                    Ok(None) => {}
+                    Err(response) => {
+                        return mcp::tool_error(
+                            name,
+                            &service_error_code(&response.body)
+                                .unwrap_or_else(|| "metadata_replay_failed".into()),
+                            "Historical metadata replay is unavailable.",
+                            None,
+                        )
+                    }
                 }
-                Ok(_) => Some(envelope),
-                Err(error) if error == "idempotency_conflict" => {
-                    return mcp::tool_error(
-                        name,
-                        "idempotency_conflict",
-                        "MCP command idempotency key was reused with a different payload.",
-                        None,
-                    );
-                }
-                Err(error) if error.starts_with("finance_authority:") => {
-                    let details = if name == "tradeassembly.execution.activate" {
-                        Some(execution::activation_blocked_preflight(
-                            self,
-                            arguments.clone(),
-                        ))
-                    } else {
-                        None
-                    };
-                    return mcp::tool_error(
-                        name,
-                        "finance_authority_denied",
-                        "MCP command failed TradeAssembly finance authority checks.",
-                        details,
-                    );
-                }
+            }
+            match current_envelope {
+                Ok(envelope) => match control_plane::prepare_command(
+                    self.runtime.storage.as_ref(),
+                    self.runtime.finance_authority.as_ref(),
+                    envelope.clone(),
+                ) {
+                    Ok(record) if record.duplicate => {
+                        return record
+                            .response_status
+                            .map(|status| {
+                                record.response_body.clone().map_or_else(
+                                    || mcp_duplicate_response(name, status),
+                                    |body| mcp_duplicate_response_with_body(name, status, body),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                mcp::tool_error(
+                                    name,
+                                    "idempotency_in_progress",
+                                    "MCP command is already in progress for this idempotency key.",
+                                    None,
+                                )
+                            });
+                    }
+                    Ok(_) => Some(envelope),
+                    Err(error) if error == "idempotency_conflict" => {
+                        return mcp::tool_error(
+                            name,
+                            "idempotency_conflict",
+                            "MCP command idempotency key was reused with a different payload.",
+                            None,
+                        );
+                    }
+                    Err(error) if error.starts_with("finance_authority:") => {
+                        let details = if name == "tradeassembly.execution.activate" {
+                            Some(execution::activation_blocked_preflight(
+                                self,
+                                arguments.clone(),
+                            ))
+                        } else {
+                            None
+                        };
+                        return mcp::tool_error(
+                            name,
+                            "finance_authority_denied",
+                            "MCP command failed TradeAssembly finance authority checks.",
+                            details,
+                        );
+                    }
+                    Err(_) => None,
+                },
                 Err(_) => None,
-            },
-            Err(_) => None,
+            }
         };
         let arguments = command_envelope
             .as_ref()
@@ -3212,6 +4044,8 @@ impl TradeAssemblyService {
             "tradeassembly.broker.connect" => broker_onboarding::connect(self, arguments.clone()),
             "tradeassembly.broker.status" => broker_onboarding::status(self, arguments.clone()),
             "tradeassembly.broker.verify" => broker_onboarding::verify(self, arguments.clone()),
+            "tradeassembly.order.submit" => agent_orders::submit(self, arguments.clone()),
+            "tradeassembly.order.reconcile" => agent_orders::reconcile(self, arguments.clone()),
             "tradeassembly.health" => {
                 let mut body = self.handle_http("GET", "/health", json!({})).body;
                 body["ok"] = json!(true);
@@ -3323,6 +4157,12 @@ impl TradeAssemblyService {
                 self.handle_http_from_source("mcp", "POST", "/journal/replay-report", arguments)
                     .body
             }
+            "tradeassembly.strategy.schema" => json!({
+                "ok": true,
+                "schema": spec::strategy_spec_schema(),
+                "evaluators": [crate::strategy_kernel::portfolio_program::discovery(), crate::data_strategy::discovery()],
+                "guidance": "Encode only owner-supplied strategy rules. Blank drafts are incomplete. Validate before requesting owner publication; publication does not activate execution."
+            }),
             "tradeassembly.strategy.create" => self.create_strategy(arguments),
             "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
                 self.save_builder_draft(arguments)
@@ -3360,12 +4200,158 @@ impl TradeAssemblyService {
                 );
                 return self.complete_mcp_command_or_error(name, &command_envelope, 403, response);
             }
-            "tradeassembly.strategy.validate" => self.validate_builder_draft(arguments),
+            "tradeassembly.strategy.validate" => {
+                if let Some(payload) = arguments.get("spec") {
+                    let report = spec::validate_strategy_spec_report(payload);
+                    json!({"ok": true, "valid": report.valid, "compilation": crate::strategy_kernel::portfolio_program::compilation_report(payload, report.valid), "report": report})
+                } else if arguments
+                    .get("strategy_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                {
+                    self.validate_builder_draft(arguments)
+                } else {
+                    return mcp::tool_error(name, "strategy_validation_input_required", "Supply spec JSON directly or strategy_id for an owned saved draft. File paths are not loaded by this tool.", None);
+                }
+            }
             "tradeassembly.plugin.list" => {
                 json!({"ok": true, "workspacePrimitive": "plugins", "plugins": self.plugins_providers()["plugins"].clone()})
             }
             "tradeassembly.plugin.capability_resolve" => {
                 providers::resolve_capability(self, providers::requirement_from_body(&arguments))
+            }
+            "tradeassembly.strategy.option_selection.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/option-selections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.order_plan.prepare" => {
+                self.dispatch_http("POST", order_plans::PREPARE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.reserve" => {
+                self.dispatch_http("POST", order_plans::RESERVE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.release" => {
+                self.dispatch_http("POST", order_plans::RELEASE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.decide" => {
+                self.dispatch_http("POST", order_plans::DECIDE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.select" => {
+                self.dispatch_http("POST", order_plans::SELECT, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.submit" => {
+                self.dispatch_http("POST", order_plans::SUBMIT, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.settle" => {
+                self.dispatch_http("POST", order_plans::SETTLE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.reconcile" => {
+                self.dispatch_http("POST", order_plans::RECONCILE, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.order_plan.status" => {
+                match order_plans::transport::status(
+                    self,
+                    arguments["planId"].as_str().unwrap_or_default(),
+                ) {
+                    Ok(v) => v,
+                    Err(e) => ServiceResponse::conflict(&e).body,
+                }
+            }
+            "tradeassembly.strategy.selection_plan.prepare" => {
+                self.dispatch_http("POST", selection_plans::PATH, arguments)
+                    .body
+            }
+            "tradeassembly.strategy.session_schedule.prepare" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/session-schedules/prepare",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.session_schedule.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/session-schedules/get",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.instrument_screen.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/instrument-screens/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.instrument_screen.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/instrument-screens/get",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_collection.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-collections/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_collection.get" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-collections/get",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_capture.create" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-captures/create",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_capture.get" => {
+                self.dispatch_http("POST", "/product/strategies/data-captures/get", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_recipe.step" => {
+                self.dispatch_http("POST", "/product/strategies/data-recipes/step", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_recipe.prepare" => {
+                self.dispatch_http(
+                    "POST",
+                    "/product/strategies/data-recipes/prepare",
+                    arguments,
+                )
+                .body
+            }
+            "tradeassembly.strategy.data_plan.prepare" => {
+                self.dispatch_http("POST", "/product/strategies/data-plans/prepare", arguments)
+                    .body
+            }
+            "tradeassembly.strategy.data_run.step" => {
+                self.dispatch_http("POST", "/product/strategies/data-runs/step", arguments)
+                    .body
             }
             "tradeassembly.plugin.capability_graph_resolve" => {
                 capability_graph::resolve(self, arguments)
@@ -3428,6 +4414,31 @@ impl TradeAssemblyService {
             }
             "tradeassembly.plugin.status" => self.plugins_providers(),
             "tradeassembly.indicator.status" => json!({"ok": true, "indicators": ["sma", "rsi"]}),
+            backtest_recomputations::START_TOOL | backtest_recomputations::ADVANCE_TOOL => {
+                let response = backtest_recomputations::mcp_response(self, name, &arguments)
+                    .expect("finite recompute mutation");
+                let payload = if response.status >= 400 {
+                    mcp::tool_error(
+                        name,
+                        service_error_code(&response.body)
+                            .as_deref()
+                            .unwrap_or("typed_recompute_refused"),
+                        "Typed recompute command refused.",
+                        Some(json!({"httpStatus":response.status})),
+                    )
+                } else {
+                    mcp::call_tool_with_payload(name, response.body.clone())
+                };
+                if response.status == 503 && response.body["error"]["retryable"] == true {
+                    return payload;
+                }
+                return self.complete_mcp_command_or_error(
+                    name,
+                    &command_envelope,
+                    response.status,
+                    payload,
+                );
+            }
             "tradeassembly.backtest.run" => {
                 backtest_lifecycle::create(self, nested_graphql_request(&arguments)).body
             }
@@ -3472,15 +4483,32 @@ impl TradeAssemblyService {
                 .body
             }
             "tradeassembly.backtest.replay" => {
-                backtest_lifecycle::replay(
+                let response = backtest_lifecycle::replay(
                     self,
                     arguments["run_id"]
                         .as_str()
                         .or_else(|| arguments["backtest_id"].as_str())
                         .unwrap_or_default(),
-                )
-                .body
+                );
+                if response.status >= 400 {
+                    let payload = mcp::tool_error(
+                        name,
+                        service_error_code(&response.body)
+                            .as_deref()
+                            .unwrap_or("backtest_replay_refused"),
+                        "Backtest replay refused.",
+                        Some(json!({"httpStatus":response.status})),
+                    );
+                    return self.complete_mcp_command_or_error(
+                        name,
+                        &command_envelope,
+                        response.status,
+                        payload,
+                    );
+                }
+                response.body
             }
+
             "tradeassembly.robustness.run" => {
                 robustness::create(self, nested_graphql_request(&arguments)).body
             }
@@ -3505,24 +4533,50 @@ impl TradeAssemblyService {
                 let run_id = arguments["run_id"].as_str().unwrap_or_default().to_string();
                 robustness::retry(self, &run_id, arguments).body
             }
-            "tradeassembly.dataset_ingestion.create" => {
+            "tradeassembly.dataset_ingestion.create" => dataset_ingestion::mcp_page(
                 self.dispatch_http("POST", "/dataset-ingestions", arguments)
-                    .body
-            }
-            "tradeassembly.dataset_ingestion.list" => {
+                    .body,
+                0,
+                0,
+            ),
+            "tradeassembly.dataset_ingestion.list" => dataset_ingestion::mcp_page(
                 self.dispatch_http("GET", "/dataset-ingestions", arguments)
-                    .body
-            }
+                    .body,
+                0,
+                0,
+            ),
             "tradeassembly.dataset_ingestion.get" | "tradeassembly.dataset_ingestion.status" => {
-                self.dispatch_http(
-                    "GET",
-                    &format!(
-                        "/dataset-ingestions/{}",
-                        arguments["ingestion_id"].as_str().unwrap_or_default()
-                    ),
-                    arguments,
-                )
-                .body
+                let offset = arguments
+                    .get("observation_offset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let limit = arguments
+                    .get("observation_limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if limit > 1000
+                    || usize::try_from(offset).is_err()
+                    || ["observation_offset", "observation_limit"]
+                        .iter()
+                        .any(|key| {
+                            arguments
+                                .get(key)
+                                .is_some_and(|value| value.as_u64().is_none())
+                        })
+                {
+                    return mcp::tool_error(name, "dataset_observation_page_invalid", "Observation offset must be a nonnegative integer and limit must be between zero and 1000.", None);
+                }
+                let response = self
+                    .dispatch_http(
+                        "GET",
+                        &format!(
+                            "/dataset-ingestions/{}",
+                            arguments["ingestion_id"].as_str().unwrap_or_default()
+                        ),
+                        arguments,
+                    )
+                    .body;
+                dataset_ingestion::mcp_page(response, offset as usize, limit as usize)
             }
             "tradeassembly.dataset_ingestion.cancel" => {
                 self.dispatch_http(
@@ -3738,7 +4792,16 @@ impl TradeAssemblyService {
                     .body
             }
             "tradeassembly.execution.scheduler.run" => {
-                self.dispatch_http("POST", "/scheduler/run", arguments).body
+                let session = arguments.get("sessionDispatch").is_some();
+                let response = self.dispatch_http("POST", "/scheduler/run", arguments).body;
+                if session && response["ok"] == false {
+                    let code = service_error_code(&response)
+                        .unwrap_or_else(|| "session_dispatch_failed".into());
+                    let error = mcp::tool_error(name, &code, &code, None);
+                    return self.complete_mcp_command_or_error(name, &command_envelope, 400, error);
+                } else {
+                    response
+                }
             }
             "tradeassembly.execution.scheduler.stop" => {
                 self.dispatch_http("POST", "/product/scheduler/stop", arguments)
@@ -3815,6 +4878,10 @@ impl TradeAssemblyService {
         ) || name.starts_with("tradeassembly.robustness.")
             || name.starts_with("tradeassembly.derivatives.")
             || name.starts_with("tradeassembly.comparison.")
+            || name.starts_with("tradeassembly.strategy.data_")
+            || name.starts_with("tradeassembly.strategy.instrument_screen.")
+            || name.starts_with("tradeassembly.strategy.selection_plan.")
+            || name.starts_with("tradeassembly.strategy.session_schedule.")
         {
             if let Some(code) = service_error_code(&payload) {
                 let response = mcp::tool_error(
@@ -3861,6 +4928,28 @@ impl TradeAssemblyService {
                 return self.complete_mcp_command_or_error(name, &command_envelope, 400, response);
             }
         }
+        if matches!(
+            name,
+            "tradeassembly.strategy.option_selection.create"
+                | "tradeassembly.strategy.selection_plan.prepare"
+                | "tradeassembly.strategy.order_plan.prepare"
+                | "tradeassembly.strategy.order_plan.reserve"
+                | "tradeassembly.strategy.order_plan.release"
+                | "tradeassembly.strategy.order_plan.decide"
+                | "tradeassembly.strategy.order_plan.select"
+                | "tradeassembly.strategy.order_plan.submit"
+                | "tradeassembly.strategy.order_plan.reconcile"
+                | "tradeassembly.strategy.order_plan.settle"
+                | "tradeassembly.strategy.order_plan.status"
+                | "tradeassembly.strategy.data_recipe.prepare"
+                | "tradeassembly.strategy.data_recipe.step"
+        ) {
+            if let Some(code) = service_error_code(&payload) {
+                let response =
+                    mcp::tool_error(name, &code, "Strategy data operation failed closed.", None);
+                return self.complete_mcp_command_or_error(name, &command_envelope, 409, response);
+            }
+        }
         if name.starts_with("tradeassembly.dataset_ingestion.") {
             let status = dataset_ingestion_status(&payload, 200);
             if status >= 400 {
@@ -3883,6 +4972,11 @@ impl TradeAssemblyService {
         if name.starts_with("tradeassembly.journal.") {
             if let Some(code) = service_error_code(&payload) {
                 return mcp::tool_error(name, &code, "Journal access failed.", None);
+            }
+        }
+        if name.starts_with("tradeassembly.order.") {
+            if let Some(code) = service_error_code(&payload) {
+                return mcp::tool_error(name, &code, "Order operation failed closed.", None);
             }
         }
         let response = mcp::call_tool_with_payload(name, payload);
@@ -4048,9 +5142,7 @@ fn validate_studio_origin(origin: &str) -> Result<(), String> {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 struct TestDatabaseIdentity {
-    #[cfg(unix)]
     device: u64,
-    #[cfg(unix)]
     inode: u64,
 }
 
@@ -4126,7 +5218,7 @@ fn assert_test_database_is_owned(db: &str) {
         panic!("test database factory refuses an existing unregistered database");
     }
 
-    let identity = test_database_identity(&metadata);
+    let identity = test_database_identity(&metadata, &path);
     match registry.get(&path) {
         Some(expected) if expected == &identity => {}
         Some(_) => panic!("test database fixture identity changed"),
@@ -4137,7 +5229,7 @@ fn assert_test_database_is_owned(db: &str) {
 }
 
 #[cfg(unix)]
-fn test_database_identity(metadata: &std::fs::Metadata) -> TestDatabaseIdentity {
+fn test_database_identity(metadata: &std::fs::Metadata, _path: &Path) -> TestDatabaseIdentity {
     use std::os::unix::fs::MetadataExt;
     TestDatabaseIdentity {
         device: metadata.dev(),
@@ -4145,8 +5237,19 @@ fn test_database_identity(metadata: &std::fs::Metadata) -> TestDatabaseIdentity 
     }
 }
 
-#[cfg(not(unix))]
-fn test_database_identity(_metadata: &std::fs::Metadata) -> TestDatabaseIdentity {
+#[cfg(windows)]
+fn test_database_identity(_metadata: &std::fs::Metadata, path: &Path) -> TestDatabaseIdentity {
+    let file = std::fs::File::open(path).expect("test database identity requires an existing file");
+    let identity =
+        winapi_util::file::information(&file).expect("test database identity cannot be inspected");
+    TestDatabaseIdentity {
+        device: identity.volume_serial_number(),
+        inode: identity.file_index(),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn test_database_identity(_metadata: &std::fs::Metadata, _path: &Path) -> TestDatabaseIdentity {
     panic!("file-backed test database ownership is unsupported on this platform; use :memory:")
 }
 
@@ -4773,6 +5876,48 @@ fn mcp_control_route(name: &str) -> Option<&'static str> {
 
 fn mcp_object_authorization_route(name: &str) -> Option<&'static str> {
     match name {
+        "tradeassembly.strategy.option_selection.create" => {
+            Some("/product/strategies/option-selections/create")
+        }
+        "tradeassembly.strategy.order_plan.prepare" => Some(order_plans::PREPARE),
+        "tradeassembly.strategy.order_plan.reserve" => Some(order_plans::RESERVE),
+        "tradeassembly.strategy.order_plan.release" => Some(order_plans::RELEASE),
+        "tradeassembly.strategy.order_plan.decide" => Some(order_plans::DECIDE),
+        "tradeassembly.strategy.order_plan.select" => Some(order_plans::SELECT),
+        "tradeassembly.strategy.order_plan.submit" => Some(order_plans::SUBMIT),
+        "tradeassembly.strategy.order_plan.reconcile" => Some(order_plans::RECONCILE),
+        "tradeassembly.strategy.order_plan.settle" => Some(order_plans::SETTLE),
+        "tradeassembly.strategy.selection_plan.prepare" => Some(selection_plans::PATH),
+        "tradeassembly.strategy.session_schedule.prepare" => {
+            Some("/product/strategies/session-schedules/prepare")
+        }
+        "tradeassembly.strategy.session_schedule.get" => {
+            Some("/product/strategies/session-schedules/get")
+        }
+        "tradeassembly.strategy.instrument_screen.create" => {
+            Some("/product/strategies/instrument-screens/create")
+        }
+        "tradeassembly.strategy.instrument_screen.get" => {
+            Some("/product/strategies/instrument-screens/get")
+        }
+        "tradeassembly.strategy.data_collection.create" => {
+            Some("/product/strategies/data-collections/create")
+        }
+        "tradeassembly.strategy.data_collection.get" => {
+            Some("/product/strategies/data-collections/get")
+        }
+        "tradeassembly.strategy.data_capture.create" => {
+            Some("/product/strategies/data-captures/create")
+        }
+        "tradeassembly.strategy.data_capture.get" => Some("/product/strategies/data-captures/get"),
+        "tradeassembly.strategy.data_recipe.step" => Some("/product/strategies/data-recipes/step"),
+        "tradeassembly.strategy.data_recipe.prepare" => {
+            Some("/product/strategies/data-recipes/prepare")
+        }
+        "tradeassembly.strategy.data_plan.prepare" => {
+            Some("/product/strategies/data-plans/prepare")
+        }
+        "tradeassembly.strategy.data_run.step" => Some("/product/strategies/data-runs/step"),
         "tradeassembly.strategy.get" => Some("/product/strategies/get"),
         "tradeassembly.strategy.save_draft" | "tradeassembly.strategy.draft.save" => {
             Some("/product/strategies/save-draft")
@@ -5109,10 +6254,26 @@ fn map_string(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
         .map(str::to_string)
 }
 
+fn readonly_backtest_path(method: &str, path: &str, body: &Value) -> bool {
+    method.eq_ignore_ascii_case("POST")
+        && body["mode"] == "backtest"
+        && matches!(
+            normalize_path(path).as_str(),
+            "/product/strategies/data-plans/prepare"
+                | "/capability-graph-revisions"
+                | "/capabilities/graph/resolve"
+                | "/strategy/contracts/capability:resolve"
+        )
+}
+
 fn bind_authenticated_studio_request(
     mut request: Value,
     session: &auth::SessionValidationResult,
 ) -> Value {
+    let computation = matches!(
+        graphql_operation_name(&request).as_str(),
+        "ResolveCapability" | "ResolveCapabilityGraph" | "SaveCapabilityGraphRevision"
+    );
     let Some(principal) = session.principal.as_ref().filter(|_| session.authenticated) else {
         return request;
     };
@@ -5120,9 +6281,17 @@ fn bind_authenticated_studio_request(
         return request;
     };
     variables.remove("_studioSession");
+    let backtest = computation && variables.get("mode").is_some_and(|mode| mode == "backtest");
     bind_authenticated_studio_variables(variables, principal);
+    if backtest {
+        variables.insert("mode".into(), json!("backtest"));
+    }
     if let Some(nested) = variables.get_mut("request").and_then(Value::as_object_mut) {
+        let backtest = computation && nested.get("mode").is_some_and(|mode| mode == "backtest");
         bind_authenticated_studio_variables(nested, principal);
+        if backtest {
+            nested.insert("mode".into(), json!("backtest"));
+        }
     }
     request
 }
@@ -6084,6 +7253,97 @@ mod finance_authority_diagnostic_tests {
 }
 
 #[cfg(test)]
+mod backtest_computation_context_tests {
+    use super::*;
+
+    fn principal() -> auth::SessionPrincipal {
+        auth::SessionPrincipal {
+            provider: "fixture".into(),
+            issuer: "fixture".into(),
+            subject: "actual-owner".into(),
+            email: None,
+            email_verified: None,
+            name: None,
+            picture: None,
+        }
+    }
+    #[test]
+    fn finite_backtest_context_keeps_authenticated_financial_authority_and_actor() {
+        let body = json!({"mode":"backtest","actor":{"id":"forged"},"accountMode":"live",
+            "authorityContext":{"actor":"forged","accountMode":"live"},"idempotencyKey":"context-only"});
+        let path = "/product/strategies/data-plans/prepare";
+        assert!(readonly_backtest_path("POST", path, &body));
+        for forbidden in [
+            "/product/strategies/order-plans/submit",
+            "/product/strategy-execution-activations/activate",
+            "/scheduler/run",
+        ] {
+            assert!(!readonly_backtest_path("POST", forbidden, &body));
+        }
+        assert!(!readonly_backtest_path("GET", path, &body));
+        assert!(!readonly_backtest_path(
+            "POST",
+            path,
+            &json!({"mode":"live"})
+        ));
+        let mut bound =
+            bind_authenticated_invocation_value(body, &principal(), "http", "user", false, None);
+        let original = bound.clone();
+        bound["mode"] = json!("backtest");
+        for key in [
+            "actor",
+            "actorKind",
+            "principalUser",
+            "accountMode",
+            "account_mode",
+            "authorityContext",
+            "authority_context",
+        ] {
+            assert_eq!(bound[key], original[key], "{key}");
+        }
+        assert_eq!(bound["accountMode"], "paper");
+        assert_eq!(bound["actor"]["id"], "actual-owner");
+        let envelope = control_plane::http_envelope("http", "POST", path, &bound).unwrap();
+        assert_eq!(envelope.authority.account_mode, "paper");
+        assert_eq!(envelope.authority.actor, "actual-owner");
+    }
+    #[test]
+    fn studio_graph_backtest_selector_changes_no_other_bound_authority_fields() {
+        let session = auth::SessionValidationResult {
+            authenticated: true,
+            reason: "fixture".into(),
+            principal: Some(principal()),
+        };
+        let input = json!({"operationName":"SaveCapabilityGraphRevision","variables":{
+            "mode":"backtest","actor":{"id":"forged"},"authorityContext":{"actor":"forged","accountMode":"paper"},
+            "request":{"mode":"backtest"}}});
+        let mut expected = input.clone();
+        let variables = expected["variables"].as_object_mut().unwrap();
+        bind_authenticated_studio_variables(variables, session.principal.as_ref().unwrap());
+        bind_authenticated_studio_variables(
+            variables["request"].as_object_mut().unwrap(),
+            session.principal.as_ref().unwrap(),
+        );
+        let bound = bind_authenticated_studio_request(input, &session);
+        assert_eq!(bound["variables"]["mode"], "backtest");
+        assert_eq!(bound["variables"]["request"]["mode"], "backtest");
+        for key in [
+            "accountMode",
+            "account_mode",
+            "authorityContext",
+            "actor",
+            "principalUser",
+        ] {
+            assert_eq!(bound["variables"][key], expected["variables"][key], "{key}");
+        }
+        assert_eq!(
+            bound["variables"]["authorityContext"]["accountMode"],
+            "paper"
+        );
+    }
+}
+
+#[cfg(test)]
 mod local_setup_identity_tests {
     use super::*;
 
@@ -6121,6 +7381,26 @@ mod test_database_factory_safety_tests {
     use super::assert_test_database_is_owned;
     use std::fs;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[cfg(windows)]
+    #[test]
+    fn replaced_windows_file_does_not_gain_fixture_authority() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("fixture.db");
+        assert_test_database_is_owned(path.to_str().expect("utf8 path"));
+        let replacement = directory.path().join("replacement.db");
+        fs::write(&replacement, b"replacement sentinel").expect("write replacement");
+        fs::remove_file(&path).expect("remove owned fixture");
+        fs::rename(&replacement, &path).expect("replace fixture");
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            assert_test_database_is_owned(path.to_str().expect("utf8 path"));
+        }))
+        .is_err());
+        assert_eq!(
+            fs::read(&path).expect("read replacement"),
+            b"replacement sentinel"
+        );
+    }
 
     #[test]
     fn fresh_fixture_can_reopen_but_unregistered_populated_file_is_untouched() {

@@ -1007,9 +1007,15 @@ mod tests {
             runtime: Arc::new(runtime),
             runtime_manifest: Some(manifest),
             oauth_config: Some(config),
+            connection_profile: None,
+            hosted_oauth_actor: None,
             invocation_principal: None,
             invocation_actor_kind: "user",
             agent_mcp_execution_context: None,
+            data_step_request: None,
+            package_validation_round: false,
+            graph_metadata: None,
+            background_worker_job: None,
         })
     }
 

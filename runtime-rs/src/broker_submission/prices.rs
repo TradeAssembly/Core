@@ -27,7 +27,7 @@ pub(super) fn load_price_evidence(
         || binding["symbolHash"] != crate::spec::canonical_hash(&json!(symbol))?
         || binding["capabilityGraphRevisionId"] != state.run["capabilityGraphRevisionId"]
         || binding["capabilityGraphFingerprint"] != state.run["capabilityGraphFingerprint"]
-        || binding["mode"] != "live"
+        || binding["mode"] != state.mode
     {
         return Err("price_request_binding_invalid".into());
     }

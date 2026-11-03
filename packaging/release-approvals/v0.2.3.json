@@ -1,0 +1,9 @@
+{
+  "schema": "tradeassembly.customer-release-approval/v1",
+  "version": "0.2.3",
+  "target": "aarch64-apple-darwin",
+  "archiveSha256": "f7deba87be429f38caf2d0fe24be0b01f80a7f3badc7381d4a1880b787ad9549",
+  "diskImageSha256": "11cc89095766f6074e10d5abf103243cf75754415cd64e73a12fa9e27e004e2d",
+  "notarizationBindingSha256": "d305998e339122762417302b0c187c0f632d9baa842fb49aa7459aec347efafa",
+  "updateFeedEnabled": false
+}

@@ -2203,6 +2203,7 @@ mod tests {
 
     fn report(snapshot: &DatasetSnapshot, accounting: &AccountingResult) -> BacktestReport {
         let mut report = BacktestReport {
+            typed_evaluation: None,
             schema: BACKTEST_REPORT_SCHEMA.to_string(),
             report_hash: String::new(),
             run: BacktestReportRun {

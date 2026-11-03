@@ -11,7 +11,13 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 use tokio::net::TcpListener;
 use url::Url;
 
@@ -49,7 +55,7 @@ struct Jwk {
     alg: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TokenResponse {
     access_token: String,
     #[serde(default)]
@@ -64,6 +70,11 @@ struct WorkosSession {
     access_token: String,
     refresh_token: String,
     identity: CliIdentity,
+    // Keep a rotated credential recoverable until Hub projection and the final
+    // vault write succeed. Older readers see only the previously authorized
+    // session, never the unprojected access token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_refresh: Option<TokenResponse>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +85,83 @@ pub struct WorkosAuthManager {
 impl WorkosAuthManager {
     pub fn new(config: RuntimeConfig) -> Self {
         Self { config }
+    }
+
+    /// Import genuine provider tokens through the normal signature and Hub
+    /// projection gates. The caller supplies tokens on stdin, never as flags.
+    pub async fn import_session(
+        &self,
+        raw: &[u8],
+        subject_sha256: &str,
+        tenant_sha256: &str,
+    ) -> Result<CliIdentity, String> {
+        self.validate_configuration()?;
+        if self.config.oidc_profile != "workos" || self.config.oidc_session_store == "keyring" {
+            return Err("workos_import_configuration_invalid".into());
+        }
+        let _lock = self.session_lock()?;
+        match self.load_session() {
+            Err(code) if code == "oidc_session_required" => {}
+            Ok(_) => return Err("workos_import_session_exists".into()),
+            Err(code) => return Err(code),
+        }
+        self.import_and_save(raw, subject_sha256, tenant_sha256, |session| {
+            self.save_session(session)
+        })
+        .await
+    }
+
+    async fn import_and_save(
+        &self,
+        raw: &[u8],
+        subject_sha256: &str,
+        tenant_sha256: &str,
+        save: impl FnOnce(&WorkosSession) -> Result<(), String>,
+    ) -> Result<CliIdentity, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Import {
+            access_token: String,
+            refresh_token: String,
+        }
+        let digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if raw.len() > 32768 || !digest(subject_sha256) || !digest(tenant_sha256) {
+            return Err("workos_import_input_invalid".into());
+        }
+        let input: Import =
+            serde_json::from_slice(raw).map_err(|_| "workos_import_input_invalid")?;
+        for value in [&input.access_token, &input.refresh_token] {
+            if value.is_empty()
+                || value.len() > 16384
+                || value
+                    .bytes()
+                    .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+            {
+                return Err("workos_import_input_invalid".into());
+            }
+        }
+        let session = self
+            .session_from_token(
+                TokenResponse {
+                    access_token: input.access_token,
+                    refresh_token: Some(input.refresh_token),
+                },
+                None,
+                None,
+            )
+            .await?;
+        if format!("{:x}", Sha256::digest(session.identity.subject.as_bytes())) != subject_sha256
+            || format!("{:x}", Sha256::digest(session.tenant_id.as_bytes())) != tenant_sha256
+        {
+            return Err("workos_identity_binding_invalid".into());
+        }
+        save(&session)?;
+        Ok(session.identity)
     }
 
     pub async fn login(&self) -> Result<CliIdentity, String> {
@@ -115,17 +203,52 @@ impl WorkosAuthManager {
         let token = self
             .exchange_code(callback.code.expose_secret(), &verifier)
             .await?;
-        let _lock = self.session_lock()?;
+        // The authorization code has already been exchanged. Wait only for
+        // local persistence contention; never repeat that exchange on retry.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let _lock = loop {
+            match self.session_lock() {
+                Ok(lock) => break lock,
+                Err(code)
+                    if code == "workos_session_busy" && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(code) => return Err(code),
+            }
+        };
         self.finish(token, None, None).await
     }
 
     pub async fn current_identity(&self) -> Result<CliIdentity, String> {
+        self.current_identity_and_token()
+            .await
+            .map(|(identity, _)| identity)
+    }
+
+    // One locked vault read and verification supplies both parts of the same
+    // session. Tokens remain internal and are never returned by MCP.
+    async fn current_identity_and_token(&self) -> Result<(CliIdentity, String), String> {
         self.validate_configuration()?;
         let _lock = self.session_lock()?;
         let session = self.load_session().map_err(|error| match error.as_str() {
             "bitwarden_session_required" | "bitwarden_session_store_unavailable" => error,
             _ => "oidc_session_invalid".to_string(),
         })?;
+        self.resolve_session(
+            session,
+            |session| self.save_session(session),
+            || self.delete_session(),
+        )
+        .await
+    }
+
+    async fn resolve_session(
+        &self,
+        mut session: WorkosSession,
+        mut save: impl FnMut(&WorkosSession) -> Result<(), String>,
+        mut delete: impl FnMut() -> Result<(), String>,
+    ) -> Result<(CliIdentity, String), String> {
         if session.client_id != self.config.oidc_client_id
             || session.issuer != configured_issuer(&self.config)
             || session.identity.issuer != session.issuer
@@ -137,32 +260,99 @@ impl WorkosAuthManager {
         {
             return Err("oidc_session_required".to_string());
         }
-        let claims = verify_access_token(&self.config, &session.access_token).await;
-        if let Ok(claims) = claims {
-            if claims.sub != session.identity.subject {
-                let _ = self.delete_session();
-                return Err("oidc_session_required".to_string());
+        if let Some(token) = session.pending_refresh.clone() {
+            // A previous exchange already consumed the old refresh token. Do
+            // not exchange it again merely because Hub or custody was unavailable.
+            match self
+                .session_from_token(
+                    token.clone(),
+                    Some(&session.identity.subject),
+                    Some(&session.tenant_id),
+                )
+                .await
+            {
+                Ok(committed) => {
+                    save(&committed)?;
+                    return Ok((committed.identity, committed.access_token));
+                }
+                Err(code) if code == "workos_token_expired" => {
+                    // The pending access token expired while the dependency was
+                    // down. Its rotated refresh credential, not the old one,
+                    // is now the next input.
+                }
+                Err(code) => {
+                    if terminal_session_error(&code) {
+                        let _ = delete();
+                    }
+                    return Err(code);
+                }
             }
-            if claims.exp as i64 * 1000 > now_ms() {
-                return Ok(identity_from_claims(&claims, &self.config));
+        } else {
+            let claims = match verify_access_token(&self.config, &session.access_token).await {
+                Ok(claims) => Some(claims),
+                Err(code) if code == "workos_token_expired" => None,
+                Err(code) => {
+                    if terminal_session_error(&code) {
+                        let _ = delete();
+                    }
+                    return Err(code);
+                }
+            };
+            if let Some(claims) = claims {
+                validate_hub_claims(&claims, &self.config)?;
+                if session.tenant_id != hub_tenant_from_claims(&claims) {
+                    return Err("workos_identity_binding_invalid".to_string());
+                }
+                if claims.sub != session.identity.subject {
+                    let _ = delete();
+                    return Err("oidc_session_required".to_string());
+                }
+                if claims.exp as i64 * 1000 > now_ms() {
+                    return Ok((
+                        identity_from_claims(&claims, &self.config),
+                        session.access_token,
+                    ));
+                }
             }
         }
-        let mut token = self.refresh(&session.refresh_token).await.map_err(|_| {
-            let _ = self.delete_session();
-            "oidc_session_required".to_string()
-        })?;
+        let refresh_token = session
+            .pending_refresh
+            .as_ref()
+            .and_then(|token| token.refresh_token.as_deref())
+            .unwrap_or(&session.refresh_token);
+        let mut token = match self.refresh(refresh_token).await {
+            Ok(token) => token,
+            Err(code) => {
+                if code == "workos_refresh_token_rejected" {
+                    let _ = delete();
+                    return Err("oidc_session_required".to_string());
+                }
+                // Timeout/rate limit/provider outage is not a logout.
+                return Err(code);
+            }
+        };
         if token.refresh_token.is_none() {
-            token.refresh_token = Some(session.refresh_token.clone());
+            token.refresh_token = Some(refresh_token.to_owned());
         }
-        self.finish(
-            token,
-            Some(&session.identity.subject),
-            Some(&session.tenant_id),
-        )
-        .await
-        .inspect_err(|_| {
-            let _ = self.delete_session();
-        })
+        session.pending_refresh = Some(token.clone());
+        // Checkpoint BEFORE another network dependency. A failed/ambiguous
+        // write never clears the original vault record; readback on the next
+        // request discovers any successfully written pending rotation.
+        save(&session)?;
+        let committed = self
+            .session_from_token(
+                token,
+                Some(&session.identity.subject),
+                Some(&session.tenant_id),
+            )
+            .await
+            .inspect_err(|code| {
+                if terminal_session_error(code) {
+                    let _ = delete();
+                }
+            })?;
+        save(&committed)?;
+        Ok((committed.identity, committed.access_token))
     }
 
     /// Internal relay authentication only; never serialize this token to clients.
@@ -170,27 +360,11 @@ impl WorkosAuthManager {
         &self,
         expected_actor: &str,
     ) -> Result<String, String> {
-        let identity = self.current_identity().await?;
+        let (identity, access_token) = self.current_identity_and_token().await?;
         if identity.stable_identity_id != expected_actor {
             return Err("oidc_session_required".to_string());
         }
-        let _lock = self.session_lock()?;
-        let session = self
-            .load_session()
-            .map_err(|_| "oidc_session_required".to_string())?;
-        if session.identity.stable_identity_id != expected_actor
-            || session.client_id != self.config.oidc_client_id
-            || session.issuer != configured_issuer(&self.config)
-        {
-            return Err("oidc_session_required".to_string());
-        }
-        let claims = verify_access_token(&self.config, &session.access_token)
-            .await
-            .map_err(|_| "oidc_session_required".to_string())?;
-        if claims.sub != identity.subject || claims.exp as i64 * 1000 <= now_ms() {
-            return Err("oidc_session_required".to_string());
-        }
-        Ok(session.access_token)
+        Ok(access_token)
     }
 
     pub fn logout(&self) -> Result<(), String> {
@@ -201,6 +375,9 @@ impl WorkosAuthManager {
     fn delete_session(&self) -> Result<(), String> {
         if self.config.oidc_session_store == "bitwarden" {
             return self.bitwarden_store().delete();
+        }
+        if self.config.oidc_session_store == "file" {
+            return LocalWorkosStore::new(&self.config).delete();
         }
         let entry = self.keyring_entry()?;
         match entry.delete_credential() {
@@ -216,7 +393,7 @@ impl WorkosAuthManager {
             .map_err(|_| "oidc_session_store_unavailable")?
             .with_extension("workos.lock");
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_| "oidc_session_store_unavailable")?;
+            ensure_private_parent(parent)?;
         }
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -224,10 +401,12 @@ impl WorkosAuthManager {
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
+            options.custom_flags(libc::O_NOFOLLOW);
         }
         let file = options
-            .open(path)
+            .open(&path)
             .map_err(|_| "oidc_session_store_unavailable")?;
+        ensure_private(&path)?;
         file.try_lock().map_err(|_| "workos_session_busy")?;
         Ok(file)
     }
@@ -267,7 +446,9 @@ impl WorkosAuthManager {
         if let Some(organization_id) = &self.config.oidc_organization_id {
             form.push(("organization_id", organization_id));
         }
-        self.post_token(&form).await
+        self.post_token(&form)
+            .await
+            .map_err(|_| "workos_token_exchange_failed".to_string())
     }
 
     async fn refresh(&self, refresh: &str) -> Result<TokenResponse, String> {
@@ -279,7 +460,21 @@ impl WorkosAuthManager {
         if let Some(organization_id) = &self.config.oidc_organization_id {
             form.push(("organization_id", organization_id));
         }
-        self.post_token(&form).await
+        // Two ten-second attempts and a short backoff fit within WorkOS's
+        // documented thirty-second replay grace period. Never retry a rejected
+        // credential, unexpected response, or changed authority.
+        for attempt in 0..2 {
+            match self.post_token(&form).await {
+                Err(code) if code == "workos_token_exchange_unavailable" && attempt == 0 => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(code) if code == "workos_token_exchange_unavailable" => {
+                    return Err("workos_refresh_unavailable".to_string());
+                }
+                result => return result,
+            }
+        }
+        Err("workos_refresh_unavailable".to_string())
     }
 
     async fn post_token(&self, form: &[(&str, &str)]) -> Result<TokenResponse, String> {
@@ -301,8 +496,20 @@ impl WorkosAuthManager {
             )
             .send()
             .await
-            .map_err(|_| "workos_token_exchange_failed".to_string())?;
+            .map_err(|_| "workos_token_exchange_unavailable".to_string())?;
+        let status = response.status();
+        if status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error() {
+            return Err("workos_token_exchange_unavailable".to_string());
+        }
         if !response.status().is_success() {
+            let bytes = bounded_body(response, "workos_token_exchange_failed").await?;
+            let error: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "workos_token_exchange_failed".to_string())?;
+            if status.as_u16() == 400
+                && error.get("error").and_then(serde_json::Value::as_str) == Some("invalid_grant")
+            {
+                return Err("workos_refresh_token_rejected".to_string());
+            }
             return Err("workos_token_exchange_failed".to_string());
         }
         let bytes = bounded_body(response, "workos_token_exchange_failed").await?;
@@ -315,6 +522,19 @@ impl WorkosAuthManager {
         expected_subject: Option<&str>,
         expected_tenant: Option<&str>,
     ) -> Result<CliIdentity, String> {
+        let session = self
+            .session_from_token(token, expected_subject, expected_tenant)
+            .await?;
+        self.save_session(&session)?;
+        Ok(session.identity)
+    }
+
+    async fn session_from_token(
+        &self,
+        token: TokenResponse,
+        expected_subject: Option<&str>,
+        expected_tenant: Option<&str>,
+    ) -> Result<WorkosSession, String> {
         let claims = verify_access_token(&self.config, &token.access_token).await?;
         validate_hub_claims(&claims, &self.config)?;
         if expected_subject.is_some_and(|subject| subject != claims.sub) {
@@ -323,9 +543,7 @@ impl WorkosAuthManager {
         let hub =
             crate::hub_identity::project_session(&self.config, &token.access_token, &claims.sub)
                 .await?;
-        if hub.subject_id != claims.sub {
-            return Err("workos_identity_binding_invalid".to_string());
-        }
+        validate_hub_projection(&claims, &hub)?;
         if expected_tenant.is_some_and(|tenant| tenant != hub.tenant_id) {
             return Err("workos_identity_binding_invalid".to_string());
         }
@@ -340,17 +558,39 @@ impl WorkosAuthManager {
             access_token: token.access_token,
             refresh_token,
             identity: identity.clone(),
+            pending_refresh: None,
         };
-        let raw = serde_json::to_string(&session)
+        Ok(session)
+    }
+
+    fn save_session(&self, session: &WorkosSession) -> Result<(), String> {
+        let raw = serde_json::to_string(session)
             .map_err(|_| "oidc_session_store_unavailable".to_string())?;
         if self.config.oidc_session_store == "bitwarden" {
             self.bitwarden_store().save(&raw)?;
+        } else if self.config.oidc_session_store == "file" {
+            let store = LocalWorkosStore::new(&self.config);
+            match store.load() {
+                Ok(existing) => {
+                    let prior: WorkosSession =
+                        serde_json::from_str(&existing).map_err(|_| "oidc_session_invalid")?;
+                    self.validate_stored_session(&prior)?;
+                    if prior.identity.subject != session.identity.subject
+                        || prior.tenant_id != session.tenant_id
+                    {
+                        return Err("workos_identity_binding_invalid".into());
+                    }
+                }
+                Err(e) if e == "oidc_session_required" => (),
+                Err(e) => return Err(e),
+            }
+            store.save(&raw)?;
         } else {
             self.keyring_entry()?
                 .set_password(&raw)
                 .map_err(|_| "oidc_session_store_unavailable".to_string())?;
         }
-        Ok(identity)
+        Ok(())
     }
 
     fn session_account(&self) -> String {
@@ -386,6 +626,62 @@ impl WorkosAuthManager {
         self.bitwarden_store().migrate(&raw)
     }
 
+    /// Explicitly copy a legacy vault record into the default local file.
+    /// The source is never deleted and the destination is read back before
+    /// returning success.
+    pub fn migrate_to_local_file(&self, source: &str) -> Result<(), String> {
+        if self.config.oidc_session_store != "file" {
+            return Err("workos_migration_destination_invalid".into());
+        }
+        let _lock = self.session_lock()?;
+        let target = LocalWorkosStore::new(&self.config);
+        let existing = match target.load() {
+            Ok(raw) => Some(raw),
+            Err(code) if code == "oidc_session_required" => None,
+            Err(code) => return Err(code),
+        };
+        let raw = match source {
+            "keyring" => self
+                .keyring_entry()?
+                .get_password()
+                .map_err(|_| "oidc_session_required")?,
+            "bitwarden" => self
+                .bitwarden_store()
+                .load()
+                .map_err(|_| "oidc_session_required")?,
+            _ => return Err("workos_migration_source_invalid".into()),
+        };
+        let session: WorkosSession =
+            serde_json::from_str(&raw).map_err(|_| "oidc_session_invalid")?;
+        self.validate_stored_session(&session)?;
+        if let Some(existing) = existing {
+            if existing != raw {
+                return Err("oidc_session_conflict".into());
+            }
+        } else {
+            target.save(&raw)?;
+        }
+        if target.load()? != raw {
+            return Err("oidc_session_store_unavailable".into());
+        }
+        Ok(())
+    }
+
+    fn validate_stored_session(&self, session: &WorkosSession) -> Result<(), String> {
+        if session.client_id != self.config.oidc_client_id
+            || session.issuer != configured_issuer(&self.config)
+            || session.identity.issuer != session.issuer
+            || session.identity.stable_identity_id
+                != stable_actor(&session.issuer, &session.identity.subject)
+            || session.identity.audience != vec![self.config.oidc_client_id.clone()]
+            || session.identity.subject.is_empty()
+            || session.tenant_id.is_empty()
+        {
+            return Err("workos_identity_binding_invalid".into());
+        }
+        Ok(())
+    }
+
     fn keyring_entry(&self) -> Result<keyring::Entry, String> {
         keyring::Entry::new("tradeassembly-workos", &self.session_account())
             .map_err(|_| "oidc_session_store_unavailable".to_string())
@@ -394,6 +690,8 @@ impl WorkosAuthManager {
     fn load_session(&self) -> Result<WorkosSession, String> {
         let raw = if self.config.oidc_session_store == "bitwarden" {
             self.bitwarden_store().load()?
+        } else if self.config.oidc_session_store == "file" {
+            LocalWorkosStore::new(&self.config).load()?
         } else {
             self.keyring_entry()?
                 .get_password()
@@ -413,13 +711,247 @@ impl WorkosAuthManager {
     }
 }
 
+/// Default local custody. The record is protected by the installation state
+/// directory and file permissions; external vaults remain explicit options.
+struct LocalWorkosStore {
+    session: PathBuf,
+}
+
+const LOCAL_SESSION_LIMIT: u64 = 1_048_576;
+
+impl LocalWorkosStore {
+    fn new(config: &RuntimeConfig) -> Self {
+        Self {
+            session: PathBuf::from(&config.oidc_session_path),
+        }
+    }
+
+    fn load(&self) -> Result<String, String> {
+        ensure_private(&self.session)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options
+            .open(&self.session)
+            .map_err(|_| "oidc_session_store_unavailable")?;
+        ensure_private_file(&file)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let held = file
+                .metadata()
+                .map_err(|_| "oidc_session_store_unavailable")?;
+            let named = fs::symlink_metadata(&self.session)
+                .map_err(|_| "oidc_session_store_unavailable")?;
+            if held.dev() != named.dev() || held.ino() != named.ino() {
+                return Err("oidc_session_store_unavailable".into());
+            }
+        }
+        let mut bytes = Vec::new();
+        file.take(LOCAL_SESSION_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "oidc_session_store_unavailable")?;
+        if bytes.is_empty() || bytes.len() as u64 > LOCAL_SESSION_LIMIT {
+            return Err("oidc_session_invalid".into());
+        }
+        String::from_utf8(bytes).map_err(|_| "oidc_session_invalid".into())
+    }
+
+    fn save(&self, raw: &str) -> Result<(), String> {
+        atomic_private(&self.session, raw.as_bytes())
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        if self.session.exists() {
+            ensure_private(&self.session)?;
+        }
+        match fs::remove_file(&self.session) {
+            Ok(()) => Ok(()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("oidc_session_store_unavailable".into()),
+        }
+    }
+}
+
+fn ensure_private(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "oidc_session_required"
+        } else {
+            "oidc_session_store_unavailable"
+        }
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err("oidc_session_store_unavailable".into());
+    }
+    ensure_private_parent(path.parent().ok_or("oidc_session_store_unavailable")?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err("oidc_session_permissions_invalid".into());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_private_file(file: &std::fs::File) -> Result<(), String> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| "oidc_session_store_unavailable")?;
+    if !metadata.file_type().is_file() {
+        return Err("oidc_session_store_unavailable".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err("oidc_session_permissions_invalid".into());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_private_parent(path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err("oidc_session_store_unavailable".into());
+    }
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if !metadata.file_type().is_dir() => {
+                return Err("oidc_session_store_unavailable".into())
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err("oidc_session_store_unavailable".into())
+            }
+            _ => (),
+        }
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or("oidc_session_store_unavailable")?;
+            if !parent.exists() {
+                ensure_private_parent(parent)?;
+            }
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(path)
+                .map_err(|_| "oidc_session_store_unavailable")?;
+            fs::File::open(parent)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| "oidc_session_store_unavailable")?;
+        }
+        Err(_) => return Err("oidc_session_store_unavailable".into()),
+    }
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    #[cfg(unix)]
+    let direct = fs::symlink_metadata(path).map_err(|_| "oidc_session_store_unavailable")?;
+    #[cfg(unix)]
+    if direct.uid() != rustix::process::geteuid().as_raw()
+        || direct.permissions().mode() & 0o777 != 0o700
+    {
+        return Err("oidc_session_permissions_invalid".into());
+    }
+    let mut current = Some(path);
+    while let Some(dir) = current {
+        let metadata = fs::symlink_metadata(dir).map_err(|_| "oidc_session_store_unavailable")?;
+        if !metadata.file_type().is_dir() {
+            return Err("oidc_session_store_unavailable".into());
+        }
+        current = dir.parent();
+    }
+    Ok(())
+}
+
+fn create_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        ensure_private_parent(parent)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| "oidc_session_store_unavailable")?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "oidc_session_store_unavailable")?;
+    ensure_private(path)
+}
+
+fn atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        ensure_private_parent(parent)?;
+    }
+    if fs::symlink_metadata(path).is_ok() {
+        ensure_private(path)?;
+    }
+    let mut suffix = [0u8; 8];
+    OsRng.fill_bytes(&mut suffix);
+    let temporary = path.with_extension(format!("tmp-{}", URL_SAFE_NO_PAD.encode(suffix)));
+    create_private(&temporary, bytes)?;
+    fs::rename(&temporary, path).map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+        String::from("oidc_session_store_unavailable")
+    })?;
+    ensure_private(path)?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "oidc_session_store_unavailable")?;
+    }
+    Ok(())
+}
+
 fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<(), String> {
+    if claims
+        .organization_id
+        .as_deref()
+        .is_some_and(|organization| organization.trim().is_empty())
+    {
+        return Err("workos_organization_binding_invalid".to_string());
+    }
     if config
         .oidc_organization_id
         .as_deref()
         .is_some_and(|expected| claims.organization_id.as_deref() != Some(expected))
     {
         return Err("workos_organization_binding_invalid".to_string());
+    }
+    // Personal sessions have no organization role. Hub, not this client,
+    // authorizes self-service access for the registered product client. The
+    // caller still must verify the token and obtain a matching Hub projection
+    // before persisting credentials. Organization sessions retain RBAC.
+    if claims.organization_id.is_none() {
+        return Ok(());
     }
     let permission_present = claims
         .permissions
@@ -433,6 +965,47 @@ fn validate_hub_claims(claims: &AccessClaims, config: &RuntimeConfig) -> Result<
             .any(|permission| permission == "hub:identity:read");
     if !permission_present {
         return Err("workos_hub_identity_permission_missing".to_string());
+    }
+    Ok(())
+}
+
+fn hub_tenant_from_claims(claims: &AccessClaims) -> String {
+    claims
+        .organization_id
+        .clone()
+        .unwrap_or_else(|| format!("user:{}", claims.sub))
+}
+
+// Only demonstrated credential/authority rejection tears down a session. A
+// configuration, network, JWKS, Hub or vault outage remains fail-closed but
+// recoverable. Never classify provider text as a reason or expose its contents.
+fn terminal_session_error(code: &str) -> bool {
+    matches!(
+        code,
+        "workos_token_header_invalid"
+            | "workos_token_signature_invalid"
+            | "workos_token_signing_key_invalid"
+            | "workos_token_claims_invalid"
+            | "workos_token_invalid"
+            | "workos_token_issuer_mismatch"
+            | "workos_token_client_mismatch"
+            | "workos_identity_binding_invalid"
+            | "workos_organization_binding_invalid"
+            | "workos_hub_identity_permission_missing"
+            | "hub_identity_binding_invalid"
+            | "hub_identity_unauthorized"
+            | "hub_identity_forbidden"
+            | "hub_identity_permission_denied"
+            | "hub_identity_client_unregistered"
+    )
+}
+
+fn validate_hub_projection(
+    claims: &AccessClaims,
+    hub: &crate::hub_identity::HubIdentity,
+) -> Result<(), String> {
+    if hub.subject_id != claims.sub || hub.tenant_id != hub_tenant_from_claims(claims) {
+        return Err("workos_identity_binding_invalid".to_string());
     }
     Ok(())
 }
@@ -496,6 +1069,7 @@ fn verify_access_token_with_jwks(
         })
         .ok_or_else(|| "workos_token_signing_key_unavailable".to_string())?;
     let mut validation = Validation::new(Algorithm::RS256);
+    validation.leeway = 0;
     validation.validate_exp = true;
     validation.validate_nbf = true;
     validation.set_issuer(std::slice::from_ref(&config.oidc_issuer));
@@ -588,22 +1162,469 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
     use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey};
     use serde::Serialize;
     use tempfile::tempdir;
 
+    struct RefreshFixture {
+        manager: WorkosAuthManager,
+        session: WorkosSession,
+        exchanges: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        inputs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    async fn refresh_fixture(statuses: &[u16], refreshed_subject: &str) -> RefreshFixture {
+        use axum::{extract::State, http::StatusCode, routing::get, routing::post, Json, Router};
+        use std::collections::VecDeque;
+        use std::sync::{atomic::AtomicUsize, Arc, Mutex};
+        #[derive(Clone)]
+        struct StateData {
+            keys: serde_json::Value,
+            replies: Arc<Mutex<VecDeque<(StatusCode, serde_json::Value)>>>,
+            exchanges: Arc<AtomicUsize>,
+            inputs: Arc<Mutex<Vec<String>>>,
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut config, key, jwks) = setup();
+        config.oidc_issuer = format!("http://{}", listener.local_addr().unwrap());
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.hub_base_url = format!("https://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let now = (now_ms() / 1000) as usize;
+        let claims = AccessClaims {
+            iss: config.oidc_issuer.clone(),
+            sub: "subject-1".into(),
+            client_id: config.oidc_client_id.clone(),
+            exp: now - 120,
+            email: None,
+            name: None,
+            organization_id: None,
+            permissions: vec![],
+            scope: None,
+        };
+        let old_access = token(
+            &key,
+            TestClaims {
+                iss: &claims.iss,
+                sub: &claims.sub,
+                client_id: &claims.client_id,
+                exp: claims.exp,
+                nbf: None,
+            },
+        );
+        let session = WorkosSession {
+            issuer: claims.iss.clone(),
+            client_id: claims.client_id.clone(),
+            tenant_id: hub_tenant_from_claims(&claims),
+            access_token: old_access,
+            refresh_token: "original-refresh".into(),
+            identity: identity_from_claims(&claims, &config),
+            pending_refresh: None,
+        };
+        let replies = statuses.iter().enumerate().map(|(index, status)| {
+            let body = if *status == 200 {
+                serde_json::json!({
+                    "access_token": token(&key, TestClaims {
+                        iss: &config.oidc_issuer, sub: refreshed_subject,
+                        client_id: &config.oidc_client_id, exp: now + 3600, nbf: None,
+                    }),
+                    "refresh_token": format!("rotated-refresh-{index}"),
+                })
+            } else {
+                serde_json::json!({"error": "invalid_grant", "error_description": "secret-sentinel"})
+            };
+            (StatusCode::from_u16(*status).unwrap(), body)
+        }).collect();
+        let state = StateData {
+            keys: serde_json::json!({"keys":[{
+                "kty":"RSA", "kid": jwks.keys[0].kid, "alg":"RS256",
+                "n": jwks.keys[0].n, "e": jwks.keys[0].e,
+            }]}),
+            replies: Arc::new(Mutex::new(replies)),
+            exchanges: Arc::new(AtomicUsize::new(0)),
+            inputs: Arc::new(Mutex::new(vec![])),
+        };
+        let exchanges = state.exchanges.clone();
+        let inputs = state.inputs.clone();
+        let router = Router::new()
+            .route("/sso/jwks/client_test", get(|State(state): State<StateData>| async move { Json(state.keys) }))
+            .route("/user_management/authenticate", post(|State(state): State<StateData>, Json(body): Json<serde_json::Value>| async move {
+                assert_eq!(body["grant_type"], "refresh_token");
+                state.exchanges.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                state.inputs.lock().unwrap().push(body["refresh_token"].as_str().unwrap().to_owned());
+                let reply = state.replies.lock().unwrap().pop_front().unwrap_or((
+                    StatusCode::BAD_REQUEST, serde_json::json!({"error":"invalid_grant"}),
+                ));
+                (reply.0, Json(reply.1))
+            }))
+            .with_state(state);
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        RefreshFixture {
+            manager: WorkosAuthManager::new(config),
+            session,
+            exchanges,
+            inputs,
+            task,
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_refresh_is_bounded_redacted_and_preserves_custody() {
+        use std::cell::Cell;
+        let fixture = refresh_fixture(&[500, 503], "subject-1").await;
+        let saves = Cell::new(0);
+        let deletes = Cell::new(0);
+        let result = fixture
+            .manager
+            .resolve_session(
+                fixture.session.clone(),
+                |_| {
+                    saves.set(saves.get() + 1);
+                    Ok(())
+                },
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "workos_refresh_unavailable");
+        assert_eq!(
+            fixture.exchanges.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!((saves.get(), deletes.get()), (0, 0));
+        fixture.task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_refresh_clears_once_without_retrying_or_exposing_provider_text() {
+        use std::cell::Cell;
+        let fixture = refresh_fixture(&[400, 200], "subject-1").await;
+        let deletes = Cell::new(0);
+        let result = fixture
+            .manager
+            .resolve_session(
+                fixture.session.clone(),
+                |_| panic!("rejected token must not be saved"),
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "oidc_session_required");
+        assert_eq!(
+            fixture.exchanges.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(deletes.get(), 1);
+        fixture.task.abort();
+    }
+
+    #[tokio::test]
+    async fn rotated_token_survives_hub_outage_and_restart_without_duplicate_exchange() {
+        use std::cell::{Cell, RefCell};
+        let fixture = refresh_fixture(&[200], "subject-1").await;
+        let vault = RefCell::new(fixture.session.clone());
+        let deletes = Cell::new(0);
+        let result = fixture
+            .manager
+            .resolve_session(
+                fixture.session.clone(),
+                |session| {
+                    vault.replace(session.clone());
+                    Ok(())
+                },
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "hub_unavailable");
+        let pending = vault.borrow().clone();
+        assert_eq!(pending.access_token, fixture.session.access_token);
+        assert_eq!(pending.refresh_token, "original-refresh");
+        assert_eq!(
+            pending
+                .pending_refresh
+                .as_ref()
+                .unwrap()
+                .refresh_token
+                .as_deref(),
+            Some("rotated-refresh-0")
+        );
+        // A legacy reader only sees the old authorized pair, never pending data.
+        #[derive(Deserialize)]
+        struct LegacySession {
+            access_token: String,
+            refresh_token: String,
+        }
+        let serialized = serde_json::to_string(&pending).unwrap();
+        let legacy: LegacySession = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(legacy.access_token, fixture.session.access_token);
+        assert_eq!(legacy.refresh_token, fixture.session.refresh_token);
+        let restarted = WorkosAuthManager::new(fixture.manager.config.clone());
+        let result = restarted
+            .resolve_session(
+                serde_json::from_str(&serialized).unwrap(),
+                |_| panic!("an unprojected rotation must not become active"),
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "hub_unavailable");
+        assert_eq!(
+            fixture.exchanges.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(deletes.get(), 0);
+        fixture.task.abort();
+    }
+
+    #[tokio::test]
+    async fn ambiguous_pending_write_preserves_rotated_readback_and_does_not_logout() {
+        use std::cell::{Cell, RefCell};
+        let fixture = refresh_fixture(&[200], "subject-1").await;
+        let vault = RefCell::new(fixture.session.clone());
+        let deletes = Cell::new(0);
+        let result = fixture
+            .manager
+            .resolve_session(
+                fixture.session.clone(),
+                |session| {
+                    vault.replace(session.clone());
+                    Err("bitwarden_session_store_unavailable".into())
+                },
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "bitwarden_session_store_unavailable");
+        let recovered = vault.borrow().clone();
+        let result = fixture
+            .manager
+            .resolve_session(
+                recovered,
+                |_| panic!("Hub is unavailable"),
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "hub_unavailable");
+        assert_eq!(
+            fixture.exchanges.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(deletes.get(), 0);
+        fixture.task.abort();
+    }
+
+    #[tokio::test]
+    async fn pending_rotation_cannot_change_the_owner() {
+        use std::cell::Cell;
+        let fixture = refresh_fixture(&[200], "other-owner").await;
+        let deletes = Cell::new(0);
+        let result = fixture
+            .manager
+            .resolve_session(
+                fixture.session.clone(),
+                |_| Ok(()),
+                || {
+                    deletes.set(deletes.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "workos_identity_binding_invalid");
+        assert_eq!(deletes.get(), 1);
+        fixture.task.abort();
+    }
+
+    #[tokio::test]
+    async fn expired_pending_rotation_uses_its_new_refresh_credential() {
+        let mut fixture = refresh_fixture(&[200], "subject-1").await;
+        fixture.session.pending_refresh = Some(TokenResponse {
+            access_token: fixture.session.access_token.clone(),
+            refresh_token: Some("prior-rotation".into()),
+        });
+        let result = fixture
+            .manager
+            .resolve_session(
+                fixture.session.clone(),
+                |_| Ok(()),
+                || panic!("an outage must not log out"),
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "hub_unavailable");
+        assert_eq!(*fixture.inputs.lock().unwrap(), vec!["prior-rotation"]);
+        fixture.task.abort();
+    }
+
+    #[test]
+    fn only_credential_or_authority_rejections_are_terminal() {
+        for code in [
+            "hub_unavailable",
+            "hub_response_invalid",
+            "hub_configuration_invalid",
+            "workos_jwks_unavailable",
+            "bitwarden_session_store_unavailable",
+            "workos_refresh_unavailable",
+            "workos_token_expired",
+        ] {
+            assert!(!terminal_session_error(code));
+        }
+        for code in [
+            "workos_identity_binding_invalid",
+            "workos_token_signature_invalid",
+            "hub_identity_unauthorized",
+            "hub_identity_permission_denied",
+        ] {
+            assert!(terminal_session_error(code));
+        }
+    }
+
+    #[test]
+    fn expired_access_token_has_no_authorization_grace() {
+        let (config, key, jwks) = setup();
+        let expired = token(
+            &key,
+            TestClaims {
+                iss: &config.oidc_issuer,
+                sub: "subject-1",
+                client_id: &config.oidc_client_id,
+                exp: (now_ms() / 1000) as usize - 1,
+                nbf: None,
+            },
+        );
+        assert_eq!(
+            verify_access_token_with_jwks(&config, &expired, &jwks).unwrap_err(),
+            "workos_token_expired"
+        );
+    }
+
     #[test]
     fn credential_rotation_is_exclusive_and_releases_on_drop() {
         let root = tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = RuntimeConfig::local(":memory:");
-        config.oidc_session_path = root.path().join("session.bin").display().to_string();
+        config.oidc_session_path = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("session.bin")
+            .display()
+            .to_string();
         let manager = WorkosAuthManager::new(config);
         let lock = manager.session_lock().unwrap();
         assert_eq!(manager.session_lock().unwrap_err(), "workos_session_busy");
         drop(lock);
         assert!(manager.session_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn import_signature_client_expiry_and_hub_failures_never_save_custody() {
+        use axum::{routing::get, Json, Router};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut config, key, jwks) = setup();
+        config.oidc_issuer = format!("http://{}", listener.local_addr().unwrap());
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.hub_base_url = format!("https://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let keys = serde_json::json!({"keys":[{"kty":"RSA","kid":jwks.keys[0].kid,"alg":"RS256","n":jwks.keys[0].n,"e":jwks.keys[0].e}]});
+        let router = Router::new().route(
+            "/sso/jwks/client_test",
+            get(move || {
+                let keys = keys.clone();
+                async move { Json(keys) }
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let manager = WorkosAuthManager::new(config.clone());
+        let hash = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
+        let now = (now_ms() / 1000) as usize;
+        let wrong_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+        for (key, client, exp, expected) in [
+            (
+                &key,
+                "other_client",
+                now + 3600,
+                "workos_token_client_mismatch",
+            ),
+            (
+                &wrong_key,
+                "client_test",
+                now + 3600,
+                "workos_token_signature_invalid",
+            ),
+            (&key, "client_test", now - 120, "workos_token_expired"),
+            (&key, "client_test", now + 3600, "hub_unavailable"),
+        ] {
+            let access = token(
+                key,
+                TestClaims {
+                    iss: &config.oidc_issuer,
+                    sub: "subject-1",
+                    client_id: client,
+                    exp,
+                    nbf: None,
+                },
+            );
+            let raw =
+                serde_json::json!({"access_token":access,"refresh_token":"IMPORT_PRIVATE_CANARY"})
+                    .to_string();
+            let saved = std::cell::Cell::new(false);
+            let result = manager
+                .import_and_save(
+                    raw.as_bytes(),
+                    &hash("subject-1"),
+                    &hash("user:subject-1"),
+                    |_| {
+                        saved.set(true);
+                        Ok(())
+                    },
+                )
+                .await;
+            assert_eq!(result.unwrap_err(), expected);
+            assert!(!saved.get());
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn import_rejects_unbounded_or_extra_fields_before_verification() {
+        let manager = WorkosAuthManager::new(RuntimeConfig::local(":memory:"));
+        let digest = "1".repeat(64);
+        for raw in [
+            vec![b'x'; 32769],
+            br#"{"access_token":"IMPORT_PRIVATE_CANARY","refresh_token":"r","trusted":true}"#
+                .to_vec(),
+        ] {
+            let result = manager
+                .import_and_save(&raw, &digest, &digest, |_| {
+                    panic!("invalid import must not save")
+                })
+                .await;
+            assert_eq!(result.unwrap_err(), "workos_import_input_invalid");
+        }
     }
 
     #[derive(Serialize)]
@@ -807,6 +1828,57 @@ mod tests {
     }
 
     #[test]
+    fn personal_preflight_defers_authority_but_requires_exact_hub_account() {
+        let (mut config, _, _) = setup();
+        config.oidc_organization_id = None;
+        let mut claims = AccessClaims {
+            iss: config.oidc_issuer.clone(),
+            sub: "user_personal".into(),
+            client_id: config.oidc_client_id.clone(),
+            exp: usize::MAX / 2000,
+            email: None,
+            name: None,
+            organization_id: None,
+            permissions: vec![],
+            scope: Some("openid profile email offline_access".into()),
+        };
+        assert!(validate_hub_claims(&claims, &config).is_ok());
+        for (subject, tenant, accepted) in [
+            ("user_personal", "user:user_personal", true),
+            ("user_other", "user:user_personal", false),
+            ("user_personal", "user:user_other", false),
+            ("user_personal", "org_other", false),
+        ] {
+            let hub = crate::hub_identity::HubIdentity {
+                subject_id: subject.into(),
+                tenant_id: tenant.into(),
+            };
+            assert_eq!(validate_hub_projection(&claims, &hub).is_ok(), accepted);
+        }
+        config.oidc_organization_id = Some("org_expected".into());
+        assert_eq!(
+            validate_hub_claims(&claims, &config).unwrap_err(),
+            "workos_organization_binding_invalid"
+        );
+        config.oidc_organization_id = None;
+        for organization in ["org_expected", "", " "] {
+            claims.organization_id = Some(organization.into());
+            assert!(validate_hub_claims(&claims, &config).is_err());
+        }
+        claims.organization_id = Some("org_expected".into());
+        claims.permissions.push("hub:identity:read".into());
+        assert!(validate_hub_claims(&claims, &config).is_ok());
+        assert!(validate_hub_projection(
+            &claims,
+            &crate::hub_identity::HubIdentity {
+                subject_id: claims.sub.clone(),
+                tenant_id: "org_expected".into(),
+            }
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn validation_diagnostics_distinguish_failures_without_claim_contents() {
         let (config, key, jwks) = setup();
         let now = (now_ms() / 1000) as usize;
@@ -906,5 +1978,86 @@ mod tests {
         assert_eq!(entry.get_password().unwrap(), "synthetic-session-only");
         entry.delete_credential().unwrap();
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+
+    #[tokio::test]
+    async fn file_import_checks_the_selected_store_without_a_vault_and_preserves_corrupt_state() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_profile = "workos".into();
+        config.oidc_issuer = "https://identity.example".into();
+        config.oidc_client_id = "client_test".into();
+        config.oidc_session_store = "file".into();
+        config.oidc_session_path = root.join("new/auth/session.json").display().to_string();
+        let manager = WorkosAuthManager::new(config);
+        let digest = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
+        assert_eq!(
+            manager
+                .import_session(b"{}", &digest("subject-1"), &digest("user:subject-1"))
+                .await
+                .unwrap_err(),
+            "workos_import_input_invalid"
+        );
+        let path = Path::new(&manager.config.oidc_session_path);
+        assert!(!path.exists());
+        create_private(path, b"corrupt-session").unwrap();
+        let original = fs::read(path).unwrap();
+        assert_eq!(
+            manager
+                .import_session(b"{}", &digest("subject-1"), &digest("user:subject-1"))
+                .await
+                .unwrap_err(),
+            "oidc_session_invalid"
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn legacy_migration_rejects_an_empty_destination_before_consulting_a_manager() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().canonicalize().unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_session_store = "file".into();
+        config.oidc_session_path = path.join("session.json").display().to_string();
+        create_private(Path::new(&config.oidc_session_path), b"").unwrap();
+        let manager = WorkosAuthManager::new(config.clone());
+        assert_eq!(
+            manager.migrate_to_local_file("bitwarden").unwrap_err(),
+            "oidc_session_invalid"
+        );
+        assert!(fs::read(&config.oidc_session_path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_file_round_trip_restart_and_rejects_corrupt_or_symlinked_state() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = RuntimeConfig::local(":memory:");
+        config.oidc_session_path = root_path.join("session.json").display().to_string();
+        let store = LocalWorkosStore::new(&config);
+        store.save("{\"session\":true}").unwrap();
+        assert_eq!(
+            LocalWorkosStore::new(&config).load().unwrap(),
+            "{\"session\":true}"
+        );
+        std::fs::write(&store.session, b"not-json").unwrap();
+        assert!(serde_json::from_str::<WorkosSession>(&store.load().unwrap()).is_err());
+        std::fs::remove_file(&store.session).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.path().join("missing"), &store.session).unwrap();
+        #[cfg(unix)]
+        assert_eq!(store.load().unwrap_err(), "oidc_session_store_unavailable");
     }
 }

@@ -408,6 +408,7 @@ fn authority(request: &Value) -> Option<AuthorityContext> {
 fn safe_deployment(deployment: &AgentDeployment) -> Value {
     json!({
         "deploymentId": deployment.deployment_id,
+        "executor": deployment.executor,
         "systemProjectId": deployment.system_project_id,
         "agentDefinitionVersionId": deployment.agent_definition_version_id,
         "executionConfigVersionId": deployment.execution_config_version_id,

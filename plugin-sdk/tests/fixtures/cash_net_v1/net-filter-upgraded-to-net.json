@@ -1,0 +1,248 @@
+{
+  "schemaVersion": "tradeassembly.net_base_inventory_observation.v1",
+  "requestSha256": "72a69b33b2668a6ca9134af451302bcd5f32d8329d2d493d6bc886b91d9353e0",
+  "status": "provisional",
+  "coherence": "non_atomic",
+  "order": {
+    "schemaVersion": "tradeassembly.broker_order_observation.v2",
+    "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+    "order": {
+      "schemaVersion": "tradeassembly.broker_order.v2",
+      "instrument": {
+        "instrumentId": "host.crypto.one",
+        "providerSymbol": "COIN/USD",
+        "assetClass": "crypto",
+        "instrumentFamily": "crypto_spot",
+        "quantityUnit": "base_asset",
+        "multiplier": "1",
+        "quoteCurrency": "USD"
+      },
+      "positionAction": "buy_to_open",
+      "quantity": "0.1",
+      "pricing": {
+        "kind": "limit",
+        "limitPrice": "100"
+      },
+      "timeInForce": "gtc",
+      "clientOrderId": "fixture.entry.original"
+    },
+    "providerOrderId": "fixture.original.order",
+    "status": "filled",
+    "filledQuantity": {
+      "status": "available",
+      "value": "0.1"
+    },
+    "cashSpent": {
+      "status": "unavailable",
+      "reason": "final_cash_debit_unknown"
+    },
+    "observedAtMs": 1050,
+    "knownAtMs": 1100
+  },
+  "orderSample": {
+    "startedAtMs": 1000,
+    "completedAtMs": 1100,
+    "evidenceIds": [
+      "order"
+    ]
+  },
+  "grossBaseFilled": {
+    "status": "available",
+    "value": "0.1"
+  },
+  "fills": {
+    "status": "available",
+    "value": {
+      "records": [
+        {
+          "providerFillId": "fill.1",
+          "providerOrderId": "fixture.original.order",
+          "baseAssetId": "host.base.one",
+          "baseQuantity": "0.1",
+          "transactionAtMs": 1040,
+          "evidenceIds": [
+            "fills"
+          ]
+        }
+      ],
+      "coverage": {
+        "providerOrderId": "fixture.original.order",
+        "pagesRead": 1,
+        "rowsRead": 1,
+        "queryExhausted": true,
+        "sample": {
+          "startedAtMs": 1110,
+          "completedAtMs": 1120,
+          "evidenceIds": [
+            "fills"
+          ]
+        }
+      }
+    }
+  },
+  "fees": {
+    "status": "available",
+    "value": {
+      "records": [
+        {
+          "providerFeeId": "fee.1",
+          "baseAssetId": {
+            "status": "available",
+            "value": "host.base.one"
+          },
+          "baseQuantity": {
+            "status": "available",
+            "value": "0.00025"
+          },
+          "effectiveAtMs": {
+            "status": "available",
+            "value": 1060
+          },
+          "attribution": {
+            "kind": "provider_order_filter",
+            "providerOrderId": "fixture.original.order"
+          },
+          "evidenceIds": [
+            "fees"
+          ]
+        }
+      ],
+      "coverage": {
+        "providerOrderId": "fixture.original.order",
+        "pagesRead": 1,
+        "rowsRead": 1,
+        "queryExhausted": true,
+        "sample": {
+          "startedAtMs": 1130,
+          "completedAtMs": 1140,
+          "evidenceIds": [
+            "fees"
+          ]
+        }
+      }
+    }
+  },
+  "feeClosure": {
+    "status": "available",
+    "value": {
+      "providerOrderId": "fixture.original.order",
+      "coveredGrossBase": "0.1",
+      "allOrderFeesFinal": true,
+      "correctionsComplete": true,
+      "finalThroughMs": 1150,
+      "sample": {
+        "startedAtMs": 1160,
+        "completedAtMs": 1170,
+        "evidenceIds": [
+          "closure"
+        ]
+      }
+    }
+  },
+  "netBaseCredited": {
+    "status": "available",
+    "value": "0.09975"
+  },
+  "aggregateInventory": {
+    "status": "available",
+    "value": {
+      "scope": "account_aggregate",
+      "instrumentId": "host.crypto.one",
+      "baseAssetId": "host.base.one",
+      "quantity": "10",
+      "quantityAvailable": {
+        "status": "available",
+        "value": "9"
+      },
+      "sample": {
+        "startedAtMs": 1180,
+        "completedAtMs": 1190,
+        "evidenceIds": [
+          "positions"
+        ]
+      }
+    }
+  },
+  "evidence": [
+    {
+      "id": "order",
+      "kind": "order",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "available",
+        "value": "fixture.original.order"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "fca12ac11d50af83f08d4d9572cfc31dc8f7d8bb199423d1eb2ee68c0caef960",
+      "startedAtMs": 1000,
+      "completedAtMs": 1100
+    },
+    {
+      "id": "fills",
+      "kind": "fills",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "available",
+        "value": "fixture.original.order"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "d96144b29efc68bf4329b49e54b376307a614d9f31b8192f158ceb909d63147a",
+      "startedAtMs": 1110,
+      "completedAtMs": 1120
+    },
+    {
+      "id": "fees",
+      "kind": "fees",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "available",
+        "value": "fixture.original.order"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "1b3a0958d14c61f105d61a17825829315a0cfebee8efdc671cdb2f873b4ae370",
+      "startedAtMs": 1130,
+      "completedAtMs": 1140
+    },
+    {
+      "id": "closure",
+      "kind": "fee_closure",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "available",
+        "value": "fixture.original.order"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "a055c12dca0d2ba63b303ad023321b825343d1eedf52687e445d5a545df76334",
+      "startedAtMs": 1160,
+      "completedAtMs": 1170
+    },
+    {
+      "id": "positions",
+      "kind": "positions",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "6226e29d6a40e8eb0bacc2a7d813b12c32a5a0741c2f61684db2bdfdc8fc137c",
+      "startedAtMs": 1180,
+      "completedAtMs": 1190
+    }
+  ]
+}

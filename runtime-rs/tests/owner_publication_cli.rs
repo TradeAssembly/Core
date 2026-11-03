@@ -38,7 +38,10 @@ fn publication_cli_requires_ack_before_mutation_and_accepts_exact_contract() {
     let created = service.handle_http(
         "POST",
         "/product/strategies/create",
-        json!({"id":"owner-cli-strategy", "name":"Owner CLI test"}),
+        json!({
+            "id":"owner-cli-strategy", "name":"Owner CLI test",
+            "spec": tradeassembly_runtime::spec::btc_exit_demo_spec_payload(),
+        }),
     );
     assert_eq!(created.status, 201, "{:#}", created.body);
     let hash = created.body["body"]["draft"]["draftHash"]

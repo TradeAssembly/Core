@@ -41,7 +41,7 @@ pub(crate) fn workspace(service: &TradeAssemblyService) -> Value {
         "providers": service.providers(),
         "journalEvents": journal_events.clone(),
         "journal_events": journal_events,
-        "researchMetrics": {"datasetRows": 6, "returnPct": 0.24, "maxDrawdownPct": 0.12, "replayable": true},
+        "researchMetrics": {"status":"unavailable","reason":"canonical_durable_backtest_report_required"},
         "marketBars": local_market_bars(),
         "credentialStatus": credential_status,
         "entitlements": {},

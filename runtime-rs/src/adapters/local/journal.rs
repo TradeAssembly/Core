@@ -90,6 +90,39 @@ impl JournalPort for LocalJournal {
         Ok(format!("journal-local-{:04}", record.sequence))
     }
 
+    fn try_owner_cursor(
+        &self,
+        owner: &crate::ports::ObjectOwner,
+    ) -> Result<Option<crate::ports::journal::LocalArchiveCursor>, String> {
+        let mut after = 0;
+        let mut scanned = 0usize;
+        let mut cursor = None;
+        loop {
+            let page = self.events.replay(STREAM, after, PAGE_SIZE)?;
+            if page.is_empty() {
+                return Ok(cursor);
+            }
+            for record in page {
+                scanned += 1;
+                if scanned > 4096 || record.sequence <= after {
+                    return Err("journal_cursor_bounds_or_sequence_invalid".to_string());
+                }
+                after = record.sequence;
+                let record_hash = canonical_hash(&record.payload);
+                let event = Self::decode(record)?;
+                if event.owner.as_ref() == Some(owner) {
+                    cursor = Some(crate::ports::journal::LocalArchiveCursor {
+                        schema: "tradeassembly.local-archive-cursor.v1".to_string(),
+                        stream: STREAM.to_string(),
+                        sequence: after,
+                        record_hash: format!("sha256:{record_hash}"),
+                        scope: "authenticated_owner".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     fn try_events(&self) -> Result<Vec<JournalEvent>, String> {
         let mut after = 0;
         let mut output = Vec::new();

@@ -3,35 +3,32 @@ use crate::ports::{
 };
 use serde_json::Value;
 
-pub fn stored_plugin_entry(
-    instance: &Value,
-    manifest_record: &Value,
-    credential_status: &CredentialStatus,
-    health: String,
-) -> Option<PluginCatalogEntry> {
-    let manifest = manifest_record.get("manifest")?;
-    let instance_ref = string_field(instance, &["instanceRef"])?;
-    let plugin_ref = string_field(instance, &["pluginRef"])?;
-    let provider_ref = string_field(instance, &["providerRef"]).or_else(|| {
-        manifest["metadata"]["provider"]["id"]
+/// Pure decoding only. Instance ownership, enablement, health and credential
+/// status are supplied anew when constructing each current catalog entry.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct ManifestCatalog {
+    provider_ref: Option<String>,
+    name: String,
+    trust_level: String,
+    manifest_fingerprint: String,
+    capabilities: Vec<String>,
+    operations: Vec<PluginOperationContract>,
+}
+pub(crate) fn decode_manifest(record: &Value) -> Option<ManifestCatalog> {
+    let manifest = record.get("manifest")?;
+    Some(ManifestCatalog {
+        provider_ref: manifest["metadata"]["provider"]["id"]
             .as_str()
-            .map(str::to_string)
-    })?;
-    Some(PluginCatalogEntry {
-        instance_ref,
-        plugin_ref,
-        provider_ref,
-        account_ref: string_field(instance, &["accountRef"]),
+            .map(str::to_string),
         name: manifest["metadata"]["name"]
             .as_str()
             .unwrap_or("Installed plugin")
-            .to_string(),
-        enabled: instance["enabled"].as_bool().unwrap_or(false),
-        trust_level: manifest_record["trust"]["level"]
+            .into(),
+        trust_level: record["trust"]["level"]
             .as_str()
             .unwrap_or("external-locked")
-            .to_string(),
-        manifest_fingerprint: manifest_record["manifestDigest"].as_str()?.to_string(),
+            .into(),
+        manifest_fingerprint: record["manifestDigest"].as_str()?.into(),
         capabilities: manifest["capabilities"]
             .as_array()
             .into_iter()
@@ -44,6 +41,39 @@ pub fn stored_plugin_entry(
             .flatten()
             .filter_map(operation_from_manifest)
             .collect(),
+    })
+}
+pub fn stored_plugin_entry(
+    instance: &Value,
+    record: &Value,
+    credential_status: &CredentialStatus,
+    health: String,
+) -> Option<PluginCatalogEntry> {
+    stored_plugin_entry_from_decoded(
+        instance,
+        &decode_manifest(record)?,
+        credential_status,
+        health,
+    )
+}
+pub(crate) fn stored_plugin_entry_from_decoded(
+    instance: &Value,
+    manifest: &ManifestCatalog,
+    credential_status: &CredentialStatus,
+    health: String,
+) -> Option<PluginCatalogEntry> {
+    Some(PluginCatalogEntry {
+        instance_ref: string_field(instance, &["instanceRef"])?,
+        plugin_ref: string_field(instance, &["pluginRef"])?,
+        provider_ref: string_field(instance, &["providerRef"])
+            .or_else(|| manifest.provider_ref.clone())?,
+        account_ref: string_field(instance, &["accountRef"]),
+        name: manifest.name.clone(),
+        enabled: instance["enabled"].as_bool().unwrap_or(false),
+        trust_level: manifest.trust_level.clone(),
+        manifest_fingerprint: manifest.manifest_fingerprint.clone(),
+        capabilities: manifest.capabilities.clone(),
+        operations: manifest.operations.clone(),
         credential_status: CredentialResolutionStatus {
             configured: credential_status.configured,
             custody: credential_status.custody.clone(),
@@ -52,7 +82,7 @@ pub fn stored_plugin_entry(
             } else {
                 "missing"
             }
-            .to_string(),
+            .into(),
             revision_ref: instance["credentialStatus"]["revisionRef"]
                 .as_str()
                 .map(str::to_string),

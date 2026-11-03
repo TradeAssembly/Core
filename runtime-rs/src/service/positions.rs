@@ -89,7 +89,7 @@ pub(crate) fn apply_filled_order(
     Err("paper_position_update_conflict".to_string())
 }
 
-fn next_position(
+pub(super) fn next_position(
     existing: Option<&Value>,
     order: &Value,
     quantity: f64,
@@ -176,7 +176,7 @@ fn next_position(
     Ok(position)
 }
 
-fn position_key(order: &Value) -> Result<String, String> {
+pub(super) fn position_key(order: &Value) -> Result<String, String> {
     let activation_id = required_string(order, &["activation_id", "activationId"])?;
     let symbol = required_string(order, &["symbol"])?;
     let account = account_scope(order);

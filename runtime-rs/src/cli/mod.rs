@@ -16,6 +16,8 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod browser_onboarding;
+pub mod external_mcp;
 pub mod output;
 
 #[derive(Parser)]
@@ -64,6 +66,16 @@ pub enum Command {
     Strategy {
         #[command(subcommand)]
         command: StrategyCommand,
+    },
+    /// Export/import public research records without execution authority.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+    /// Describe durable strategy results; absent metrics remain unavailable.
+    ResultSummary {
+        #[arg(long)]
+        strategy_id: String,
     },
     Journal {
         #[command(subcommand)]
@@ -220,6 +232,22 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum WorkspaceCommand {
+    Export {
+        #[arg(long, required_unless_present = "stdout", conflicts_with = "stdout")]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        stdout: bool,
+    },
+    Import {
+        #[arg(long, required_unless_present = "stdin", conflicts_with = "stdin")]
+        from: Option<PathBuf>,
+        #[arg(long)]
+        stdin: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum PolicyCommand {
     /// Run in the foreground; does not activate strategies or start an agent.
     Serve {
@@ -368,6 +396,18 @@ pub enum AuthCommand {
     Logout,
     /// Copy the current WorkOS session to Bitwarden, verify it, and retain Keychain.
     MigrateToBitwarden,
+    /// Copy a legacy keyring or Bitwarden session into protected local state.
+    MigrateToLocalFile {
+        #[arg(long, value_parser = ["keyring", "bitwarden"])]
+        source: String,
+    },
+    /// Verify stdin provider tokens against the packaged profile and Hub, then store in the selected credential store.
+    ImportSession {
+        #[arg(long)]
+        subject_sha256: String,
+        #[arg(long)]
+        tenant_sha256: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -413,6 +453,8 @@ pub enum JournalCommand {
     Export,
     /// Replay owner-scoped journal events and return deterministic counts.
     Replay,
+    /// Return the authenticated owner's durable journal cursor.
+    Cursor,
 }
 
 #[derive(Subcommand)]
@@ -533,6 +575,10 @@ pub enum BacktestsCommand {
     Replay {
         run_id: String,
     },
+    Recompute {
+        #[command(subcommand)]
+        command: BacktestRecomputeCommand,
+    },
     Report {
         run_id: String,
     },
@@ -541,6 +587,23 @@ pub enum BacktestsCommand {
         #[arg(long, default_value = "reportJson")]
         export_kind: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum BacktestRecomputeCommand {
+    Start(BacktestRecomputeRequestArgs),
+    Advance(BacktestRecomputeRequestArgs),
+    Inspect {
+        run_id: String,
+        recomputation_id: String,
+    },
+}
+
+#[derive(Args)]
+pub struct BacktestRecomputeRequestArgs {
+    /// Closed recompute command JSON, including its explicit stable idempotencyKey.
+    #[arg(long)]
+    request_file: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -1151,6 +1214,38 @@ pub async fn run_with_service(
         }
         Command::Auth { command } => {
             let response = match command {
+                AuthCommand::ImportSession {
+                    subject_sha256,
+                    tenant_sha256,
+                } => {
+                    let result = async {
+                        use std::io::Read;
+                        let mut raw = Vec::new();
+                        std::io::stdin()
+                            .take(32769)
+                            .read_to_end(&mut raw)
+                            .map_err(|_| "workos_import_input_invalid".to_string())?;
+                        let profile_path = std::env::current_exe()
+                            .map_err(|_| "connection_profile_unavailable".to_string())?
+                            .parent()
+                            .ok_or("connection_profile_unavailable")?
+                            .join("connection-profile.json");
+                        let hosted = if profile_path.exists() {
+                            crate::connection_profile::ConnectionProfile::read(&profile_path)?
+                                .configure(config)
+                        } else {
+                            config.clone()
+                        };
+                        crate::workos_identity::WorkosAuthManager::new(hosted)
+                            .import_session(&raw, &subject_sha256, &tenant_sha256)
+                            .await
+                    }
+                    .await;
+                    match result {
+                        Ok(identity) => identity.redacted_status(),
+                        Err(code) => json!({"authenticated":false,"error":{"code":code}}),
+                    }
+                }
                 AuthCommand::MigrateToBitwarden => {
                     match crate::workos_identity::WorkosAuthManager::new(config.clone())
                         .migrate_to_bitwarden()
@@ -1158,6 +1253,16 @@ pub async fn run_with_service(
                     {
                         Ok(()) => {
                             json!({"ok":true,"copied":true,"verified":true,"legacyEntryPreserved":true,"nextConfiguration":{"oidcSessionStore":"bitwarden"}})
+                        }
+                        Err(error) => json!({"ok":false,"error":{"code":error}}),
+                    }
+                }
+                AuthCommand::MigrateToLocalFile { source } => {
+                    match crate::workos_identity::WorkosAuthManager::new(config.clone())
+                        .migrate_to_local_file(&source)
+                    {
+                        Ok(()) => {
+                            json!({"ok":true,"copied":true,"verified":true,"legacyEntryPreserved":true,"source":source})
                         }
                         Err(error) => json!({"ok":false,"error":{"code":error}}),
                     }
@@ -1275,6 +1380,40 @@ pub async fn run_with_service(
         Command::Agent {
             command: AgentCommand::Uninstall(args),
         } => print_launchd_response(agent_launchd_uninstall(config, cli.config.as_deref(), args)),
+        Command::Workspace { command } => {
+            let result = async {
+                let session = crate::cli_identity::verify_cli_session(config).await?;
+                let workspace = crate::service::public_workspace::VerifiedLocalWorkspace::from_verified_session(
+                    service, session,
+                )?;
+                match command {
+                    WorkspaceCommand::Export { out: Some(out), .. } => workspace.export_file(&out),
+                    WorkspaceCommand::Export { stdout: true, .. } => workspace.export().and_then(|bundle| {
+                        serde_json::to_value(bundle).map_err(|_| "workspace_bundle_invalid".to_string())
+                    }),
+                    WorkspaceCommand::Import { from: Some(from), .. } => {
+                        crate::service::public_workspace::read_file(&from).and_then(|raw| workspace.import(&raw))
+                    }
+                    WorkspaceCommand::Import { stdin: true, .. } => {
+                        crate::service::public_workspace::read_stdin().and_then(|raw| workspace.import(&raw))
+                    }
+                    _ => Err("workspace_io_required".to_string()),
+                }
+            }
+            .await;
+            let response = result.unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}));
+            let failed = command_response_failed(&response);
+            let output = if failed {
+                output::failure(response, "workspace")
+            } else {
+                output::success(response, "workspace")
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).expect("CLI output JSON")
+            );
+            i32::from(failed)
+        }
         command => {
             let authenticated =
                 match require_authenticated_service(service, &identity_manager).await {
@@ -1674,8 +1813,10 @@ fn serve_mcp_stdio(
     bootstrap: &crate::identity_bootstrap::IdentityBootstrap,
     studio_base_url: &str,
 ) {
+    let onboarding = service
+        .map(|service| browser_onboarding::BrowserOnboarding::new(service, identity_manager));
     let inherited_capability = std::env::var(crate::agent_runner::MCP_CAPABILITY_ENV).ok();
-    let runner_execution_context = match service {
+    let inherited_execution_context = match service {
         Some(service) => crate::agent_runner::resolve_mcp_execution_context(
             service.runtime().as_ref(),
             inherited_capability.as_deref(),
@@ -1685,7 +1826,16 @@ fn serve_mcp_stdio(
         }
         None => Ok(None),
     };
+    let external_connection = external_mcp::ExternalMcpConnection::new();
     for line in io::stdin().lock().lines().map_while(Result::ok) {
+        let runner_execution_context = if inherited_capability.is_some() {
+            inherited_execution_context.clone()
+        } else {
+            match &external_connection {
+                Ok(connection) => connection.execution_context(),
+                Err(_) => Ok(None), // Keep setup usable; attachment itself fails closed.
+            }
+        };
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             println!(
                 "{}",
@@ -1697,14 +1847,18 @@ fn serve_mcp_stdio(
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let response = match method {
             "initialize" => {
-                json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": crate::mcp::MCP_PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": false}}, "serverInfo": {"name": "tradeassembly", "version": "0.1.0"}}})
+                json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": crate::mcp::MCP_PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": true}}, "serverInfo": {"name": "tradeassembly", "version": "0.1.0"}}})
             }
             "notifications/initialized" => continue,
             "tools/list" => match &runner_execution_context {
                 Ok(Some(context)) => json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": {"tools": crate::mcp::tool_definitions_for_agent_execution_context(context.allowed_tools())}
+                    "result": {"tools": if inherited_capability.is_none() {
+                        let mut allowed = context.allowed_tools().to_vec();
+                        allowed.extend([external_mcp::ATTACH.to_string(), external_mcp::DETACH.to_string()]);
+                        crate::mcp::tool_definitions_for_agent_execution_context(&allowed)
+                    } else { crate::mcp::tool_definitions_for_agent_execution_context(context.allowed_tools()) }}
                 }),
                 Ok(None) => {
                     json!({"jsonrpc": "2.0", "id": id, "result": {"tools": crate::mcp::tool_definitions()}})
@@ -1722,7 +1876,34 @@ fn serve_mcp_stdio(
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                let result = if runner_execution_context.is_err() {
+                let result = if matches!(name, external_mcp::ATTACH | external_mcp::DETACH) {
+                    let action = if inherited_capability.is_some() {
+                        Err("external_attach_operator_required".to_string())
+                    } else if let Ok(connection) = &external_connection {
+                        if name == external_mcp::DETACH {
+                            connection.detach()
+                        } else {
+                            match service
+                                .zip(current_mcp_identity(service, identity_manager).as_ref())
+                            {
+                                Some((service, identity)) => connection
+                                    .attach(&authenticated_service(service, identity), &args),
+                                None => Err("external_attach_identity_required".to_string()),
+                            }
+                        }
+                    } else {
+                        Err("external_agent_heartbeat_unavailable".to_string())
+                    };
+                    match action {
+                        Ok(payload) => crate::mcp::call_tool_with_payload(name, payload),
+                        Err(code) => crate::mcp::tool_error(
+                            name,
+                            &code,
+                            "External agent session action failed closed.",
+                            None,
+                        ),
+                    }
+                } else if runner_execution_context.is_err() {
                     crate::mcp::tool_error(
                         name,
                         "agent_mcp_execution_context_invalid",
@@ -1743,12 +1924,31 @@ fn serve_mcp_stdio(
                     )
                 } else {
                     let identity = current_mcp_identity(service, identity_manager);
-                    if name == "tradeassembly.account.login"
+                    if name.starts_with("tradeassembly.onboarding.")
+                        || name == "tradeassembly.broker.connect"
+                    {
+                        match onboarding.as_ref() {
+                            Some(onboarding) => crate::mcp::call_tool_with_payload(
+                                name,
+                                tokio::task::block_in_place(|| onboarding.call(name, args)),
+                            ),
+                            None => crate::mcp::tool_error(
+                                name,
+                                "runtime_unavailable",
+                                "Repair the installation before starting browser setup.",
+                                None,
+                            ),
+                        }
+                    } else if name == "tradeassembly.account.login"
                         || name == "tradeassembly.account.login.status"
                     {
                         let result = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async {
-                                if name == "tradeassembly.account.login" {
+                                if let Some(onboarding) = onboarding.as_ref() {
+                                    onboarding
+                                        .login(name == "tradeassembly.account.login")
+                                        .await
+                                } else if name == "tradeassembly.account.login" {
                                     bootstrap.start().await
                                 } else {
                                     bootstrap.status().await
@@ -1856,6 +2056,18 @@ fn serve_mcp_stdio(
             }
         };
         println!("{}", response);
+        if method == "tools/call"
+            && matches!(
+                message.pointer("/params/name").and_then(Value::as_str),
+                Some(external_mcp::ATTACH | external_mcp::DETACH)
+            )
+            && response.pointer("/result/isError") == Some(&Value::Bool(false))
+        {
+            println!(
+                "{}",
+                json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"})
+            );
+        }
     }
 }
 
@@ -1886,6 +2098,33 @@ fn execute_command_with_agent(
     agent: Option<&crate::agent_runner::CodexCliAdapter>,
 ) -> Value {
     match command {
+        Command::Workspace { command } => {
+            let result = match command {
+                WorkspaceCommand::Export { out: Some(out), .. } => {
+                    crate::service::public_workspace::export_file(service, &out)
+                }
+                WorkspaceCommand::Export { stdout: true, .. } => {
+                    crate::service::public_workspace::export(service).and_then(|bundle| {
+                        serde_json::to_value(bundle)
+                            .map_err(|_| "workspace_bundle_invalid".to_string())
+                    })
+                }
+                WorkspaceCommand::Import {
+                    from: Some(from), ..
+                } => crate::service::public_workspace::read_file(&from)
+                    .and_then(|raw| crate::service::public_workspace::import(service, &raw)),
+                WorkspaceCommand::Import { stdin: true, .. } => {
+                    crate::service::public_workspace::read_stdin()
+                        .and_then(|raw| crate::service::public_workspace::import(service, &raw))
+                }
+                _ => Err("workspace_io_required".to_string()),
+            };
+            result.unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}))
+        }
+        Command::ResultSummary { strategy_id } => {
+            crate::service::public_workspace::result_summary(service, &strategy_id)
+                .unwrap_or_else(|code| json!({"ok":false,"error":{"code":code}}))
+        }
         Command::Strategy { command } => match command {
             StrategyCommand::List => {
                 service
@@ -1938,6 +2177,11 @@ fn execute_command_with_agent(
             JournalCommand::Replay => {
                 service
                     .handle_http_from_source("cli", "POST", "/journal/replay-report", json!({}))
+                    .body
+            }
+            JournalCommand::Cursor => {
+                service
+                    .handle_http_from_source("cli", "GET", "/journal/cursor", json!({}))
                     .body
             }
         },
@@ -2931,6 +3175,9 @@ pub fn execute_backtests_command(
             &format!("/backtests/{run_id}/replay"),
             json!({}),
         ),
+        BacktestsCommand::Recompute { command } => {
+            execute_backtest_recompute_command(service, command)
+        }
         BacktestsCommand::Report { run_id } => service.handle_http_from_source(
             "cli",
             "GET",
@@ -2946,6 +3193,75 @@ pub fn execute_backtests_command(
             &format!("/backtests/{run_id}/export"),
             json!({"exportKind": export_kind}),
         ),
+    }
+}
+
+fn recompute_request_file(path: &PathBuf, kind: &str) -> Result<(String, Value), ServiceResponse> {
+    use std::io::Read;
+    let file = fs::File::open(path)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_unreadable"))?;
+    if !file
+        .metadata()
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_unreadable"))?
+        .is_file()
+    {
+        return Err(ServiceResponse::bad_request(
+            "typed_recompute_request_bounds_invalid",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_unreadable"))?;
+    if bytes.len() > 65_536 {
+        return Err(ServiceResponse::bad_request(
+            "typed_recompute_request_bounds_invalid",
+        ));
+    }
+    let request: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_invalid"))?;
+    let route = crate::service::backtest_recomputations::cli_command_path(kind, &request)
+        .map_err(|_| ServiceResponse::bad_request("typed_recompute_request_invalid"))?;
+    Ok((route, json!({"request":request})))
+}
+
+fn execute_backtest_recompute_command(
+    service: &TradeAssemblyService,
+    command: BacktestRecomputeCommand,
+) -> ServiceResponse {
+    match command {
+        BacktestRecomputeCommand::Start(args) => execute_recompute_request(service, args, "start"),
+        BacktestRecomputeCommand::Advance(args) => {
+            execute_recompute_request(service, args, "advance")
+        }
+        BacktestRecomputeCommand::Inspect {
+            run_id,
+            recomputation_id,
+        } => {
+            if [&run_id, &recomputation_id]
+                .iter()
+                .any(|id| !crate::service::backtest_recomputations::cli_path_segment(id))
+            {
+                return ServiceResponse::bad_request("typed_recompute_request_invalid");
+            }
+            service.handle_http_from_source(
+                "cli",
+                "GET",
+                &format!("/backtests/{run_id}/recomputations/{recomputation_id}"),
+                json!({}),
+            )
+        }
+    }
+}
+
+fn execute_recompute_request(
+    service: &TradeAssemblyService,
+    args: BacktestRecomputeRequestArgs,
+    kind: &str,
+) -> ServiceResponse {
+    match recompute_request_file(&args.request_file, kind) {
+        Ok((path, body)) => service.handle_http_from_source("cli", "POST", &path, body),
+        Err(response) => response,
     }
 }
 
@@ -3385,6 +3701,29 @@ fn bundled_default_plugin_request(
     executable: &std::path::Path,
     offline: bool,
 ) -> Option<Result<PluginPackageArgs, Value>> {
+    if let Some(pin) =
+        crate::workspace_bootstrap::installed_plugin_pin(executable, &runtime_target())
+    {
+        return Some(
+            pin.and_then(|pin| {
+                let compiled: Value =
+                    serde_json::from_str(include_str!("../../../packaging/alpaca.json"))
+                        .expect("Alpaca bundle pin JSON");
+                if compiled["version"].as_str() != Some(pin.version.as_str())
+                    || compiled["sourceRevision"].as_str() != Some(pin.source_revision.as_str())
+                {
+                    return Err("bundled_plugin_compile_identity_changed".into());
+                }
+                Ok(PluginPackageArgs {
+                    source: pin.source.display().to_string(),
+                    package_sha256: pin.package_sha256,
+                    manifest_sha256: pin.manifest_sha256,
+                    offline,
+                })
+            })
+            .map_err(|_| json!({"ok":false,"error":{"code":"bundled_plugin_unavailable"}})),
+        );
+    }
     let bin = executable.parent()?;
     let root = bin.parent()?;
     if bin.file_name()? != "bin" || !root.join("bundle.json").is_file() {
@@ -3439,6 +3778,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Mcp { .. } => "mcp",
         Command::Strategy { .. } => "strategy",
         Command::Journal { .. } => "journal",
+        Command::Workspace { .. } => "workspace",
+        Command::ResultSummary { .. } => "result-summary",
         Command::Providers { .. } => "providers",
         Command::Credentials { .. } => "credentials",
         Command::Account { .. } => "account",
@@ -3751,13 +4092,112 @@ mod tests {
     }
 
     #[test]
+    fn installed_default_plugin_uses_bound_pin_and_preserves_bootstrap_request_scope() {
+        let fixture =
+            crate::workspace_bootstrap::installed_pin_tests::Fixture::new(&super::runtime_target());
+        let request = super::bundled_default_plugin_request(&fixture.executable, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.package_sha256, fixture.pin["packageSha256"]);
+        assert_eq!(request.manifest_sha256, fixture.pin["manifestSha256"]);
+        let compiled: serde_json::Value =
+            serde_json::from_str(include_str!("../../../packaging/alpaca.json")).unwrap();
+        assert_ne!(request.package_sha256, compiled["packageSha256"]);
+        let envelope =
+            super::scoped_plugin_package_request(&request, "cli-install-default", "fixture");
+        assert_eq!(
+            envelope["integrity"],
+            serde_json::json!({"packageSha256":fixture.pin["packageSha256"],"manifestSha256":fixture.pin["manifestSha256"]})
+        );
+        assert_eq!(
+            envelope["idempotencyKey"],
+            format!(
+                "cli-install-default:plugin-package:{}:{}:fixture",
+                request.package_sha256, request.manifest_sha256
+            )
+        );
+        assert_eq!(envelope["offline"], true);
+        fs::write(fixture.payload.join("plugins/alpaca.json"), b"{}").unwrap();
+        let rejected = super::bundled_default_plugin_request(&fixture.executable, true)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(rejected["error"]["code"], "bundled_plugin_unavailable");
+    }
+
+    #[test]
+    fn installed_default_plugin_rejects_a_rebound_sdk_source_identity() {
+        use sha2::{Digest, Sha256};
+        let fixture =
+            crate::workspace_bootstrap::installed_pin_tests::Fixture::new(&super::runtime_target());
+        let lock = fixture.payload.join("plugins/alpaca.json");
+        let mut pin = fixture.pin.clone();
+        pin["sourceRevision"] = serde_json::json!("f".repeat(40));
+        fs::write(&lock, serde_json::to_vec(&pin).unwrap()).unwrap();
+        let bundle_path = fixture.payload.join("bundle.json");
+        let mut bundle: serde_json::Value =
+            serde_json::from_slice(&fs::read(&bundle_path).unwrap()).unwrap();
+        bundle["nativeInputs"]["alpacaRevision"] = pin["sourceRevision"].clone();
+        bundle["files"]["plugins/alpaca.json"]["sha256"] =
+            serde_json::json!(format!("{:x}", Sha256::digest(fs::read(&lock).unwrap())));
+        fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        let mut release = fixture.release.clone();
+        release["bundleManifestSha256"] = serde_json::json!(format!(
+            "{:x}",
+            Sha256::digest(fs::read(bundle_path).unwrap())
+        ));
+        crate::workspace_bootstrap::installed_pin_tests::private_record(
+            &fixture.root.join("installed.json"),
+            &serde_json::json!({"schemaVersion":1,"current":release,"previous":null,"wardenPort":32123}),
+        );
+        // Filesystem bindings are internally consistent, but cannot change this
+        // executable's compiled plugin source identity.
+        crate::workspace_bootstrap::installed_plugin_pin(
+            &fixture.executable,
+            &super::runtime_target(),
+        )
+        .unwrap()
+        .unwrap();
+        let rejected = super::bundled_default_plugin_request(&fixture.executable, true)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(rejected["error"]["code"], "bundled_plugin_unavailable");
+    }
+
+    #[test]
     fn offline_default_install_reaches_digest_cache_without_source_override() {
         let request = default_external_plugin_request(PluginDefaultInstallArgs {
             package_source: None,
             offline: true,
             skip_default_plugins: false,
-        })
-        .expect("supported default package request");
+        });
+        let catalogue: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../plugin-contracts/default-external-plugins.json"
+        ))
+        .unwrap();
+        let selected = catalogue["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["selectedByDefault"] == true)
+            .unwrap();
+        let target = super::runtime_target();
+        let supported = selected["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|package| package["target"] == target);
+        if !supported {
+            assert_eq!(
+                request.err().unwrap(),
+                json!({"ok":true,"status":"skipped",
+                "reason":"unsupported_target","target":target,
+                "pluginRef":selected["pluginRef"],"optional":true})
+            );
+            return;
+        }
+        let request = request.expect("supported default package request");
 
         assert!(request.offline);
         assert!(!request.source.is_empty());
@@ -3872,5 +4312,130 @@ mod tests {
         let exact = spawn_health_response("0.1.0");
         preflight_api_warden(&warden_config(exact, &token_path))
             .expect("exact Warden health must allow API startup");
+    }
+
+    fn recompute_cli_fixture_command(kind: &str) -> serde_json::Value {
+        let mut command = json!({
+            "schemaVersion":"tradeassembly.typed_backtest_recompute_command.v1",
+            "kind":kind,
+            "scope":{"strategyId":"strategy_cli","strategyVersionId":"version_cli",
+                "strategySpecHash":format!("sha256:{}", "a".repeat(64))},
+            "runId":"backtest_cli","idempotencyKey":format!("explicit-cli-{kind}")
+        });
+        if kind == "start" {
+            command["expectedManifestHash"] = json!(format!("sha256:{}", "b".repeat(64)));
+            command["expectedResultHash"] = json!(format!("sha256:{}", "c".repeat(64)));
+        } else {
+            command["recomputationId"] = json!("backtest_recompute_cli");
+            command["expectedStateSha256"] = json!("d".repeat(64));
+        }
+        command
+    }
+
+    #[test]
+    fn backtest_recompute_cli_preserves_explicit_keys_and_fixed_routes() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        for kind in ["start", "advance"] {
+            let file = dir.path().join(format!("{kind}.json"));
+            let request = recompute_cli_fixture_command(kind);
+            fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
+            let first = recompute_request_file(&file, kind).unwrap();
+            let retry = recompute_request_file(&file, kind).unwrap();
+            assert_eq!(
+                first, retry,
+                "CLI retries must never mint a replacement key"
+            );
+            assert_eq!(first.1, json!({"request":request}));
+            assert_eq!(
+                first.0,
+                if kind == "start" {
+                    "/backtests/backtest_cli/recomputations"
+                } else {
+                    "/backtests/backtest_cli/recomputations/backtest_recompute_cli/advance"
+                }
+            );
+            let cli = Cli::try_parse_from([
+                "tradeassembly",
+                "backtests",
+                "recompute",
+                kind,
+                "--request-file",
+                file.to_str().unwrap(),
+            ])
+            .unwrap();
+            let Command::Backtests {
+                command: BacktestsCommand::Recompute { command },
+            } = cli.command
+            else {
+                panic!("expected explicit recompute subcommand");
+            };
+            match (kind, command) {
+                ("start", BacktestRecomputeCommand::Start(args))
+                | ("advance", BacktestRecomputeCommand::Advance(args)) => {
+                    assert_eq!(args.request_file, file)
+                }
+                _ => panic!("wrong recompute action"),
+            }
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["tradeassembly", "backtests", "replay", "backtest_old"])
+                .unwrap()
+                .command,
+            Command::Backtests {
+                command: BacktestsCommand::Replay { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn backtest_recompute_cli_refuses_unkeyed_oversized_or_ambiguous_requests() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("request.json");
+        let mut request = recompute_cli_fixture_command("start");
+        request.as_object_mut().unwrap().remove("idempotencyKey");
+        fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(
+            recompute_request_file(&file, "start").unwrap_err().status,
+            400
+        );
+        let mut request = recompute_cli_fixture_command("start");
+        request["owner"] = json!("caller-selected-owner");
+        fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(
+            recompute_request_file(&file, "start").unwrap_err().status,
+            400
+        );
+        fs::write(
+            &file,
+            serde_json::to_vec(&recompute_cli_fixture_command("advance")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            recompute_request_file(&file, "start").unwrap_err().status,
+            400
+        );
+        fs::write(&file, vec![b' '; 65_537]).unwrap();
+        let oversized = recompute_request_file(&file, "start").unwrap_err();
+        assert_eq!(
+            oversized.body["error"]["code"],
+            "typed_recompute_request_bounds_invalid"
+        );
+        let service = TradeAssemblyService::test_local(":memory:");
+        let invalid_path = execute_backtest_recompute_command(
+            &service,
+            BacktestRecomputeCommand::Inspect {
+                run_id: "../other".into(),
+                recomputation_id: "id".into(),
+            },
+        );
+        assert_eq!(invalid_path.status, 400);
+        assert!(service
+            .runtime()
+            .storage
+            .list_json("plugin_operation_requests")
+            .unwrap()
+            .is_empty());
     }
 }

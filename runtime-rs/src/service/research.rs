@@ -1,3 +1,5 @@
+// Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
 use super::{
     backtest, journal_events, portfolio_risk_body_from, strategy, strategy_id_from,
     workspace_evidence, TradeAssemblyService,
@@ -14,6 +16,13 @@ pub(crate) fn create_dataset(service: &TradeAssemblyService, body: Value) -> Val
     let strategy_id = strategy_id_from(&body);
     if service.require_object("strategy", &strategy_id).is_err() {
         return unavailable();
+    }
+    match requested_snapshot_id(&body) {
+        Ok(Some(id)) => {
+            return verified_dataset_metadata(service, &strategy_id, id).unwrap_or_else(unavailable)
+        }
+        Err(()) => return unavailable(),
+        Ok(None) => {}
     }
     let source_plugin_ref = body
         .get("sourcePluginRef")
@@ -41,48 +50,16 @@ pub(crate) fn create_dataset(service: &TradeAssemblyService, body: Value) -> Val
             "noAdvice": true
         });
     }
-    let symbol = body
-        .get("symbol")
-        .and_then(Value::as_str)
-        .unwrap_or("BTC/USD");
     let id = next_id(service, DATASETS_NS, "ds", &strategy_id);
-    let records = body.get("rows").and_then(Value::as_array).cloned();
-    let row_count = body
-        .get("rows")
-        .and_then(Value::as_array)
-        .map(|rows| rows.len())
-        .or_else(|| {
-            body.get("rows")
-                .and_then(Value::as_u64)
-                .map(|rows| rows as usize)
-        })
-        .unwrap_or(6);
-    let dataset = json!({
-        "id": id,
-        "datasetId": id,
-        "strategy_id": strategy_id,
-        "strategyId": strategy_id,
-        "symbol": symbol,
-        "records": records.clone().unwrap_or_default(),
-        "rows": row_count,
-        "rowCount": row_count,
-        "snapshotRef": format!("snapshot://local/{id}"),
-        "content_hash": format!("sha256:{}", slug(&id)),
-        "contentHash": format!("sha256:{}", slug(&id)),
-        "sourcePluginRef": body.get("sourcePluginRef").or_else(|| body.get("source_plugin_ref")).and_then(Value::as_str).unwrap_or("tradeassembly.local-data"),
-        "capability": body.get("capability").and_then(Value::as_str).unwrap_or("marketdata.bars"),
-        "timeSlice": body.get("timeSlice").or_else(|| body.get("time_slice")).cloned().unwrap_or_else(|| json!({"start": "2026-01-02T00:00:00Z", "end": "2026-01-02T00:05:00Z"})),
-        "normalization": body.get("normalization").cloned().unwrap_or_else(|| json!({"kind": "close_price", "missingBars": "fail_closed"})),
-        "timezone": body.get("timezone").and_then(Value::as_str).unwrap_or("UTC"),
-        "calendar": body.get("calendar").and_then(Value::as_str).unwrap_or("crypto_24x7"),
-        "session": body.get("session").and_then(Value::as_str).unwrap_or("continuous"),
-        "capital": body.get("capital").cloned().unwrap_or_else(|| json!({"currency": "USD", "startingCash": body.get("startingCash").or_else(|| body.get("starting_cash")).and_then(Value::as_f64).unwrap_or(1000.0)})),
-        "slippage": body.get("slippage").cloned().unwrap_or_else(|| json!({"model": "fixed_bps", "bps": body.get("slippageBps").or_else(|| body.get("slippage_bps")).and_then(Value::as_f64).unwrap_or(2.0)})),
-        "spread": body.get("spread").cloned().unwrap_or_else(|| json!({"model": "fixed_bps", "bps": body.get("spreadBps").or_else(|| body.get("spread_bps")).and_then(Value::as_f64).unwrap_or(1.0)})),
-        "fillModel": body.get("fillModel").or_else(|| body.get("fill_model")).cloned().unwrap_or_else(|| json!("next_bar_close")),
-        "feeModel": body.get("feeModel").or_else(|| body.get("fee_model")).cloned().unwrap_or_else(|| json!({"kind": "flat", "amount": body.get("feeAmount").or_else(|| body.get("fee_amount")).and_then(Value::as_f64).unwrap_or(0.01), "currency": "USD"})),
-        "orderPolicy": body.get("orderPolicy").or_else(|| body.get("order_policy")).cloned().unwrap_or_else(|| json!({"entry": "market", "exit": "market", "unclosedPosition": "value_at_dataset_end"})),
-    });
+    let mut dataset = unverified_dataset(&json!({"id":id,"datasetId":id,
+        "strategyId":strategy_id,"strategy_id":strategy_id,"sourcePluginRef":source_plugin_ref}));
+    // These are caller-authored declarations, never acquired or verified data.
+    if let Some(symbol) = body.get("symbol").and_then(Value::as_str) {
+        dataset["symbol"] = json!(symbol);
+    }
+    if let Some(records) = body.get("rows").and_then(Value::as_array) {
+        dataset["records"] = json!(records);
+    }
     if service
         .bind_inherited_object("dataset", &id, "strategy", &strategy_id)
         .is_err()
@@ -109,14 +86,20 @@ pub(crate) fn create_universe(service: &TradeAssemblyService, body: Value) -> Va
     let symbols = body
         .get("symbols")
         .cloned()
-        .unwrap_or_else(|| json!(["BTC/USD", "ETH/USD"]));
+        .filter(|value| {
+            value
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(Value::is_string))
+        })
+        .unwrap_or_else(|| json!([]));
     let universe = json!({
         "id": id,
         "strategy_id": strategy_id,
         "strategyId": strategy_id,
         "symbols": symbols,
-        "provider_ref": body.get("providerRef").or_else(|| body.get("provider_ref")).cloned().unwrap_or_else(|| json!("local-data")),
-        "metrics": {"rows": 3},
+        "provider_ref": body.get("providerRef").or_else(|| body.get("provider_ref")).and_then(Value::as_str),
+        "status":"unverified", "verified":false, "verificationKind":"caller_declared_symbols",
+        "researchEvidenceQualified":false, "executionAuthorityGranted":false, "metrics": {},
     });
     if service
         .bind_inherited_object("research_universe", &id, "strategy", &strategy_id)
@@ -135,52 +118,16 @@ pub(crate) fn create_universe(service: &TradeAssemblyService, body: Value) -> Va
     universe
 }
 
-pub(crate) fn create_job(service: &TradeAssemblyService, body: Value) -> Value {
-    let strategy_id = strategy_id_from(&body);
-    if service.require_object("strategy", &strategy_id).is_err() {
-        return unavailable();
+pub(crate) fn create_job(service: &TradeAssemblyService, body: Value) -> super::ServiceResponse {
+    let mut blocked = backtest::run_backtest(service, body);
+    if blocked["status"] == "not_found" {
+        return super::ServiceResponse::object_unavailable();
     }
-    let id = next_id(service, JOBS_NS, "research_job", &strategy_id);
-    let backtest = backtest::run_backtest(service, body.clone());
-    if backtest["status"].as_str() == Some("blocked") {
-        return json!({
-            "id": id,
-            "status": "blocked",
-            "strategy_id": strategy_id,
-            "strategyId": strategy_id,
-            "blockedBacktest": backtest,
-            "artifacts": [],
-            "noAdvice": super::LEGAL_BOUNDARY,
-        });
+    blocked["kind"] = json!("ResearchJob");
+    super::ServiceResponse {
+        status: 501,
+        body: json!({"ok":false,"error":blocked["error"],"body":blocked}),
     }
-    let backtest_id = backtest["id"].as_str().unwrap_or("backtest-local");
-    let job = json!({
-        "id": id,
-        "status": "completed",
-        "strategy_id": strategy_id,
-        "strategyId": strategy_id,
-        "dataset_id": body.get("datasetId").or_else(|| body.get("dataset_id")).cloned().unwrap_or_else(|| json!("dataset-local-fixture")),
-        "datasetId": body.get("datasetId").or_else(|| body.get("dataset_id")).cloned().unwrap_or_else(|| json!("dataset-local-fixture")),
-        "engine": body.get("engine").cloned().unwrap_or_else(|| json!("auto")),
-        "backtest_id": backtest_id,
-        "backtestId": backtest_id,
-        "artifacts": backtest["artifacts"].clone(),
-    });
-    if service
-        .bind_inherited_object("research_job", &id, "strategy", &strategy_id)
-        .is_err()
-    {
-        return unavailable();
-    }
-    persist(
-        service,
-        JOBS_NS,
-        &id,
-        job.clone(),
-        "research.job.completed",
-        &body,
-    );
-    job
 }
 
 pub(crate) fn job_status(service: &TradeAssemblyService, body: Value) -> Value {
@@ -201,13 +148,17 @@ pub(crate) fn job_status(service: &TradeAssemblyService, body: Value) -> Value {
             .get_json(JOBS_NS, requested)
             .ok()
             .flatten()
+            .map(|record| backtest::historical_summary(&record, "LegacyResearchJob"))
     }
     .unwrap_or_else(|| json!({"status": "not_found"}));
-    json!({"job": job, "artifacts": job["artifacts"].clone()})
+    json!({"job": job, "artifacts": []})
 }
 
 pub(crate) fn list_jobs(service: &TradeAssemblyService) -> Vec<Value> {
     visible_stored(service, "research_job", JOBS_NS, &["id"])
+        .iter()
+        .map(|record| backtest::historical_summary(record, "LegacyResearchJob"))
+        .collect()
 }
 
 pub(crate) fn list_sweeps(service: &TradeAssemblyService) -> Vec<Value> {
@@ -215,12 +166,10 @@ pub(crate) fn list_sweeps(service: &TradeAssemblyService) -> Vec<Value> {
 }
 
 pub(crate) fn list_universes(service: &TradeAssemblyService) -> Vec<Value> {
-    visible_or_default(
-        service,
-        "research_universe",
-        UNIVERSES_NS,
-        json!({"id": "universe_local", "symbols": ["BTC/USD", "ETH/USD"]}),
-    )
+    visible_stored(service, "research_universe", UNIVERSES_NS, &["id"])
+        .iter()
+        .map(unverified_universe)
+        .collect()
 }
 
 pub(crate) fn workspace(service: &TradeAssemblyService, strategy_id: &str) -> Value {
@@ -266,10 +215,13 @@ pub(crate) fn workspace(service: &TradeAssemblyService, strategy_id: &str) -> Va
             }))
         })
         .collect::<Vec<_>>();
-    let datasets = visible_stored(service, "dataset", DATASETS_NS, &["id", "datasetId"])
+    let snapshots = verified_dataset_list(service, strategy_id);
+    let mut datasets = visible_stored(service, "dataset", DATASETS_NS, &["id", "datasetId"])
         .into_iter()
         .filter(|dataset| dataset["strategyId"].as_str() == Some(strategy_id))
+        .map(|dataset| unverified_dataset(&dataset))
         .collect::<Vec<_>>();
+    datasets.extend(snapshots.clone());
     let portfolio_risk_report = crate::report_envelope::portfolio_risk_surface(
         service.portfolio_risk_overlay(portfolio_risk_body_from(&json!({
             "strategyId": strategy_id,
@@ -304,7 +256,7 @@ pub(crate) fn workspace(service: &TradeAssemblyService, strategy_id: &str) -> Va
             {"kind": "Comparison", "label": "Compare runs", "enabled": false, "reason": "Requires dedicated comparison slice."}
         ],
         "datasets": datasets,
-        "datasetSnapshots": [],
+        "datasetSnapshots": snapshots,
         "providerStatus": {"deprecated": true, "replacement": "datasetSetup.selectedDataset.sourcePluginRef"},
         "jobs": list_jobs(service),
         "researchJobs": list_jobs(service),
@@ -386,18 +338,233 @@ fn visible_stored(
     service.filter_visible_values(object_type, values, id_fields)
 }
 
-fn visible_or_default(
-    service: &TradeAssemblyService,
-    object_type: &str,
-    namespace: &str,
-    default: Value,
-) -> Vec<Value> {
-    let stored = visible_stored(service, object_type, namespace, &["id"]);
-    if stored.is_empty() && service.invocation_owner().is_none() {
-        vec![default]
-    } else {
-        stored
+// Legacy descriptions are not immutable snapshots. In particular, historical
+// slug hashes, row counts and fabricated economic/time defaults are not evidence.
+fn unverified_dataset(record: &Value) -> Value {
+    let mut descriptor = json!({"schemaVersion":"tradeassembly.research_dataset_descriptor.v1",
+        "status":"unverified","verified":false,"verificationKind":"caller_declared_data",
+        "researchEvidenceQualified":false,"executionAuthorityGranted":false,
+        "nextAction":{"tool":"tradeassembly.dataset_ingestion.create","path":"/dataset-ingestions"}});
+    for field in ["id", "datasetId", "strategyId", "strategy_id", "symbol"] {
+        if let Some(value) = record.get(field).and_then(Value::as_str) {
+            descriptor[field] = json!(value);
+        }
     }
+    if let Some(provider) = record
+        .get("requestedSourcePluginRef")
+        .or_else(|| record.get("sourcePluginRef"))
+        .and_then(Value::as_str)
+    {
+        descriptor["requestedSourcePluginRef"] = json!(provider);
+    }
+    if let Some(records) = record.get("records").and_then(Value::as_array) {
+        descriptor["records"] = json!(records);
+    }
+    descriptor
+}
+fn unverified_universe(record: &Value) -> Value {
+    let mut descriptor = json!({"status":"unverified","verified":false,
+        "verificationKind":"caller_declared_symbols","researchEvidenceQualified":false,
+        "executionAuthorityGranted":false,"metrics":{}});
+    for field in ["id", "strategyId", "strategy_id", "provider_ref"] {
+        if let Some(value) = record.get(field).and_then(Value::as_str) {
+            descriptor[field] = json!(value);
+        }
+    }
+    descriptor["symbols"] = record
+        .get("symbols")
+        .filter(|v| v.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    descriptor
+}
+fn requested_snapshot_id(body: &Value) -> Result<Option<&str>, ()> {
+    let mut id = None;
+    for field in ["immutableSnapshotId", "immutable_snapshot_id"] {
+        if let Some(value) = body.get(field) {
+            let value = value
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
+                .ok_or(())?;
+            if id.is_some_and(|prior| prior != value) {
+                return Err(());
+            }
+            id = Some(value);
+        }
+    }
+    Ok(id)
+}
+fn snapshot_metadata(snapshot: &crate::historical_data::DatasetSnapshot) -> Value {
+    json!({"schemaVersion":"tradeassembly.research_dataset_descriptor.v1",
+        "id":snapshot.dataset_id,"datasetId":snapshot.dataset_id,"snapshotId":snapshot.dataset_id,
+        "strategyId":snapshot.content.strategy_id,"strategy_id":snapshot.content.strategy_id,
+        "status":"verified","verified":true,"verificationKind":"immutable_snapshot_integrity",
+        "researchEvidenceQualified":false,"executionAuthorityGranted":false,
+        "rows":snapshot.row_count,"rowCount":snapshot.row_count,"snapshotRef":snapshot.snapshot_ref,
+        "contentHash":snapshot.content_hash,"content_hash":snapshot.content_hash,"byteLength":snapshot.byte_length,
+        "firstTimestamp":snapshot.first_timestamp,"lastTimestamp":snapshot.last_timestamp,"createdAtMs":snapshot.created_at_ms,
+        "sourcePluginRef":snapshot.content.source.plugin_ref,"sourceClass":snapshot.content.source.source_class,
+        "timeSlice":snapshot.content.time_slice,"normalization":snapshot.content.normalization_policy,
+        "calendar":snapshot.content.calendar,"timezone":snapshot.content.timezone,"instruments":snapshot.content.instruments})
+}
+fn verified_dataset_metadata(
+    service: &TradeAssemblyService,
+    strategy: &str,
+    id: &str,
+) -> Option<Value> {
+    service.require_object("dataset_snapshot", id).ok()?;
+    let snapshot = service.runtime().dataset_snapshots.get(id).ok()??;
+    snapshot.verify().ok()?;
+    super::dataset_projections::verify_publication(service, &snapshot).ok()?;
+    if snapshot.dataset_id != id || snapshot.content.strategy_id != strategy {
+        return None;
+    }
+    Some(snapshot_metadata(&snapshot))
+}
+fn verified_dataset_list(service: &TradeAssemblyService, strategy: &str) -> Vec<Value> {
+    let mut snapshots = service
+        .runtime()
+        .dataset_snapshots
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| {
+            s.content.strategy_id == strategy
+                && s.verify().is_ok()
+                && super::dataset_projections::verify_publication(service, s).is_ok()
+                && service
+                    .require_object("dataset_snapshot", &s.dataset_id)
+                    .is_ok()
+        })
+        .collect::<Vec<_>>();
+    snapshots
+        .sort_by(|a, b| (a.created_at_ms, &a.dataset_id).cmp(&(b.created_at_ms, &b.dataset_id)));
+    snapshots.iter().map(snapshot_metadata).collect()
+}
+
+/// Read-only projection of finite legacy metadata results. Called only after
+/// ordinary invocation/object authorization and construction of the CURRENT
+/// C3 envelope, before generic prepare would rewrite its duplicate flag. Never
+/// dispatches a mutation or edits the retained command/authorization receipt.
+pub(super) fn cached_metadata_projection(
+    service: &TradeAssemblyService,
+    interface: &str,
+    operation: &str,
+    request: &Value,
+    envelope: &crate::control_plane::ControlPlaneCommandEnvelope,
+) -> Result<Option<super::ServiceResponse>, super::ServiceResponse> {
+    let (command, universe, field) = match (interface, operation) {
+        (
+            "http",
+            "POST /research/datasets" | "POST /product/strategies/research/datasets/create",
+        )
+        | ("graphql", "CreateResearchDataset")
+        | ("mcp", "tradeassembly.research.dataset.create") => {
+            ("research.dataset.create", false, "createResearchDataset")
+        }
+        ("http", "POST /research/universes")
+        | ("graphql", "CreateResearchUniverse")
+        | ("mcp", "tradeassembly.research.universe.create") => {
+            ("research.universe.create", true, "createResearchUniverse")
+        }
+        _ => return Ok(None),
+    };
+    // The similarly named real dataset-ingestion command is deliberately not
+    // selected by this finite route/tool table.
+    if envelope.command_name != command || envelope.side_effect_class == "read" {
+        return Ok(None);
+    }
+    let request = request.get("request").unwrap_or(request);
+    let strategy_id = strategy_id_from(request);
+    // Some old aliases do not have a strategy route in the generic object
+    // preflight. Authorize the current owner before reading any retained result.
+    if service.require_object("strategy", &strategy_id).is_err() {
+        return Err(super::ServiceResponse::object_unavailable());
+    }
+    let raw = service
+        .runtime()
+        .storage
+        .get_json(crate::control_plane::COMMAND_NS, &envelope.command_id)
+        .map_err(|_| super::ServiceResponse::internal_error("metadata_replay_unavailable"))?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let record: crate::control_plane::ControlPlaneCommandRecord = serde_json::from_value(raw)
+        .map_err(|_| super::ServiceResponse::conflict("metadata_replay_invalid"))?;
+    if record.envelope.payload_hash != envelope.payload_hash {
+        return Err(super::ServiceResponse::conflict("idempotency_conflict"));
+    }
+    if record.envelope.schema_version != envelope.schema_version
+        || record.envelope.command_id != envelope.command_id
+        || record.envelope.command_name != envelope.command_name
+        || record.envelope.command_group != envelope.command_group
+        || record.envelope.source_interface != envelope.source_interface
+        || record.envelope.authority != envelope.authority
+        || record.envelope.target_object != envelope.target_object
+        || record.envelope.side_effect_class != envelope.side_effect_class
+        || record.envelope.idempotency_key != envelope.idempotency_key
+        || record.envelope.idempotency_requirement != envelope.idempotency_requirement
+        || record.envelope.expected_sequence != envelope.expected_sequence
+        || record.envelope.evidence_refs != envelope.evidence_refs
+    {
+        return Err(super::ServiceResponse::conflict(
+            "metadata_replay_scope_changed",
+        ));
+    }
+    let Some(status) = record.response_status else {
+        return Ok(None);
+    };
+    if status >= 400 {
+        return Err(super::ServiceResponse::error(
+            status,
+            "idempotency_replay_failed",
+            false,
+        ));
+    }
+    let original = record
+        .response_body
+        .as_ref()
+        .ok_or_else(|| super::ServiceResponse::conflict("metadata_replay_payload_unavailable"))?;
+    let data = match interface {
+        "graphql" => &original["data"][field],
+        "mcp" => original.get("structuredContent").unwrap_or(original),
+        _ => original,
+    };
+    let data = data.get("body").unwrap_or(data);
+    let original_strategy = data
+        .get("strategyId")
+        .or_else(|| data.get("strategy_id"))
+        .and_then(Value::as_str);
+    if original_strategy.is_some_and(|id| id != strategy_id) {
+        return Err(super::ServiceResponse::object_unavailable());
+    }
+    let mut projected = if universe {
+        unverified_universe(data)
+    } else {
+        unverified_dataset(data)
+    };
+    // Old defaults are not reclassified as current caller declarations. Only
+    // identity metadata remains; raw records and old default symbols stay in the
+    // original protected response, not this current projection.
+    projected.as_object_mut().unwrap().remove("records");
+    if universe {
+        projected["symbols"] = request
+            .get("symbols")
+            .filter(|v| v.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+    }
+    projected["verificationKind"] = json!("unverified_historical_command_projection");
+    projected["strategyId"] = json!(strategy_id);
+    let original_hash =
+        crate::backtest_contracts::canonical_hash(original, "metadata_replay_encoding_invalid")
+            .map_err(|_| super::ServiceResponse::conflict("metadata_replay_invalid"))?;
+    let mut body = super::api_result(projected);
+    body["metadataProjection"] = json!({"schemaVersion":"tradeassembly.research_metadata_replay_projection.v1",
+        "originalCommandId":envelope.command_id,"originalResponseSha256":original_hash,
+        "originalResponseReturned":false,"storedCommandUnchanged":true,
+        "projectionKind":"sanitized_historical_metadata","executionAuthorityGranted":false});
+    Ok(Some(super::ServiceResponse { status, body }))
 }
 
 fn unavailable() -> Value {
@@ -492,3 +659,7 @@ fn slug(value: &str) -> String {
         slug
     }
 }
+
+#[cfg(test)]
+#[path = "research_metadata_tests.rs"]
+mod metadata_tests;

@@ -9,6 +9,31 @@ use tradeassembly_runtime::{
 };
 
 struct Package(InstalledPluginPackage);
+#[test]
+fn readiness_is_unavailable_for_unqualified_or_missing_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let service =
+        TradeAssemblyService::test_local(temp.path().join("boundary.db").to_string_lossy());
+    assert!(service
+        .runtime()
+        .finance_authority
+        .verify_broker_boundary()
+        .is_err());
+    assert!(
+        LocalPluginOperations::new(service.runtime().storage.clone())
+            .verify_broker_boundary()
+            .is_err()
+    );
+    let guard = Guard {
+        calls: Arc::new(AtomicUsize::new(0)),
+        deny: false,
+    };
+    assert!(
+        guard.verify_available().is_err(),
+        "a custom allow adapter must explicitly implement availability"
+    );
+}
+
 impl VersionedPort for Package {
     fn descriptors(&self) -> Vec<PortDescriptor> {
         vec![]

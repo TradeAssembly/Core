@@ -1,0 +1,118 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+# Linux owns routine correctness. Native packaging is a separate release lane.
+name: Linux CI
+on:
+  pull_request:
+  push:
+    branches: ['codex/f2-browser-onboarding']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: linux-ci-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  owning:
+    name: Linux owning gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+      WRANGLER_SEND_METRICS: 'false'
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.0.0'
+      - name: Compiler
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy --no-self-update
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
+        with:
+          tool: just@1.54.0,cargo-nextest@0.9.138,cargo-deny@0.19.9,cargo-audit@0.22.2,cargo-machete@0.9.2
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: compiler-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.npm
+            source/target
+            source/apps/broker-oauth-relay/target
+            source/apps/broker-oauth-edge/target
+            source/tools/relay-release/target
+          key: linux-core-${{ runner.os }}-${{ runner.arch }}-1.98.0-node26-debug0-${{ hashFiles('source/**/Cargo.lock', 'source/**/package-lock.json', 'source/.github/workflows/linux-ci.yml') }}
+          restore-keys: linux-core-${{ runner.os }}-${{ runner.arch }}-1.98.0-node26-debug0-
+      - name: Explicit setup
+        run: |
+          git config --global url."https://github.com/TradeAssembly/Core.git".insteadOf "ssh://git@github.com/TradeAssembly/Core.git"
+          mkdir -p target/linux-ci
+          just setup 2>&1 | tee target/linux-ci/setup.log
+      - name: Owning gate
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          npm_config_offline: 'true'
+        run: '{ time just verify; } 2>&1 | tee target/linux-ci/verify.log'
+      - name: Contract tests
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          npm_config_offline: 'true'
+        run: '{ time just contract-test; } 2>&1 | tee target/linux-ci/contracts.log'
+      - name: Development participant artifacts
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: '{ time just build-artifacts; } 2>&1 | tee target/linux-ci/build.log'
+      - name: Bind source, toolchain, logs and participant bytes
+        run: |
+          set -euo pipefail
+          git status --porcelain --untracked-files=all > target/linux-ci/source-status.log
+          if test -s target/linux-ci/source-status.log; then
+            cat target/linux-ci/source-status.log
+            echo 'Source changed during verification; inspect the recorded paths.' >&2
+            exit 1
+          fi
+          rustc --version --verbose > target/linux-ci/rustc.txt
+          tools='{}'
+          for tool in rustc cargo just node npm cargo-nextest cargo-deny cargo-audit cargo-machete; do
+            digest=$("$tool" --version | sha256sum | cut -d ' ' -f 1)
+            tools=$(jq --arg tool "$tool" --arg digest "$digest" '. + {($tool): $digest}' <<< "$tools")
+          done
+          printf '%s\n' "$tools" > target/linux-ci/tools.json
+          sha256sum target/linux-ci/{verify,contracts,build}.log target/linux-ci/tools.json target/debug/tradeassembly target/debug/tradeassembly-core-runner > target/linux-ci/SHA256SUMS
+          jq -n --arg component 'core' --arg source "$(git rev-parse HEAD)" --arg tree "$(git rev-parse HEAD^{tree})" --arg host x86_64-unknown-linux-gnu --arg workflow "$GITHUB_WORKFLOW_REF" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg rust '1.98.0' --arg node '26.0.0' '{schema_version:1,component:$component,source:$source,tree:$tree,host:$host,workflow:$workflow,run:$run,attempt:$attempt,rust:$rust,node:$node,debug:"0",incremental:"0",jobs:"2",artifact_class:"development"}' > target/linux-ci/owner.json
+          tar -czf target/linux-ci/participant.tar.gz target/debug/tradeassembly target/debug/tradeassembly-core-runner
+      - name: Retain evidence including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-owner-core-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: source/target/linux-ci/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Preserve compiler caches after completed or failed checks
+        if: always() && !cancelled() && steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.npm
+            source/target
+            source/apps/broker-oauth-relay/target
+            source/apps/broker-oauth-edge/target
+            source/tools/relay-release/target
+          key: linux-core-${{ runner.os }}-${{ runner.arch }}-1.98.0-node26-debug0-${{ hashFiles('source/**/Cargo.lock', 'source/**/package-lock.json', 'source/.github/workflows/linux-ci.yml') }}

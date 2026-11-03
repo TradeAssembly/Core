@@ -627,6 +627,7 @@ fn classify_file(path: &Path, _relative: &str) -> Option<&'static str> {
         match ext.to_ascii_lowercase().as_str() {
             "rb" | "rake" | "gemspec" | "ru" => return Some("ruby"),
             "py" | "pyi" => return Some("python"),
+            "js" | "mjs" | "cjs" => return Some("javascript"),
             _ => {}
         }
     }

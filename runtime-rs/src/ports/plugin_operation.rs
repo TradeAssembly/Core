@@ -55,6 +55,12 @@ pub struct PluginOperationResponse {
 }
 
 pub trait PluginOperationPort: VersionedPort {
+    /// Verify that external dispatch is wired through an available broker PEP.
+    /// Actual invocation must still authorize every prepared order separately.
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        Err("broker_submission_boundary_unavailable".into())
+    }
+
     /// Observation-only recovery. The opaque plan can only be constructed after
     /// original evidence and current observer authentication have been checked.
     fn recover_ambiguous_broker_order(
@@ -65,6 +71,21 @@ pub trait PluginOperationPort: VersionedPort {
         Err("broker_order_recovery_unsupported".into())
     }
 
+    fn reconcile_order_v2(
+        &self,
+        _source: &crate::broker_submission::v2::OrderPlanSource,
+        _context: &SideEffectContext,
+    ) -> Result<crate::broker_submission::v2::RecoveryResult, String> {
+        Err("broker_v2_recovery_unsupported".into())
+    }
+    fn invoke_order_v2(
+        &self,
+        _request: &PluginOperationRequest,
+        _context: &SideEffectContext,
+        _source: &crate::broker_submission::v2::OrderPlanSource,
+    ) -> Result<PluginOperationResponse, String> {
+        Err("broker_v2_host_unsupported".into())
+    }
     fn invoke(
         &self,
         request: &PluginOperationRequest,

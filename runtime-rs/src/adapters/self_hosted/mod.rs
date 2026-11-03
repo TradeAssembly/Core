@@ -232,6 +232,7 @@ pub fn runtime_from_config_with_authority(
             ),
             artifact_root.join("plugins/sandbox-settings"),
             config.plugin_sandbox_allow_local_egress,
+            config.plugin_sandbox_windows_proxy_port_range,
         )?,
     );
     let dataset_snapshots = Arc::new(

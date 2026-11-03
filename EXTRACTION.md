@@ -14,7 +14,7 @@ No webapp, Product, Hub, deployment infrastructure or sibling provider source.
 Compile-time asset closure adds docs/reference/contracts/strategy-spec.schema.json
 and examples/strategy-spec/v3/valid/{crypto-spot-24x7,multi-leg-option-spread,
 static-equity}.json. Initial isolated build85128 exposed these four parent-relative
-includes in runtime-rs/src/spec.rs; copy only the required schema/fixtures.
+includes in strategy/src/spec.rs; copy only the required schema/fixtures.
 
 The existing xtask is retained initially to preserve lockfile and harness code;
 its Studio-specific commands must be separated before this becomes public Core.

@@ -56,7 +56,16 @@ pub enum ComparePutOutcome {
     Conflict,
 }
 
+/// Thread-affine, callback-local optimization token. It must not retain application query results,
+/// authority decisions, or a database read transaction. Every read sees fresh
+/// committed data; writes and atomic comparisons keep their original semantics.
+pub trait ReadValidationScope {}
+impl ReadValidationScope for () {}
+
 pub trait StoragePort: VersionedPort {
+    fn read_validation_scope(&self) -> Result<Box<dyn ReadValidationScope>, String> {
+        Ok(Box::new(()))
+    }
     fn adapter_name(&self) -> &'static str;
     fn put_json(
         &self,
@@ -99,6 +108,29 @@ pub trait StoragePort: VersionedPort {
         _limit: usize,
     ) -> Result<Vec<(String, Value)>, String> {
         Err("paged storage listing is unsupported".to_string())
+    }
+    /// Trusted local pre-dispatch durability barrier only. No public export route.
+    fn execution_checkpoint_snapshot(&self, _destination: &std::path::Path) -> Result<(), String> {
+        Err("execution_checkpoint_snapshot_unsupported".into())
+    }
+    /// Bounded, consistent read for the public portability allowlist.
+    fn public_workspace_snapshot(
+        &self,
+        _namespaces: &[&str],
+        _max_rows: usize,
+        _max_bytes: usize,
+    ) -> Result<Vec<(String, String, Value)>, String> {
+        Err("workspace_snapshot_unsupported".to_string())
+    }
+    /// Commit to a completely empty durable workspace, or verify an exact retry.
+    /// Implementations must check emptiness and write the receipt in one transaction.
+    fn import_public_workspace(
+        &self,
+        _writes: &[StorageWrite],
+        _digest: &str,
+        _bootstrap: &[StorageExpectation],
+    ) -> Result<ImmutablePutOutcome, String> {
+        Err("workspace_import_unsupported".to_string())
     }
     fn clear_namespace(&self, namespace: &str) -> Result<(), String>;
 }

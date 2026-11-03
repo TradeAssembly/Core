@@ -1,0 +1,278 @@
+include!("external_management_v6_tests.rs");
+include!("external_managed_plan_tests.rs");
+// Synthetic screen -> selected subject -> normal activation/decision -> C5.
+fn setup_dynamic_execution_fixture(s:&crate::service::TradeAssemblyService,root:&std::path::Path,refresh:bool,automatic:bool)->(InstalledPluginPackage,std::thread::JoinHandle<()>){
+ setup_dynamic_execution_fixture_reads(s,root,refresh,automatic,None)
+}
+fn setup_dynamic_execution_fixture_reads(s:&crate::service::TradeAssemblyService,root:&std::path::Path,refresh:bool,automatic:bool,reads:Option<usize>)->(InstalledPluginPackage,std::thread::JoinHandle<()>){
+ let package=install_screen_package(s,root);s.runtime().plugins.put_instance(&package.plugin_ref,json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"configuration":{}}),&ctx("dynamic-screen-instance")).unwrap();
+ let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+ let bounded_profile=reads==Some(0);let stop=root.join("c5-calendar-stop");if bounded_profile{listener.set_nonblocking(true).unwrap();}
+ let server=std::thread::spawn(move||{let base_now=chrono::Utc::now().timestamp_millis();let deadline=std::time::Instant::now()+std::time::Duration::from_secs(300);let mut observations=0;'requests: for _index in 0..if bounded_profile{1024}else{reads.unwrap_or(if automatic{3}else if refresh{2}else{1})}{let(mut stream,_)=loop{if bounded_profile&&(stop.exists()||std::time::Instant::now()>=deadline){break 'requests;}match listener.accept(){Ok(v)=>break v,Err(e)if bounded_profile&&e.kind()==std::io::ErrorKind::WouldBlock=>std::thread::sleep(std::time::Duration::from_millis(10)),Err(e)=>panic!("fixture accept failed: {e}")}};stream.set_nonblocking(false).unwrap();stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();let calendar=String::from_utf8_lossy(&buffer[..n]).starts_with("GET /options ");assert!(calendar||String::from_utf8_lossy(&buffer[..n]).starts_with("GET /observations "));if calendar{assert!(automatic);let now=chrono::Utc::now().timestamp_millis();let date=chrono::DateTime::from_timestamp_millis(now).unwrap().date_naive().to_string();let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.auto.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":now,"days":[{"sessionDate":date,"session":{"status":"open","openAtMs":if bounded_profile{base_now-1000}else{now-1000},"closeAtMs":if bounded_profile{base_now+3600000}else{now+3600000},"earlyClose":false}}]});let bytes=serde_json::to_vec(&document).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();continue;}let rows=if !refresh||observations==0{json!([{"id":"SPY","dte":50,"oi":20,"oiAgeDays":0},{"id":"B","dte":50,"oi":10,"oiAgeDays":0}])}else{json!([{"id":"SPY","dte":50,"oi":10,"oiAgeDays":0},{"id":"B","dte":50,"oi":20,"oiAgeDays":0}])};observations+=1;let bytes=serde_json::to_vec(&json!({"rows":rows,"coverage":{"complete":true,"scope":"fixture_candidates"}})).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();}});
+ let mut replay=s.runtime().plugins.get_instance("capture.source").unwrap().unwrap();replay["configuration"]=json!({"dataApiUrl":format!("http://{address}")});replay["credentialRef"]=json!("dynamic-screen-fake-source");s.runtime().plugins.put_instance("capture.source",replay,&ctx("dynamic-source-config")).unwrap();s.runtime().credentials.store("dynamic-screen-fake-source",&BTreeMap::from([("api_key".into(),"fake-screen-only-key".into()),("api_secret".into(),"fake-screen-only-secret".into())])).unwrap();
+ (package,server)
+}
+fn configure_dynamic_execution_spec(s:&crate::service::TradeAssemblyService,spec:&mut Value,bindings:&mut Value,replay:&InstalledPluginPackage,screen:&InstalledPluginPackage,snapshot:&Value){
+ use crate::selection_strategy::*;use tradeassembly_plugin_sdk::instrument_screen as wire;
+ let policy=json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"fixture.screen.v1","inputs":{"contracts":{"capability_requirement_ref":"screen_source","response_schema_ref":"schema://capture-fixture/response@1","query":{"literal":{},"date_bindings":{}},"max_age_ms":300000,"coverage":{"complete_pointer":"/snapshot/coverage/complete","scope_pointer":"/snapshot/coverage/scope","scope_value":"fixture_candidates"}}},"candidate_input":"contracts","candidate_records_pointer":"/snapshot/rows","candidate_id_pointer":"/id","parameters":{"minDte":45,"maxDte":60,"maxOiAgeDays":1},"coverage":"complete_configured_inputs","max_candidates":2,"top_n":1,"ttl_ms":300000});
+ spec["signal_market_requirements"][0]["selectors"].as_array_mut().unwrap().push(json!({"selector_id":"screened","type":"screened","screen":policy}));
+ let template=SelectionStrategy{schema_version:"tradeassembly.selection_strategy.v1".into(),selections:BTreeMap::from([("selected".into(),SelectorRef{market_requirement_ref:"signal_primary".into(),selector_ref:"screened".into()})]),trade_selection_ref:"selected".into(),nodes:vec![NodeTemplate{graph_node_id:"exec_signal".into(),parameters:json!({"snapshot":snapshot,"digest":canonical_sha256(snapshot).unwrap()}),context:ContextTemplate::Subject{interval_ms:Some(60000)},input_contexts:BTreeMap::new()}],bindings:vec![],entry:RuleTemplate::Compare{left:OperandTemplate::Output{node:"exec_signal".into(),port:"value".into(),instrument:InstrumentRef::Subject,sample:crate::data_strategy::Sample::Current},op:crate::data_strategy::Comparison::Greater,right:OperandTemplate::Number{value:0.0}},exit:RuleTemplate::IsTrue{value:OperandTemplate::Boolean{value:false}}};spec["stages"]["evaluate"]["substeps"][0]["config"]=json!({(CONFIG_KEY):template});
+ for(id,cap,schemas,deps)in[("screen_source","test.screen.source@1",vec!["schema://capture-fixture/response@1"],vec![]),("screen","test.instrument.screen@1",vec![wire::SCREEN_REQUEST_SCHEMA,wire::SCREEN_RESULT_SCHEMA],vec!["screen_source"])]{let mut r=spec["capability_requirements"]["required"][0].clone();r["requirement_id"]=json!(id);r["capability"]=json!(cap);r["stage_refs"]=json!(["universe"]);r["substep_refs"]=json!([]);r["dependency_refs"]=json!(deps);r["constraints"]=json!({"schema_refs":schemas,"data_shapes":if id=="screen"{vec!["instrument_set"]}else{vec![]},"fields":[],"input_paths":[],"operations":[],"deterministic":id=="screen","replayable":id=="screen"});spec["capability_requirements"]["required"].as_array_mut().unwrap().push(r);s.runtime().storage.put_json("entitlement_grants",cap,json!({"grantId":cap,"profile":"local_full","source":"test","capability":cap,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("dynamic-screen-grants")).unwrap();}
+ bindings["screen_source"]=json!({"pluginInstanceRef":replay.plugin_ref,"pluginRef":replay.plugin_ref,"operationId":"acquire"});bindings["screen"]=json!({"pluginInstanceRef":screen.plugin_ref,"pluginRef":screen.plugin_ref,"operationId":"screen"});
+}
+fn prepare_dynamic_execution_plan(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,key:&str,subject:&str)->Value{
+ use crate::service::{data_collections as collections,instrument_screens as screens,selection_plans};
+ let collection=collections::acquire(s,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:"screen_source".into(),mode:"paper".into(),response_schema_ref:"schema://capture-fixture/response@1".into(),input:json!({})},&ctx(&format!("{key}-collection"))).unwrap();
+ let screen=screens::acquire(s,screens::ScreenCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),signal_requirement_ref:"signal_primary".into(),selector_ref:"screened".into(),collections:BTreeMap::from([("contracts".into(),collection.collection_id)]),knowledge_cutoff_ms:s.runtime().clock.now_ms()},&ctx(&format!("{key}-screen"))).unwrap();assert_eq!(screen.instrument_set.members[0].instrument_id,subject);
+ let c=selection_plans::SelectionPlanCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),subject_instrument_id:subject.into(),selection_receipts:BTreeMap::from([("selected".into(),screen.selection_id.clone())]),source_captures:BTreeMap::new()};let prepared=s.handle_http("POST","/product/strategies/selection-plans/prepare",json!({"selectionPlan":c,"idempotencyKey":format!("{key}-plan")}));assert_eq!(prepared.status,200,"{}",prepared.body);
+ let id=prepared.body["plan"]["revisionId"].as_str().unwrap();let selected=financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Select{scope:scope.clone(),selection:crate::service::order_plans::decision::SelectionCommand{activation_id:"fixture-v2-activation".into(),plan_revision_id:id.into()}},&format!("{key}-select"));assert_eq!(selected.status,200,"{}",selected.body);write_screen_interface_evidence("dynamic_execution",&format!("{key}-selection.json"),&json!({"screen":screen,"plan":prepared.body,"selected":selected.body}));prepared.body
+}
+fn refuse_removed_dynamic_entry(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,plan_id:&str,submission:&Value,root:&std::path::Path){
+ let oldrun=s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();let managed=oldrun["managedEntries"].clone();assert_eq!(managed.as_object().unwrap().len(),1);
+ // Authored pre-existing management records, never fabricated fill evidence.
+ s.runtime().storage.put_json("positions","fixture-existing-position",json!({"symbol":"REMOVED","state":"open","fixture":true}),&ctx("fixture-existing-position")).unwrap();s.runtime().storage.put_json("orders","fixture-existing-pending",json!({"symbol":"REMOVED","state":"pending","fixture":true}),&ctx("fixture-existing-pending")).unwrap();let positions=s.runtime().storage.list_json("positions").unwrap();let orders=s.runtime().storage.list_json("orders").unwrap();
+ let prepared=prepare_dynamic_execution_plan(s,scope,revision,"replacement","B");let latest=s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();assert_ne!(latest["typedSelectionHead"],oldrun["typedSelectionHead"]);assert_eq!(latest["managedEntries"],managed);
+ let oldplan=crate::service::order_plans::submission::source(s,plan_id).unwrap().historical().unwrap();let cfg=s.runtime().storage.get_json("execution_configs",latest["configId"].as_str().unwrap()).unwrap().unwrap();assert_eq!(crate::service::order_plans::decision::check_plan(s,&oldplan,&latest,&cfg).unwrap_err(),"typed_entry_selection_not_current");
+ let refusal=s.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":submission,"accountMode":"paper","idempotencyKey":"removed-entry-submit"}));assert_eq!(refusal.status,409,"{}",refusal.body);assert!(!root.join("synthetic-broker/calls.log").exists());assert_eq!(s.runtime().storage.list_json("positions").unwrap(),positions);assert_eq!(s.runtime().storage.list_json("orders").unwrap(),orders);assert_eq!(s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap()["managedEntries"],managed);
+ let p=crate::service::order_plans::submission::source(s,plan_id).unwrap().historical().unwrap();let (data,_)=crate::service::data_evaluation::indexed_receipt(s,&p.command.signal_receipt_sha256).unwrap();let older=s.handle_http("POST","/product/strategies/order-plans/select",json!({"scope":scope,"selection":{"activationId":"fixture-v2-activation","planRevisionId":data.revision_id},"accountMode":"paper","idempotencyKey":"older-selection-refused"}));assert_eq!(older.status,409,"{}",older.body);assert_eq!(older.body["error"]["code"],"typed_selection_revision_not_newer");
+ let release=financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Release{scope:scope.clone(),plan_id:plan_id.into()},"removed-plan-release");assert_eq!(release.status,200,"{}",release.body);
+ let reopened=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);assert_eq!(reopened.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap()["typedSelectionHead"],latest["typedSelectionHead"]);write_screen_interface_evidence("dynamic_execution","removed-entry-refusal.json",&json!({"replacementPlan":prepared,"refusal":refusal.body,"olderSelection":older.body,"release":release.body,"managedEntriesPreserved":true,"authoredPositionsAndPendingOrdersPreserved":true,"brokerInvocations":0}));
+}
+#[test]
+#[ignore="explicit native screened selection, normal typed admission and removal fixture"]
+fn financial_v4_screened_subject_entry_and_refresh_preserve_management(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();for case in ["financial_screen_reject","financial_screen_refresh"]{native_execution_plan_fixture(Some(case));}}
+
+fn exercise_native_automatic_cycle(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,snapshot:&Value,root:&std::path::Path,background:bool){
+ use crate::service::{data_collections as collections,session_schedules as schedules,session_dispatch as dispatch};
+ let calendar=collections::acquire(s,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:"calendar".into(),mode:"paper".into(),response_schema_ref:tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA.into(),input:json!({})},&ctx("auto-calendar")).unwrap();
+ let now=s.runtime().clock.now_ms();let date=chrono::DateTime::from_timestamp_millis(now).unwrap().date_naive().to_string();
+ let schedule=s.handle_http("POST","/product/strategies/session-schedules/prepare",json!({"schedule":schedules::ScheduleCommand{scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),trigger_ref:"preopen".into(),session_date:date,calendar_collection_id:calendar.collection_id.clone(),execution_calendar_collection_id:calendar.collection_id,knowledge_cutoff_ms:now},"idempotencyKey":"auto-schedule"}));assert_eq!(schedule.status,200,"{}",schedule.body);
+ let request=dispatch::DispatchRequest{occurrence_id:schedule.body["schedule"]["occurrence"]["occurrenceId"].as_str().unwrap().into(),scope:scope.clone(),capability_graph_revision:revision.into(),mode:"paper".into(),subjects:dispatch::SubjectPolicy::AllSelected{max_members:1},event_start_ms:snapshot["start"].as_i64().unwrap(),event_end_ms:snapshot["start"].as_i64().unwrap()+60000,interval_ms:60000,max_frames_per_step:1,source_captures_by_subject:BTreeMap::new(),execution_activation_id:Some("fixture-v2-activation".into())};
+ let remote=crate::service::data_runner::DataRunnerCommand{schema_version:crate::service::data_runner::DATA_RUNNER_SCHEMA_V3.into(),core_release:"fixture.release".into(),workspace_id:"fixture.workspace".into(),command_id:"auto-refuses-old-remote".into(),authority_ref:"provenance-only".into(),idempotency_key:IdempotencyKey::new("auto-refuses-old-remote").unwrap(),mode:crate::service::data_runner::DataRunnerMode::Paper,submitted_at_ms:now,operation:crate::service::data_runner::DataRunnerOperation::DispatchSession{dispatch:dispatch::RemoteRequest::Enqueue{job:Box::new(request.clone())}}};assert_eq!(remote.validate("fixture.release").unwrap_err(),"session_dispatch_remote_financial_authority_unsupported");
+ let enqueued=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"enqueue","job":request},"idempotencyKey":"auto-enqueue"}));assert_eq!(enqueued.status,200,"{}",enqueued.body);let id=enqueued.body["body"]["job"]["jobId"].as_str().unwrap();
+ if background{exercise_native_background_management(s,scope,id,root);return;}
+ let positions=s.runtime().storage.list_json("positions").unwrap();let orders=s.runtime().storage.list_json("orders").unwrap();let mut final_job=None;
+ let scenario=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap()["configuration"]["scenario"].as_str().unwrap().to_owned();
+ let probe=scenario=="auto_batch_delay"||scenario=="auto_batch_pause";
+ let pause=scenario=="auto_batch_pause";
+ let fault=Arc::new(ObservationReadFault{inner:s.runtime().plugin_operations.clone(),storage:s.runtime().storage.clone(),fired:std::sync::atomic::AtomicBool::new(false),pause});
+ let mut fault_runtime=(*s.runtime()).clone();fault_runtime.plugin_operations=fault.clone();
+ let who=s.invocation_owner().unwrap();
+ let delayed=crate::service::TradeAssemblyService::from_runtime(s.db(),fault_runtime).for_authenticated_invocation(&who.issuer,&who.subject,None,None);
+ let mut partial_account=None;
+
+ for step in 0..24{
+  let active=if probe&&!fault.fired.load(std::sync::atomic::Ordering::SeqCst){delayed.clone()}else if step>=5{crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None)}else{s.clone()};
+  let result=active.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("auto-advance-{step}")}));assert_eq!(result.status,200,"{}",result.body);assert_eq!(result.body["ok"],true,"{}",result.body);let job:dispatch::Job=serde_json::from_value(result.body["body"]["job"].clone()).unwrap();
+  let wire=&result.body["body"]["job"];
+  let cycles=wire["results"].as_object().unwrap().iter().filter(|(key,_)|key.starts_with("execute:")).collect::<Vec<_>>();
+  if job.status==dispatch::Status::Running && cycles.iter().any(|(_,v)|v["status"]=="running") && !cycles.iter().any(|(_,v)|matches!(v["status"].as_str(),Some("complete"|"skipped"|"blocked"|"uncertain"))) {
+   assert_eq!(wire["pending"]["path"],"internal:typed-financial-cycle","progressing cycle must persist the next original payload before restart: {wire}");
+   assert_eq!(wire["pending"]["body"]["cycle"]["scope"],serde_json::to_value(scope).unwrap());
+   assert_eq!(wire["pending"]["body"]["cycle"]["activationId"],"fixture-v2-activation");
+  }
+
+  if probe {
+   let retained=s.runtime().storage.list_json("typed_execution_cycles_v1").unwrap();
+   if let Some((_,cycle))=retained.first(){
+    if cycle["phase"]==2 && fault.fired.load(std::sync::atomic::Ordering::SeqCst){
+     assert_eq!(observation_read_inventory(s),BTreeMap::from([("exec_account".to_string(),1)]));
+     partial_account=Some(cycle["collections"]["account_data"].clone());
+     assert!(s.runtime().storage.list_json("execution_order_plans_v1").unwrap().is_empty());
+     if pause {
+      assert!(matches!(job.status,dispatch::Status::Running|dispatch::Status::Failed));
+      assert_eq!(job.error.as_deref(),Some("typed_entry_controls_blocked"));
+      assert!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap().is_empty());
+      write_screen_interface_evidence("observation_batch","pause-between-reads.json",&json!({"status":"PASS","completedReads":1,"nextReadRefused":true,"schedulerState":job.status,"refusal":job.error,"plans":0,"cashHolds":0,"providerOrders":0}));return;
+     }
+    }
+    if !pause && cycle["phase"]==4 {
+     assert_eq!(cycle["collections"]["account_data"],partial_account.clone().expect("budget must yield after genuine10sfirstread"));
+     assert_eq!(observation_read_inventory(s),BTreeMap::from([("exec_account".to_string(),1),("exec_metadata".to_string(),1),("exec_quote".to_string(),1)]));
+     assert!(s.runtime().storage.list_json("execution_order_plans_v1").unwrap().is_empty());
+     assert!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap().is_empty());
+     write_screen_interface_evidence("observation_batch","budget-resume.json",&json!({"status":"PASS","completedReads":3,"perRoleReads":1,"accountReceiptRetained":true,"serviceRecreated":true,"realDelayMs":10001,"clockInjected":false,"plans":0,"cashHolds":0,"providerOrders":0}));return;
+    }
+   }
+  }
+  if !matches!(job.status,dispatch::Status::Pending|dispatch::Status::Running){final_job=Some(job);break;}
+ }
+ assert!(!probe,"fault probe must return its dedicated pause/budget proof, never silently pass the C5 smoke path");
+ let job=final_job.expect("bounded selected evaluation-to-C5 path");assert_eq!(job.status,dispatch::Status::Complete,"{job:?}");let calls=||fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap_or_default();assert_eq!(calls().lines().filter(|x|*x=="submit").count(),1);
+ let state=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();assert_eq!(state.len(),1);assert_eq!(state[0].1["phase"],"open");assert_eq!(state[0].1["retainedCash"],"41");
+ for step in 0..2{let result=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"advance","jobId":id},"idempotencyKey":format!("auto-terminal-retry-{step}")}));assert_eq!(result.status,200,"{}",result.body);}assert_eq!(calls().lines().filter(|x|*x=="submit").count(),1);assert_eq!(s.runtime().storage.list_json("positions").unwrap(),positions);assert_eq!(s.runtime().storage.list_json("orders").unwrap(),orders);
+ write_screen_interface_evidence("automatic_execution","selected-scheduled-admission.json",&json!({"job":job,"sourceSubmission":state,"submitCalls":1,"serviceRecreatedBetweenPhases":true,"actualProcessRestartQualified":false,"qualification":"synthetic native selected scheduler/evaluation/acquisition/normal decision/actual C5 mock Warden, traced sandbox; no real broker"}));
+}
+#[test]
+#[ignore="explicit native automatic selected scheduler-to-C5 synthetic fixture"]
+fn native_selected_scheduled_automatic_admission_is_durable_and_idempotent(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_auto"));}
+fn exercise_native_managed_close(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,root:&std::path::Path){
+ use crate::service::{order_plans as plans,data_collections as collections};
+ let entries=s.runtime().storage.list_json("execution_order_plan_submissions_v2").unwrap();assert_eq!(entries.len(),1);let entry=&entries[0].0;
+ let original_key=entries[0].1["originalKey"].as_str().unwrap();let original_acceptance=s.runtime().storage.get_json("plugin_operation_receipts",original_key).unwrap().unwrap();
+ let lookup=management_v6_http(s,"POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-original-lookup"}));assert_eq!(lookup.status,200,"{}",lookup.body);
+ assert_eq!(s.runtime().storage.get_json("plugin_operation_receipts",original_key).unwrap().unwrap(),original_acceptance);
+ let settled=management_v6_http(s,"POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-entry-final-posting"}));assert_eq!(settled.status,200,"{}",settled.body);assert_eq!(settled.body["releasedHold"],"41");
+ // A second OWNED active run with the identical current config is still not
+ // the activation that admitted this entry's original normal C5 intent.
+ let other_activation="fixture-v2-same-config-other-activation";
+ let other_run=format!("run_{other_activation}");
+ for (namespace,original_key,replacement_key) in [
+  ("execution_activations","fixture-v2-activation",other_activation),
+  ("execution_runs","run_fixture-v2-activation",other_run.as_str()),
+  ("execution_controls","fixture-v2-activation",other_activation),
+  ("execution_reconciliation","fixture-v2-activation",other_activation),
+ ] {
+  let mut clone=s.runtime().storage.get_json(namespace,original_key).unwrap().unwrap();
+  clone["activationId"]=json!(other_activation);
+  if clone.get("activation_id").is_some(){clone["activation_id"]=json!(other_activation);}
+  if namespace=="execution_runs"{for field in ["id","executionRunId","run_id"]{clone[field]=json!(other_run);}}
+  s.runtime().storage.put_json(namespace,replacement_key,clone,&ctx(&format!("managed-other-owned-activation:{namespace}"))).unwrap();
+ }
+ s.bind_owned_object("execution_activation",other_activation).unwrap();
+ let (_,original_config)=plans::management::management_run(s,"fixture-v2-activation").unwrap();
+ let (_,other_config)=plans::management::management_run(s,other_activation).unwrap();
+ assert_eq!(original_config,other_config,"the alternate activation must pass current management checks with the SAME config");
+ assert_eq!(entries[0].1["intent"]["originalRequest"]["activationId"],"fixture-v2-activation");
+ let guarded_namespaces=["execution_managed_positions_v1","execution_managed_position_journal_v1","plugin_operation_receipts","execution_cash_reservations_v1","execution_order_plan_submissions_v2"];
+ let before_wrong_activation=guarded_namespaces.iter().map(|namespace|s.runtime().storage.list_json(namespace).unwrap()).collect::<Vec<_>>();
+ assert!(before_wrong_activation[0].is_empty(),"test must precede the first legitimate managed-position registration");
+ // Exercise the normal LOCAL route: V6's independent binding already refuses
+ // this case and must not conceal a missing local registration guard.
+ let broker_calls_before_wrong_activation=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();
+ let wrong_activation=s.handle_http("POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":other_activation},"accountMode":"paper","idempotencyKey":"managed-register-wrong-owned-activation"}));
+ assert_eq!(wrong_activation.status,409,"{}",wrong_activation.body);
+ assert_eq!(wrong_activation.body["error"]["code"],"managed_activation_scope_mismatch");
+ assert_eq!(fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap(),broker_calls_before_wrong_activation);
+ assert_eq!(guarded_namespaces.iter().map(|namespace|s.runtime().storage.list_json(namespace).unwrap()).collect::<Vec<_>>(),before_wrong_activation,"wrong-activation registration must not write a position/journal, invoke a provider, or alter cash/submission records");
+ write_screen_interface_evidence("managed_exit","same-config-owned-activation-registration-refused.json",&json!({"entryPlanId":entry,"originalActivationId":"fixture-v2-activation","otherOwnedActivationId":other_activation,"sameCurrentConfig":true,"response":wrong_activation.body,"positionProviderCashSubmissionWrites":0,"qualification":"normal local Core registration refusal for a second owned active activation sharing the exact current config; original C5 intent activation remains authoritative"}));
+ let registered=management_v6_http(s,"POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-register"}));assert_eq!(registered.status,200,"{}",registered.body);let id=registered.body["position"]["positionId"].as_str().unwrap();
+ if management_v6_enabled(){
+   let refreshed=s.handle_http("POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":entry,"accountMode":"paper","idempotencyKey":"managed-entry-fresh-final-observation"}));assert_eq!(refreshed.status,200,"{}",refreshed.body);assert_eq!(refreshed.body["releasedHold"],"0");
+   let again=management_v6_http(s,"POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-register-after-refresh"}));assert_eq!(again.status,200,"{}",again.body);assert_eq!(again.body["position"]["positionId"],id);assert_eq!(s.runtime().storage.list_json("execution_managed_positions_v1").unwrap().len(),1);
+ }
+ let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();let foreign=s.for_authenticated_invocation("fixture","foreign",None,None).handle_http("POST",plans::management::REGISTER,json!({"scope":scope,"register":{"entryPlanId":entry,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"managed-foreign"}));assert!(foreign.status>=400,"{}",foreign.body);assert_eq!(before,s.runtime().storage.list_json("plugin_operation_receipts").unwrap());
+ let mut close_decision=None;
+ for (index,phase) in ["managed_high","managed_trigger"].iter().enumerate(){
+  let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);
+  if index==1{
+   let paused=management_v6_http(&restored,"POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"managed-pause-new-entries"}));assert_eq!(paused.status,200,"{}",paused.body);
+   let mut run=restored.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();run["selectionHead"]=json!({"members":[],"qualification":"authored removed membership for management isolation proof"});restored.runtime().storage.put_json("execution_runs","run_fixture-v2-activation",run,&ctx("managed-removed-selection")).unwrap();
+  }
+  let mut ids=BTreeMap::new();for (name,node,schema) in [("account","exec_account",tradeassembly_plugin_sdk::execution_snapshot::ACCOUNT_SCHEMA),("metadata","exec_metadata",tradeassembly_plugin_sdk::execution_snapshot::METADATA_SCHEMA),("quote","exec_quote",tradeassembly_plugin_sdk::execution_snapshot::QUOTE_SCHEMA)]{
+   let r=collections::acquire(&restored,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.into(),acquisition_node:node.into(),mode:"paper".into(),response_schema_ref:schema.into(),input:json!({"fixturePhase":phase})},&ctx(&format!("managed-{phase}-{name}"))).unwrap();ids.insert(name,r.collection_id);
+  }
+  let occurrence=s.runtime().storage.list_json("session_occurrence_plans_v1").unwrap()[0].1["occurrence"]["occurrenceId"].as_str().unwrap().to_owned();
+  let command=json!({"executionOccurrenceId":occurrence,"positionId":id,"accountCollectionId":ids["account"],"metadataCollectionId":ids["metadata"],"quoteCollectionId":ids["quote"],"reversalSignalReceiptSha256":Value::Null});
+  let body=json!({"scope":scope,"advance":command,"accountMode":"paper","idempotencyKey":if index==1{"managed-fixture-fail-after-prepare".to_string()}else{format!("managed-{phase}")}});
+  let mut advanced=management_v6_http(&restored,"POST",plans::management::ADVANCE,body.clone());
+  if index==1&&!management_v6_enabled(){assert_eq!(advanced.status,409,"{}",advanced.body);assert_eq!(advanced.body["error"]["code"],"managed_fixture_prepared_before_decision");let again=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);let mut retry=body;retry["idempotencyKey"]=json!("managed-resume-prepared-close");advanced=management_v6_http(&again,"POST",plans::management::ADVANCE,retry);assert_eq!(advanced.body["resumedReservedClose"],true,"{}",advanced.body);}
+  assert_eq!(advanced.status,200,"{}",advanced.body);
+  if index==0{assert!(advanced.body["decision"].is_null());assert_eq!(advanced.body["position"]["highWater"],"120");}else{close_decision=Some(advanced.body["decision"].clone());}
+ }
+ let decision=close_decision.unwrap();let close=decision["planId"].as_str().unwrap();let submitted=management_v6_http(s,"POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-close-submit"}));
+ if management_v6_seal_failure_enabled(){exercise_management_v6_seal_failure_recovery(s,scope,root,id,&decision,&submitted);return;}
+ assert_eq!(submitted.status,200,"{}",submitted.body);
+ let repeated=management_v6_http(s,"POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":decision["submission"],"accountMode":"paper","idempotencyKey":"managed-close-repeat"}));if management_v6_enabled(){assert!(repeated.status>=400,"{}",repeated.body);}else{assert_eq!(repeated.status,200,"{}",repeated.body);}
+ let looked=management_v6_http(s,"POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-lookup"}));assert_eq!(looked.status,200,"{}",looked.body);
+ let final_posting=management_v6_http(s,"POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-final-posting"}));assert_eq!(final_posting.status,200,"{}",final_posting.body);assert_eq!(final_posting.body["grossProceeds"],"36");
+ let repeat_final=management_v6_http(s,"POST","/product/strategies/order-plans/settle",json!({"scope":scope,"planId":close,"accountMode":"paper","idempotencyKey":"managed-close-final-posting"}));let mut same=repeat_final.body.clone();if !management_v6_enabled(){assert_eq!(same["duplicate"],true);assert!(same["commandId"].as_str().is_some());same.as_object_mut().unwrap().remove("duplicate");same.as_object_mut().unwrap().remove("commandId");}assert_eq!(same,final_posting.body);
+ let inspected=management_v6_http(s,"GET",&format!("/product/strategies/positions/{id}"),json!({}));assert_eq!(inspected.status,200,"{}",inspected.body);assert_eq!(inspected.body["position"]["closedQuantity"],"0.4");assert_eq!(inspected.body["position"]["reservations"],json!({}));assert_eq!(inspected.body["journal"].as_array().unwrap().len(),4);
+ if management_v6_enabled(){
+  let stopped=s.handle_http("POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"stop","accountMode":"paper","idempotencyKey":"management-v6-stop-before-historical-read"}));assert_eq!(stopped.status,200,"{}",stopped.body);
+  let mut broker=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap();broker["enabled"]=json!(false);s.runtime().plugins.put_instance("fixture.broker.v2",broker,&ctx("management-v6-fixture-revoked-source")).unwrap();
+  let quiet=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+  let history=management_v6_http(s,"GET",&format!("/product/strategies/positions/{id}"),json!({"idempotencyKey":"management-v6-historical-after-stop-revocation"}));assert_eq!(history.status,200,"{}",history.body);assert_eq!(history.body["position"]["closedQuantity"],"0.4");assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),quiet);
+ }
+ let calls=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();assert_eq!(calls.lines().filter(|v|*v=="submit").count(),2);assert_eq!(calls.lines().filter(|v|*v=="lookup").count(),2);assert_eq!(fs::read_to_string(root.join("synthetic-broker/close-settlement.log")).unwrap().lines().count(),1);
+ write_screen_interface_evidence("managed_exit","entry-close-final-posting-journal.json",&json!({"registered":registered.body,"decision":decision,"submitted":submitted.body,"settlement":final_posting.body,"journal":inspected.body,"syntheticSubmits":2,"syntheticLookups":2,"closeFinalPostings":1,"serviceRecreatedBetweenObservations":true,"actualProcessRestartQualified":false,"realBrokerCalls":0,"qualification":"actual Core local HTTP/C5 with authored native provider, mock Warden/traced sandbox; explicit stop/trailing; no SRT/remote-close/reversal-path qualification inferred"}));
+}
+#[test]
+#[ignore="explicit native automatic entry, owned position, close C5, final proceeds and journal fixture"]
+fn native_automatic_entry_owned_exit_final_proceeds_and_journal(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_auto_managed"));}
+fn exercise_native_background_management(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,id:&str,root:&std::path::Path){
+ use crate::service::{session_dispatch as dispatch,order_plans as plans};
+ let start=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"start_worker","jobId":id},"idempotencyKey":"managed-background-start"}));assert_eq!(start.status,200,"{}",start.body);assert_eq!(start.body["ok"],true,"{}",start.body);
+ let deadline=std::time::Instant::now()+std::time::Duration::from_secs(180);let mut restarted=false;
+ let final_position=loop{
+  assert!(std::time::Instant::now()<deadline,"autonomous management deadline: {:?}",s.runtime().storage.list_json("execution_management_automation_v1"));
+  let rows=s.runtime().storage.list_json("execution_managed_positions_v1").unwrap();
+  if !rows.is_empty()&&!restarted{
+   dispatch::halt_worker_for_test(s,id);
+   for _ in 0..100{let inspected=dispatch::worker_status_for_test(s,id);if inspected["running"]==false{break;}std::thread::sleep(std::time::Duration::from_millis(20));}
+   let paused=s.handle_http("POST","/product/strategy-execution-activations/control",json!({"activationId":"fixture-v2-activation","action":"pause_entries","accountMode":"paper","idempotencyKey":"background-pause-entry"}));assert_eq!(paused.status,200,"{}",paused.body);
+   let mut run=s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();run["selectionHead"]=json!({"members":[],"qualification":"authored membership removal, independent background management"});s.runtime().storage.put_json("execution_runs","run_fixture-v2-activation",run,&ctx("background-selection-removed")).unwrap();
+   let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);
+   let resume=restored.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"resume_workers"},"idempotencyKey":"background-resume-owned-worker"}));assert_eq!(resume.status,200,"{}",resume.body);assert_eq!(resume.body["ok"],true,"{}",resume.body);assert_eq!(resume.body["body"]["workersResumed"],1,"{}",resume.body);restarted=true;
+  }
+  if let Some((key,pos))=rows.first(){if pos["closedQuantity"]=="0.4"&&pos["reservations"]==json!({}){let view=s.handle_http("GET",&format!("/product/strategies/positions/{key}"),json!({}));assert_eq!(view.status,200,"{}",view.body);break view.body;}}
+  let inspected=dispatch::worker_status_for_test(s,id);if inspected["running"]==false{let error=&inspected["lastError"];assert!(error.is_null(),"background worker stopped: {} state {:?}",inspected,s.runtime().storage.list_json("execution_management_automation_v1"));}
+  std::thread::sleep(std::time::Duration::from_millis(25));
+ };
+ let stop=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"stop_worker","jobId":id},"idempotencyKey":"background-stop-owned-worker"}));assert_eq!(stop.status,200,"{}",stop.body);assert!(restarted);
+ let calls=fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap();assert_eq!(calls.lines().filter(|v|*v=="submit").count(),2);assert_eq!(calls.lines().filter(|v|*v=="lookup").count(),2);assert!(final_position["journal"].as_array().unwrap().len()>=3);
+ let job=s.handle_http("POST","/scheduler/run",json!({"sessionDispatch":{"kind":"inspect","jobId":id},"idempotencyKey":"background-final-inspect"}));assert_eq!(job.body["body"]["job"]["status"],"complete");
+ write_screen_interface_evidence("automatic_management","background-entry-close-settlement.json",&json!({"scope":scope,"job":job.body,"position":final_position,"manager":s.runtime().storage.list_json("execution_management_automation_v1").unwrap(),"syntheticSubmits":2,"syntheticLookups":2,"manualPhaseAdvances":0,"workerStoppedAndResumedAfterPositionRegistered":true,"actualProcessRestartQualified":false,"oldV4V5RemoteCloseQualified":false,"realBrokerCalls":0,"qualification":"actual background worker+Core HTTP/C5 with synthetic native provider/mock Warden/traced sandbox; same occurrence, stop-loss; no next-day/MA-TSI/whole-process/SRT qualification inferred"}));
+ let _ = plans::management::REGISTER;
+}
+#[test]
+#[ignore="explicit actual background auto-entry/owned-management/close/proceeds fixture"]
+fn native_background_worker_drives_owned_close_after_selection_completion_and_resume(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_auto_worker"));}
+
+include!("external_automatic_health_tests.rs");
+
+include!("external_automatic_stream_tests.rs");
+
+// Delay is real fixture latency, not an injected clock or rewritten observation.
+struct ObservationReadFault {
+    inner: Arc<dyn PluginOperationPort>,
+    storage: Arc<dyn StoragePort>,
+    fired: std::sync::atomic::AtomicBool,
+    pause: bool,
+}
+impl VersionedPort for ObservationReadFault {
+    fn descriptors(&self) -> Vec<PortDescriptor> { self.inner.descriptors() }
+}
+impl PluginOperationPort for ObservationReadFault {
+    fn verify_broker_boundary(&self) -> Result<(), String> { self.inner.verify_broker_boundary() }
+    fn invoke(&self, r: &PluginOperationRequest, c: &SideEffectContext) -> Result<PluginOperationResponse, String> {
+        let result = self.inner.invoke(r, c)?;
+        if r.operation_id == "execution_account" && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if self.pause {
+                let mut control = self.storage.get_json("execution_controls", "fixture-v2-activation")?.ok_or("fixture_controls_missing")?;
+                control["paused"] = json!(true);
+                self.storage.put_json("execution_controls", "fixture-v2-activation", control, &ctx("batch-read-pause"))?;
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10001));
+            }
+        }
+        Ok(result)
+    }
+}
+fn observation_read_inventory(s: &crate::service::TradeAssemblyService) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for (_, r) in s.runtime().storage.list_json("data_collection_receipts_v1").unwrap() {
+        if let Some(node @ ("exec_account" | "exec_metadata" | "exec_quote")) = r["command"]["acquisitionNode"].as_str() {
+            *counts.entry(node.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+#[test]
+#[ignore="focused real-delay bounded financial read cursor and service recreation"]
+fn native_observation_batch_yields_and_resumes_without_reacquiring_account() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_auto_batch_delay"));
+}
+#[test]
+#[ignore="focused pause during first observation blocks the next independent read"]
+fn native_observation_batch_rechecks_entry_authority_between_reads() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_auto_batch_pause"));
+}
+#[test]
+#[ignore="focused native opted-in observation batch through original C5"]
+fn native_observation_batch_selected_entry_is_durable_and_idempotent() {
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    native_execution_plan_fixture(Some("financial_screen_auto_batch"));
+}

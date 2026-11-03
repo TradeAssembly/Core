@@ -21,6 +21,16 @@ pub const TRADEASSEMBLY_PEP_MANIFEST: &str =
     include_str!("../config/warden/tradeassembly-core-peps.json");
 
 pub trait FinanceAuthorityPort: Send + Sync {
+    /// Non-secret identity of the exact configured control-plane policy.
+    /// Metadata only: possession of this digest is never an authorization.
+    fn command_policy_sha256(&self) -> Result<String, String> {
+        Err("command_policy_identity_unsupported".into())
+    }
+    /// Availability only; callers must not treat this as an order permit.
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        Err("broker_submission_authority_unavailable".into())
+    }
+
     /// Separate from control-plane authorization. Implementations that do not
     /// support a broker-boundary PEP must never inherit a control-plane allow.
     fn prepare_broker_submission(
@@ -175,6 +185,90 @@ action!(
     "capability.binding.revision.save",
     "execution_config",
     "strategy_configuration",
+    Write
+);
+action!(
+    OPTION_SELECTION_CREATE,
+    "strategy.option_selection.create",
+    "strategy_option_selection",
+    "data_acquisition",
+    Write
+);
+action!(
+    SESSION_SCHEDULE_PREPARE,
+    "strategy.session_schedule.prepare",
+    "strategy_session_schedule",
+    "data_calculation",
+    Write
+);
+action!(
+    INSTRUMENT_SCREEN_CREATE,
+    "strategy.instrument_screen.create",
+    "strategy_instrument_screen",
+    "data_calculation",
+    Write
+);
+action!(
+    DATA_COLLECTION_CREATE,
+    "strategy.data_collection.create",
+    "strategy_data_collection",
+    "data_acquisition",
+    Write
+);
+action!(
+    DATA_CAPTURE_CREATE,
+    "strategy.data_capture.create",
+    "strategy_data_capture",
+    "data_acquisition",
+    Write
+);
+action!(
+    DATA_RECIPE_STEP,
+    "strategy.data_recipe.step",
+    "strategy_data_recipe",
+    "data_calculation",
+    Write
+);
+action!(
+    DATA_RECIPE_PREPARE,
+    "strategy.data_recipe.prepare",
+    "strategy_data_recipe",
+    "strategy_configuration",
+    Write
+);
+action!(
+    SELECTION_PLAN_PREPARE,
+    "strategy.selection_plan.prepare",
+    "strategy_selection_plan",
+    "strategy_configuration",
+    Write
+);
+action!(
+    ORDER_PLAN_MANAGE,
+    "strategy.order_plan.manage",
+    "strategy_order_plan",
+    "order_planning",
+    Write
+);
+action!(
+    ORDER_PLAN_SUBMIT_REQUEST,
+    "strategy.order_plan.submit",
+    "strategy_order_plan",
+    "order_submission_request",
+    Write
+);
+action!(
+    DATA_PLAN_PREPARE,
+    "strategy.data_plan.prepare",
+    "strategy_data_plan",
+    "strategy_configuration",
+    Write
+);
+action!(
+    DATA_RUN_STEP,
+    "strategy.data_run.step",
+    "strategy_data_run",
+    "data_calculation",
     Write
 );
 action!(
@@ -562,6 +656,18 @@ pub const AUTHORITY_ACTIONS: &[AuthorityActionDefinition] = &[
     PLUGIN_OPERATION,
     STUDIO_SETUP_OBSERVE,
     CAPABILITY_BINDING_CONFIGURE,
+    OPTION_SELECTION_CREATE,
+    DATA_CAPTURE_CREATE,
+    DATA_COLLECTION_CREATE,
+    INSTRUMENT_SCREEN_CREATE,
+    SESSION_SCHEDULE_PREPARE,
+    SELECTION_PLAN_PREPARE,
+    ORDER_PLAN_MANAGE,
+    ORDER_PLAN_SUBMIT_REQUEST,
+    DATA_PLAN_PREPARE,
+    DATA_RECIPE_PREPARE,
+    DATA_RECIPE_STEP,
+    DATA_RUN_STEP,
     ENTITLEMENT_MANAGE,
     CREDENTIAL_CONFIGURE,
     CREDENTIAL_TEST,
@@ -649,6 +755,24 @@ pub fn authority_definition(
         "strategy.version.publish" => &STRATEGY_PUBLISH,
         "strategy.duplicate" | "strategy.archive" | "strategy.restore" => &STRATEGY_LIFECYCLE,
         "capability.binding.revision.save" => &CAPABILITY_BINDING_CONFIGURE,
+        "strategy.option_selection.create" => &OPTION_SELECTION_CREATE,
+        "strategy.instrument_screen.create" => &INSTRUMENT_SCREEN_CREATE,
+        "strategy.session_schedule.prepare" => &SESSION_SCHEDULE_PREPARE,
+        "strategy.data_collection.create" => &DATA_COLLECTION_CREATE,
+        "strategy.data_capture.create" => &DATA_CAPTURE_CREATE,
+        "strategy.selection_plan.prepare" => &SELECTION_PLAN_PREPARE,
+        "strategy.order_plan.submit" => &ORDER_PLAN_SUBMIT_REQUEST,
+        "strategy.position.register"
+        | "strategy.position.advance"
+        | "strategy.order_plan.prepare"
+        | "strategy.order_plan.reserve"
+        | "strategy.order_plan.release"
+        | "strategy.order_plan.reconcile"
+        | "strategy.order_plan.settle" => &ORDER_PLAN_MANAGE,
+        "strategy.data_plan.prepare" => &DATA_PLAN_PREPARE,
+        "strategy.data_recipe.prepare" => &DATA_RECIPE_PREPARE,
+        "strategy.data_recipe.step" => &DATA_RECIPE_STEP,
+        "strategy.data_run.step" => &DATA_RUN_STEP,
         "plugin.manifest.install"
         | "plugin.package.install"
         | "plugin.instance.create"
@@ -664,7 +788,9 @@ pub fn authority_definition(
         "credential.test" => &CREDENTIAL_TEST,
         "credential.revoke" => &CREDENTIAL_REVOKE,
         "research.run.create" | "research.sweep.create" | "research.promote.paper" => &RESEARCH_RUN,
-        "research.dataset.create" => &RESEARCH_DATASET,
+        "research.dataset.create"
+        | "research.dataset.project.create"
+        | "research.dataset.project.advance" => &RESEARCH_DATASET,
         "research.dataset.cancel" => &RESEARCH_DATASET_CANCEL,
         "research.universe.create" => &RESEARCH_UNIVERSE,
         "research.job.create" | "research.job.status" => &RESEARCH_JOB,
@@ -892,6 +1018,14 @@ impl WardenSidecarAuthority {
 }
 
 impl FinanceAuthorityPort for WardenSidecarAuthority {
+    fn command_policy_sha256(&self) -> Result<String, String> {
+        crate::data_pipeline::canonical_sha256(&self.policy_bundle)
+            .map_err(|_| "command_policy_identity_invalid".into())
+    }
+    fn verify_broker_boundary(&self) -> Result<(), String> {
+        self.preflight()
+    }
+
     fn prepare_broker_submission(
         &self,
         storage: &dyn StoragePort,
@@ -1090,16 +1224,30 @@ impl EnforcementPoint {
     }
 }
 
-fn validate_broker_envelope(envelope: &ControlPlaneCommandEnvelope) -> Result<(), String> {
-    if envelope.command_name != "order.submit.live"
-        || envelope.side_effect_class != "live_order"
-        || envelope.authority.account_mode != "live"
-        || envelope.target_object.as_deref().is_none_or(str::is_empty)
+fn validate_broker_envelope(
+    envelope: &ControlPlaneCommandEnvelope,
+) -> Result<&'static AuthorityActionDefinition, String> {
+    let definition = match envelope.authority.account_mode.as_str() {
+        "live"
+            if envelope.command_name == "order.submit.live"
+                && envelope.side_effect_class == "live_order" =>
+        {
+            &ORDER_SUBMIT_LIVE
+        }
+        "paper"
+            if envelope.command_name == "order.submit.paper"
+                && envelope.side_effect_class == "paper_order" =>
+        {
+            &ORDER_SUBMIT_PAPER
+        }
+        _ => return Err("broker_submission_envelope_invalid".into()),
+    };
+    if envelope.target_object.as_deref().is_none_or(str::is_empty)
         || envelope.payload_hash.is_empty()
     {
         return Err("broker_submission_envelope_invalid".into());
     }
-    Ok(())
+    Ok(definition)
 }
 
 /// Validate original durable C5 evidence without contacting Warden or writing
@@ -1108,13 +1256,13 @@ pub(crate) fn validate_stored_broker_authorization(
     storage: &dyn StoragePort,
     envelope: &ControlPlaneCommandEnvelope,
 ) -> Result<(), String> {
-    validate_broker_envelope(envelope)?;
+    let definition = validate_broker_envelope(envelope)?;
     let stored = storage
         .get_json(DECISION_NS, &envelope.command_id)?
         .ok_or("broker_authorization_evidence_missing")?;
     if stored["request"]["pep_id"] != EnforcementPoint::BrokerSubmission.id()
-        || stored["request"]["action"] != ORDER_SUBMIT_LIVE.action
-        || stored["request"]["resource"] != resource_ref(envelope, &ORDER_SUBMIT_LIVE)
+        || stored["request"]["action"] != definition.action
+        || stored["request"]["resource"] != resource_ref(envelope, definition)
         || stored["request"]["idempotency_key"] != envelope.idempotency_key.as_str()
         || stored["decision"]["decision"] != "allow"
         || stored["request"]["context"]["context_digest"]
@@ -1127,7 +1275,7 @@ pub(crate) fn validate_stored_broker_authorization(
     }
     validate_decision(
         envelope,
-        &ORDER_SUBMIT_LIVE,
+        definition,
         &stored["decision"],
         EnforcementPoint::BrokerSubmission,
     )?;
@@ -1522,7 +1670,7 @@ struct PepPackEntry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::adapters::local::sqlite::LocalSqliteStorage;
     use crate::control_plane::{graphql_envelope, http_envelope, mcp_envelope};
@@ -1532,14 +1680,14 @@ mod tests {
         routing::{get, post},
         Json, Router,
     };
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot;
 
     const TEST_TOKEN: &str = "test-warden-token-with-at-least-32-bytes";
 
     #[derive(Clone, Copy, Debug)]
-    enum MockBehavior {
+    pub(crate) enum MockBehavior {
         Allow,
         Deny,
         VersionMismatch,
@@ -1552,11 +1700,11 @@ mod tests {
     struct MockState {
         behavior: MockBehavior,
         request: Mutex<Option<Value>>,
-        receipt: Mutex<Option<Value>>,
+        receipts: Mutex<BTreeMap<String, Value>>,
     }
 
-    struct MockServer {
-        base_url: String,
+    pub(crate) struct MockServer {
+        pub(crate) base_url: String,
         state: Arc<MockState>,
         shutdown: Option<oneshot::Sender<()>>,
         thread: Option<std::thread::JoinHandle<()>>,
@@ -1573,7 +1721,7 @@ mod tests {
         }
     }
 
-    fn spawn_mock_warden(behavior: MockBehavior) -> MockServer {
+    pub(crate) fn spawn_mock_warden(behavior: MockBehavior) -> MockServer {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock listener");
         listener
             .set_nonblocking(true)
@@ -1582,7 +1730,7 @@ mod tests {
         let state = Arc::new(MockState {
             behavior,
             request: Mutex::new(None),
-            receipt: Mutex::new(None),
+            receipts: Mutex::new(BTreeMap::new()),
         });
         let server_state = Arc::clone(&state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1684,7 +1832,13 @@ mod tests {
                 "signature": "mock-signature"
             }
         });
-        *state.receipt.lock().expect("receipt lock") = Some(signed.clone());
+        state.receipts.lock().expect("receipt lock").insert(
+            signed["receipt"]["receipt_id"]
+                .as_str()
+                .expect("receipt id")
+                .into(),
+            signed.clone(),
+        );
         Json(json!({
             "schema_version": "apf.action_authorization_decision.v1",
             "decision_id": format!("decision:{}", request["request_id"].as_str().unwrap_or("missing")),
@@ -1699,18 +1853,83 @@ mod tests {
 
     async fn mock_receipt(
         State(state): State<Arc<MockState>>,
-        AxumPath(_receipt_id): AxumPath<String>,
-    ) -> Json<Value> {
+        AxumPath(receipt_id): AxumPath<String>,
+    ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
         let mut receipt = state
-            .receipt
+            .receipts
             .lock()
             .expect("receipt lock")
-            .clone()
-            .expect("authorization receipt");
+            .get(&receipt_id)
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"code":"receipt_not_found"})),
+                )
+            })?;
         if matches!(state.behavior, MockBehavior::ReceiptMismatch) {
             receipt["receipt"]["action"] = json!("forged.action");
         }
-        Json(receipt)
+        Ok(Json(receipt))
+    }
+
+    #[test]
+    fn mock_warden_concurrent_authorizations_retrieve_their_own_signed_receipt() {
+        let server = spawn_mock_warden(MockBehavior::Allow);
+        let authority = WardenSidecarAuthority::new(
+            &server.base_url,
+            TEST_TOKEN,
+            REQUIRED_WARDEN_SERVICE_VERSION,
+        )
+        .unwrap();
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let handles = (0..4)
+                .map(|index| {
+                    let authority = &authority;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let envelope = strategy_envelope(&format!("concurrent-read-{index}"));
+                        let definition = authority_definition(&envelope).unwrap();
+                        let request = authorization_request_at(
+                            &envelope,
+                            definition,
+                            json!({}),
+                            EnforcementPoint::ControlPlane,
+                        );
+                        let decision = authority
+                            .protected_post("/v1/actions/authorize", &request)
+                            .unwrap();
+                        validate_decision(
+                            &envelope,
+                            definition,
+                            &decision,
+                            EnforcementPoint::ControlPlane,
+                        )
+                        .unwrap();
+                        // Force all four decisions to exist before any receipt lookup.
+                        // A singleton last-receipt fixture deterministically fails here.
+                        barrier.wait();
+                        let id = decision["receipt"]["receipt_id"].as_str().unwrap();
+                        let signed = authority
+                            .protected_get(&format!("/v1/receipts/{id}"))
+                            .unwrap();
+                        validate_signed_receipt(&decision, &signed).unwrap();
+                        assert_eq!(signed["receipt"]["receipt_id"], id);
+                        id.to_string()
+                    })
+                })
+                .collect::<Vec<_>>();
+            let ids = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(ids.len(), 4);
+        });
+        assert!(authority
+            .protected_get("/v1/receipts/not-created")
+            .unwrap_err()
+            .contains("404:receipt_not_found"));
     }
 
     fn strategy_envelope(idempotency_key: &str) -> ControlPlaneCommandEnvelope {
@@ -1777,6 +1996,32 @@ mod tests {
         .unwrap();
         let original: Value = serde_json::from_str(TRADEASSEMBLY_POLICY_BUNDLE).unwrap();
         assert_eq!(authority.policy_bundle, original);
+        let original_digest = authority.command_policy_sha256().unwrap();
+        assert_eq!(
+            original_digest,
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json_canonicalizer::to_vec(&original).unwrap())
+            ),
+            "normal shipping policy identity remains unchanged"
+        );
+        for unsafe_integer in [9_007_199_254_740_992u64, 9_007_199_254_740_993] {
+            let mut bundle = original.clone();
+            bundle["identity_test_limit"] = json!(unsafe_integer);
+            assert_eq!(
+                authority
+                    .clone()
+                    .with_policy_bundle(bundle)
+                    .unwrap()
+                    .command_policy_sha256()
+                    .unwrap_err(),
+                "command_policy_identity_invalid"
+            );
+        }
+        assert_eq!(
+            original_digest,
+            authority.clone().command_policy_sha256().unwrap()
+        );
         for invalid in [
             Value::Null,
             json!({"schema_version":"other","rules":[]}),
@@ -1787,6 +2032,15 @@ mod tests {
         }
         let mut changed = original.clone();
         changed["version"] = json!("isolated-version");
+        assert_ne!(
+            original_digest,
+            authority
+                .clone()
+                .with_policy_bundle(changed.clone())
+                .unwrap()
+                .command_policy_sha256()
+                .unwrap()
+        );
         assert_eq!(
             authority
                 .clone()
@@ -1804,7 +2058,10 @@ mod tests {
         let peps: Vec<PepPackEntry> =
             serde_json::from_str(TRADEASSEMBLY_PEP_MANIFEST).expect("peps");
         assert_eq!(peps.len(), 2);
-        assert_eq!(peps[1].actions, vec!["order.submit.live"]);
+        assert_eq!(
+            peps[1].actions,
+            vec!["order.submit.paper", "order.submit.live"]
+        );
         assert_eq!(peps[1].resources, vec!["brokerage_account"]);
         let registrations: Value = serde_json::from_str(TRADEASSEMBLY_PEP_MANIFEST).unwrap();
         assert_eq!(registrations[0]["coverage_class"], "c3");
@@ -2071,6 +2328,49 @@ mod tests {
                 .complete_broker_submission(&storage, &envelope, 202)
                 .unwrap_err(),
             "broker_authorization_evidence_mismatch"
+        );
+    }
+
+    #[test]
+    fn paper_broker_authority_uses_paper_action_without_live_policy_downgrade() {
+        let server = spawn_mock_warden(MockBehavior::Allow);
+        let authority = WardenSidecarAuthority::new(
+            &server.base_url,
+            TEST_TOKEN,
+            REQUIRED_WARDEN_SERVICE_VERSION,
+        )
+        .unwrap();
+        let (_directory, storage) = test_storage("paper-broker-pep");
+        let mut envelope = broker_envelope("paper-broker-pep");
+        envelope.command_name = "order.submit.paper".into();
+        envelope.side_effect_class = "paper_order".into();
+        envelope.authority.account_mode = "paper".into();
+        authority
+            .prepare_broker_submission(&storage, &envelope)
+            .unwrap();
+        let request = server.state.request.lock().unwrap().clone().unwrap();
+        assert_eq!(request["pep_id"], "pep-tradeassembly-broker-submission");
+        assert_eq!(request["action"], "order.submit.paper");
+        validate_stored_broker_authorization(&storage, &envelope).unwrap();
+        authority
+            .complete_broker_submission(&storage, &envelope, 202)
+            .unwrap();
+
+        let mut forged = envelope.clone();
+        forged.authority.account_mode = "live".into();
+        assert_eq!(
+            authority
+                .prepare_broker_submission(&storage, &forged)
+                .unwrap_err(),
+            "broker_submission_envelope_invalid"
+        );
+        forged = envelope;
+        forged.command_name = "order.submit.live".into();
+        assert_eq!(
+            authority
+                .prepare_broker_submission(&storage, &forged)
+                .unwrap_err(),
+            "broker_submission_envelope_invalid"
         );
     }
 

@@ -569,29 +569,72 @@ mod tests {
         verify_no_private_build_paths(b"/build/tradeassembly/runtime-rs", &root).unwrap();
     }
 
+    // A tiny non-executable archive exercises the same production scanner without
+    // retaining or disclosing any historical developer binary or path.
+    fn write_alpaca_privacy_fixture(path: &Path, target: &str, bytes: &[u8]) {
+        let output = fs::File::create(path).unwrap();
+        let gzip = flate2::write::GzEncoder::new(output, flate2::Compression::default());
+        let mut archive = tar::Builder::new(gzip);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(
+                &mut header,
+                format!("bin/{target}/tradeassembly-plugin-alpaca"),
+                bytes,
+            )
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
+    }
+
     #[test]
-    #[ignore = "requires exact current and retained previous Alpaca archives"]
+    fn alpaca_archive_privacy_rejects_synthetic_source_and_builder_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let target = "aarch64-apple-darwin";
+        let archive = directory.path().join("fixture.tar.gz");
+        let builder = root.components().take(3).collect::<PathBuf>();
+        for private in [&root, &builder] {
+            write_alpaca_privacy_fixture(&archive, target, private.as_os_str().as_encoded_bytes());
+            assert_eq!(
+                verify_alpaca_package(&archive, target, &root).unwrap_err(),
+                "bundle_binary_contains_private_build_path"
+            );
+        }
+        write_alpaca_privacy_fixture(&archive, target, b"/build/alpaca/src/lib.rs");
+        verify_alpaca_package(&archive, target, &root).unwrap();
+        let accepted_digest = digest(&archive).unwrap();
+        write_alpaca_privacy_fixture(&archive, target, root.as_os_str().as_encoded_bytes());
+        assert_eq!(
+            verify_digest(&archive, &accepted_digest).unwrap_err(),
+            "bundle_digest_mismatch"
+        );
+        assert_eq!(
+            verify_alpaca_package(&archive, target, &root).unwrap_err(),
+            "bundle_binary_contains_private_build_path"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires exact TRADEASSEMBLY_ALPACA_PLUGIN_PACKAGE selected by packaging/alpaca.json"]
     fn compiled_alpaca_pin_passes_bundle_privacy_and_rejects_previous_private_binary() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let archive = PathBuf::from(
             std::env::var_os("TRADEASSEMBLY_ALPACA_PLUGIN_PACKAGE")
                 .expect("explicit current pinned archive required"),
         );
-        let previous = PathBuf::from(
-            std::env::var_os("TRADEASSEMBLY_ALPACA_PREVIOUS_PRIVATE_PACKAGE")
-                .expect("explicit retained previous archive required"),
-        );
         let pin: Value = read_json(&root.join("packaging/alpaca.json")).unwrap();
         let target = string(&pin, "target").unwrap();
         verify_digest(&archive, string(&pin, "packageSha256").unwrap()).unwrap();
         verify_alpaca_package(&archive, target, root).unwrap();
-        verify_digest(
-            &previous,
-            "d3f85503e64ff481d4137c8849c66b4ac545830a8c7ef17b7f756976edc3d00e",
-        )
-        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let negative = directory.path().join("synthetic-private.tar.gz");
+        let source = root.canonicalize().unwrap();
+        write_alpaca_privacy_fixture(&negative, target, source.as_os_str().as_encoded_bytes());
         assert_eq!(
-            verify_alpaca_package(&previous, target, root).unwrap_err(),
+            verify_alpaca_package(&negative, target, root).unwrap_err(),
             "bundle_binary_contains_private_build_path"
         );
         if let Some(directory) = std::env::var_os("TRADEASSEMBLY_PIN_PROOF_DIR") {
@@ -600,8 +643,9 @@ mod tests {
                 PathBuf::from(directory).join("actual-bundle-alpaca-privacy.json"),
                 serde_json::to_vec_pretty(&json!({
                     "pin": pin, "currentArchivePrivacy": "passed",
-                    "previousArchiveSha256": digest(&previous).unwrap(),
-                    "previousArchiveRefusal": "bundle_binary_contains_private_build_path",
+                    "negativeFixture": "synthetic_current_source_prefix_tar_entry_v1",
+                    "negativeFixtureSha256": digest(&negative).unwrap(),
+                    "negativeFixtureRefusal": "bundle_binary_contains_private_build_path",
                     "guard": "verify_alpaca_package/verify_no_private_build_paths",
                     "actualFullBundleAssembled": false, "providerCalls": 0
                 }))

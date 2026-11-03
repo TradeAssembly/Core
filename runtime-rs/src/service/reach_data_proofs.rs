@@ -2,7 +2,7 @@
 //! and command preparation. No source record, enrollment or grant is created here.
 use super::{
     data_runner::{DataRunnerCommand, DurableCoreDataRunner},
-    reach_data::{ReachDataCommand, MAX_REACH_DATA_LIFETIME_MS, REACH_DATA_SCHEMA},
+    reach_data::{ReachDataCommand, MAX_REACH_DATA_LIFETIME_MS},
     reach_data_consumer::describe_source,
     TradeAssemblyService,
 };
@@ -73,7 +73,7 @@ impl SourceRegistration {
 impl Preparation {
     pub fn signing_payload(&self) -> Result<String, String> {
         self.command.validate()?;
-        if self.schema != "tradeassembly.relay.reach-data-preparation/v1"
+        if self.schema != self.command.command.preparation_schema()
             || self.source_revision == 0
             || self.source_revision > tradeassembly_plugin_sdk::canonical::MAX_EXACT_INTEGER
             || !label(&self.nonce)
@@ -161,7 +161,7 @@ impl<'a> DataStatementProducer<'a> {
             self.service.runtime().clock.now_ms(),
         )?;
         let mut statement = Preparation {
-            schema: "tradeassembly.relay.reach-data-preparation/v1".into(),
+            schema: envelope.command.preparation_schema().into(),
             command: envelope,
             source_revision,
             nonce: self
@@ -190,7 +190,7 @@ impl<'a> DataStatementProducer<'a> {
         let resource = self.current_binding(&command)?;
         let now = self.service.runtime().clock.now_ms();
         let envelope = ReachDataCommand {
-            schema: REACH_DATA_SCHEMA.into(),
+            schema: command.reach_schema().into(),
             node: self.node.clone(),
             request_id: command.command_id.clone(),
             idempotency_key: command.idempotency_key.as_str().into(),

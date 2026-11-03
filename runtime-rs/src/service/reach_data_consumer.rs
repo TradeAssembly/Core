@@ -117,7 +117,8 @@ impl DataDelivery {
             return Err("reach_data_delivery_invalid".into());
         }
         if let Some(r) = &self.receipt {
-            if r.command_id != self.command.command.command_id
+            if r.schema_version != self.command.command.receipt_schema()
+                || r.command_id != self.command.command.command_id
                 || r.workspace_id != self.command.node.workspace_id
                 || r.command_sha256 != self.command.resource.command_sha256
                 || r.core_revision.as_deref() != Some(self.command.resource.core_revision.as_str())
@@ -319,6 +320,9 @@ impl ReachDataConsumer {
         Ok(r)
     }
     pub fn poll_once(&self) -> Result<ReachDataPoll, String> {
+        if let Some(recovered) = self.reconcile_pending_ack()? {
+            return Ok(recovered);
+        }
         let claim = self.signed(
             DataNodeOperation::Claim,
             self.entropy
@@ -344,7 +348,6 @@ impl ReachDataConsumer {
         if c.node != self.node || c.source_binding_sha256 != self.source {
             return Err("reach_data_source_scope_unavailable".into());
         }
-        let current = self.runner.mutation_binding(&c.command)?;
         // An expired accepted command may only reconcile an already-final local
         // receipt; it never starts or resumes another effect under that expiry.
         let now = self.service.runtime().clock.now_ms();
@@ -355,8 +358,13 @@ impl ReachDataConsumer {
             matches!(
                 r.state,
                 DataRunnerState::Completed | DataRunnerState::Failed
-            )
+            ) || c.command.protected() && r.state == DataRunnerState::Uncertain
         });
+        let current = if final_prior {
+            self.runner.reconciliation_binding(&c.command)?
+        } else {
+            self.runner.mutation_binding(&c.command)?
+        };
         if now >= c.expires_at_ms && !final_prior {
             return Ok(ReachDataPoll::Blocked {
                 request_id: c.request_id.clone(),
@@ -388,6 +396,18 @@ impl ReachDataConsumer {
         }
         let receipt = if final_prior {
             prior.unwrap()
+        } else if c.command.protected() {
+            // Never carry mutable validation across the accept network call.
+            // Validate now, compare the real resource, and consume the opaque
+            // evidence immediately. Dispatch/C5 retain their fresh checks.
+            let verified = self.runner.verify_financial_dispatch(&c.command)?;
+            c.validate_bindings(
+                &self.node,
+                &self.source,
+                verified.binding(),
+                self.service.runtime().clock.now_ms(),
+            )?;
+            self.runner.dispatch_verified(&c.command, verified)?
         } else {
             c.validate_bindings(
                 &self.node,
@@ -407,31 +427,13 @@ impl ReachDataConsumer {
                 code: "reach_data_post_dispatch_binding_changed".into(),
             });
         }
-        let request = self.signed(
-            DataNodeOperation::Record,
-            c.request_id.clone(),
-            Some(record.command_sha256.clone()),
-            Some(receipt.receipt_sha256.clone()),
-            Some(accepted.revision),
-        )?;
-        let ack = self.transport.record(&DataNodeRecord {
-            request,
-            receipt: receipt.clone(),
-        })?;
-        ack.validate()?;
-        if ack.command_sha256 != record.command_sha256
-            || ack.revision < accepted.revision
-            || ack.receipt.as_ref() != Some(&receipt)
-        {
-            return Err("reach_data_record_ack_invalid".into());
-        }
-        Ok(ReachDataPoll::Recorded {
-            request_id: c.request_id.clone(),
-            state: ack.state,
-            receipt_sha256: receipt.receipt_sha256,
-        })
+        self.stage_ack(&accepted, &receipt)?;
+        self.reconcile_pending_ack()?
+            .ok_or_else(|| "reach_data_record_pending_missing".into())
     }
 }
+
+mod record_outbox;
 
 #[cfg(test)]
 mod tests {

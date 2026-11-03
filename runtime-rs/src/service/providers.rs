@@ -3,14 +3,14 @@ use crate::capability::{
     local_full_entitlements, CAPABILITY_RESOLUTION_SCHEMA_VERSION, LOCAL_FULL_PROFILE,
 };
 use crate::instrument_packs;
-use crate::plugin_catalog::stored_plugin_entry as portable_stored_plugin_entry;
 use crate::ports::{
-    AuthorityContext, CapabilityRequirement, CapabilityRequirementConstraints,
-    CapabilityResolverCatalog, CredentialResolutionStatus, EntitlementGrant, IdempotencyKey,
-    PluginCatalogEntry, PluginOperationContract, PluginOperationRequest, PluginOperationTraits,
-    SideEffectContext,
+    AuthorityContext, CapabilityGraphRequest, CapabilityRequirement,
+    CapabilityRequirementConstraints, CapabilityResolverCatalog, CredentialResolutionStatus,
+    EntitlementGrant, IdempotencyKey, PluginCatalogEntry, PluginOperationContract,
+    PluginOperationRequest, PluginOperationTraits, SideEffectContext,
 };
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const ENTITLEMENT_NS: &str = "entitlement_grants";
 
@@ -222,9 +222,10 @@ pub(crate) fn resolve_capability(
             "noAdvice": true,
         });
     }
+    let eligibility = entitlements_for(service, Some(&requirement.capability));
     let catalog = CapabilityResolverCatalog {
         plugins: plugin_catalog(service),
-        entitlements: entitlements(service),
+        entitlements: eligibility,
     };
     serde_json::to_value(
         service
@@ -447,14 +448,113 @@ fn persist_entitlement(service: &TradeAssemblyService, grant: EntitlementGrant) 
 }
 
 pub(crate) fn entitlements(service: &TradeAssemblyService) -> Vec<EntitlementGrant> {
+    entitlements_for(service, None)
+}
+
+fn entitlements_for(
+    service: &TradeAssemblyService,
+    capability: Option<&str>,
+) -> Vec<EntitlementGrant> {
+    let capabilities = capability.map(|cap| BTreeSet::from([cap.to_string()]));
+    entitlements_matching(service, capabilities.as_ref())
+}
+
+// A metadata-only superset of every capability the resolver can visit. Include
+// dependencies of all matching alternatives; actual selection, cycles and
+// authority checks still belong to the ordinary resolver.
+fn graph_capabilities(
+    request: &CapabilityGraphRequest,
+    catalog: &[PluginCatalogEntry],
+) -> BTreeSet<String> {
+    let mut capabilities = request
+        .requirements
+        .iter()
+        .map(|r| r.capability.clone())
+        .collect::<BTreeSet<_>>();
+    let mut dependencies: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for operation in catalog.iter().flat_map(|plugin| &plugin.operations) {
+        dependencies
+            .entry(&operation.capability)
+            .or_default()
+            .extend(
+                operation
+                    .dependencies
+                    .iter()
+                    .map(|dependency| dependency.capability.as_str()),
+            );
+    }
+    let mut pending = capabilities.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(capability) = pending.pop_front() {
+        if let Some(children) = dependencies.get(capability.as_str()) {
+            for child in children {
+                if capabilities.insert((*child).to_string()) {
+                    pending.push_back((*child).to_string());
+                }
+            }
+        }
+    }
+    capabilities
+}
+
+pub(super) fn entitlements_for_graph(
+    service: &TradeAssemblyService,
+    request: &CapabilityGraphRequest,
+    catalog: &[PluginCatalogEntry],
+) -> Vec<EntitlementGrant> {
+    entitlements_matching(service, Some(&graph_capabilities(request, catalog)))
+}
+
+fn entitlements_matching(
+    service: &TradeAssemblyService,
+    capabilities: Option<&BTreeSet<String>>,
+) -> Vec<EntitlementGrant> {
     let mut grants = local_full_entitlements();
-    if let Ok(stored) = service.runtime().storage.list_json(ENTITLEMENT_NS) {
+    let Ok(records) = service.runtime().storage.list_json(ENTITLEMENT_NS) else {
+        // Preserve existing defaults, but never regenerate new policy grants
+        // when a host-owned revocation/expiry record cannot be checked.
+        return grants;
+    };
+    let mut complete = true;
+    let stored = records
+        .into_iter()
+        .filter_map(
+            |(_, value)| match serde_json::from_value::<EntitlementGrant>(value) {
+                Ok(grant) => Some(grant),
+                Err(_) => {
+                    complete = false;
+                    None
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    let eligible = if complete {
+        super::default_free_plugins::grants_matching(service, capabilities)
+    } else {
+        Vec::new()
+    };
+    if complete {
+        // The existing host record is authoritative even when revoked or
+        // expired. Reading eligibility does not persist an allow grant.
         grants.extend(
-            stored
-                .into_iter()
-                .filter_map(|(_, value)| serde_json::from_value::<EntitlementGrant>(value).ok()),
+            eligible
+                .iter()
+                .filter(|generated| {
+                    !stored
+                        .iter()
+                        .any(|entry| entry.grant_id == generated.grant_id)
+                })
+                .cloned(),
         );
     }
+    grants.extend(stored.into_iter().filter(|entry| {
+        entry.source_type != crate::default_free_plugin_policy::SOURCE_TYPE
+            || eligible.iter().any(|current| {
+                entry.grant_id == current.grant_id
+                    && entry.capability == current.capability
+                    && entry.source_ref == current.source_ref
+                    && entry.limits.get("sourceBinding") == current.limits.get("sourceBinding")
+            })
+    }));
     grants
 }
 
@@ -706,8 +806,11 @@ fn plugin_operation_from_path(path: &str) -> Option<(String, String)> {
 }
 
 pub(crate) fn plugin_catalog(service: &TradeAssemblyService) -> Vec<PluginCatalogEntry> {
-    let mut catalog = builtin_plugin_catalog(service);
-    if let Ok(instances) = service.runtime().plugins.list_instances() {
+    let mut catalog =
+        super::order_plans::measured("graph.catalog.builtin", || builtin_plugin_catalog(service));
+    if let Ok(instances) = super::order_plans::measured("graph.catalog.instances", || {
+        service.runtime().plugins.list_instances()
+    }) {
         for instance in instances {
             if instance
                 .get("removedAtMs")
@@ -716,7 +819,9 @@ pub(crate) fn plugin_catalog(service: &TradeAssemblyService) -> Vec<PluginCatalo
                 continue;
             }
             let plugin_ref = string_field(&instance, &["pluginRef"]).unwrap_or_default();
-            let Ok(Some(manifest)) = service.runtime().plugins.get_manifest(&plugin_ref) else {
+            let Ok(Some(manifest)) = super::order_plans::measured("graph.catalog.manifest", || {
+                service.runtime().plugins.get_manifest(&plugin_ref)
+            }) else {
                 continue;
             };
             let instance_ref = string_field(&instance, &["instanceRef"]).unwrap_or_default();
@@ -726,11 +831,25 @@ pub(crate) fn plugin_catalog(service: &TradeAssemblyService) -> Vec<PluginCatalo
                     .unwrap_or(&instance_ref),
             );
             let health = plugin_lifecycle::effective_health_state(service, &instance);
-            let Some(entry) =
-                portable_stored_plugin_entry(&instance, &manifest, &credential_status, health)
-            else {
+            let _decode_timing = super::order_plans::financial_timing("graph.catalog.decode");
+            let decoded = if let Some(metadata) = &service.graph_metadata {
+                metadata.catalog.get(&plugin_ref, &manifest, || {
+                    crate::plugin_catalog::decode_manifest(&manifest)
+                })
+            } else {
+                crate::plugin_catalog::decode_manifest(&manifest).map(std::sync::Arc::new)
+            };
+            let Some(entry) = decoded.and_then(|decoded| {
+                crate::plugin_catalog::stored_plugin_entry_from_decoded(
+                    &instance,
+                    &decoded,
+                    &credential_status,
+                    health,
+                )
+            }) else {
                 continue;
             };
+            drop(_decode_timing);
             catalog.retain(|candidate| candidate.instance_ref != entry.instance_ref);
             catalog.push(entry);
         }
@@ -1776,6 +1895,35 @@ fn context(event_type: &str, key: &str) -> SideEffectContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eligibility_scope_includes_transitive_alternatives_and_cycles_without_unrelated_operations()
+    {
+        let operation = |id: &str, capability: &str, dependencies: &[&str]| {
+            crate::plugin_catalog::operation_from_manifest(&json!({
+                "id":id,"capability":capability,"financeAction":{"actionId":"test.read"},
+                "dependencies":dependencies.iter().enumerate().map(|(i, cap)| json!({"dependencyId":format!("dep{i}"),"capability":cap,"required":true,"traits":{}})).collect::<Vec<_>>()
+            })).unwrap()
+        };
+        let plugin: PluginCatalogEntry = serde_json::from_value(json!({
+            "instanceRef":"scope-fixture","pluginRef":"fixture.scope","providerRef":"scope-fixture",
+            "accountRef":null,"name":"scope fixture","enabled":true,"trustLevel":"test","manifestFingerprint":"fixture",
+            "capabilities":["a","b","c","z"],
+            "operations":[operation("a.first","a",&["b"]),operation("a.alternative","a",&["c"]),operation("b","b",&["a","missing"]),operation("z","z",&["unrelated"])],
+            "credentialStatus":{"configured":false,"custody":"none","status":"missing","revisionRef":null},"health":"ready"
+        })).unwrap();
+        let request = CapabilityGraphRequest {
+            requirements: vec![CapabilityRequirement {
+                capability: "a".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            graph_capabilities(&request, &[plugin]),
+            BTreeSet::from(["a", "b", "c", "missing"].map(str::to_string))
+        );
+    }
 
     #[test]
     fn requirement_parser_preserves_the_complete_strategy_and_binding_contract() {

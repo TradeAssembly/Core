@@ -1,0 +1,208 @@
+// Normal typed activation/decision + native synthetic adapter. No real broker/OS-sandbox claim.
+fn install_v2_broker_fixture(s:&crate::service::TradeAssemblyService,root:&std::path::Path,scenario:&str)->InstalledPluginPackage {
+ use crate::adapters::plugin_packages::data_package_tests::{archive_files,materials};
+ use tradeassembly_plugin_sdk::broker_v2 as wire;
+ use std::os::unix::fs::PermissionsExt;
+ let network=scenario=="financial_joint"||scenario=="financial_settlement_joint";let settlement=scenario.starts_with("financial_screen_managed_plan")||scenario.starts_with("settlement_")||scenario=="financial_settlement_joint"||scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"||scenario=="financial_screen_auto_health"||matches!(scenario,AUTOMATIC_STREAM_CASE|STREAM_REBUILD_VALIDATION_CASE|STREAM_WARMUP_VALIDATION_CASE|STREAM_C5_PROFILE_CASE);
+ let id="fixture.broker.v2";let state=root.join("synthetic-broker");fs::create_dir(&state).unwrap();fs::set_permissions(&state,fs::Permissions::from_mode(0o700)).unwrap();fs::write(state.join("SYNTHETIC_BROKER_ONLY"),b"synthetic only\n").unwrap();
+ let template=crate::data_pipeline::tests::fixture().0.nodes.into_iter().find_map(|n|n.selected).unwrap();
+ let provisional=scenario.starts_with("financial_screen_managed_plan_provisional");
+ let lookup_v3=scenario.starts_with("financial_lookup_v3_")||provisional;
+ let lookup=if lookup_v3{tradeassembly_plugin_sdk::broker_lookup_v3::LOOKUP_SCHEMA}else{"schema://tradeassembly/broker-lookup@2"};
+ let lookup_op=if lookup_v3{tradeassembly_plugin_sdk::broker_lookup_v3::OPERATION_ID}else{crate::broker_submission::v2::LOOKUP_OPERATION};
+ let lookup_cap=if lookup_v3{tradeassembly_plugin_sdk::broker_lookup_v3::CAPABILITY}else{crate::broker_submission::v2::LOOKUP_CAPABILITY};
+ let mut operations=vec![];
+ for (op,cap,purpose,effect,input) in [(crate::broker_submission::v2::SUBMIT_OPERATION,crate::broker_submission::v2::SUBMIT_CAPABILITY,"paper_trading","write",wire::SUBMIT_SCHEMA),(lookup_op,lookup_cap,"recovery","read",lookup)] {
+  let mut v=serde_json::to_value(&template.operation).unwrap();v["id"]=json!(op);v["capability"]=json!(cap);v["purpose"]=json!(purpose);v["effect"]=json!(effect);v["protocol"]=json!("stdio");v["apfActionId"]=json!(if effect=="write"{"order.submit.paper"}else{"broker.order.observe"});v["financeResourceType"]=json!("broker_account");v["dependencies"]=json!([]);v["credentialGrantRequired"]=json!(true);v["accountBindingRequired"]=json!(true);v["traits"]=json!({"modes":["paper"],"instrumentFamilies":["equity"],"inputSchemaRefs":[input],"outputSchemaRefs":[wire::OBSERVATION_SCHEMA],"deterministic":false,"replayable":false});operations.push(v);
+ }
+ if lookup_v3{operations[0]["dependencies"]=json!([{"dependencyId":"broker.lookup","capability":lookup_cap,"operationId":lookup_op,"required":true,"traits":{}}]);}
+ if provisional{
+  for (dependency,op,cap) in [("broker.cash_settlement",tradeassembly_plugin_sdk::settlement_observation_v2::CASH_OPERATION,tradeassembly_plugin_sdk::settlement_observation_v2::CASH_CAPABILITY),("broker.close_settlement",tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_OPERATION,tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_CAPABILITY)]{operations[0]["dependencies"].as_array_mut().unwrap().push(json!({"dependencyId":dependency,"operationId":op,"capability":cap,"required":true,"traits":{}}));}
+ }
+ if settlement {
+  for (op,cap,purpose,input,output) in [("account.health","account.health","account_health","schema://fixture/account-health-request@1","schema://fixture/account-health-response@1"),(tradeassembly_plugin_sdk::cash_settlement::OPERATION,tradeassembly_plugin_sdk::cash_settlement::CAPABILITY,"settlement",tradeassembly_plugin_sdk::cash_settlement::REQUEST_SCHEMA,tradeassembly_plugin_sdk::cash_settlement::RESPONSE_SCHEMA),(tradeassembly_plugin_sdk::close_settlement::OPERATION,tradeassembly_plugin_sdk::close_settlement::CAPABILITY,"settlement",tradeassembly_plugin_sdk::close_settlement::REQUEST_SCHEMA,tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA)] {
+   let (op,cap,input,output)=if provisional&&purpose=="settlement"{
+    (if op==tradeassembly_plugin_sdk::cash_settlement::OPERATION{tradeassembly_plugin_sdk::settlement_observation_v2::CASH_OPERATION}else{tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_OPERATION},if cap==tradeassembly_plugin_sdk::cash_settlement::CAPABILITY{tradeassembly_plugin_sdk::settlement_observation_v2::CASH_CAPABILITY}else{tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_CAPABILITY},tradeassembly_plugin_sdk::settlement_observation_v2::REQUEST_SCHEMA,tradeassembly_plugin_sdk::settlement_observation_v2::RESPONSE_SCHEMA)
+   }else{(op,cap,input,output)};
+   let mut v=operations[1].clone();v["id"]=json!(op);v["capability"]=json!(cap);v["purpose"]=json!(if provisional&&purpose=="settlement"{"recovery"}else{purpose});v["traits"]["inputSchemaRefs"]=json!([input]);v["traits"]["outputSchemaRefs"]=json!([output]);operations.push(v);
+  }
+ }
+ let manifest=json!({"metadata":{"id":id,"version":"1","provider":{"id":"fixture.execution.facts","name":"Synthetic paper broker only"}},"capabilities":operations.iter().map(|v|json!({"id":v["capability"]})).collect::<Vec<_>>(),"operations":operations,"permissions":if network{vec!["network.outbound"]}else{vec![]},"configuration":{"fields":if network{json!([{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}])}else{json!([])}},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
+ let binary=fixture_executable();let mb=serde_json::to_vec(&manifest).unwrap();let mut d=materials().0["package"].clone();d["plugin"]["id"]=json!(id);d["manifest"]["sha256"]=json!(sha256(&mb));d["targets"][0]["binary"]["sha256"]=json!(sha256(binary));d["responseSchemas"]=json!([]);
+ let mut files=vec![("manifest.json".to_string(),mb),("bin/plugin".into(),binary.to_vec())];
+ for (i,(id,schema)) in [(wire::SUBMIT_SCHEMA,wire::submit_schema()),(wire::OBSERVATION_SCHEMA,wire::observation_schema()),(lookup,if lookup_v3{tradeassembly_plugin_sdk::broker_lookup_v3::request_schema()}else{json!({"type":"object","additionalProperties":false,"required":["schemaVersion","clientOrderId","canonicalAccountSha256"],"properties":{"schemaVersion":{"const":"tradeassembly.broker_lookup.v2"},"clientOrderId":{"type":"string"},"canonicalAccountSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}})})].into_iter().enumerate(){let path=format!("broker-schema-{i}.json");let bytes=serde_json::to_vec(&schema).unwrap();d["responseSchemas"].as_array_mut().unwrap().push(json!({"schemaRef":id,"document":{"path":path,"sha256":sha256(&bytes)}}));files.push((path,bytes));}
+ if settlement {
+  for (i,(id,schema)) in [(tradeassembly_plugin_sdk::close_settlement::REQUEST_SCHEMA,tradeassembly_plugin_sdk::close_settlement::request_schema()),(tradeassembly_plugin_sdk::close_settlement::RESPONSE_SCHEMA,tradeassembly_plugin_sdk::close_settlement::response_schema()),(tradeassembly_plugin_sdk::cash_settlement::REQUEST_SCHEMA,tradeassembly_plugin_sdk::cash_settlement::request_schema()),(tradeassembly_plugin_sdk::cash_settlement::RESPONSE_SCHEMA,tradeassembly_plugin_sdk::cash_settlement::response_schema()),("schema://fixture/account-health-request@1",json!({"type":"object","additionalProperties":false,"properties":{}})),("schema://fixture/account-health-response@1",json!({"type":"object","required":["account"],"properties":{"account":{"type":"object"}}}))].into_iter().enumerate(){let path=format!("settlement-schema-{i}.json");let bytes=serde_json::to_vec(&schema).unwrap();d["responseSchemas"].as_array_mut().unwrap().push(json!({"schemaRef":id,"document":{"path":path,"sha256":sha256(&bytes)}}));files.push((path,bytes));}
+ }
+ if provisional{
+  for (i,(id,schema)) in [(tradeassembly_plugin_sdk::settlement_observation_v2::REQUEST_SCHEMA,tradeassembly_plugin_sdk::settlement_observation_v2::request_schema()),(tradeassembly_plugin_sdk::settlement_observation_v2::RESPONSE_SCHEMA,tradeassembly_plugin_sdk::settlement_observation_v2::response_schema())].into_iter().enumerate(){let path=format!("non-atomic-schema-{i}.json");let bytes=serde_json::to_vec(&schema).unwrap();d["responseSchemas"].as_array_mut().unwrap().push(json!({"schemaRef":id,"document":{"path":path,"sha256":sha256(&bytes)}}));files.push((path,bytes));}
+ }
+ files.push(("tradeassembly-plugin.json".into(),serde_json::to_vec(&d).unwrap()));let archive=archive_files(files.iter().map(|(n,b)|(n.as_str(),b.clone())).collect());let path=root.join("synthetic-broker.tgz");fs::write(&path,&archive).unwrap();
+ let package=s.runtime().plugin_packages.install(&PluginPackageInstallRequest{source_type:"file".into(),locator:path.to_string_lossy().into(),package_sha256:sha256(&archive),manifest_sha256:canonical_sha256(&manifest).unwrap(),offline:true}).unwrap();
+ s.runtime().plugins.install_manifest(id,json!({"pluginRef":id,"manifest":manifest,"manifestDigest":package.manifest_sha256,"package":{"packageSha256":package.package_sha256},"trust":{"level":"test"}}),&ctx("broker-fixture-package")).unwrap();
+ s.runtime().credentials.store("synthetic-broker-handle",&BTreeMap::from([("api_key".into(),"fake-no-access".into()),("api_secret".into(),"fake-no-access-secret".into())])).unwrap();
+ let mut instance=json!({"instanceRef":id,"pluginRef":id,"providerRef":"fixture.execution.facts","accountRef":"account://fixture.broker.v2/fixture.paper.provider","enabled":true,"activePackageSha256":package.package_sha256,"configuration":{"fixtureStore":state,"lookupVersion3":lookup_v3,"nonAtomicSettlement":provisional,"partialClose":scenario.ends_with("_partial_close"),"scenario":scenario.strip_prefix("financial_lookup_v3_").or_else(||scenario.strip_prefix("settlement_")).or_else(||scenario.strip_prefix("financial_screen_")).or_else(||scenario.strip_prefix("financial_")).unwrap_or(scenario),"mode":"paper"},"credentialRef":"synthetic-broker-handle","credentialRevision":1,"accountMode":"paper","credentialStatus":{"configured":true},"health":{"state":"ready","checkedAtMs":s.runtime().clock.now_ms(),"connectivityChecked":true,"evidenceCurrent":true,"account":{"id":"fixture.paper.provider","mode":"paper","status":"ACTIVE","tradingBlocked":false,"accountBlocked":false,"tradeSuspendedByUser":false}}});if network{let origin=std::env::var("FINANCIAL_V4_BROKER_ORIGIN").expect("explicit synthetic loopback broker origin");let port=origin.strip_prefix("http://127.0.0.1:").unwrap().parse::<u16>().unwrap();assert!(port>0);instance["configuration"]=json!({"dataApiUrl":origin,"mode":"paper"});}instance["health"]["binding"]=crate::live_execution_checks::live_health_evidence_binding(&instance);s.runtime().plugins.put_instance(id,instance,&ctx("broker-fixture-instance")).unwrap();
+ for capability in [crate::broker_submission::v2::SUBMIT_CAPABILITY,lookup_cap].into_iter().chain(if provisional{vec!["account.health",tradeassembly_plugin_sdk::settlement_observation_v2::CASH_CAPABILITY,tradeassembly_plugin_sdk::settlement_observation_v2::CLOSE_CAPABILITY]}else if settlement{vec!["account.health",tradeassembly_plugin_sdk::cash_settlement::CAPABILITY,tradeassembly_plugin_sdk::close_settlement::CAPABILITY]}else{vec![]}){s.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("broker-fixture-grant")).unwrap();}
+ package
+}
+
+fn exercise_native_v2_broker(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,plan_id:&str,policy:&Value,root:&std::path::Path,scenario:&str){
+ let source=crate::service::order_plans::submission::source(s,plan_id).unwrap();
+ let _=(revision,policy);
+ let decided=if scenario.starts_with("financial_"){financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Decide{scope:scope.clone(),decision:crate::service::order_plans::decision::DecisionCommand{plan_id:plan_id.into(),activation_id:"fixture-v2-activation".into()}},"normal-entry-decision")}else{s.handle_http("POST","/product/strategies/order-plans/decide",json!({"scope":scope,"decision":{"planId":plan_id,"activationId":"fixture-v2-activation"},"accountMode":"paper","idempotencyKey":"normal-entry-decision"}))};assert_eq!(decided.status,200,"{}",decided.body);let command=decided.body["submission"].clone();assert!(command["attemptId"].as_str().unwrap().starts_with("attempt_typed_"));
+ let foreign=s.for_authenticated_invocation("fixture","foreign",None,None);let refused=foreign.call_mcp_tool("tradeassembly.strategy.order_plan.submit",json!({"scope":scope,"submission":command,"accountMode":"paper","idempotencyKey":"foreign-v2"}));assert_eq!(refused["isError"],true,"{refused}");assert!(!root.join("synthetic-broker/calls.log").exists());
+ if scenario.starts_with("financial_c5_round_"){exercise_native_c5_round_refusal(s,scope,plan_id,&command,root,scenario);return;}
+ if scenario=="financial_screen_refresh"{refuse_removed_dynamic_entry(s,scope,revision,plan_id,&command,root);return;}
+ let submit=|key:&str|if scenario.starts_with("financial_"){financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Submit{scope:scope.clone(),submission:serde_json::from_value(command.clone()).unwrap()},key)}else{s.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":command,"accountMode":"paper","idempotencyKey":key}))};
+ let first=submit("native-v2-submit");eprintln!("native V2 {scenario} response: {} {}",first.status,first.body);
+ let calls=||fs::read_to_string(root.join("synthetic-broker/calls.log")).unwrap_or_default();
+ assert_eq!(calls().lines().filter(|v|*v=="submit").count(),1,"{}",first.body);
+ if scenario.starts_with("financial_screen_managed_plan"){if scenario.starts_with("financial_screen_managed_plan_provisional"){assert_eq!(first.status,409,"{}",first.body);}else{assert_eq!(first.status,200,"{}",first.body);}exercise_native_managed_plan(s,scope,revision,plan_id,root,scenario.ends_with("_stale"),(actual_managed_math_case(scenario),scenario.ends_with("_metadata_round")));return;}
+ let record=source.state().unwrap().unwrap();
+ if scenario.ends_with("reject"){assert_eq!(record.phase,crate::service::order_plans::submission::Phase::Rejected);assert_eq!(record.retained_cash.to_string(),"0");}
+ else {
+  assert!(matches!(record.phase,crate::service::order_plans::submission::Phase::Sending|crate::service::order_plans::submission::Phase::Unknown));assert_eq!(record.retained_cash.to_string(),"41");
+  let release=s.handle_http("POST","/product/strategies/order-plans/release",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"unsafe-release"}));assert_ne!(release.status,200,"{}",release.body);
+  let retry=submit("native-v2-new-transport");assert_ne!(retry.status,200,"{}",retry.body);assert_eq!(calls().lines().filter(|v|*v=="submit").count(),1);
+  if scenario.starts_with("financial_lookup_v3_"){assert!(!root.join("synthetic-broker/accepted-request.json").exists(),"provider must not retain opaque host order identity for V3 recovery");let provider:Value=serde_json::from_slice(&fs::read(root.join("synthetic-broker/provider-order.json")).unwrap()).unwrap();assert!(provider.get("instrumentId").is_none());assert!(provider.get("canonicalAccountSha256").is_none());assert!(provider.get("order").is_none());}
+  let recovered=if scenario.starts_with("financial_"){financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Reconcile{scope:scope.clone(),plan_id:plan_id.into()},"native-v2-reconcile")}else{s.handle_http("POST","/product/strategies/order-plans/reconcile",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"native-v2-reconcile"}))};assert_eq!(recovered.status,200,"{}",recovered.body);assert_eq!(source.state().unwrap().unwrap().phase,crate::service::order_plans::submission::Phase::Consumed);assert_eq!(source.state().unwrap().unwrap().retained_cash.to_string(),"41");
+  if scenario.starts_with("settlement_") { exercise_native_settlement(s,scope,plan_id,root); }
+  let replay=s.call_mcp_tool("tradeassembly.strategy.order_plan.reconcile",json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"native-v2-reconcile"}));assert_ne!(replay["isError"],true,"{replay}");assert_eq!(calls().lines().filter(|v|*v=="lookup").count(),1);write_screen_interface_evidence("execution_v2","recovery.json",&recovered.body);
+ }
+ if scenario.starts_with("settlement_"){assert_eq!(source.verified_signal().err().unwrap(),"data_plan_graph_stale");let _=submit("settled-retry-no-second-order");assert_eq!(calls().lines().filter(|v|*v=="submit").count(),1);write_screen_interface_evidence("settlement","post-health-graph-refusal.json",&json!({"oldGraphEntryRefusal":"data_plan_graph_stale","submitCalls":1,"lookupCalls":1,"qualification":"health refresh invalidates old graph; no bypass or stale entry reuse"}));return;}
+ let witness=source.verified_signal().unwrap();let original=source.historical().unwrap().command;witness.matches(s,&original).unwrap();let mut changed=original.clone();changed.quote_collection_id.push_str("-changed");assert_eq!(witness.matches(s,&changed).unwrap_err(),"order_plan_signal_witness_mismatch");assert_eq!(witness.matches(&s.for_authenticated_invocation("fixture","foreign",None,None),&original).unwrap_err(),"order_plan_signal_witness_mismatch");let other=crate::service::TradeAssemblyService::from_runtime("different-database",(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None);assert_eq!(witness.matches(&other,&original).unwrap_err(),"order_plan_signal_witness_mismatch");
+ let _=submit("native-v2-final-retry");assert_eq!(calls().lines().filter(|v|*v=="submit").count(),1);write_screen_interface_evidence("execution_v2",&format!("{scenario}.json"),&json!({"first":first.body,"state":crate::service::order_plans::submission::summary(source.state().unwrap().unwrap()),"calls":calls(),"qualification":"synthetic native adapter; normal typed activation/decision; no production OS sandbox or real broker"}));
+}
+
+#[test]
+#[ignore="explicit native synthetic C5 fixture"]
+fn native_v2_c5_rejection_and_unknown_acceptance_reconcile_without_resubmission(){for case in ["reject","timeout_after_accept"]{native_execution_plan_fixture(Some(case));}}
+
+// Runs in the existing managed native fixture BEFORE its normal config save.
+// No new fixture/provider setup and no entry is admitted by this negative probe.
+fn assert_rollover_config_refuses_unknown_trigger_before_entry(
+ s:&crate::service::TradeAssemblyService, scope:&data_plans::PlanScope, typed:&Value,
+){
+ let namespaces=["execution_configs","execution_activations","execution_runs","execution_attempts","execution_order_plans_v1","execution_cash_reservations_v1","execution_order_plan_submissions_v2","execution_managed_positions_v1","plugin_operation_receipts"];
+ let before=namespaces.iter().map(|ns|s.runtime().storage.list_json(ns).unwrap()).collect::<Vec<_>>();
+ let mut invalid=typed.clone();invalid["automaticExecution"]["management"]["calendarRollover"]=json!({"schemaVersion":"tradeassembly.management_calendar_rollover.v1","triggerRef":"unknown_rollover_trigger_before_entry","refreshIntervalMs":60000,"observationPolicy":"execution_session_only","sourceInputs":{}});
+ let denied=s.handle_http("POST","/product/strategy-execution-configs/save",json!({"strategyId":scope.strategy_id,"typedExecution":invalid,"mode":"paper","accountMode":"paper","idempotencyKey":"rollover-unknown-trigger-before-entry"}));
+ assert_eq!(denied.body["error"]["code"],"management_window_trigger_missing","{}",denied.body);
+ assert_eq!(namespaces.iter().map(|ns|s.runtime().storage.list_json(ns).unwrap()).collect::<Vec<_>>(),before,"invalid rollover must not admit a config, activation, order or provider effect");
+ write_screen_interface_evidence("calendar_rollover","unknown-trigger-config-save-before-entry.json",&json!({"response":denied.body,"guardedNamespacesUnchanged":namespaces,"entryAdmitted":false,"providerCalls":0,"qualification":"normal config-save negative inside existing native managed setup; does not qualify rollover execution"}));
+}
+
+fn activate_native_typed_execution(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,revision:&str,scenario:&str){
+ let mut typed=json!({"scope":scope,"capabilityGraphRevision":revision,"brokerRequirementRef":"exec_broker"});if scenario.starts_with("financial_screen_auto"){typed["automaticExecution"]=json!({"sourceInputs":{"account_data":{},"instrument_metadata":{},"pricing_quote":{}},"maxSubjectsPerOccurrence":1});}
+ if scenario.starts_with("financial_screen_auto_batch")||matches!(scenario,AUTOMATIC_STREAM_CASE|STREAM_REBUILD_VALIDATION_CASE|STREAM_WARMUP_VALIDATION_CASE|STREAM_C5_PROFILE_CASE){typed["automaticExecution"]["observationAcquisition"]=json!("bounded_independent_reads_v1");}
+ if scenario=="financial_screen_auto_health"{typed["automaticExecution"]["accountHealthRefresh"]=json!({"schemaVersion":"tradeassembly.automatic_account_health_refresh.v1","refreshIntervalMs":60000});}
+ if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{typed["automaticExecution"]["management"]=json!({"cadenceMs":1000,"maxPositionsPerRound":1,"sourceInputs":{"account_data":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"instrument_metadata":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"pricing_quote":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}}}});}
+ if scenario=="financial_screen_auto_managed"||scenario=="financial_screen_auto_worker"{assert_rollover_config_refuses_unknown_trigger_before_entry(s,scope,&typed);}
+ if matches!(scenario,AUTOMATIC_STREAM_CASE|STREAM_REBUILD_VALIDATION_CASE|STREAM_WARMUP_VALIDATION_CASE|STREAM_C5_PROFILE_CASE){typed["automaticExecution"]["accountHealthRefresh"]=json!({"schemaVersion":"tradeassembly.automatic_account_health_refresh.v1","refreshIntervalMs":60000});typed["automaticExecution"]["management"]=json!({"cadenceMs":1000,"maxPositionsPerRound":1,"sourceInputs":{"account_data":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"instrument_metadata":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}},"pricing_quote":{"fixturePhase":{"kind":"literal","value":"managed_trigger"}}},"reversalEvaluation":{"schemaVersion":"tradeassembly.management_reversal_evaluation.v1","originPolicy":"original_entry_capture","completionLagMs":0,"maxFramesPerStep":4,"maxSegmentObservations":8,"sourceBindings":{(STREAM_SOURCE):automatic_stream_source_config()}}});}
+ if scenario==STREAM_C5_PROFILE_CASE{typed["automaticExecution"]["management"]["calendarRollover"]=json!({"schemaVersion":"tradeassembly.management_calendar_rollover.v1","triggerRef":"preopen","refreshIntervalMs":1000,"observationPolicy":"execution_session_only","sourceInputs":{}});}
+ let saved=s.handle_http("POST","/product/strategy-execution-configs/save",json!({"strategyId":scope.strategy_id,"typedExecution":typed,"mode":"paper","accountMode":"paper","idempotencyKey":"normal-typed-save"}));assert_eq!(saved.status,200,"{}",saved.body);let config=saved.body["body"]["configId"].as_str().unwrap_or_else(||panic!("normal config missing: {}",saved.body));
+ let active=s.handle_http("POST","/product/strategy-execution-activations/activate",json!({"configId":config,"activationId":"fixture-v2-activation","accountMode":"paper","mode":"paper","idempotencyKey":"normal-typed-activation"}));assert_eq!(active.status,200,"{}",active.body);assert_eq!(active.body["body"]["run"]["orchestrator"],"typed_pipeline","{}",active.body);assert_eq!(active.body["body"]["scheduler"]["continuousExecution"],false);write_screen_interface_evidence("typed_execution",&format!("{scenario}-activation.json"),&active.body);
+ let legacy=s.handle_http("POST","/product/strategy-execution-activations/fixture-v2-activation/evaluate-tick",json!({"activationId":"fixture-v2-activation","accountMode":"paper","idempotencyKey":"typed-refuses-legacy"}));assert_ne!(legacy.status,200);
+}
+
+#[test]
+#[ignore="explicit native financial V4 installed-runner/C5 synthetic fixture"]
+fn financial_v4_native_runner_preserves_c5_unknown_acceptance_and_original_receipts(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();for case in ["financial_reject","financial_timeout_after_accept"]{native_execution_plan_fixture(Some(case));}}
+
+fn financial_native_call(s:&crate::service::TradeAssemblyService,op:crate::service::order_plans::remote::FinancialOperation,key:&str)->crate::service::ServiceResponse{
+ use crate::service::data_runner::*;
+ let runner=DurableCoreDataRunner::new(s.clone(),"fixture.release".into()).unwrap();
+ let c=DataRunnerCommand{schema_version:if op.settlement(){DATA_RUNNER_SCHEMA_V5.into()}else{DATA_RUNNER_SCHEMA_V4.into()},core_release:"fixture.release".into(),workspace_id:"fixture.financial".into(),command_id:key.into(),authority_ref:"provenance.only".into(),idempotency_key:IdempotencyKey::new(key).unwrap(),mode:DataRunnerMode::Paper,submitted_at_ms:s.runtime().clock.now_ms(),operation:DataRunnerOperation::Financial{financial:op}};
+ let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();let foreign=DurableCoreDataRunner::new(s.for_authenticated_invocation("fixture","foreign",None,None),"fixture.release".into()).unwrap();assert!(foreign.mutation_binding(&c).is_err());assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);
+ let result=runner.verify_financial_dispatch(&c).and_then(|witness|{runner.assert_financial_witness_custody(&c,&witness);runner.dispatch_verified(&c,witness)});
+ match result{
+  Ok(receipt)=>{
+   write_screen_interface_evidence("financial_v4",&format!("{key}-{}.json",receipt.command_sha256),&json!({"command":c,"receipt":receipt}));
+   let restored=DurableCoreDataRunner::new(crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone()).for_authenticated_invocation(&s.invocation_owner().unwrap().issuer,&s.invocation_owner().unwrap().subject,None,None),"fixture.release".into()).unwrap();
+   let (binding_key,stored)=s.runtime().storage.list_json("financial_original_bindings_v1").unwrap().into_iter().find(|(_,v)|v["commandSha256"]==receipt.command_sha256).unwrap();let mut corrupt=stored.clone();corrupt["binding"]["domainBindingSha256"]=json!("f".repeat(64));s.runtime().storage.put_json("financial_original_bindings_v1",&binding_key,corrupt,&ctx("corrupt-financial-binding")).unwrap();assert!(restored.reconciliation_binding(&c).is_err());s.runtime().storage.put_json("financial_original_bindings_v1",&binding_key,stored,&ctx("restore-financial-binding")).unwrap();
+   let original=restored.receipt(&c.workspace_id,&c.command_id).unwrap().unwrap();assert_eq!(original,receipt);let binding=restored.reconciliation_binding(&c).unwrap();assert_eq!(binding.schema_version,c.binding_schema());assert_eq!(binding.resource_kind.as_deref(),Some("strategy_order_plan"));assert_eq!(restored.dispatch(&c).unwrap(),receipt);
+   // Unsigned authored source fixture: shape/signing bytes only, never enrollment or authority.
+   let wire=crate::service::reach_data::ReachDataCommand{schema:c.reach_schema().into(),node:crate::ports::ReachNodeScope{tenant_id:"fixture.tenant".into(),workspace_id:c.workspace_id.clone(),node_id:"fixture.node".into(),actor_ref:"fixture.actor".into()},request_id:c.command_id.clone(),idempotency_key:c.idempotency_key.as_str().into(),issued_at_ms:c.submitted_at_ms,expires_at_ms:c.submitted_at_ms+300000,source_binding_sha256:"a".repeat(64),resource:binding,command:c.clone()};wire.validate().unwrap();let preparation=crate::service::reach_data_proofs::Preparation{schema:c.preparation_schema().into(),command:wire.clone(),source_revision:1,nonce:format!("fixture-{key}"),issued_at_ms:c.submitted_at_ms,signature:String::new()};let unsigned:Value=serde_json::from_str(&preparation.signing_payload().unwrap()).unwrap();write_screen_interface_evidence("financial_v4_unsigned_wire",&format!("{key}-{}.json",receipt.command_sha256),&json!({"qualification":"authored unsigned source fixture, not enrollment or permission; synthetic build identity","reachCommand":wire,"unsignedPreparation":unsigned,"receipt":receipt}));
+   if let Some(DataRunnerResult::Financial{snapshot})=&receipt.result{
+    // Decode the real closed projection into the existing test's field view.
+    // The public wire remains the complete immutable V4 receipt above.
+    if matches!(c.operation,DataRunnerOperation::Financial{financial:crate::service::order_plans::remote::FinancialOperation::Decide{..}}){assert!(snapshot.cash_reserved);}
+    crate::service::ServiceResponse::ok(json!({"planId":snapshot.plan_id,"order":snapshot.order,"purchaseCash":snapshot.cash_amount,"cashReservedAtPreparation":snapshot.cash_reserved,"cashReserved":snapshot.cash_amount,"submission":snapshot.submission,"selectionBindingSha256":snapshot.selection_binding_sha256,"executionAuthorityGranted":false,"brokerDispatchAllowed":false,"settlement":snapshot.settlement,"runnerReceipt":receipt}))
+   }else{eprintln!("synthetic financial failure receipt: {}",serde_json::to_string(&receipt).unwrap());crate::service::ServiceResponse::conflict(if receipt.state==DataRunnerState::Uncertain{"plugin_order_reconciliation_required"}else{"financial_runner_failed"})}
+  },
+  Err(e)=>crate::service::ServiceResponse::conflict(&e),
+ }
+}
+
+// Explicit synthetic C3 identity, never a broker authority. C5 below is the
+// real Warden adapter against its loopback fixture and cannot inherit this allow.
+struct FixtureFinancialAuthority;
+impl crate::finance_authority::FinanceAuthorityPort for FixtureFinancialAuthority {
+ fn command_policy_sha256(&self)->Result<String,String>{crate::data_pipeline::canonical_sha256(&json!({"fixturePolicy":"local-financial-C3-only-v1"})).map_err(|e|e.to_string())}
+ fn prepare_command(&self,s:&dyn StoragePort,e:&crate::control_plane::ControlPlaneCommandEnvelope)->Result<(),String>{crate::finance_authority::TestFinanceAuthority.prepare_command(s,e)}
+ fn complete_command(&self,s:&dyn StoragePort,e:&crate::control_plane::ControlPlaneCommandEnvelope,status:u16)->Result<(),String>{crate::finance_authority::TestFinanceAuthority.complete_command(s,e,status)}
+ fn audit(&self,s:&dyn StoragePort)->Value{crate::finance_authority::TestFinanceAuthority.audit(s)}
+}
+
+#[test]
+#[ignore="explicit native synthetic settlement provider/C5 fixture"]
+fn native_provider_settlement_refreshes_health_and_rebases_only_final_posting(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("settlement_timeout_after_accept"));}
+fn exercise_native_settlement(s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,plan_id:&str,root:&std::path::Path){
+ let arguments=json!({"scope":scope,"planId":plan_id,"accountMode":"paper","idempotencyKey":"native-settlement"});
+ let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();
+ let foreign=s.for_authenticated_invocation("fixture","foreign",None,None).call_mcp_tool("tradeassembly.strategy.order_plan.settle",arguments.clone());assert_eq!(foreign["isError"],true,"{foreign}");assert_eq!(before,s.runtime().storage.list_json("plugin_operation_receipts").unwrap());
+ let health=s.handle_http("POST","/plugins/instances/fixture.broker.v2/health:refresh",json!({"idempotencyKey":"native-health-real-read"}));assert_eq!(health.status,200,"{}",health.body);
+ let instance=s.runtime().plugins.get_instance("fixture.broker.v2").unwrap().unwrap();assert_eq!(instance["health"]["account"]["id"],"fixture.paper.provider","health response: {} stored: {}",health.body,instance["health"]);assert_eq!(instance["health"]["connectivityChecked"],true);assert_eq!(fs::read_to_string(root.join("synthetic-broker/health.log")).unwrap().lines().count(),1);
+ let response=s.handle_http("POST","/product/strategies/order-plans/settle",arguments.clone());assert_eq!(response.status,200,"{}",response.body);assert_eq!(response.body["releasedHold"],"41");assert_eq!(response.body["availableCashCeiling"],"60");
+ let source=crate::service::order_plans::submission::source(s,plan_id).unwrap();assert_eq!(source.state().unwrap().unwrap().retained_cash.to_string(),"0");
+ let replay=s.call_mcp_tool("tradeassembly.strategy.order_plan.settle",arguments);assert_ne!(replay["isError"],true,"{replay}");assert_eq!(fs::read_to_string(root.join("synthetic-broker/settlement.log")).unwrap().lines().count(),1);
+ let capability=tradeassembly_plugin_sdk::cash_settlement::CAPABILITY;let grant=s.runtime().storage.get_json("entitlement_grants",capability).unwrap().unwrap();let mut denied=grant.clone();denied["effect"]=json!("deny");denied["precedence"]=json!(1000);s.runtime().storage.put_json("entitlement_grants",capability,denied,&ctx("fixture-settlement-deny")).unwrap();let before=s.runtime().storage.list_json("plugin_operation_receipts").unwrap();let denied=financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Settle{scope:scope.clone(),plan_id:plan_id.into()},"native-settlement-v5-denied");assert_eq!(denied.status,409,"{}",denied.body);assert_eq!(denied.body["error"]["code"],"cash_settlement_permission_changed");assert_eq!(s.runtime().storage.list_json("plugin_operation_receipts").unwrap(),before);s.runtime().storage.put_json("entitlement_grants",capability,grant,&ctx("fixture-settlement-restore-exact-grant")).unwrap();
+ let remote=financial_native_call(s,crate::service::order_plans::remote::FinancialOperation::Settle{scope:scope.clone(),plan_id:plan_id.into()},"native-settlement-v5");assert_eq!(remote.status,200,"{}",remote.body);assert_eq!(remote.body["runnerReceipt"]["schemaVersion"],"tradeassembly.core-data-runner.receipt.v5");assert_eq!(remote.body["settlement"]["releasedHold"],"0");assert_eq!(remote.body["settlement"]["postedDebit"],"40");assert_eq!(fs::read_to_string(root.join("synthetic-broker/settlement.log")).unwrap().lines().count(),2);
+ write_screen_interface_evidence("settlement","native-provider.json",&json!({"response":response.body,"state":source.state().unwrap(),"qualification":"synthetic native provider process, actual C5 and Core HTTP/MCP, traced fixture sandbox; no real broker or enforcing-OS-sandbox claim"}));
+}
+
+#[test]
+#[ignore="explicit native synthetic lookup V3 fresh-provider-process recovery fixture"]
+fn financial_lookup_v3_recovers_original_order_without_host_identity_cache(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_lookup_v3_timeout_after_accept"));}
+
+#[test]
+#[ignore="explicit native non-atomic observation/unsettled managed position/C5 journey"]
+fn native_provisional_entry_and_close_preserve_cash_holds_and_recover_receipts(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_managed_plan_provisional"));}
+
+#[test]
+#[ignore="explicit native non-atomic terminal partial-close quantity and cash hold journey"]
+fn native_provisional_partial_close_preserves_remaining_owned_quantity(){crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();native_execution_plan_fixture(Some("financial_screen_managed_plan_provisional_partial_close"));}
+
+// Actual normal V2 submission, with one independently fresh fixture per refusal.
+fn exercise_native_c5_round_refusal(
+ s:&crate::service::TradeAssemblyService,scope:&data_plans::PlanScope,plan_id:&str,command:&Value,root:&std::path::Path,scenario:&str,
+){
+ let run=s.runtime().storage.get_json("execution_runs","run_fixture-v2-activation").unwrap().unwrap();
+ let plan=s.runtime().storage.get_json("execution_order_plans_v1",plan_id).unwrap().unwrap();
+ let (namespace,key,field,changed)=if scenario.ends_with("config") {
+  ("execution_configs",run["configId"].as_str().unwrap().to_string(),"strategySpecHash",json!("changed-config"))
+ } else if scenario.ends_with("authority") {
+  ("execution_controls","fixture-v2-activation".to_string(),"paused",json!(true))
+ } else {
+  let index=s.runtime().storage.get_json("data_evaluation_receipt_hash_index_v1",plan["command"]["signalReceiptSha256"].as_str().unwrap()).unwrap().unwrap();
+  ("data_evaluation_receipts_v1",index["receiptKey"].as_str().unwrap().to_string(),"receiptSha256",json!("0".repeat(64)))
+ };
+ let mut invalid=s.runtime().storage.get_json(namespace,&key).unwrap().unwrap();invalid[field]=changed;
+ s.runtime().storage.put_json(namespace,&key,invalid,&ctx("c5-round-negative-change")).unwrap();
+ let cash=s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap();
+ let submit=|service:&crate::service::TradeAssemblyService,label:&str| service.handle_http("POST","/product/strategies/order-plans/submit",json!({"scope":scope,"submission":command,"accountMode":"paper","idempotencyKey":label}));
+ let first=submit(s,"changed-c5-round");assert_ne!(first.status,200,"{scenario}: {}",first.body);
+ let owner=s.invocation_owner().unwrap();
+ let restored=crate::service::TradeAssemblyService::from_runtime(s.db(),(*s.runtime()).clone())
+  .for_authenticated_invocation(&owner.issuer,&owner.subject,None,None);
+ let repeated=submit(&restored,"changed-c5-after-recreation");assert_ne!(repeated.status,200,"{scenario}: {}",repeated.body);
+ assert!(!root.join("synthetic-broker/calls.log").exists(),"refused C5 must not dispatch or replay");
+ assert_eq!(s.runtime().storage.list_json("execution_cash_reservations_v1").unwrap(),cash);
+ write_screen_interface_evidence("c5_validation",&format!("{scenario}.json"),&json!({"first":first.body,"afterServiceRecreation":repeated.body,"providerCalls":0,"cashUnchanged":true,"qualification":"synthetic normal V2 transport refusal; no OS restart or real broker"}));
+}
+#[test]
+#[ignore="focused actual C5 changed config/authority/tampered signal refusal and service recreation"]
+fn native_c5_validation_rounds_refuse_current_mutations_before_dispatch_and_after_restart(){
+ crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+ for case in ["financial_c5_round_config","financial_c5_round_authority","financial_c5_round_tamper"]{native_execution_plan_fixture(Some(case));}
+}

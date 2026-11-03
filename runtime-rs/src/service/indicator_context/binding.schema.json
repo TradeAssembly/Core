@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tradeassembly.example/indicator-context/binding.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "tradeassembly.indicator_profile_bindings.v1"
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "byteSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "canonicalSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "canonicalization": {
+          "const": "tradeassembly.canonical-json.v1"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "byteSha256",
+        "canonicalSha256",
+        "canonicalization"
+      ]
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "conceptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "profileVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "recipe": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "recipeId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$"
+                  },
+                  "semanticsVersion": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                  },
+                  "canonicalSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "documentSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "recipeId",
+                  "semanticsVersion",
+                  "canonicalSha256",
+                  "documentSha256"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outputs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                "implementationStatus": {
+                  "enum": [
+                    "implemented",
+                    "planned_only"
+                  ]
+                },
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "schemaRef": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                    },
+                    "canonicalSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "schemaRef",
+                    "canonicalSha256"
+                  ]
+                },
+                "origin": {
+                  "enum": [
+                    "derived",
+                    "estimated",
+                    "conditional"
+                  ]
+                },
+                "modelId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                "modelVersion": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                },
+                "units": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                },
+                "estimate": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "never"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "always"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "output_boolean"
+                        },
+                        "output": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^[A-Za-z0-9_.:-]+$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "output"
+                      ]
+                    }
+                  ]
+                },
+                "gates": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 16,
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "host_capture"
+                          },
+                          "input": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[A-Za-z0-9_.:-]+$"
+                          },
+                          "acquisitionSchema": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "schemaRef": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                              },
+                              "canonicalSha256": {
+                                "type": "string",
+                                "pattern": "^[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "schemaRef",
+                              "canonicalSha256"
+                            ]
+                          },
+                          "originPointer": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256,
+                            "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "input",
+                          "acquisitionSchema",
+                          "originPointer"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "capture_anchor"
+                          },
+                          "input": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[A-Za-z0-9_.:-]+$"
+                          },
+                          "anchorPointer": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256,
+                            "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+                          },
+                          "boundary": {
+                            "enum": [
+                              "window_start",
+                              "window_end"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "input",
+                          "anchorPointer",
+                          "boundary"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "strict_fixed_interval_history"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "name",
+                "implementationStatus",
+                "schema",
+                "origin",
+                "modelId",
+                "modelVersion",
+                "units",
+                "estimate",
+                "gates"
+              ]
+            }
+          }
+        },
+        "required": [
+          "conceptId",
+          "profileId",
+          "profileVersion",
+          "recipe",
+          "outputs"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "recipe": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "recipe"
+              ]
+            },
+            "then": {
+              "properties": {
+                "outputs": {
+                  "items": {
+                    "properties": {
+                      "implementationStatus": {
+                        "const": "planned_only"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "catalog",
+    "profiles"
+  ]
+}

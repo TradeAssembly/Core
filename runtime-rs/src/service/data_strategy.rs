@@ -45,6 +45,37 @@ pub fn program(
         .map(Some)
         .map_err(|_| "data_strategy_program_invalid".into())
 }
+pub(super) fn program_for_content(
+    service: &TradeAssemblyService,
+    content: &data_plans::DataPlanContent,
+) -> Result<Option<DataStrategy>, String> {
+    match &content.selection_source {
+        Some(source) => {
+            if source.managed_position_id.is_some()
+                && (source.command.mode != "paper"
+                    || source.managed_position_sha256.is_none()
+                    || source.resolved_program.entry
+                        != (crate::data_strategy::Rule::IsTrue {
+                            value: crate::data_strategy::Operand::Boolean { value: false },
+                        }))
+            {
+                return Err("managed_plan_entry_admission_invalid".into());
+            }
+            if source.command.scope != content.scope
+                || super::selection_plans::template(service, &content.scope)?.is_none()
+            {
+                return Err("selection_plan_source_invalid".into());
+            }
+            Ok(Some(source.resolved_program.clone()))
+        }
+        None => {
+            if super::selection_plans::template(service, &content.scope)?.is_some() {
+                return Err("selection_plan_binding_required".into());
+            }
+            program(service, &content.scope)
+        }
+    }
+}
 fn context(service: &TradeAssemblyService, body: &Value) -> Result<SideEffectContext, String> {
     let key = body["idempotencyKey"]
         .as_str()
@@ -110,9 +141,9 @@ pub fn evaluate(service: &TradeAssemblyService, body: Value) -> ServiceResponse 
     let result: Result<data_evaluation::EvaluationReceipt, String> = (|| {
         let step: data_evaluation::EvaluationStep = serde_json::from_value(body["step"].clone())
             .map_err(|_| "data_strategy_step_invalid")?;
-        let plan = data_plans::current(service, &step.plan_revision_id)?;
+        let plan = data_evaluation::request_plan(service, &step)?;
         let program =
-            program(service, &plan.content.scope)?.ok_or("data_strategy_program_missing")?;
+            program_for_content(service, &plan.content)?.ok_or("data_strategy_program_missing")?;
         program.validate(&plan.content.plan)?;
         let ctx = context(service, &body)?;
         data_evaluation::step(service, step, &ctx)
@@ -143,7 +174,10 @@ pub(crate) fn preflight(
                 serde_json::from_value(body["step"].clone())
                     .map_err(|_| "data_strategy_step_invalid")?;
             let plan = data_plans::current(service, &step.plan_revision_id)?;
-            program(service, &plan.content.scope)?
+            if !super::managed_data_streams::plan_roots(&plan).is_empty() {
+                return Err("managed_stream_step_route_required".into());
+            }
+            program_for_content(service, &plan.content)?
                 .ok_or("data_strategy_program_missing")?
                 .validate(&plan.content.plan)?;
             data_evaluation::remember_request_plan(service, &step, &plan)

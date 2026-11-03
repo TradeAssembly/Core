@@ -275,9 +275,9 @@ fn data_evaluation_batch_and_incremental_share_state_readiness_and_causal_output
         .unwrap()
         .iter()
         .filter(|r| !r.inputs.is_empty())
-        .all(|r| r.inputs.values().all(
-            |b| b.points.len() == 1 && b.points[0].provenance.known_at_ms == r.window.as_of_ms
-        )));
+        .all(|r| r.inputs.values().all(|b| b.points.len() == 1
+            && b.points[0].provenance.known_at_ms <= r.window.as_of_ms
+            && b.points[0].provenance.arrived_at_ms <= r.window.as_of_ms)));
 }
 #[test]
 fn data_evaluation_duplicate_is_noop_and_revision_requires_explicit_replay() {
@@ -1251,47 +1251,76 @@ fn data_evaluation_step_schema_reuse_cannot_commit_changed_artifacts_or_authorit
 
 #[test]
 fn request_plan_handoff_is_local_and_rechecks_before_dispatch() {
-    let (_dir, service, plan, operations) = rig();
-    let request = request(&plan, "request-handoff", 10, 11, None);
-    let scoped = request_service(&service);
-    let verified = request_plan(&scoped, &request).unwrap();
-    remember_request_plan(&scoped, &request, &verified).unwrap();
-    assert!(service.data_step_request.is_none());
-    assert!(request_service(&service)
-        .data_step_request
-        .unwrap()
-        .verified
-        .lock()
-        .unwrap()
-        .is_none());
-    assert_eq!(request_plan(&scoped, &request).unwrap(), verified);
-    let mut instance = service
-        .runtime()
-        .plugins
-        .get_instance("instance.derive")
-        .unwrap()
-        .unwrap();
-    instance["enabled"] = json!(false);
-    service
-        .runtime()
-        .plugins
-        .put_instance(
-            "instance.derive",
-            instance,
-            &context("revoke-after-preflight"),
-        )
-        .unwrap();
-    // The immutable handoff is reusable, but is never dispatch authorization.
-    let error = step(&scoped, request, &context("request-handoff")).unwrap_err();
-    assert_eq!(error, "data_plan_graph_stale");
-    assert!(operations.requests.lock().unwrap().is_empty());
-    for namespace in [RUNS, SOURCES, RECEIPTS] {
-        assert!(service
-            .runtime()
-            .storage
-            .list_json(namespace)
+    for case in ["revocation", "configuration", "schema", "executable"] {
+        let (_dir, service, plan, operations) = rig();
+        let request = request(&plan, "request-handoff", 10, 11, None);
+        let scoped = request_service(&service);
+        let verified = request_plan(&scoped, &request).unwrap();
+        remember_request_plan(&scoped, &request, &verified).unwrap();
+        assert!(service.data_step_request.is_none());
+        assert!(request_service(&service)
+            .data_step_request
             .unwrap()
-            .is_empty());
+            .verified
+            .lock()
+            .unwrap()
+            .is_none());
+        assert_eq!(request_plan(&scoped, &request).unwrap(), verified);
+        let mut instance = service
+            .runtime()
+            .plugins
+            .get_instance("instance.derive")
+            .unwrap()
+            .unwrap();
+        match case {
+            "revocation" => instance["enabled"] = json!(false),
+            "configuration" => instance["configuration"] = json!({"changedAfterPreflight":true}),
+            "schema" | "executable" => {
+                let package = service
+                    .runtime()
+                    .plugin_packages
+                    .get(&plan.content.package_sha256["derived"])
+                    .unwrap()
+                    .unwrap();
+                let path = if case == "schema" {
+                    package.install_root.join("state.json")
+                } else {
+                    package.executable_path
+                };
+                std::fs::write(path, b"changed-after-preflight").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        service
+            .runtime()
+            .plugins
+            .put_instance(
+                "instance.derive",
+                instance,
+                &context("revoke-after-preflight"),
+            )
+            .unwrap();
+        // The immutable handoff is reusable, but is never dispatch authorization.
+        let error = step(&scoped, request, &context("request-handoff")).unwrap_err();
+        assert_eq!(
+            error,
+            match case {
+                "configuration" => "data_plan_stale",
+                "schema" => "plugin_data_artifact_digest_mismatch",
+                "executable" => "plugin_package_integrity_invalid",
+                _ => "data_plan_graph_stale",
+            },
+            "{case}"
+        );
+        assert!(operations.requests.lock().unwrap().is_empty());
+        for namespace in [RUNS, SOURCES, RECEIPTS] {
+            assert!(service
+                .runtime()
+                .storage
+                .list_json(namespace)
+                .unwrap()
+                .is_empty());
+        }
     }
 }
 
@@ -1318,4 +1347,712 @@ fn public_request_budget_is_not_restarted_by_evaluation() {
             .unwrap()
             .is_empty());
     }
+}
+
+#[test]
+fn selected_subject_product_plan_warms_signals_and_resumes_without_changing_positions() {
+    for (subject, context_only) in [("TEST", false), ("SPY", true)] {
+        use crate::selection_strategy::*;
+        let (directory, service, baseline, operations) = rig();
+        let old_request = &baseline.content.plan.request;
+        let template = SelectionStrategy {
+            schema_version: "tradeassembly.selection_strategy.v1".into(),
+            selections: BTreeMap::from([(
+                "primary".into(),
+                SelectorRef {
+                    market_requirement_ref: "signal_primary".into(),
+                    selector_ref: "primary_symbol".into(),
+                },
+            )]),
+            trade_selection_ref: "primary".into(),
+            nodes: old_request
+                .nodes
+                .iter()
+                .map(|n| NodeTemplate {
+                    graph_node_id: n.graph_node_id.clone(),
+                    parameters: n.parameters.clone(),
+                    context: if context_only {
+                        ContextTemplate::Literal {
+                            context: n.context.clone(),
+                        }
+                    } else {
+                        ContextTemplate::Subject {
+                            interval_ms: n.context.interval_ms,
+                        }
+                    },
+                    input_contexts: BTreeMap::new(),
+                })
+                .collect(),
+            bindings: old_request.bindings.clone(),
+            entry: RuleTemplate::Compare {
+                left: OperandTemplate::Output {
+                    node: "derived".into(),
+                    port: "value".into(),
+                    instrument: if context_only {
+                        InstrumentRef::Literal {
+                            instrument_id: "TEST".into(),
+                        }
+                    } else {
+                        InstrumentRef::Subject
+                    },
+                    sample: crate::data_strategy::Sample::Current,
+                },
+                op: crate::data_strategy::Comparison::Greater,
+                right: OperandTemplate::Output {
+                    node: "derived".into(),
+                    port: "value".into(),
+                    instrument: if context_only {
+                        InstrumentRef::Literal {
+                            instrument_id: "TEST".into(),
+                        }
+                    } else {
+                        InstrumentRef::Subject
+                    },
+                    sample: crate::data_strategy::Sample::Previous,
+                },
+            },
+            exit: RuleTemplate::IsTrue {
+                value: OperandTemplate::Boolean { value: false },
+            },
+        };
+        let mut spec: Value = serde_json::from_str(include_str!(
+            "../../../examples/strategy-spec/v3/valid/static-equity.json"
+        ))
+        .unwrap();
+        spec["signal_market_requirements"][0]["selectors"][0]["normalized_id"] = json!(subject);
+        spec["stages"]["evaluate"]["substeps"][0]["config"] =
+            json!({(crate::selection_strategy::CONFIG_KEY):template});
+        let created = service.handle_http(
+            "POST",
+            "/product/strategies/create",
+            json!({"name":"Bound selected subject fixture","spec":spec}),
+        );
+        assert_eq!(created.status, 201, "{}", created.body);
+        let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":created.body["body"]["strategy"]["id"],"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));
+        let v = &published.body["body"]["version"];
+        let scope = data_plans::PlanScope {
+            strategy_id: v["strategyId"].as_str().unwrap().into(),
+            strategy_version_id: v["id"].as_str().unwrap().into(),
+            strategy_spec_hash: v["specHash"].as_str().unwrap().into(),
+        };
+        let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"selected-subject-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"derived","capability":"test.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+        assert_eq!(
+            graph.body["revision"]["graph"]["ok"], true,
+            "{}",
+            graph.body
+        );
+        let command = crate::service::selection_plans::SelectionPlanCommand {
+            scope: scope.clone(),
+            capability_graph_revision: graph.body["revision"]["revisionId"]
+                .as_str()
+                .unwrap()
+                .into(),
+            mode: "paper".into(),
+            subject_instrument_id: subject.into(),
+            selection_receipts: BTreeMap::new(),
+            source_captures: BTreeMap::new(),
+        };
+        let body = json!({"selectionPlan":command,"idempotencyKey":"selected-prepare"});
+        service.runtime().storage.put_json("positions","managed-before-reselection",json!({"strategyId":scope.strategy_id,"symbol":"PREVIOUS-MEMBER","quantity":1,"status":"open"}),&context("existing-managed-position")).unwrap();
+        let positions = service.runtime().storage.list_json("positions").unwrap();
+        let orders = service.runtime().storage.list_json("orders").unwrap();
+        let response =
+            service.handle_http("POST", crate::service::selection_plans::PATH, body.clone());
+        assert_eq!(response.status, 200, "{}", response.body);
+        let plan: data_plans::StoredDataPlan =
+            serde_json::from_value(response.body["plan"].clone()).unwrap();
+        assert_eq!(
+            plan.content.plan.request.trade_instruments[0].instrument_id,
+            subject
+        );
+        assert!(plan.content.selection_source.is_some());
+        let retry =
+            service.handle_http("POST", crate::service::selection_plans::PATH, body.clone());
+        assert_eq!(retry.body["plan"], response.body["plan"]);
+        let direct = crate::service::selection_plans::prepare_response(&service, body);
+        assert_eq!(
+            direct.body["plan"], response.body["plan"],
+            "domain retry must retain original host selection time"
+        );
+        exercise_selected_runner_original_receipt(&service, &command);
+        let mut rejected = command.clone();
+        rejected.subject_instrument_id = "NOT-SELECTED".into();
+        let before = service
+            .runtime()
+            .storage
+            .list_json("compiled_data_plan_revisions_v1")
+            .unwrap();
+        assert_eq!(
+            service
+                .handle_http(
+                    "POST",
+                    crate::service::selection_plans::PATH,
+                    json!({"selectionPlan":rejected,"idempotencyKey":"unselected"})
+                )
+                .status,
+            409
+        );
+        assert_eq!(
+            service
+                .runtime()
+                .storage
+                .list_json("compiled_data_plan_revisions_v1")
+                .unwrap(),
+            before
+        );
+        let mut request = request(&plan, "selected-evaluation", 10, 16, None);
+        request.window.as_of_ms = service.runtime().clock.now_ms();
+        let mut premature = request.clone();
+        premature.run_id = "selected-before-knowledge".into();
+        premature.window.as_of_ms = plan.content.selection_source.as_ref().unwrap().known_at_ms - 1;
+        let calls_before = operations.requests.lock().unwrap().len();
+        let refused = service.handle_http(
+            "POST",
+            "/product/strategies/data-runs/step",
+            json!({"step":premature,"idempotencyKey":"selected-before-knowledge"}),
+        );
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(
+            refused.body["error"]["code"],
+            "selection_plan_not_yet_known"
+        );
+        assert_eq!(
+            operations.requests.lock().unwrap().len(),
+            calls_before,
+            "selection cannot be backdated to create earlier signals"
+        );
+        let evaluated = service.handle_http(
+            "POST",
+            "/product/strategies/data-runs/step",
+            json!({"step":request,"idempotencyKey":"selected-warm"}),
+        );
+        assert_eq!(evaluated.status, 200, "{}", evaluated.body);
+        let receipt: EvaluationReceipt =
+            serde_json::from_value(evaluated.body["receipt"].clone()).unwrap();
+        assert!(!receipt.signals.is_empty());
+        assert!(receipt.signals.iter().all(|s| s.trade_instruments
+            == plan.content.plan.request.trade_instruments
+            && s.known_at_ms >= plan.content.selection_source.as_ref().unwrap().known_at_ms));
+        assert!(receipt
+            .signals
+            .iter()
+            .any(|s| s.entry == crate::data_strategy::SignalValue::WarmingUp));
+        assert!(receipt
+            .signals
+            .iter()
+            .any(|s| s.entry == crate::data_strategy::SignalValue::Ready { value: true }));
+        let db = directory
+            .path()
+            .join("service.db")
+            .to_string_lossy()
+            .into_owned();
+        let mut runtime = crate::adapters::local::test_runtime(&db);
+        runtime.plugin_packages = Arc::new(
+            crate::adapters::plugin_packages::LocalPluginPackageStore::new(
+                directory.path().join("package-store"),
+            )
+            .unwrap(),
+        );
+        runtime.plugin_operations = Arc::new(FixtureOperations::default());
+        drop(service);
+        drop(operations);
+        let reopened = TradeAssemblyService::from_runtime(&db, runtime);
+        assert_eq!(
+            data_plans::current(&reopened, &plan.revision_id).unwrap(),
+            plan
+        );
+        let mut next = request.clone();
+        next.window.event_start_ms = 16 * INTERVAL;
+        next.window.event_end_ms = 17 * INTERVAL;
+        next.expected_checkpoint_sha256 = Some(receipt.checkpoint.checkpoint_sha256.clone());
+        next.window.as_of_ms = reopened.runtime().clock.now_ms();
+        let resumed = reopened.handle_http(
+            "POST",
+            "/product/strategies/data-runs/step",
+            json!({"step":next,"idempotencyKey":"selected-resume"}),
+        );
+        assert_eq!(resumed.status, 200, "{}", resumed.body);
+        assert_eq!(
+            reopened.runtime().storage.list_json("positions").unwrap(),
+            positions
+        );
+        assert_eq!(
+            reopened.runtime().storage.list_json("orders").unwrap(),
+            orders
+        );
+    }
+}
+
+fn exercise_selected_runner_original_receipt(
+    service: &TradeAssemblyService,
+    selection_plan: &crate::service::selection_plans::SelectionPlanCommand,
+) {
+    use crate::service::data_runner::*;
+    // Same synthetic process identity used by the existing legal-receipt unit
+    // harness. Actual CLI process proof installs its compiled revision instead.
+    crate::build_identity::install("1111111111111111111111111111111111111111").unwrap();
+    let command = DataRunnerCommand {
+        schema_version: DATA_RUNNER_SCHEMA_V2.into(),
+        core_release: "fixture.release".into(),
+        workspace_id: "fixture.selected.workspace".into(),
+        command_id: "fixture.selected.command".into(),
+        authority_ref: "provenance.only".into(),
+        idempotency_key: IdempotencyKey::new("fixture.selected.key").unwrap(),
+        mode: DataRunnerMode::Paper,
+        submitted_at_ms: service.runtime().clock.now_ms(),
+        operation: DataRunnerOperation::PrepareSelectionPlan {
+            selection_plan: selection_plan.clone(),
+        },
+    };
+    // The small signal fixture deliberately has no policy-identity adapter.
+    // Use the actual configured Warden adapter against the existing loopback
+    // mock; unsupported adapters retain their production fail-closed default.
+    let warden = crate::finance_authority::tests::spawn_mock_warden(
+        crate::finance_authority::tests::MockBehavior::Allow,
+    );
+    let mut runtime = (*service.runtime()).clone();
+    runtime.finance_authority = Arc::new(
+        crate::finance_authority::WardenSidecarAuthority::new(
+            warden.base_url.clone(),
+            "fake-reach-authority-token-at-least-thirty-two-bytes",
+            crate::finance_authority::REQUIRED_WARDEN_SERVICE_VERSION,
+        )
+        .unwrap(),
+    );
+    let bound = TradeAssemblyService::from_runtime(service.db(), runtime);
+    let runner = DurableCoreDataRunner::new(bound, "fixture.release".into()).unwrap();
+    let binding = runner.mutation_binding(&command).unwrap();
+    assert_eq!(
+        binding.schema_version,
+        "tradeassembly.core-data-mutation-binding.v2"
+    );
+    assert_eq!(binding.action, "strategy.selection_plan.prepare");
+    assert_eq!(
+        binding.resource_kind.as_deref(),
+        Some("strategy_selection_plan")
+    );
+    assert!(!binding.execution_authority_granted);
+    assert_eq!(
+        runner.mutation_binding(&command).unwrap(),
+        binding,
+        "binding must not contain newly generated host preparation time"
+    );
+    let db = rusqlite::Connection::open(service.db()).unwrap();
+    db.execute_batch("CREATE TRIGGER selected_runner_completion_failure BEFORE UPDATE ON tradeassembly_kv WHEN NEW.namespace='data_runner_receipts_v1' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    let error = runner.dispatch(&command).unwrap_err();
+    assert_eq!(error, "data_runner_complete_commit_failed");
+    let accepted = runner
+        .receipt(&command.workspace_id, &command.command_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        accepted.schema_version,
+        "tradeassembly.core-data-runner.receipt.v2"
+    );
+    assert_eq!(accepted.state, DataRunnerState::Accepted);
+    let before = service
+        .runtime()
+        .storage
+        .list_json("compiled_data_plan_revisions_v1")
+        .unwrap();
+    db.execute_batch("DROP TRIGGER selected_runner_completion_failure;")
+        .unwrap();
+    let receipt = runner.dispatch(&command).unwrap();
+    assert_eq!(
+        receipt.schema_version,
+        "tradeassembly.core-data-runner.receipt.v2"
+    );
+    assert_eq!(receipt.state, DataRunnerState::Completed);
+    assert!(
+        matches!(&receipt.result,Some(DataRunnerResult::SelectedPlan{subject,..}) if subject.instrument_id==selection_plan.subject_instrument_id)
+    );
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("compiled_data_plan_revisions_v1")
+            .unwrap(),
+        before,
+        "recover the original domain plan, not a plan with a new host time"
+    );
+    assert_eq!(runner.dispatch(&command).unwrap(), receipt);
+    assert_eq!(
+        runner
+            .receipt(&command.workspace_id, &command.command_id)
+            .unwrap()
+            .unwrap(),
+        receipt
+    );
+    let mut changed = command.clone();
+    if let DataRunnerOperation::PrepareSelectionPlan { selection_plan: p } = &mut changed.operation
+    {
+        p.subject_instrument_id = "NOT-SELECTED".into();
+    }
+    assert!(runner.dispatch(&changed).is_err());
+    assert_eq!(
+        service
+            .runtime()
+            .storage
+            .list_json("compiled_data_plan_revisions_v1")
+            .unwrap(),
+        before
+    );
+    let mut old = command;
+    old.schema_version = DATA_RUNNER_SCHEMA.into();
+    assert_eq!(
+        old.validate("fixture.release").unwrap_err(),
+        "data_runner_version_unsupported"
+    );
+}
+
+#[test]
+fn receipt_digest_index_preserves_duplicate_no_data_and_refuses_tampering() {
+    let (_dir, service, plan, _ops) = rig();
+    let first = step(
+        &service,
+        request(&plan, "indexed-run", 10, 15, None),
+        &context("indexed-first"),
+    )
+    .unwrap();
+    assert_eq!(
+        indexed_receipt(&service, &first.receipt_sha256).unwrap().1,
+        first
+    );
+    let duplicate = request(
+        &plan,
+        "indexed-run",
+        10,
+        15,
+        Some(first.checkpoint.checkpoint_sha256.clone()),
+    );
+    let a = step(&service, duplicate.clone(), &context("indexed-duplicate-a")).unwrap();
+    let b = step(&service, duplicate, &context("indexed-duplicate-b")).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.status, EvaluationStatus::NoNewData);
+    assert_eq!(indexed_receipt(&service, &a.receipt_sha256).unwrap().1, a);
+    let saved = service
+        .runtime()
+        .storage
+        .get_json(RECEIPT_INDEX, &first.receipt_sha256)
+        .unwrap()
+        .unwrap();
+    service
+        .runtime()
+        .storage
+        .put_json(
+            RECEIPT_INDEX,
+            &first.receipt_sha256,
+            json!({"planRevisionId":plan.revision_id,"receiptKey":"missing"}),
+            &context("tampered-index"),
+        )
+        .unwrap();
+    assert!(indexed_receipt(&service, &first.receipt_sha256).is_err());
+    service
+        .runtime()
+        .storage
+        .put_json(
+            RECEIPT_INDEX,
+            &first.receipt_sha256,
+            saved,
+            &context("restore-index"),
+        )
+        .unwrap();
+    let foreign = service.for_authenticated_invocation("fixture", "foreign", None, None);
+    assert!(indexed_receipt(&foreign, &first.receipt_sha256).is_err());
+}
+
+// A mock calculation enforces the same two-clock cutoff check as a real
+// independent plugin, rather than accepting a host-truncated asOf window.
+struct ArrivalCutoffOperations {
+    inner: FixtureOperations,
+    first_arrival: i64,
+}
+impl VersionedPort for ArrivalCutoffOperations {
+    fn descriptors(&self) -> Vec<PortDescriptor> {
+        vec![]
+    }
+}
+impl PluginOperationPort for ArrivalCutoffOperations {
+    fn invoke(
+        &self,
+        request: &PluginOperationRequest,
+        context: &SideEffectContext,
+    ) -> Result<PluginOperationResponse, String> {
+        let q: DataEvaluationRequest = serde_json::from_value(request.input.clone()).unwrap();
+        if request.operation_id == "derive"
+            && q.inputs.values().flat_map(|b| &b.points).any(|p| {
+                p.provenance.known_at_ms > q.window.as_of_ms
+                    || p.provenance.arrived_at_ms > q.window.as_of_ms
+            })
+        {
+            return Err("fixture_arrival_after_plugin_cutoff".into());
+        }
+        let mut r = self.inner.invoke(request, context)?;
+        if request.operation_id == "provide" {
+            let mut body: DataEvaluationResponse = serde_json::from_value(r.payload).unwrap();
+            for b in body.outputs.values_mut() {
+                for p in &mut b.points {
+                    if p.provenance.event_end_ms == 11 * INTERVAL {
+                        p.provenance.known_at_ms = 50 * INTERVAL;
+                        p.provenance.arrived_at_ms = self.first_arrival;
+                    } else {
+                        p.provenance.known_at_ms = p.provenance.event_end_ms;
+                        p.provenance.arrived_at_ms = p.provenance.event_end_ms;
+                    }
+                    p.provenance.content_sha256 = point_sha256(p).unwrap();
+                }
+            }
+            r.payload = serde_json::to_value(body).unwrap();
+            r.content_hash = hash(&r.payload)?;
+        }
+        Ok(r)
+    }
+}
+fn arrival_cutoff_rig(
+    first_arrival: i64,
+) -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    data_plans::StoredDataPlan,
+    Arc<ArrivalCutoffOperations>,
+) {
+    let operations = Arc::new(ArrivalCutoffOperations {
+        inner: FixtureOperations::default(),
+        first_arrival,
+    });
+    let (directory, service, scope, mut pipeline) =
+        super::super::data_plans::tests::fixture_service_with_history(
+            Some(operations.clone()),
+            StatePartition::Instrument,
+            "paper",
+            true,
+        );
+    pipeline
+        .nodes
+        .iter_mut()
+        .find(|n| n.graph_node_id == "derived")
+        .unwrap()
+        .parameters = json!({"window":1});
+    let plan =
+        data_plans::save(&service, scope, pipeline, &context("arrival-cutoff-plan")).unwrap();
+    (directory, service, plan, operations)
+}
+fn arrival_causal_records(service: &TradeAssemblyService) -> Vec<Vec<(String, Value)>> {
+    [RUNS, RECEIPTS, RECEIPT_INDEX, SOURCES]
+        .into_iter()
+        .map(|n| service.runtime().storage.list_json(n).unwrap())
+        .collect()
+}
+#[test]
+fn data_evaluation_v3_declared_cutoff_keeps_known_and_arrived_distinct() {
+    let (_dir, s, plan, op) = arrival_cutoff_rig(60 * INTERVAL);
+    let mut q = request(&plan, "arrival-positive", 10, 11, None);
+    q.window.as_of_ms = 100 * INTERVAL;
+    let r = step(&s, q, &context("arrival-positive")).unwrap();
+    let calls = op.inner.requests.lock().unwrap();
+    let calc = calls.iter().find(|q| q.node_id == "derived").unwrap();
+    assert_eq!(calc.window.as_of_ms, 100 * INTERVAL);
+    let point = &terminal(&r)[0];
+    assert!(matches!(point.result, PointValue::Ready(_)));
+    assert_eq!(point.provenance.known_at_ms, 50 * INTERVAL);
+    assert_eq!(point.provenance.arrived_at_ms, 60 * INTERVAL);
+    assert_eq!(
+        r.checkpoint.partition_availability["derived"]["TEST"],
+        StateAvailability {
+            known_at_ms: 50 * INTERVAL,
+            arrived_at_ms: 60 * INTERVAL
+        }
+    );
+}
+#[test]
+fn data_evaluation_v3_future_arrival_refuses_before_calculation_and_atomic_commit() {
+    let (_dir, s, plan, op) = arrival_cutoff_rig(101 * INTERVAL);
+    let before = arrival_causal_records(&s);
+    let mut q = request(&plan, "arrival-future", 10, 11, None);
+    q.window.as_of_ms = 100 * INTERVAL;
+    assert_eq!(
+        step(&s, q, &context("arrival-future")).unwrap_err(),
+        "data_evaluation_event_contract_invalid"
+    );
+    assert!(op
+        .inner
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|q| q.node_id != "derived"));
+    assert_eq!(arrival_causal_records(&s), before);
+}
+#[test]
+fn data_evaluation_v3_prior_state_arrival_after_cutoff_refuses_without_raising_cutoff() {
+    let (_dir, s, plan, op) = arrival_cutoff_rig(60 * INTERVAL);
+    let mut q = request(&plan, "arrival-prior", 10, 11, None);
+    q.window.as_of_ms = 100 * INTERVAL;
+    let first = step(&s, q, &context("arrival-prior-first")).unwrap();
+    let before = arrival_causal_records(&s);
+    let calls = op.inner.requests.lock().unwrap().len();
+    let mut q = request(
+        &plan,
+        "arrival-prior",
+        11,
+        12,
+        Some(first.checkpoint.checkpoint_sha256),
+    );
+    q.window.as_of_ms = 55 * INTERVAL;
+    assert_eq!(
+        step(&s, q, &context("arrival-prior-before-arrival")).unwrap_err(),
+        "data_evaluation_state_not_available_at_cutoff"
+    );
+    assert_eq!(
+        op.inner.requests.lock().unwrap().len(),
+        calls,
+        "unavailable prior state must refuse before any plugin dispatch"
+    );
+    assert_eq!(arrival_causal_records(&s), before);
+}
+
+// Source-only plans have no transform state or partition-availability slot.
+// Their previous-sample evidence lives solely in checkpoint.last_frame.
+fn source_previous_arrival_rig() -> (
+    tempfile::TempDir,
+    TradeAssemblyService,
+    data_plans::StoredDataPlan,
+    Arc<ArrivalCutoffOperations>,
+) {
+    use crate::data_strategy::{Comparison, DataStrategy, Operand, Rule, Sample};
+    let operations = Arc::new(ArrivalCutoffOperations {
+        inner: FixtureOperations::default(),
+        first_arrival: 60 * INTERVAL,
+    });
+    let (directory, service, _, pipeline) =
+        super::super::data_plans::tests::fixture_service_with_history(
+            Some(operations.clone()),
+            StatePartition::Instrument,
+            "paper",
+            true,
+        );
+    let mut source = pipeline
+        .nodes
+        .iter()
+        .find(|node| node.graph_node_id == pipeline.bindings[0].producer_node)
+        .unwrap()
+        .clone();
+    source.graph_node_id = "signal_source".into();
+    let operand = |sample| Operand::Output {
+        node: "signal_source".into(),
+        port: "value".into(),
+        instrument: "TEST".into(),
+        sample,
+    };
+    let program = DataStrategy {
+        version: 1,
+        nodes: vec![source],
+        bindings: vec![],
+        trade_instruments: vec![crate::data_pipeline::InstrumentContext {
+            instrument_id: "SPY".into(),
+            asset_class: "equity".into(),
+            instrument_family: "equity".into(),
+        }],
+        entry: Rule::Compare {
+            left: operand(Sample::Current),
+            op: Comparison::Greater,
+            right: operand(Sample::Previous),
+        },
+        exit: Rule::IsTrue {
+            value: Operand::Boolean { value: false },
+        },
+    };
+    let mut spec: Value = serde_json::from_str(include_str!(
+        "../../../examples/strategy-spec/v3/valid/static-equity.json"
+    ))
+    .unwrap();
+    spec["stages"]["evaluate"]["substeps"][0]["config"] =
+        json!({"tradeassembly.data_strategy":program});
+    let created = service.handle_http(
+        "POST",
+        "/product/strategies/create",
+        json!({"name":"Source previous arrival fixture","spec":spec}),
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+    let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":created.body["body"]["strategy"]["id"],"expectedDraftHash":created.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));
+    assert_eq!(
+        published.body["body"]["published"], true,
+        "{}",
+        published.body
+    );
+    let v = &published.body["body"]["version"];
+    let scope = data_plans::PlanScope {
+        strategy_id: v["strategyId"].as_str().unwrap().into(),
+        strategy_version_id: v["id"].as_str().unwrap().into(),
+        strategy_spec_hash: v["specHash"].as_str().unwrap().into(),
+    };
+    let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"source-previous-arrival","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper","additionalRequirements":[{"requirementId":"signal_source","capability":"test.provide","mode":"paper","declaration":"required","fallbackPolicy":"none"}]}));
+    assert_eq!(
+        graph.body["revision"]["graph"]["ok"], true,
+        "{}",
+        graph.body
+    );
+    let prepared=service.handle_http("POST","/product/strategies/data-plans/prepare",json!({"scope":scope,"capabilityGraphRevisionId":graph.body["revision"]["revisionId"],"mode":"paper","idempotencyKey":"source-previous-prepare"}));
+    assert_eq!(prepared.status, 200, "{}", prepared.body);
+    let plan: data_plans::StoredDataPlan =
+        serde_json::from_value(prepared.body["plan"].clone()).unwrap();
+    assert_eq!(plan.content.plan.request.nodes.len(), 1);
+    (directory, service, plan, operations)
+}
+#[test]
+fn data_evaluation_source_only_previous_arrival_refuses_before_provider_fence_or_receipt_write() {
+    use crate::data_strategy::SignalValue;
+    let (_dir, s, plan, op) = source_previous_arrival_rig();
+    let mut first = request(&plan, "source-previous-arrival", 10, 11, None);
+    first.window.as_of_ms = 100 * INTERVAL;
+    let admitted = step(&s, first, &context("source-previous-first")).unwrap();
+    assert!(admitted.checkpoint.states.is_empty());
+    assert!(admitted.checkpoint.state_availability.is_empty());
+    assert!(admitted.checkpoint.partition_availability.is_empty());
+    let previous = &admitted.checkpoint.last_frame["signal_source"].outputs["value"].points[0];
+    assert_eq!(previous.provenance.known_at_ms, 50 * INTERVAL);
+    assert_eq!(previous.provenance.arrived_at_ms, 60 * INTERVAL);
+    let snapshot = || {
+        [RUNS, RECEIPTS, RECEIPT_INDEX, SOURCES, FENCES]
+            .into_iter()
+            .map(|namespace| s.runtime().storage.list_json(namespace).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot();
+    let calls = op.inner.requests.lock().unwrap().len();
+    let mut next = request(
+        &plan,
+        "source-previous-arrival",
+        11,
+        12,
+        Some(admitted.checkpoint.checkpoint_sha256.clone()),
+    );
+    next.window.as_of_ms = 55 * INTERVAL;
+    assert_eq!(
+        step(&s, next, &context("source-previous-before-arrival")).unwrap_err(),
+        "data_evaluation_state_not_available_at_cutoff"
+    );
+    assert_eq!(
+        op.inner.requests.lock().unwrap().len(),
+        calls,
+        "last-frame cutoff must refuse before source acquisition"
+    );
+    assert_eq!(
+        snapshot(),
+        before,
+        "provider/fence/checkpoint/receipt/source records must remain unchanged"
+    );
+    // The identical historical evidence is usable at its declared later cutoff.
+    let mut ready = request(
+        &plan,
+        "source-previous-arrival",
+        11,
+        12,
+        Some(admitted.checkpoint.checkpoint_sha256),
+    );
+    ready.window.as_of_ms = 100 * INTERVAL;
+    let resumed = step(&s, ready, &context("source-previous-after-arrival")).unwrap();
+    assert_eq!(resumed.signals[0].entry, SignalValue::Ready { value: true });
+    assert_eq!(resumed.signals[0].known_at_ms, 50 * INTERVAL);
+    assert_eq!(resumed.signals[0].arrived_at_ms, 60 * INTERVAL);
 }

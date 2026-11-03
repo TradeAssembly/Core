@@ -84,6 +84,7 @@ pub use paper_runner_bridge::{
 pub use plugin_operation::{PluginOperationPort, PluginOperationRequest, PluginOperationResponse};
 pub use plugin_package::{
     InstalledPluginPackage, OperationDataSnapshot, PluginPackageInstallRequest, PluginPackagePort,
+    VerifiedPackageMetadataSnapshot,
 };
 pub use plugin_sandbox::{PluginProcessSandboxPort, PluginSandboxRequest, SandboxedPluginProcess};
 pub use provider::{ProviderCapability, ProviderPort};

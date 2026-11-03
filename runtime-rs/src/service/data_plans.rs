@@ -25,6 +25,8 @@ pub struct PlanScope {
 pub struct DataPlanContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe_source: Option<super::data_recipes::RecipePlanSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_source: Option<super::selection_plans::SelectionPlanSource>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_authentication: BTreeMap<String, super::data_captures::SourceAuthentication>,
     pub scope: PlanScope,
@@ -46,11 +48,28 @@ pub struct StoredDataPlan {
 pub(crate) fn prepare(
     service: &TradeAssemblyService,
     scope: PlanScope,
+    request: PipelineRequest,
+) -> Result<DataPlanContent, String> {
+    prepare_inner(service, scope, request, None)
+}
+pub(super) fn prepare_selected(
+    service: &TradeAssemblyService,
+    scope: PlanScope,
+    request: PipelineRequest,
+    source: super::selection_plans::SelectionPlanSource,
+) -> Result<DataPlanContent, String> {
+    prepare_inner(service, scope, request, Some(source))
+}
+fn prepare_inner(
+    service: &TradeAssemblyService,
+    scope: PlanScope,
     mut request: PipelineRequest,
+    selection_source: Option<super::selection_plans::SelectionPlanSource>,
 ) -> Result<DataPlanContent, String> {
     service
         .require_object("strategy", &scope.strategy_id)
         .map_err(|_| "data_plan_not_available")?;
+    let graph_timing = super::order_plans::financial_timing("plan.prepare.graph");
     let now_ms = service.runtime().clock.now_ms();
     if now_ms <= 0 {
         return Err("data_plan_clock_unavailable".into());
@@ -72,7 +91,11 @@ pub(crate) fn prepare(
     }
     let graph: CapabilityGraphResolution =
         serde_json::from_value(revision["graph"].clone()).map_err(|_| "data_plan_graph_invalid")?;
-    super::data_captures::resolve_parameters(service, &scope, &mut request)?;
+    drop(graph_timing);
+    super::order_plans::measured("plan.prepare.parameters", || {
+        super::data_captures::resolve_parameters(service, &scope, &mut request)
+    })?;
+    let bindings_timing = super::order_plans::financial_timing("plan.prepare.bindings");
     let runtime = service.runtime();
     let mut contracts = Vec::new();
     let mut packages = BTreeMap::new();
@@ -126,25 +149,33 @@ pub(crate) fn prepare(
         packages.insert(node.graph_node_id.clone(), digest.to_owned());
         bindings.insert(node.graph_node_id.clone(), pinned.context_sha256);
     }
-    let plan = compile_data_plan(&graph, request, contracts).map_err(|errors| {
-        format!(
-            "data_plan_compile_failed:{}",
-            serde_json::to_string(&errors).unwrap_or_default()
-        )
+    drop(bindings_timing);
+    let plan = super::order_plans::measured("plan.prepare.compile", || {
+        compile_data_plan(&graph, request, contracts).map_err(|errors| {
+            format!(
+                "data_plan_compile_failed:{}",
+                serde_json::to_string(&errors).unwrap_or_default()
+            )
+        })
     })?;
-    if let Some(program) = super::data_strategy::program(service, &scope)? {
-        program.validate(&plan)?;
-    }
-    let source_authentication =
-        super::data_captures::validate_plan_sources(service, &scope, &graph, &plan)?;
-    Ok(DataPlanContent {
+    let source_authentication = super::order_plans::measured("plan.prepare.sources", || {
+        super::data_captures::validate_plan_sources(service, &scope, &graph, &plan)
+    })?;
+    let content = DataPlanContent {
         recipe_source: None,
+        selection_source,
         source_authentication,
         scope,
         plan,
         package_sha256: packages,
         binding_sha256: bindings,
-    })
+    };
+    let program_timing = super::order_plans::financial_timing("plan.prepare.program");
+    if let Some(program) = super::data_strategy::program_for_content(service, &content)? {
+        program.validate(&content.plan)?;
+    }
+    drop(program_timing);
+    Ok(content)
 }
 
 pub fn save(
@@ -181,18 +212,28 @@ pub fn current(
     service: &TradeAssemblyService,
     revision_id: &str,
 ) -> Result<StoredDataPlan, String> {
-    let stored = read_owned(service, revision_id)?;
-    let fresh = match &stored.content.recipe_source {
-        Some(source) => super::data_recipes::prepare(
-            service,
-            stored.content.scope.clone(),
-            source.program.clone(),
-        )?,
-        None => prepare(
-            service,
-            stored.content.scope.clone(),
-            stored.content.plan.request.clone(),
-        )?,
+    let _timing = super::order_plans::financial_timing("current_plan.total");
+    let stored = super::order_plans::measured("current_plan.read_owned", || {
+        read_owned(service, revision_id)
+    })?;
+    let fresh = if let Some(source) = &stored.content.selection_source {
+        if stored.content.recipe_source.is_some() {
+            return Err("selection_plan_recipe_conflict".into());
+        }
+        super::selection_plans::rebuild(service, source)?
+    } else {
+        match &stored.content.recipe_source {
+            Some(source) => super::data_recipes::prepare(
+                service,
+                stored.content.scope.clone(),
+                source.program.clone(),
+            )?,
+            None => prepare(
+                service,
+                stored.content.scope.clone(),
+                stored.content.plan.request.clone(),
+            )?,
+        }
     };
     if fresh != stored.content {
         return Err("data_plan_stale".into());
@@ -216,6 +257,27 @@ fn record(content: DataPlanContent) -> Result<StoredDataPlan, String> {
     })
 }
 
+pub(super) fn previous(
+    service: &TradeAssemblyService,
+    scope: &PlanScope,
+    context: &SideEffectContext,
+) -> Result<Option<StoredDataPlan>, String> {
+    service
+        .require_object("strategy", &scope.strategy_id)
+        .map_err(|_| "data_plan_not_available")?;
+    let key=canonical_sha256(&json!({"strategyId":scope.strategy_id,"authority":context.authority,"key":context.idempotency_key.as_str()})).map_err(|_|"data_plan_key_invalid")?;
+    let Some(value) = service.runtime().storage.get_json(KEYS, &key)? else {
+        return Ok(None);
+    };
+    let id = value["revisionId"]
+        .as_str()
+        .ok_or("data_plan_record_invalid")?;
+    let plan = current(service, id)?;
+    if plan.content.scope != *scope || value["revisionSha256"] != plan.revision_sha256 {
+        return Err("data_plan_idempotency_conflict".into());
+    }
+    Ok(Some(plan))
+}
 pub(crate) fn persist(
     storage: &dyn StoragePort,
     content: DataPlanContent,

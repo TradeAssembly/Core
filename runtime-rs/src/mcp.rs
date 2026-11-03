@@ -140,6 +140,19 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
             Some(redact_sensitive_payload(arguments)),
         );
     }
+    if matches!(
+        name,
+        "tradeassembly.backtest.report"
+            | "tradeassembly.backtest.export"
+            | "tradeassembly.report.envelope"
+    ) {
+        return tool_error(
+            name,
+            "service_required",
+            "Use a service-backed integrity-verified backtest report or export.",
+            None,
+        );
+    }
     let payload = match name {
         "tradeassembly.health" => health_tool(&arguments),
         "tradeassembly.setup.status" => setup_status(&arguments),
@@ -326,6 +339,8 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
         }),
         "tradeassembly.backtest.run"
         | "tradeassembly.backtest.get"
+        | "tradeassembly.backtest.report"
+        | "tradeassembly.backtest.export"
         | "tradeassembly.backtest.list"
         | "tradeassembly.backtest.cancel"
         | "tradeassembly.backtest.retry"
@@ -336,13 +351,6 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
                 "code": "service_required",
                 "message": "Use TradeAssemblyService-backed MCP execution for durable backtest lifecycle operations."
             }
-        }),
-        "tradeassembly.backtest.export" => json!({
-            "schemaVersion": "tradeassembly.mcp.backtest_export.v1",
-            "ok": true,
-            "db": string_arg(&arguments, "db", DEFAULT_DB),
-            "backtestId": string_arg(&arguments, "backtest_id", ""),
-            "exportKind": string_arg(&arguments, "export_kind", "reportJson")
         }),
         "tradeassembly.dataset_ingestion.create"
         | "tradeassembly.dataset_ingestion.list"
@@ -358,11 +366,8 @@ pub fn call_tool(name: &str, arguments: Value) -> Value {
         }),
         "tradeassembly.report.envelope" => json!({
             "schemaVersion": "tradeassembly.mcp.report_envelope.v1",
-            "ok": true,
-            "db": string_arg(&arguments, "db", DEFAULT_DB),
-            "kind": string_arg(&arguments, "kind", "backtest"),
-            "studioBaseUrl": string_arg(&arguments, "studio_base_url", DEFAULT_STUDIO_BASE_URL),
-            "noAdviceNotice": NO_ADVICE_NOTICE
+            "ok": false,
+            "error":{"code":"service_required","message":"Use a service-backed integrity-verified report; generic report placeholders are disabled."}
         }),
         "tradeassembly.scenario.valuation" => json!({
             "ok": false,
@@ -1035,6 +1040,16 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.strategy.version.publish", "Publish Strategy Version", "Publish the expected strategy draft as an immutable StrategyVersion. Requires explicit user authority; agent calls are denied.", object_schema([("db", db_property()), ("strategy_id", string_schema("Strategy ID.", Some("strat_local_btc_demo"))), ("expected_draft_hash", string_schema("Exact hash of the draft being published.", None)), ("actor", object_like_schema("User authority context."))], ["strategy_id", "expected_draft_hash", "actor"]), false),
         tool("tradeassembly.strategy.validate", "Validate StrategySpec", "Validate inline spec JSON without saving it, or validate an owned saved draft by strategy_id. Returns structured diagnostics. Does not read files, publish, or activate.", object_schema([("spec", object_like_schema("StrategySpec JSON to validate without persistence.")), ("strategy_id", string_schema("Owned saved draft to validate when spec is omitted.", None)), ("db", db_property())], []), true),
         tool("tradeassembly.strategy.option_selection.create", "Select Eligible Option Contract", "Acquire a complete chain through the verified provider host after an owned causal typed entry signal. Apply the published typed option_selection policy; record ranking/rejections or no eligible contract. No order authority. Provider analytics only; explicit model requests fail unavailable.", object_schema([("db",db_property()),("selection",object_like_schema("SelectionCommand: scope, capabilityGraphRevision, acquisitionNode, mode, stageSubstepId, signalStep, signalIdempotencyKey, signalEventEndMs.")),("idempotencyKey",string_schema("Stable selection command key.",None))],["selection","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.prepare","Prepare Cash-Funded Order Proposal","Compute a paper-only capped limit buy using current owned signal/account/metadata/quote receipts and the published pure sizing plugin. Explicit reserveCash commits the verified plan and internal cash reservation atomically. Replay is historical; no broker authority or dispatch.",object_schema([("orderPlan",object_like_schema("Closed PrepareCommand with scope,capabilityGraphRevision,mode,reserveCash,signalReceiptSha256,accountCollectionId,metadataCollectionId,quoteCollectionId.")),("idempotencyKey",string_schema("Stable command key.",None)),("accountMode",string_schema("Explicit paper authority.",Some("paper")))],["orderPlan","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.reserve","Reserve Proposal Cash","Atomically reserve cash across strategy members within the pinned provider/account binding. Requires a current plan and explicit matching scope; grants no broker submission permit.",object_schema([("planId",string_schema("Owned current order plan identifier.",None)),("scope",object_like_schema("Exact published plan scope.")),("idempotencyKey",string_schema("Stable command key.",None)),("accountMode",string_schema("Explicit paper authority.",Some("paper")))],["planId","scope","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.release","Release Unsubmitted Proposal Cash","Release an owned internal cash hold and atomically fence the proposal against later reservation. Historical quotes may be expired. This does not cancel a broker order or grant execution authority.",object_schema([("planId",string_schema("Owned unsubmitted order plan identifier.",None)),("scope",object_like_schema("Exact published plan scope.")),("idempotencyKey",string_schema("Stable command key.",None)),("accountMode",string_schema("Explicit paper authority.",Some("paper")))],["planId","scope","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.reconcile","Reconcile Original Paper Submission","Observe the original admitted broker order through a scoped V2 lookup. Unknown acceptance retains funds; this never resubmits or refreshes a quote permit.",object_schema([("planId",string_schema("Owned original order plan identifier.",None)),("scope",object_like_schema("Exact published plan scope.")),("idempotencyKey",string_schema("Stable command key.",None)),("accountMode",string_schema("Explicit paper authority.",Some("paper")))],["planId","scope","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.settle","Observe Final Paper Settlement","Require a final provider posting and coherent account revision before atomically rebasing capital and releasing the original hold. No broker actuation; unavailable evidence retains funds.",object_schema([("planId",string_schema("Owned original order plan identifier.",None)),("scope",object_like_schema("Exact published plan scope.")),("idempotencyKey",string_schema("Stable command key.",None)),("accountMode",string_schema("Explicit paper authority.",Some("paper")))],["planId","scope","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.decide","Decide Typed Paper Entry","Construct a current host-owned entry approval and fenced attempt for an owned reserved plan and active typed execution; existing C5 remains mandatory.",object_schema([("scope",object_like_schema("Exact owned plan scope.")),("decision",object_like_schema("Closed DecisionCommand: planId, activationId.")),("accountMode",string_schema("Explicit paper.",Some("paper"))),("idempotencyKey",string_schema("Original key.",None))],["scope","decision","accountMode","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.select","Refresh Typed Entry Selection","Bind a current selected data-plan lineage to an active typed execution. Preserve managed positions, pending orders and reservations; refuse older revisions.",object_schema([("scope",object_like_schema("Exact owned selected-plan scope.")),("selection",object_like_schema("Closed SelectionCommand: activationId, planRevisionId.")),("accountMode",string_schema("Explicit paper.",Some("paper"))),("idempotencyKey",string_schema("Original key.",None))],["scope","selection","accountMode","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.submit","Submit Typed Paper Limit Proposal","Request V2 dispatch of an owned reserved plan through current run/attempt, prepared broker identity, C5 and duplicate-safe sink. Never converts to V1 market orders. Pending/unknown outcomes retain funds and require reconciliation.",object_schema([("scope",object_like_schema("Exact published owned plan scope.")),("submission",object_like_schema("Closed SubmissionCommand: planId, activationId, attemptId, brokerRequirementRef. Core constructs order/account/source proof.")),("idempotencyKey",string_schema("Original outer command key.",None)),("accountMode",string_schema("Explicit paper authority.",Some("paper")))],["scope","submission","idempotencyKey"]),false),
+        tool("tradeassembly.strategy.order_plan.status","Inspect Owned Proposal Status","Read historical owned proposal, hold/release and submission status. Does not query broker or mint authority.",object_schema([("planId",string_schema("Owned plan identifier.",None))],["planId"]),true),
+        tool("tradeassembly.strategy.selection_plan.prepare","Prepare Selected Subject Data Plan","Bind current owned screened or explicit static selection to one published typed strategy subject. Retains selection identity and causal availability; warms real data through existing evaluator. No order authority or managed-position effects.",object_schema([("db",db_property()),("accountMode",string_schema("Explicit account authority mode.",Some("paper"))),("selectionPlan",object_like_schema("Closed SelectionPlanCommand: scope,capabilityGraphRevision,mode,subjectInstrumentId,selectionReceipts,sourceCaptures.")),("idempotencyKey",string_schema("Stable command key.",None))],["selectionPlan","idempotencyKey"]),false),
         tool("tradeassembly.strategy.session_schedule.prepare","Prepare Session Occurrence","Bind explicit published session trigger to current admitted primary-session calendars. Records an immutable occurrence plan only; no queue dispatch or execution authority.",object_schema([("db",db_property()),("accountMode",string_schema("Account authority mode.",Some("paper"))),("schedule",object_like_schema("Closed ScheduleCommand with owned scope, graph, mode, triggerRef, sessionDate, calendar collection IDs and knowledgeCutoffMs.")),("idempotencyKey",string_schema("Stable command key.",None))],["schedule","idempotencyKey"]),false),
         tool("tradeassembly.strategy.session_schedule.get","Inspect Session Occurrence Plan","Read owned immutable calendar plan after current calendar/package/graph checks. Planned status describes preparation, not dispatch or a trade.",object_schema([("db",db_property()),("occurrenceId",string_schema("Host-issued occurrence ID.",None))],["occurrenceId"]),true),
         tool("tradeassembly.strategy.instrument_screen.create","Evaluate Strategy Instrument Screen","Invoke an owned published screened selector against exact admitted input collections and a current pure typed operation. Records candidate membership, ranking/rejection evidence and explicit complete/empty/partial/failure status. No order authority; existing positions are unchanged.",object_schema([("db",db_property()),("accountMode",string_schema("Account authority: paper for paper/backtest; explicit live for a live context.",Some("paper"))),("screen",object_like_schema("Closed ScreenCommand: scope, capabilityGraphRevision, mode, signalRequirementRef, selectorRef, collections(port to collectionId), knowledgeCutoffMs.")),("idempotencyKey",string_schema("Stable command key; preserve transport when retrying.",None))],["screen","idempotencyKey"]),false),
@@ -1043,6 +1058,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.strategy.data_collection.get","Inspect Owned Collection Evidence","Read a stable owned collection summary with current graph/package/config bindings; raw provider evidence stays local. Historical evidence alone is not current entry eligibility.",object_schema([("db",db_property()),("collectionId",string_schema("Host-issued collection ID.",None))],["collectionId"]),true),
         tool("tradeassembly.strategy.data_capture.create", "Acquire and Admit Data Capture", "Invoke an exact authorized acquisition, verify complete bounded typed replay, and persist a host-witnessed immutable capture receipt. Uses current plugin credentials only through the host; grants no trading authority. V3 instrument-independent replay requires one instrument per capture.", object_schema([("db",db_property()),("capture",object_like_schema("Closed CaptureCommand: policy(scope, capabilityGraphRevision, mode, acquisitionNode, replayNode, parameterExtracts, context, eventStartMs, eventEndMs, gapPolicy=strict_fixed_interval), input.")),("idempotencyKey",string_schema("Stable command key.",None))],["capture","idempotencyKey"]),false),
         tool("tradeassembly.strategy.data_capture.get", "Inspect Admitted Data Capture", "Read an owned capture receipt after current source-binding and provenance checks.", object_schema([("db",db_property()),("captureId",string_schema("Host-issued immutable capture ID.",None))],["captureId"]),true),
+        tool("tradeassembly.strategy.indicator_context.inspect", "Inspect Contextual Indicator Support", "Read current owned publisher/profile, source, capture and original evaluation evidence. No provider invocation, credential acquisition, plan mutation or trading authority.", object_schema([("db",db_property()),("request",crate::service::indicator_context::request_schema())],["request"]),true),
         tool("tradeassembly.strategy.data_recipe.step","Evaluate Typed Recipe Data Plan","Evaluate a bounded window of an owned, current recipe data plan. Saves only data evidence/checkpoints; grants no order authority.",object_schema([("db",db_property()),("step",object_like_schema("Closed EvaluationStep: runId, planRevisionId, window and expectedCheckpointSha256.")),("idempotencyKey",string_schema("Stable command key; use the same transport for a retry.",None))],["step","idempotencyKey"]),false),
         tool("tradeassembly.strategy.data_recipe.prepare","Prepare Typed Recipe Data Plan","Materialize a verified package recipe program into current admitted operation nodes and atomically save an immutable read-only data plan. No publication, calculation or order authority.",object_schema([("db",db_property()),("scope",object_like_schema("Exact owned strategyId, strategyVersionId and strategySpecHash.")),("program",object_like_schema("Closed tradeassembly.recipe_plan.v1: baseRequest, instances and selected outputs. Requires package V3 and declared native capability nodes.")),("idempotencyKey",string_schema("Stable command key.",None))],["scope","program","idempotencyKey"]),false),
         tool("tradeassembly.strategy.data_plan.prepare", "Prepare Strategy Data Plan", "Compile and save the typed pipeline declared in an immutable strategy version. Does not publish or activate trading.", object_schema([("db",db_property()), ("scope",object_like_schema("Exact strategyId, strategyVersionId and strategySpecHash.")), ("capabilityGraphRevisionId",string_schema("Current saved graph revision.",None)), ("mode",string_schema("Evaluation context: paper, live or backtest.",Some("paper"))), ("sourceCaptures",object_like_schema("Optional root graph-node ID to host-issued capture ID. The declared source template must have empty parameters; captures fill only those source parameters.")), ("idempotencyKey",string_schema("Stable command key.",None))], ["scope","capabilityGraphRevisionId","mode","idempotencyKey"]), false),
@@ -1064,6 +1080,9 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool_with_metadata("tradeassembly.plugin.oauth.disconnect", "Disconnect Plugin OAuth", "Revoke local credentials and invalidate pending OAuth handoffs for an owned plugin instance.", object_schema([("instanceRef", string_schema("Owned plugin instance ref.", None)), ("idempotencyKey", string_schema("Stable key for retrying this disconnect request.", None))], ["instanceRef", "idempotencyKey"]), false, true, true),
         tool("tradeassembly.plugin.status", "Plugin Status", "Summarize plugin command availability.", object_schema([("registry_path", string_schema("Optional plugin registry path.", None))], []), true),
         tool("tradeassembly.indicator.status", "Indicator Status", "Summarize indicator surface availability.", object_schema([("db", db_property())], []), true),
+        tool_with_metadata("tradeassembly.backtest.recompute.start","Start Typed Backtest Recompute","Admit one immutable original typed recomputation generation. Requires actual current local owner and normal research authority; never grants trading authority.",object_schema([("request",crate::service::backtest_recomputations::tool_schema("start")),("db",db_property())],["request"]),false,false,true),
+        tool_with_metadata("tradeassembly.backtest.recompute.advance","Advance Typed Backtest Recompute","Perform at most one retained original typed evaluator step; exact stable key retries recover the original outcome.",object_schema([("request",crate::service::backtest_recomputations::tool_schema("advance")),("db",db_property())],["request"]),false,false,true),
+        tool_with_metadata("tradeassembly.backtest.recompute.inspect","Inspect Typed Backtest Recompute","Read an owned recomputation/proof without invoking plugins or allocating a generation.",object_schema([("request",crate::service::backtest_recomputations::tool_schema("inspect")),("db",db_property())],["request"]),true,false,true),
         tool("tradeassembly.backtest.run", "Run Backtest", "Create a durable deterministic BacktestRun for one immutable StrategyVersion and dataset snapshot.", object_schema([("db", db_property()), ("request", backtest_request_schema()), ("strategy_id", string_schema("Strategy ID for compatibility configuration.", None)), ("strategy_version_id", string_schema("Immutable StrategyVersion ID.", None)), ("dataset_id", string_schema("Immutable dataset snapshot ID.", None)), ("purpose", string_schema("Controlled purpose.", Some("strategy_backtest_research"))), ("client", string_schema("Client context.", Some("self"))), ("idempotency_key", string_schema("Request-equivalence idempotency key.", None))], ["idempotency_key"]), false),
         tool("tradeassembly.backtest.get", "Get Backtest", "Read one durable BacktestRun and its current attempt.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
         tool("tradeassembly.backtest.report", "Get Backtest Report", "Project one integrity-verified completed BacktestRun into its deterministic report.", object_schema([("backtest_id", string_schema("Backtest ID.", None)), ("db", db_property())], ["backtest_id"]), true),
@@ -1072,7 +1091,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.backtest.cancel", "Cancel Backtest", "Cancel a queued or running BacktestRun; late worker completion is fenced.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("idempotency_key", string_schema("Command idempotency key.", None)), ("db", db_property())], ["run_id", "idempotency_key"]), false),
         tool("tradeassembly.backtest.retry", "Retry Backtest", "Retry a failed BacktestRun as a new immutable attempt.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("idempotency_key", string_schema("Command idempotency key.", None)), ("db", db_property())], ["run_id", "idempotency_key"]), false),
         tool("tradeassembly.backtest.process", "Process Backtest", "Claim and process only the authenticated owner's specified durable BacktestRun.", object_schema([("run_id", string_schema("Exact authorized backtest run ID.", None)), ("worker", string_schema("Stable worker identity.", Some("local-backtest-worker"))), ("idempotency_key", string_schema("Command idempotency key.", None)), ("db", db_property())], ["run_id", "idempotency_key"]), false),
-        tool("tradeassembly.backtest.replay", "Replay Backtest", "Recompute a persisted backtest from pinned inputs and fail closed on mismatch.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
+        tool("tradeassembly.backtest.replay", "Replay Backtest", "Replay a V1 pure backtest. Typed V2 runs require explicit keyed recompute.start/advance mutations.", object_schema([("run_id", string_schema("Backtest run ID.", None)), ("db", db_property())], ["run_id"]), true),
         tool("tradeassembly.dataset_ingestion.create", "Create Dataset Ingestion", "Resolve an exact historical-data plugin operation, acquire typed observations, validate quality, and persist an immutable content-addressed dataset snapshot.", dataset_ingestion_create_schema(), false),
         tool("tradeassembly.dataset_ingestion.list", "List Dataset Ingestions", "List historical dataset ingestion lifecycle records.", object_schema([("db", db_property())], []), true),
         tool("tradeassembly.dataset_ingestion.get", "Get Dataset Ingestion", "Get an integrity-checked dataset summary; request a bounded observation page explicitly.", dataset_ingestion_get_schema(), true),
@@ -1136,7 +1155,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         tool("tradeassembly.execution.control", "Control Execution", "Apply an audited execution lifecycle control: pause_entries, resume_entries, stop_after_flat, stop, cancel_orders, liquidate, manual_override, or emergency_stop.", object_schema([("db", db_property()), ("activation_id", string_schema("Activation ID.", None)), ("action", string_schema("Execution control action.", Some("pause_entries"))), ("idempotency_key", string_schema("Stable idempotency key for retry-safe control.", None))], ["activation_id", "action"]), false),
         tool("tradeassembly.execution.deactivate", "Deactivate Execution", "Deactivate a selected activation and persist replayable stop evidence.", object_schema([("db", db_property()), ("activation_id", string_schema("Activation ID.", None))], ["activation_id"]), false),
         tool("tradeassembly.execution.scheduler.start", "Start Execution Scheduler", "Start local scheduler state for a selected activation. Use scheduler.run for bounded worker ticks.", object_schema([("db", db_property()), ("activation_id", string_schema("Activation ID.", None)), ("interval_seconds", integer_schema("Scheduler interval seconds.", Some(60)))], ["activation_id"]), false),
-        tool("tradeassembly.execution.scheduler.run", "Run Execution Scheduler", "Run bounded scheduler ticks through the control plane for active executions.", object_schema([("db", db_property()), ("activation_id", string_schema("Optional activation ID.", None)), ("worker_id", string_schema("Worker ID.", Some("worker-local"))), ("max_cycles", integer_schema("Maximum cycles to run.", Some(1)))], []), false),
+        tool("tradeassembly.execution.scheduler.run", "Run Execution Scheduler", "Run bounded scheduler ticks through the control plane for active executions.", object_schema([("db", db_property()), ("activation_id", string_schema("Optional activation ID.", None)), ("worker_id", string_schema("Worker ID.", Some("worker-local"))), ("max_cycles", integer_schema("Maximum cycles to run.", Some(1))), ("sessionDispatch", object_like_schema("Closed session computation request: enqueue with explicit job; advance/inspect/start_worker/stop_worker by jobId; pause with jobId and paused; or resume_workers. Background intent requires current verified owner. No broker orders."))], []), false),
         tool("tradeassembly.execution.scheduler.stop", "Stop Execution Scheduler", "Stop local scheduler state.", object_schema([("db", db_property())], []), false),
         tool("tradeassembly.execution.status", "Execution Status", "Read one activation-scoped execution dashboard snapshot, APF audit receipts, scheduler state, orders, positions, and replay refs.", object_schema([("db", db_property()), ("strategy_id", string_schema("Optional strategy ID.", Some("strat_local_btc_demo"))), ("activation_id", string_schema("Optional explicit activation ID.", None)), ("after_sequence", integer_schema("Return events after this sequence.", Some(0))), ("event_limit", integer_schema("Maximum ordered events to return.", Some(100)))], []), true),
         tool("tradeassembly.execution.run", "Run Execution Plan", "Run an activation through the execution service. Defaults to dry-run/no order submission.", object_schema([("db", db_property()), ("activation_id", string_schema("Optional activation ID.", None)), ("submit_exit", boolean_schema("Submit exit logic.", Some(false))), ("submit_orders", boolean_schema("Submit broker orders. Defaults false for MCP safety.", Some(false)))], []), false),
@@ -2186,6 +2205,28 @@ fn bool_arg(arguments: &Value, key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
+
+    #[test]
+    fn standalone_backtest_report_and_export_require_the_real_service() {
+        for tool in [
+            "tradeassembly.backtest.report",
+            "tradeassembly.backtest.export",
+            "tradeassembly.report.envelope",
+        ] {
+            let response = super::call_tool(
+                tool,
+                json!({"backtest_id":"legacy-or-missing","export_kind":"reportJson"}),
+            );
+            assert_eq!(response["structuredContent"]["ok"], false, "{response}");
+            assert_eq!(response["isError"], true, "{response}");
+            assert_eq!(
+                response["structuredContent"]["error"]["code"],
+                "service_required"
+            );
+            assert!(response["structuredContent"].get("artifact").is_none());
+            assert_ne!(response["structuredContent"]["status"], "completed");
+        }
+    }
 
     const REQUIRED_TOOLS: &[&str] = &[
         "tradeassembly.health",

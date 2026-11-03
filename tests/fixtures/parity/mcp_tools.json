@@ -158,8 +158,22 @@
   "tradeassembly.strategy.data_run.step",
   "tradeassembly.strategy.data_collection.create",
   "tradeassembly.strategy.data_collection.get",
+  "tradeassembly.strategy.selection_plan.prepare",
   "tradeassembly.strategy.session_schedule.prepare",
   "tradeassembly.strategy.session_schedule.get",
   "tradeassembly.strategy.instrument_screen.create",
-  "tradeassembly.strategy.instrument_screen.get"
+  "tradeassembly.strategy.instrument_screen.get",
+  "tradeassembly.backtest.recompute.advance",
+  "tradeassembly.backtest.recompute.inspect",
+  "tradeassembly.backtest.recompute.start",
+  "tradeassembly.strategy.indicator_context.inspect",
+  "tradeassembly.strategy.order_plan.decide",
+  "tradeassembly.strategy.order_plan.prepare",
+  "tradeassembly.strategy.order_plan.reconcile",
+  "tradeassembly.strategy.order_plan.release",
+  "tradeassembly.strategy.order_plan.reserve",
+  "tradeassembly.strategy.order_plan.select",
+  "tradeassembly.strategy.order_plan.settle",
+  "tradeassembly.strategy.order_plan.status",
+  "tradeassembly.strategy.order_plan.submit"
 ]

@@ -1,0 +1,178 @@
+[
+  {
+    "name": "cash-request",
+    "file": "cash-request.json",
+    "kind": "cash_request",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-request",
+    "file": "net-request.json",
+    "kind": "net_request",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-known-debt-unavailable",
+    "file": "cash-known-debt-unavailable.json",
+    "kind": "cash_observation",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-direct-complete-final",
+    "file": "net-direct-complete-final.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-unavailable",
+    "file": "cash-unavailable.json",
+    "kind": "cash_observation",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-filled-fees-unavailable",
+    "file": "net-filled-fees-unavailable.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-filter-associated-not-ready",
+    "file": "net-filter-associated-not-ready.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-unknown",
+    "file": "net-unknown.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": true,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-unknown-field",
+    "file": "cash-unknown-field.json",
+    "kind": "cash_observation",
+    "schemaValid": false,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-future-read",
+    "file": "cash-future-read.json",
+    "kind": "cash_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-wrong-account",
+    "file": "cash-wrong-account.json",
+    "kind": "cash_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-positive-permission-missing-flag",
+    "file": "cash-positive-permission-missing-flag.json",
+    "kind": "cash_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "cash-duplicate-evidence",
+    "file": "cash-duplicate-evidence.json",
+    "kind": "cash_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-filter-upgraded-to-net",
+    "file": "net-filter-upgraded-to-net.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-no-final-closure",
+    "file": "net-no-final-closure.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-fees-not-final",
+    "file": "net-fees-not-final.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-query-not-exhausted",
+    "file": "net-query-not-exhausted.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-wrong-fill-link",
+    "file": "net-wrong-fill-link.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-aggregate-overclaim",
+    "file": "net-aggregate-overclaim.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-wrong-net",
+    "file": "net-wrong-net.json",
+    "kind": "net_observation",
+    "schemaValid": true,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-too-fine-fee",
+    "file": "net-too-fine-fee.json",
+    "kind": "net_observation",
+    "schemaValid": false,
+    "semanticValid": false,
+    "nowMs": 1200
+  },
+  {
+    "name": "net-exclusive-caller-assertion",
+    "file": "net-exclusive-caller-assertion.json",
+    "kind": "net_request",
+    "schemaValid": false,
+    "semanticValid": false,
+    "nowMs": 1200
+  }
+]

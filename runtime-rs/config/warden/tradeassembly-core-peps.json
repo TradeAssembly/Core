@@ -21,6 +21,7 @@
       "capability.binding.revision.save",
       "strategy.option_selection.create",
       "strategy.data_capture.create",
+      "strategy.selection_plan.prepare",
       "strategy.data_plan.prepare",
       "strategy.data_recipe.prepare",
       "strategy.data_recipe.step",
@@ -74,7 +75,9 @@
       "tradeassembly.telemetry.manage",
       "strategy.data_collection.create",
       "strategy.instrument_screen.create",
-      "strategy.session_schedule.prepare"
+      "strategy.session_schedule.prepare",
+      "strategy.order_plan.manage",
+      "strategy.order_plan.submit"
     ],
     "resources": [
       "activation",
@@ -89,6 +92,7 @@
       "execution_config",
       "strategy_option_selection",
       "strategy_data_capture",
+      "strategy_selection_plan",
       "strategy_data_plan",
       "strategy_data_recipe",
       "strategy_data_run",
@@ -114,7 +118,8 @@
       "telemetry_preference",
       "strategy_data_collection",
       "strategy_instrument_screen",
-      "strategy_session_schedule"
+      "strategy_session_schedule",
+      "strategy_order_plan"
     ],
     "receipt_sink_writable": true,
     "registered_at_epoch_ms": 1767225600000

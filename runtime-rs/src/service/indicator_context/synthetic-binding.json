@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "tradeassembly.indicator_profile_bindings.v1",
+  "catalog": {
+    "schemaVersion": "example.publisher.catalog.v1",
+    "byteSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "canonicalSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "canonicalization": "tradeassembly.canonical-json.v1"
+  },
+  "profiles": [
+    {
+      "conceptId": "example.average",
+      "profileId": "example.mean.fixed-window",
+      "profileVersion": "1",
+      "recipe": {
+        "recipeId": "example.mean",
+        "semanticsVersion": "example.mean.v1",
+        "canonicalSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "documentSha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "outputs": [
+        {
+          "name": "value",
+          "implementationStatus": "implemented",
+          "schema": {
+            "schemaRef": "schema://example/series@1",
+            "canonicalSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "origin": "derived",
+          "modelId": "example.arithmetic-mean",
+          "modelVersion": "1",
+          "units": "price",
+          "estimate": {
+            "kind": "never"
+          },
+          "gates": [
+            {
+              "kind": "host_capture",
+              "input": "source",
+              "acquisitionSchema": {
+                "schemaRef": "schema://example/observations@1",
+                "canonicalSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+              },
+              "originPointer": "/origin"
+            },
+            {
+              "kind": "strict_fixed_interval_history"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

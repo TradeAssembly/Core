@@ -43,17 +43,36 @@ pub struct CapturePolicy {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureCommand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_version: Option<CaptureReceiptVersion>,
     pub policy: CapturePolicy,
     pub input: Value,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CaptureReceiptVersion {
     #[serde(rename = "tradeassembly.data_capture_receipt.v1")]
     V1,
+    #[serde(rename = "tradeassembly.data_capture_receipt.v2")]
+    V2,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputWitnessVersion {
+    #[serde(rename = "tradeassembly.data_capture_input_witness.v1")]
+    V1,
+}
+/// Protected actual nonsecret input, created by the host before acquisition.
+/// It is never accepted as a caller-provided receipt or provider response.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputWitness {
+    pub schema_version: InputWitnessVersion,
+    pub input: Value,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_witness: Option<InputWitness>,
     pub schema_version: CaptureReceiptVersion,
     pub capture_id: String,
     pub receipt_sha256: String,
@@ -76,6 +95,10 @@ pub struct CaptureReceipt {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceAuthentication {
     UnverifiedInput,
+    HostCaptureStream {
+        stream_id: String,
+        binding_sha256: String,
+    },
     HostAcquisition {
         capture_id: String,
         receipt_sha256: String,
@@ -134,6 +157,106 @@ fn identity(receipt: &CaptureReceipt) -> Result<String, String> {
     r.capture_id.clear();
     r.receipt_sha256.clear();
     hash(&r)
+}
+fn check_v2_input(input: &Value) -> Result<(), String> {
+    if !input.is_object() {
+        return Err("data_capture_input_object_required".into());
+    }
+    bounded(input, 65_536)?;
+    tradeassembly_plugin_sdk::data_package::metadata_budget(input)?;
+    capturable_payload(input)?;
+    nonsecret_witness_input(input)
+}
+// V2 retains the actual query, unlike V1's input hash. Refuse credential fields
+// recursively before acquisition or durable command admission. Keep the legacy
+// payload validator unchanged for existing V1 requests and receipts.
+pub(crate) fn nonsecret_witness_input(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(fields) => {
+            for (key, child) in fields {
+                let normalized: String = key
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                if matches!(
+                    normalized.as_str(),
+                    "apikey"
+                        | "apisecret"
+                        | "password"
+                        | "passwd"
+                        | "passphrase"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "idtoken"
+                        | "authtoken"
+                        | "bearertoken"
+                        | "sessiontoken"
+                        | "privatekey"
+                        | "secretkey"
+                        | "clientsecret"
+                        | "credential"
+                        | "secret"
+                        | "secrets"
+                ) {
+                    return Err("data_capture_input_credential_material_forbidden".into());
+                }
+                nonsecret_witness_input(child)?;
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                nonsecret_witness_input(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+fn command_identity(
+    policy: &CapturePolicy,
+    input_sha256: &str,
+    requested: Option<CaptureReceiptVersion>,
+) -> Result<String, String> {
+    if requested == Some(CaptureReceiptVersion::V2) {
+        hash(&(policy, input_sha256, CaptureReceiptVersion::V2))
+    } else {
+        hash(&(policy, input_sha256))
+    }
+}
+fn validate_receipt_input(receipt: &CaptureReceipt) -> Result<(), String> {
+    validate_witness(
+        receipt.schema_version,
+        &receipt.input_sha256,
+        receipt.input_witness.as_ref(),
+    )
+}
+fn validate_witness(
+    version: CaptureReceiptVersion,
+    input_sha256: &str,
+    witness: Option<&InputWitness>,
+) -> Result<(), String> {
+    match (version, witness) {
+        (CaptureReceiptVersion::V1, None) => Ok(()),
+        (CaptureReceiptVersion::V2, Some(witness)) => {
+            check_v2_input(&witness.input)?;
+            if hash(&witness.input)? != input_sha256 {
+                return Err("data_capture_input_witness_hash_mismatch".into());
+            }
+            Ok(())
+        }
+        _ => Err("data_capture_input_witness_version_mismatch".into()),
+    }
+}
+pub(crate) fn verified_input_witness(receipt: &CaptureReceipt) -> Result<&InputWitness, String> {
+    validate_receipt_input(receipt)?;
+    if receipt.schema_version != CaptureReceiptVersion::V2 {
+        return Err("data_capture_v2_input_witness_required".into());
+    }
+    receipt
+        .input_witness
+        .as_ref()
+        .ok_or_else(|| "data_capture_v2_input_witness_required".into())
 }
 fn check_policy(policy: &CapturePolicy) -> Result<u64, String> {
     bounded(policy, 65536)?;
@@ -400,6 +523,7 @@ fn validate_coverage(service: &TradeAssemblyService, r: &CaptureReceipt) -> Resu
     Ok(())
 }
 pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<CaptureReceipt, String> {
+    let _timing = super::order_plans::financial_timing("capture.current_total");
     if id.len() != 72
         || !id.starts_with("capture_")
         || !id[8..]
@@ -408,6 +532,7 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     {
         return Err("data_capture_not_available".into());
     }
+    let read_timing = super::order_plans::financial_timing("capture.read_deserialize");
     let value = service
         .runtime()
         .storage
@@ -416,9 +541,12 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     bounded(&value, MAX_BYTES)?;
     let r: CaptureReceipt =
         serde_json::from_value(value).map_err(|_| "data_capture_receipt_invalid")?;
+    drop(read_timing);
+    let integrity_timing = super::order_plans::financial_timing("capture.integrity");
     service
         .require_object("strategy", &r.policy.scope.strategy_id)
         .map_err(|_| "data_capture_not_available")?;
+    validate_receipt_input(&r)?;
     let digest = identity(&r)?;
     if r.capture_id != id
         || r.receipt_sha256 != digest
@@ -430,13 +558,16 @@ pub(crate) fn current(service: &TradeAssemblyService, id: &str) -> Result<Captur
     {
         return Err("data_capture_receipt_invalid".into());
     }
-    let graph = resolve(service, &r.policy)?;
+    drop(integrity_timing);
+    let graph = super::order_plans::measured("capture.graph", || resolve(service, &r.policy))?;
+    let pin_timing = super::order_plans::financial_timing("capture.pins");
     if data_binding::pin(service, selection(&graph, &r.policy.acquisition_node)?)? != r.acquisition
         || data_binding::pin(service, selection(&graph, &r.policy.replay_node)?)? != r.replay
     {
         return Err("data_capture_binding_stale".into());
     }
-    validate_coverage(service, &r)?;
+    drop(pin_timing);
+    super::order_plans::measured("capture.coverage", || validate_coverage(service, &r))?;
     Ok(r)
 }
 fn check_replay_partition(
@@ -467,6 +598,15 @@ pub(crate) fn acquire(
     }
     bounded(&command.input, 65536)?;
     tradeassembly_plugin_sdk::data_package::metadata_budget(&command.input)?;
+    if command.receipt_version == Some(CaptureReceiptVersion::V2) {
+        check_v2_input(&command.input)?;
+    }
+    let input_witness =
+        (command.receipt_version == Some(CaptureReceiptVersion::V2)).then(|| InputWitness {
+            schema_version: InputWitnessVersion::V1,
+            input: command.input.clone(),
+        });
+    let receipt_version = command.receipt_version.unwrap_or(CaptureReceiptVersion::V1);
     let graph = resolve(service, &command.policy)?;
     let acquisition = data_binding::pin(
         service,
@@ -484,7 +624,7 @@ pub(crate) fn acquire(
         return Err("data_capture_pure_replay_required".into());
     }
     let input_sha256 = hash(&command.input)?;
-    let command_hash = hash(&(command.policy.clone(), &input_sha256))?;
+    let command_hash = command_identity(&command.policy, &input_sha256, command.receipt_version)?;
     let key = hash(
         &json!({"strategy":command.policy.scope.strategy_id,"authority":ctx.authority,"key":ctx.idempotency_key.as_str()}),
     )?;
@@ -547,7 +687,7 @@ pub(crate) fn acquire(
     let as_of = service.runtime().clock.now_ms();
     let payload = DataEvaluationRequest {
         schema_version: EvaluationVersion::V1,
-        plan_sha256: command_hash,
+        plan_sha256: command_hash.clone(),
         node_id: command.policy.replay_node.clone(),
         semantics_version: c.semantics_version.clone(),
         instruments: command
@@ -587,7 +727,8 @@ pub(crate) fn acquire(
     let replay_content_hash = replay_response.content_hash.clone();
     let replay_source_event_id = replay_response.source_event_id.clone();
     let mut receipt = CaptureReceipt {
-        schema_version: CaptureReceiptVersion::V1,
+        input_witness,
+        schema_version: receipt_version,
         capture_id: String::new(),
         receipt_sha256: String::new(),
         policy: command.policy,
@@ -625,6 +766,7 @@ pub(crate) fn acquire(
     {
         return Err("data_capture_binding_stale".into());
     }
+    validate_receipt_input(&receipt)?;
     receipt.receipt_sha256 = identity(&receipt)?;
     receipt.capture_id = format!("capture_{}", receipt.receipt_sha256);
     bounded(&receipt, MAX_BYTES)?;
@@ -635,7 +777,7 @@ pub(crate) fn acquire(
         StorageWrite::new(
             KEYS,
             &key,
-            json!({"captureId":receipt.capture_id,"commandSha256":hash(&(receipt.policy.clone(),&receipt.input_sha256))?}),
+            json!({"captureId":receipt.capture_id,"commandSha256":command_hash}),
             ctx.clone(),
         ),
     ];
@@ -719,6 +861,9 @@ pub(crate) fn preflight(
         if path.ends_with("create") {
             let c: CaptureCommand = serde_json::from_value(body["capture"].clone())
                 .map_err(|_| "data_capture_command_invalid")?;
+            if c.receipt_version == Some(CaptureReceiptVersion::V2) {
+                check_v2_input(&c.input)?;
+            }
             let graph = resolve(service, &c.policy)?;
             data_binding::pin(service, selection(&graph, &c.policy.acquisition_node)?)?;
             data_binding::pin(service, selection(&graph, &c.policy.replay_node)?)?;
@@ -733,7 +878,9 @@ pub(crate) fn preflight(
                 &json!({"strategy":policy.scope.strategy_id,"authority":ctx.authority,"key":ctx.idempotency_key.as_str()}),
             )?;
             if let Some(value) = service.runtime().storage.get_json(KEYS, &key)? {
-                if value["commandSha256"] != hash(&(policy, hash(&c.input)?))? {
+                if value["commandSha256"]
+                    != command_identity(&policy, &hash(&c.input)?, c.receipt_version)?
+                {
                     return Err("data_capture_idempotency_conflict".into());
                 }
                 current(
@@ -811,6 +958,16 @@ pub(crate) fn validate_window(
     plan: &super::data_plans::StoredDataPlan,
     window: &EvaluationWindow,
 ) -> Result<(), String> {
+    if plan
+        .content
+        .source_authentication
+        .values()
+        .any(|source| matches!(source, SourceAuthentication::HostCaptureStream { .. }))
+    {
+        super::managed_data_streams::validate_plan_streams(service, plan)?;
+        super::data_evaluation::source_snapshot(service, plan, window)?
+            .ok_or("managed_stream_private_snapshot_required")?;
+    }
     for auth in plan.content.source_authentication.values() {
         if let SourceAuthentication::HostAcquisition { capture_id, .. } = auth {
             let r = current(service, capture_id)?;
@@ -833,6 +990,12 @@ pub(crate) fn envelope_source(
     node: &PipelineNode,
     response: &mut DataEvaluationResponse,
 ) -> Result<(), String> {
+    if matches!(
+        plan.content.source_authentication.get(&node.graph_node_id),
+        Some(SourceAuthentication::HostCaptureStream { .. })
+    ) {
+        return Err("managed_stream_segment_envelope_required".into());
+    }
     let Some(SourceAuthentication::HostAcquisition { capture_id, .. }) =
         plan.content.source_authentication.get(&node.graph_node_id)
     else {
@@ -943,5 +1106,303 @@ mod partition_tests {
             c.history.partitioning = Partitioning::AllDeclaredContext;
         }
         assert!(check_replay_partition(&contract, context).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod input_witness_tests {
+    use super::*;
+    fn command() -> CaptureCommand {
+        CaptureCommand {
+            receipt_version: None,
+            policy: CapturePolicy {
+                scope: PlanScope {
+                    strategy_id: "s".into(),
+                    strategy_version_id: "v".into(),
+                    strategy_spec_hash: format!("sha256:{}", "a".repeat(64)),
+                },
+                capability_graph_revision: "graph".into(),
+                mode: "paper".into(),
+                acquisition_node: "acquire".into(),
+                replay_node: "replay".into(),
+                parameter_extracts: BTreeMap::from([("bars".into(), "/bars".into())]),
+                context: DataContext {
+                    instruments: vec![crate::data_pipeline::InstrumentContext {
+                        instrument_id: "OWNED".into(),
+                        asset_class: "equity".into(),
+                        instrument_family: "equity".into(),
+                    }],
+                    interval_ms: Some(10),
+                },
+                event_start_ms: 10,
+                event_end_ms: 30,
+                gap_policy: GapPolicy::StrictFixedInterval,
+            },
+            input: json!({"symbol":"OWNED","feed":"declared","start":10,"end":30}),
+        }
+    }
+    #[test]
+    fn capture_none_and_explicit_v1_preserve_original_command_hash_and_none_wire() {
+        #[derive(Serialize)]
+        struct LegacyCommand<'a> {
+            policy: &'a CapturePolicy,
+            input: &'a Value,
+        }
+        let c = command();
+        assert_eq!(
+            serde_json::to_vec(&c).unwrap(),
+            serde_json::to_vec(&LegacyCommand {
+                policy: &c.policy,
+                input: &c.input
+            })
+            .unwrap()
+        );
+        let old = json!({"policy":c.policy,"input":c.input});
+        assert_eq!(serde_json::to_value(&c).unwrap(), old);
+        let input_sha = hash(&c.input).unwrap();
+        let original = hash(&(c.policy.clone(), &input_sha)).unwrap();
+        assert_eq!(
+            command_identity(&c.policy, &input_sha, None).unwrap(),
+            original
+        );
+        assert_eq!(
+            command_identity(&c.policy, &input_sha, Some(CaptureReceiptVersion::V1)).unwrap(),
+            original
+        );
+        assert_ne!(
+            command_identity(&c.policy, &input_sha, Some(CaptureReceiptVersion::V2)).unwrap(),
+            original
+        );
+        let decoded: CaptureCommand = serde_json::from_value(old).unwrap();
+        assert!(decoded.receipt_version.is_none());
+    }
+    #[test]
+    fn v2_witness_is_closed_exact_nonsecret_and_v1_cannot_claim_it() {
+        let input = command().input;
+        let witness = InputWitness {
+            schema_version: InputWitnessVersion::V1,
+            input: input.clone(),
+        };
+        let sha = hash(&input).unwrap();
+        validate_witness(CaptureReceiptVersion::V2, &sha, Some(&witness)).unwrap();
+        assert!(validate_witness(CaptureReceiptVersion::V1, &sha, Some(&witness)).is_err());
+        assert!(validate_witness(CaptureReceiptVersion::V2, &sha, None).is_err());
+        let mut wrong = witness.clone();
+        wrong.input["feed"] = json!("changed");
+        assert_eq!(
+            validate_witness(CaptureReceiptVersion::V2, &sha, Some(&wrong)).unwrap_err(),
+            "data_capture_input_witness_hash_mismatch"
+        );
+        let invalid = json!({"schemaVersion":"tradeassembly.data_capture_input_witness.v1","input":{},"authority":"forbidden"});
+        assert!(serde_json::from_value::<InputWitness>(invalid).is_err());
+        let secret = InputWitness {
+            schema_version: InputWitnessVersion::V1,
+            input: json!({"credentials":{"token":"not-persisted"}}),
+        };
+        assert!(validate_witness(
+            CaptureReceiptVersion::V2,
+            &hash(&secret.input).unwrap(),
+            Some(&secret)
+        )
+        .is_err());
+        assert!(check_v2_input(&json!({"tooLarge":"x".repeat(65_536)})).is_err());
+    }
+    #[test]
+    fn v2_input_witness_refuses_normalized_nested_credential_fields_only() {
+        for name in [
+            "api_key",
+            "API-KEY",
+            "apiSecret",
+            "Password",
+            "accessToken",
+            "refresh_token",
+            "private.key",
+            "clientSecret",
+            "pass_phrase",
+        ] {
+            let input = json!({"query":[{"nested":{(name):"not-a-secret-test-value"}}]});
+            // These fields remain subject to their original V1 semantics.
+            capturable_payload(&input).unwrap();
+            assert_eq!(
+                check_v2_input(&input).unwrap_err(),
+                "data_capture_input_credential_material_forbidden",
+                "{name}"
+            );
+            let witness = InputWitness {
+                schema_version: InputWitnessVersion::V1,
+                input,
+            };
+            assert_eq!(
+                validate_witness(
+                    CaptureReceiptVersion::V2,
+                    &hash(&witness.input).unwrap(),
+                    Some(&witness)
+                )
+                .unwrap_err(),
+                "data_capture_input_credential_material_forbidden"
+            );
+        }
+        check_v2_input(&json!({"symbol":"OWNED","feed":"declared",
+            "adjustment":"raw","pageToken":"noncredential-pagination-cursor"}))
+        .unwrap();
+    }
+    #[test]
+    fn requested_v2_nested_credentials_refuse_before_command_and_provider_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory
+            .path()
+            .join("nested-input-guard.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let service = TradeAssemblyService::test_local(&db);
+        let names = [
+            "control_plane_commands",
+            RECEIPTS,
+            KEYS,
+            "plugin_operation_receipts",
+        ];
+        let before = names.map(|ns| service.runtime().storage.list_json(ns).unwrap());
+        for name in [
+            "api_key",
+            "apiSecret",
+            "password",
+            "accessToken",
+            "privateKey",
+        ] {
+            let mut c = command();
+            c.receipt_version = Some(CaptureReceiptVersion::V2);
+            c.input = json!({"query":[{"nested":{(name):"not-a-secret-test-value"}}]});
+            let result = service.handle_http("POST", "/product/strategies/data-captures/create",
+                json!({"capture":c,"accountMode":"paper","idempotencyKey":format!("nested-{name}")}));
+            assert_eq!(result.status, 409, "{}", result.body);
+            assert_eq!(
+                result.body["error"]["code"],
+                "data_capture_input_credential_material_forbidden"
+            );
+            assert_eq!(
+                names.map(|ns| service.runtime().storage.list_json(ns).unwrap()),
+                before
+            );
+        }
+    }
+    #[test]
+    fn requested_v2_secret_input_refuses_before_outer_command_or_capture_persistence() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory
+            .path()
+            .join("input-guard.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let service = TradeAssemblyService::test_local(&db);
+        let mut c = command();
+        c.receipt_version = Some(CaptureReceiptVersion::V2);
+        c.input = json!({"headers":{"authorization":"not-a-secret-test-value"}});
+        let names = [
+            "control_plane_commands",
+            RECEIPTS,
+            KEYS,
+            "plugin_operation_receipts",
+        ];
+        let before = names.map(|ns| service.runtime().storage.list_json(ns).unwrap());
+        let result = service.handle_http(
+            "POST",
+            "/product/strategies/data-captures/create",
+            json!({
+                "capture":c,"accountMode":"paper","idempotencyKey":"v2-refuse-before-storage",
+            }),
+        );
+        assert_eq!(result.status, 409, "{}", result.body);
+        assert_eq!(
+            result.body["error"]["code"],
+            "data_capture_transport_material_forbidden"
+        );
+        assert_eq!(
+            names.map(|ns| service.runtime().storage.list_json(ns).unwrap()),
+            before
+        );
+    }
+}
+
+#[cfg(test)]
+mod legacy_receipt_wire_tests {
+    use super::*;
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Legacy<'a> {
+        schema_version: CaptureReceiptVersion,
+        capture_id: &'a str,
+        receipt_sha256: &'a str,
+        policy: &'a CapturePolicy,
+        input_sha256: &'a str,
+        acquisition: &'a PinnedOperation,
+        replay: &'a PinnedOperation,
+        replay_contract_sha256: &'a str,
+        acquisition_response: &'a PluginOperationResponse,
+        payload_sha256: &'a str,
+        replay_parameters: &'a Value,
+        replay_response: &'a DataEvaluationResponse,
+        replay_as_of_ms: i64,
+        replay_observed_at_ms: i64,
+        replay_payload_sha256: &'a str,
+        replay_content_hash: &'a str,
+        replay_source_event_id: &'a str,
+    }
+    #[test]
+    fn absent_v1_witness_preserves_original_receipt_field_bytes_and_identity_hash() {
+        // Serialization fixture only. Empty output data is never admitted or
+        // represented as evaluated/available provider evidence by this test.
+        let pin=serde_json::from_value(json!({"pluginInstanceRef":"fixture","pluginRef":"fixture","operationId":"fixture",
+            "packageSha256":"a".repeat(64),"manifestSha256":"b".repeat(64),"contextSha256":"c".repeat(64),"accountRef":null})).unwrap();
+        let response = PluginOperationResponse {
+            correlation_id: "serializer-only".into(),
+            schema_ref: "schema://example/serializer@1".into(),
+            content_hash: "d".repeat(64),
+            payload: json!({}),
+            observed_at_ms: 30,
+            source_event_id: "serializer-only".into(),
+            freshness_state: "serializer-only".into(),
+            evidence_refs: vec![],
+            deterministic: true,
+            replayable: true,
+            provider_outcome_id: None,
+            reconciliation_required: false,
+        };
+        let policy:CapturePolicy=serde_json::from_value(json!({"scope":{"strategyId":"s","strategyVersionId":"v","strategySpecHash":"h"},
+            "capabilityGraphRevision":"g","mode":"paper","acquisitionNode":"a","replayNode":"r","parameterExtracts":{"v":"/v"},
+            "context":{"instruments":[{"instrumentId":"X","assetClass":"equity","instrumentFamily":"equity"}],"intervalMs":10},
+            "eventStartMs":10,"eventEndMs":30,"gapPolicy":"strict_fixed_interval"})).unwrap();
+        let r=CaptureReceipt {
+            input_witness:None,schema_version:CaptureReceiptVersion::V1,capture_id:String::new(),receipt_sha256:String::new(),
+            policy,input_sha256:hash(&json!({})).unwrap(),acquisition:pin,replay:serde_json::from_value(json!({
+                "pluginInstanceRef":"fixture","pluginRef":"fixture","operationId":"replay","packageSha256":"a".repeat(64),
+                "manifestSha256":"b".repeat(64),"contextSha256":"c".repeat(64),"accountRef":null})).unwrap(),
+            replay_contract_sha256:"e".repeat(64),acquisition_response:response,payload_sha256:"f".repeat(64),replay_parameters:json!({}),
+            replay_response:DataEvaluationResponse {schema_version:EvaluationVersion::V1,outputs:BTreeMap::new(),state:BTreeMap::new()},
+            replay_as_of_ms:31,replay_observed_at_ms:32,replay_payload_sha256:"a".repeat(64),replay_content_hash:"b".repeat(64),replay_source_event_id:"serializer-only".into(),
+        };
+        let old = Legacy {
+            schema_version: r.schema_version,
+            capture_id: &r.capture_id,
+            receipt_sha256: &r.receipt_sha256,
+            policy: &r.policy,
+            input_sha256: &r.input_sha256,
+            acquisition: &r.acquisition,
+            replay: &r.replay,
+            replay_contract_sha256: &r.replay_contract_sha256,
+            acquisition_response: &r.acquisition_response,
+            payload_sha256: &r.payload_sha256,
+            replay_parameters: &r.replay_parameters,
+            replay_response: &r.replay_response,
+            replay_as_of_ms: r.replay_as_of_ms,
+            replay_observed_at_ms: r.replay_observed_at_ms,
+            replay_payload_sha256: &r.replay_payload_sha256,
+            replay_content_hash: &r.replay_content_hash,
+            replay_source_event_id: &r.replay_source_event_id,
+        };
+        assert_eq!(
+            serde_json::to_vec(&r).unwrap(),
+            serde_json::to_vec(&old).unwrap()
+        );
+        assert_eq!(identity(&r).unwrap(), hash(&old).unwrap());
     }
 }

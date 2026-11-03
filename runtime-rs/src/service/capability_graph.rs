@@ -1,3 +1,4 @@
+pub(crate) mod context;
 use super::{providers, TradeAssemblyService};
 use crate::capability::now_rfc3339_second;
 use crate::ports::{
@@ -1039,13 +1040,21 @@ fn graph_resolution(
     service: &TradeAssemblyService,
     request: &CapabilityGraphRequest,
 ) -> CapabilityGraphResolution {
-    service.runtime().capability_resolver.resolve_graph(
-        request.clone(),
-        CapabilityResolverCatalog {
-            plugins: providers::plugin_catalog(service),
-            entitlements: providers::entitlements(service),
-        },
-    )
+    let _timing = super::order_plans::financial_timing("graph.resolve_total");
+    let plugins =
+        super::order_plans::measured("graph.catalog", || providers::plugin_catalog(service));
+    let entitlements = super::order_plans::measured("graph.entitlements", || {
+        providers::entitlements_for_graph(service, request, &plugins)
+    });
+    super::order_plans::measured("graph.semantic_resolve", || {
+        service.runtime().capability_resolver.resolve_graph(
+            request.clone(),
+            CapabilityResolverCatalog {
+                plugins,
+                entitlements,
+            },
+        )
+    })
 }
 
 fn graph_value(service: &TradeAssemblyService, request: &CapabilityGraphRequest) -> Value {

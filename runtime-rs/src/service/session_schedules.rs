@@ -115,6 +115,18 @@ fn calendar(
     b: &SessionCalendarBinding,
     at: i64,
 ) -> Result<(SessionCalendar, String), String> {
+    calendar_at_times(s, c, id, b, &[at], false)
+}
+// One verified immutable receipt is checked at every requested causal time.
+// This result never survives the current call or replaces a later fresh check.
+fn calendar_at_times(
+    s: &TradeAssemblyService,
+    c: &ScheduleCommand,
+    id: &str,
+    b: &SessionCalendarBinding,
+    times: &[i64],
+    check_current: bool,
+) -> Result<(SessionCalendar, String), String> {
     let r = data_collections::current(s, id)?;
     if r.command.scope != c.scope
         || r.command.capability_graph_revision != c.capability_graph_revision
@@ -131,15 +143,22 @@ fn calendar(
     let document: SessionCalendar = SessionCalendar::decode(r.response.payload.clone())
         .map_err(|_| "session_schedule_calendar_invalid")?;
     document.validate()?;
+    let mut times = times.to_vec();
+    if check_current {
+        times.push(s.runtime().clock.now_ms());
+    }
     if document.known_at_ms > r.host_known_at_ms
         || document.known_at_ms > c.knowledge_cutoff_ms
-        || at < r.host_known_at_ms
+        || times.iter().any(|at| *at < r.host_known_at_ms)
     {
         return Err("session_schedule_calendar_future".into());
     }
     let age = i64::try_from(b.max_age_ms).map_err(|_| "session_schedule_calendar_age_invalid")?;
     // Provider knowledge and host admission ages remain separate, both explicit.
-    if at - document.known_at_ms >= age || at - r.host_known_at_ms >= age {
+    if times
+        .iter()
+        .any(|at| *at - document.known_at_ms >= age || *at - r.host_known_at_ms >= age)
+    {
         return Err("session_schedule_calendar_stale".into());
     }
     Ok((document, r.receipt_sha256))
@@ -205,25 +224,42 @@ pub fn current(s: &TradeAssemblyService, id: &str) -> Result<ScheduleReceipt, St
     if r.schema_version != "tradeassembly.session_schedule_receipt.v1"
         || identity(&r)? != r.receipt_sha256
         || r.occurrence.occurrence_id != id
-        || build(s, &r.command, r.prepared_at_ms)? != r.occurrence
     {
         return Err("session_schedule_receipt_invalid".into());
     }
     let t = policy(s, &r.command)?;
-    calendar(
+    let times = [r.prepared_at_ms];
+    let (a, ha) = calendar_at_times(
         s,
         &r.command,
         &r.command.calendar_collection_id,
         &t.calendar,
-        s.runtime().clock.now_ms(),
+        &times,
+        true,
     )?;
-    calendar(
+    let (b, hb) = calendar_at_times(
         s,
         &r.command,
         &r.command.execution_calendar_collection_id,
         &t.execution_window.calendar,
-        s.runtime().clock.now_ms(),
+        &times,
+        true,
     )?;
+    if plan_occurrence(
+        &r.command.scope.strategy_id,
+        &r.command.scope.strategy_version_id,
+        &r.command.scope.strategy_spec_hash,
+        &t,
+        &r.command.session_date,
+        &a,
+        &ha,
+        &b,
+        &hb,
+        r.prepared_at_ms,
+    )? != r.occurrence
+    {
+        return Err("session_schedule_receipt_invalid".into());
+    }
     Ok(r)
 }
 pub fn prepare(

@@ -1,0 +1,1319 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "tradeassembly.net_base_inventory_observation.v1"
+    },
+    "requestSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "provisional"
+      ]
+    },
+    "coherence": {
+      "const": "non_atomic"
+    },
+    "order": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "tradeassembly.broker_order_observation.v2"
+        },
+        "canonicalAccountSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "order": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schemaVersion": {
+              "const": "tradeassembly.broker_order.v2"
+            },
+            "instrument": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "instrumentId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "providerSymbol": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "assetClass": {
+                  "const": "crypto"
+                },
+                "instrumentFamily": {
+                  "const": "crypto_spot"
+                },
+                "quantityUnit": {
+                  "const": "base_asset"
+                },
+                "multiplier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                },
+                "quoteCurrency": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16
+                }
+              },
+              "required": [
+                "assetClass",
+                "instrumentFamily",
+                "instrumentId",
+                "multiplier",
+                "providerSymbol",
+                "quantityUnit",
+                "quoteCurrency"
+              ]
+            },
+            "positionAction": {
+              "const": "buy_to_open"
+            },
+            "quantity": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40,
+              "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+            },
+            "pricing": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "limit"
+                },
+                "limitPrice": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                }
+              },
+              "required": [
+                "kind",
+                "limitPrice"
+              ]
+            },
+            "timeInForce": {
+              "const": "gtc"
+            },
+            "clientOrderId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "clientOrderId",
+            "instrument",
+            "positionAction",
+            "pricing",
+            "quantity",
+            "schemaVersion",
+            "timeInForce"
+          ]
+        },
+        "providerOrderId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "open",
+            "partially_filled",
+            "filled",
+            "rejected",
+            "cancelled",
+            "expired",
+            "unknown"
+          ]
+        },
+        "filledQuantity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                }
+              },
+              "required": [
+                "status",
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "unavailable"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "required": [
+                "reason",
+                "status"
+              ]
+            }
+          ]
+        },
+        "cashSpent": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                }
+              },
+              "required": [
+                "status",
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "unavailable"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "required": [
+                "reason",
+                "status"
+              ]
+            }
+          ]
+        },
+        "observedAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "knownAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "canonicalAccountSha256",
+        "cashSpent",
+        "filledQuantity",
+        "knownAtMs",
+        "observedAtMs",
+        "order",
+        "providerOrderId",
+        "schemaVersion",
+        "status"
+      ]
+    },
+    "orderSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startedAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "completedAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "evidenceIds": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "completedAtMs",
+        "evidenceIds",
+        "startedAtMs"
+      ]
+    },
+    "grossBaseFilled": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40,
+              "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+            }
+          },
+          "required": [
+            "status",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ]
+        }
+      ]
+    },
+    "fills": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "records": {
+                  "type": "array",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "providerFillId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "providerOrderId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "baseAssetId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "baseQuantity": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40,
+                        "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                      },
+                      "transactionAtMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "evidenceIds": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "minItems": 1,
+                        "uniqueItems": true
+                      }
+                    },
+                    "required": [
+                      "baseAssetId",
+                      "baseQuantity",
+                      "evidenceIds",
+                      "providerFillId",
+                      "providerOrderId",
+                      "transactionAtMs"
+                    ]
+                  }
+                },
+                "coverage": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "providerOrderId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "pagesRead": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 8
+                    },
+                    "rowsRead": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 128
+                    },
+                    "queryExhausted": {
+                      "type": "boolean"
+                    },
+                    "sample": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "startedAtMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "completedAtMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "evidenceIds": {
+                          "type": "array",
+                          "maxItems": 64,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "minItems": 1,
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "completedAtMs",
+                        "evidenceIds",
+                        "startedAtMs"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "pagesRead",
+                    "providerOrderId",
+                    "queryExhausted",
+                    "rowsRead",
+                    "sample"
+                  ]
+                }
+              },
+              "required": [
+                "coverage",
+                "records"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ]
+        }
+      ]
+    },
+    "fees": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "records": {
+                  "type": "array",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "providerFeeId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "baseAssetId": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "status": {
+                                "const": "available"
+                              },
+                              "value": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128
+                              }
+                            },
+                            "required": [
+                              "status",
+                              "value"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "status": {
+                                "const": "unavailable"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "reason",
+                              "status"
+                            ]
+                          }
+                        ]
+                      },
+                      "baseQuantity": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "status": {
+                                "const": "available"
+                              },
+                              "value": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 40,
+                                "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                              }
+                            },
+                            "required": [
+                              "status",
+                              "value"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "status": {
+                                "const": "unavailable"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "reason",
+                              "status"
+                            ]
+                          }
+                        ]
+                      },
+                      "effectiveAtMs": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "status": {
+                                "const": "available"
+                              },
+                              "value": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "status",
+                              "value"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "status": {
+                                "const": "unavailable"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "reason",
+                              "status"
+                            ]
+                          }
+                        ]
+                      },
+                      "attribution": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "direct_order"
+                              },
+                              "providerOrderId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "providerOrderId"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "direct_fill"
+                              },
+                              "providerFillId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "providerFillId"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "provider_order_filter"
+                              },
+                              "providerOrderId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "providerOrderId"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "unavailable"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "reason"
+                            ]
+                          }
+                        ]
+                      },
+                      "evidenceIds": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "minItems": 1,
+                        "uniqueItems": true
+                      }
+                    },
+                    "required": [
+                      "attribution",
+                      "baseAssetId",
+                      "baseQuantity",
+                      "effectiveAtMs",
+                      "evidenceIds",
+                      "providerFeeId"
+                    ]
+                  }
+                },
+                "coverage": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "providerOrderId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "pagesRead": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 8
+                    },
+                    "rowsRead": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 128
+                    },
+                    "queryExhausted": {
+                      "type": "boolean"
+                    },
+                    "sample": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "startedAtMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "completedAtMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "evidenceIds": {
+                          "type": "array",
+                          "maxItems": 64,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "minItems": 1,
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "completedAtMs",
+                        "evidenceIds",
+                        "startedAtMs"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "pagesRead",
+                    "providerOrderId",
+                    "queryExhausted",
+                    "rowsRead",
+                    "sample"
+                  ]
+                }
+              },
+              "required": [
+                "coverage",
+                "records"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ]
+        }
+      ]
+    },
+    "feeClosure": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "providerOrderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "coveredGrossBase": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                },
+                "allOrderFeesFinal": {
+                  "type": "boolean"
+                },
+                "correctionsComplete": {
+                  "type": "boolean"
+                },
+                "finalThroughMs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "sample": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "startedAtMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "completedAtMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "evidenceIds": {
+                      "type": "array",
+                      "maxItems": 64,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "minItems": 1,
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "completedAtMs",
+                    "evidenceIds",
+                    "startedAtMs"
+                  ]
+                }
+              },
+              "required": [
+                "allOrderFeesFinal",
+                "correctionsComplete",
+                "coveredGrossBase",
+                "finalThroughMs",
+                "providerOrderId",
+                "sample"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ]
+        }
+      ]
+    },
+    "netBaseCredited": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40,
+              "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+            }
+          },
+          "required": [
+            "status",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ]
+        }
+      ]
+    },
+    "aggregateInventory": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scope": {
+                  "const": "account_aggregate"
+                },
+                "instrumentId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "baseAssetId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "quantity": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                },
+                "quantityAvailable": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "status": {
+                          "const": "available"
+                        },
+                        "value": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40,
+                          "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "value"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "status": {
+                          "const": "unavailable"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "required": [
+                        "reason",
+                        "status"
+                      ]
+                    }
+                  ]
+                },
+                "sample": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "startedAtMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "completedAtMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "evidenceIds": {
+                      "type": "array",
+                      "maxItems": 64,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "minItems": 1,
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "completedAtMs",
+                    "evidenceIds",
+                    "startedAtMs"
+                  ]
+                }
+              },
+              "required": [
+                "baseAssetId",
+                "instrumentId",
+                "quantity",
+                "quantityAvailable",
+                "sample",
+                "scope"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ]
+        }
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "kind": {
+            "enum": [
+              "order",
+              "fills",
+              "fees",
+              "fee_closure",
+              "positions"
+            ]
+          },
+          "providerRecordId": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "const": "available"
+                  },
+                  "value": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "status",
+                  "value"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "reason",
+                  "status"
+                ]
+              }
+            ]
+          },
+          "providerOrderId": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "const": "available"
+                  },
+                  "value": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "status",
+                  "value"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "reason",
+                  "status"
+                ]
+              }
+            ]
+          },
+          "hashBasis": {
+            "const": "raw_response_bytes"
+          },
+          "responseSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "startedAtMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "completedAtMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "completedAtMs",
+          "hashBasis",
+          "id",
+          "kind",
+          "providerOrderId",
+          "providerRecordId",
+          "responseSha256",
+          "startedAtMs"
+        ]
+      }
+    }
+  },
+  "required": [
+    "aggregateInventory",
+    "coherence",
+    "evidence",
+    "feeClosure",
+    "fees",
+    "fills",
+    "grossBaseFilled",
+    "netBaseCredited",
+    "order",
+    "orderSample",
+    "requestSha256",
+    "schemaVersion",
+    "status"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "pending"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "order": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "unknown",
+                  "open",
+                  "partially_filled"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "provisional"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "order": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "filled",
+                  "cancelled",
+                  "expired",
+                  "rejected"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://tradeassembly/net-base-inventory-observation@1"
+}

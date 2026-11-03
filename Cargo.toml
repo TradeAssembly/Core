@@ -12,3 +12,8 @@ members = [
   "sightline-sidecar",
   "xtask",
 ]
+
+# Debug native journeys verify shipped bytes repeatedly, just like release.
+# Keep SHA throughput realistic without caching trust or extending data TTLs.
+[profile.dev.package."sha2@0.10.9"]
+opt-level = 3

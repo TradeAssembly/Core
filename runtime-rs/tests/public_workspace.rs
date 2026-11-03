@@ -611,3 +611,62 @@ fn interrupted_import_recovers_without_partial_state_and_can_retry() {
         true
     );
 }
+
+#[test]
+fn published_integral_float_canonical_source_roundtrips_but_semantic_drift_refuses() {
+    let (_source, source) = source();
+    let mut spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../examples/strategy-spec/v3/valid/static-equity.json"
+    ))
+    .unwrap();
+    spec["metadata"]["numericFixture"] = json!(100.0);
+    let created = source.handle_http("POST", "/product/strategies/create",
+        json!({"id":"numeric-spec","name":"Numeric canonical source","spec":spec,"idempotencyKey":"numeric-create"}));
+    assert_eq!(created.status, 201, "{}", created.body);
+    let published = source.handle_http("POST", "/product/strategies/publish",
+        json!({"strategyId":"numeric-spec","expectedDraftHash":created.body["body"]["draft"]["draftHash"],"idempotencyKey":"numeric-publish"}));
+    assert_eq!(
+        published.body["body"]["published"], true,
+        "{}",
+        published.body
+    );
+    let bundle = public::export(&source).unwrap();
+    let version = bundle
+        .entries
+        .iter()
+        .find(|e| e.namespace == "strategy_versions" && e.value["strategyId"] == "numeric-spec")
+        .unwrap();
+    assert!(version.value["spec"]["metadata"]["numericFixture"]
+        .as_number()
+        .unwrap()
+        .is_f64());
+    let canonical: serde_json::Value =
+        serde_json::from_str(version.value["canonicalSpecBytes"].as_str().unwrap()).unwrap();
+    assert!(canonical["metadata"]["numericFixture"]
+        .as_number()
+        .unwrap()
+        .is_i64());
+    let (_target, target) = service_with_owner("numeric-target");
+    public::import(&target, &bytes(&bundle)).unwrap();
+    let mut changed = bundle.clone();
+    let entry = changed
+        .entries
+        .iter_mut()
+        .find(|e| e.namespace == "strategy_versions" && e.value["strategyId"] == "numeric-spec")
+        .unwrap();
+    let mut changed_source = canonical;
+    changed_source["metadata"]["numericFixture"] = json!(101);
+    entry.value["canonicalSpecBytes"] = json!(serde_json::to_string(&changed_source).unwrap());
+    rehash(&mut changed);
+    let (_empty, empty) = service_with_owner("numeric-reject");
+    assert_eq!(
+        public::import(&empty, &bytes(&changed)).unwrap_err(),
+        "workspace_strategy_source_invalid"
+    );
+    assert!(empty
+        .runtime()
+        .storage
+        .list_json("strategies")
+        .unwrap()
+        .is_empty());
+}

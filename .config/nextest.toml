@@ -1,0 +1,9 @@
+# Copyright (c) 2026 OptionLab LLC. All rights reserved.
+
+# This protocol test deliberately keeps its genuine one-second process budget.
+# Reserve the runner's slots so parser assertions are not a host-saturation test.
+# No test, retry policy, timeout or production execution limit is changed.
+# https://nexte.st/docs/configuration/threads-required/
+[[profile.default.overrides]]
+filter = 'test(=adapters::external_plugin_host::tests::malformed_and_multiple_plugin_responses_are_rejected)'
+threads-required = "num-test-threads"

@@ -36,6 +36,11 @@ pub(crate) struct PreparedPluginInvocation {
     timeout_ms: u64,
 }
 
+impl PreparedPluginInvocation {
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.operation["effect"] == "read"
+    }
+}
 impl ExternalPluginHost {
     pub fn new(
         registry: Arc<dyn PluginRegistryPort>,
@@ -66,6 +71,7 @@ impl ExternalPluginHost {
         request: &PluginOperationRequest,
         context: &SideEffectContext,
     ) -> Result<PreparedPluginInvocation, String> {
+        let _timing = crate::service::order_plans::financial_timing("plugin.prepare");
         let instance = self
             .registry
             .get_instance(&request.plugin_instance_ref)?
@@ -133,6 +139,7 @@ impl ExternalPluginHost {
         &self,
         prepared: PreparedPluginInvocation,
     ) -> Result<PluginOperationResponse, String> {
+        let process_timing = crate::service::order_plans::financial_timing("plugin.process");
         let wire_response = execute(
             self.sandbox.as_ref(),
             &prepared.package.executable_path,
@@ -141,6 +148,7 @@ impl ExternalPluginHost {
             &prepared.wire_request,
             prepared.timeout_ms,
         )?;
+        drop(process_timing);
         crate::adapters::plugin_output_policy::validate_plugin_response_policy(
             &prepared.wire_request,
             &wire_response,
@@ -170,6 +178,16 @@ impl ExternalPluginHost {
             ),
             ("broker.order_lookup", "broker.order_lookup.live", "live")
                 | (
+                    "broker.order_lookup.paper_v2",
+                    "broker.order_lookup.paper@2",
+                    "paper"
+                )
+                | (
+                    "broker.order_lookup.paper_v3",
+                    "broker.order_lookup.paper@3",
+                    "paper"
+                )
+                | (
                     "broker.order_lookup.paper",
                     "broker.order_lookup.paper",
                     "paper"
@@ -190,6 +208,7 @@ fn validate_response_schema_document(
     package: &crate::ports::InstalledPluginPackage,
     response: &PluginResponse,
 ) -> Result<(), String> {
+    let _timing = crate::service::order_plans::financial_timing("plugin.response_schema");
     let envelope = tradeassembly_plugin_sdk::data_package::VersionedPackageDescriptor::decode(
         &serde_json::to_vec(&package.descriptor)
             .map_err(|_| "plugin_package_descriptor_invalid")?,

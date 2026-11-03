@@ -27,6 +27,7 @@ publicPathPrefixes:
   - xtask/
 
 publicFiles:
+  - .config/nextest.toml
   - .dockerignore
   - .gitignore
   - .gitleaksignore

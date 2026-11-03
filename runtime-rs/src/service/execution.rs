@@ -1,3 +1,6 @@
+pub(crate) mod automatic_health;
+pub(crate) mod typed;
+pub(crate) mod typed_cycle;
 use super::{
     api_result, capability_graph, orders, positions, risk, workspace, ServiceResponse,
     TradeAssemblyService, LEGAL_BOUNDARY,
@@ -80,6 +83,9 @@ pub(crate) fn evaluate_tick_response(
             json!({"activationId": activation_id, "failClosed": true}),
         );
     };
+    if typed::is_typed(&run) || typed::is_typed(&activation) {
+        return ServiceResponse::conflict("typed_pipeline_dispatch_required");
+    }
     if external_agent(&run) || external_agent(&activation) {
         return ServiceResponse::conflict_with_details(
             "external_agent_evaluation_required",
@@ -1054,6 +1060,9 @@ fn quantity_value(quantity_micros: i64) -> f64 {
 }
 
 pub(crate) fn save_config(service: &TradeAssemblyService, body: Value) -> Value {
+    if body.get("typedExecution").is_some() {
+        return typed::save(service, &body);
+    }
     if body
         .get("orchestrator")
         .is_some_and(|value| !matches!(value.as_str(), Some("deterministic" | "external_agent")))
@@ -1498,13 +1507,18 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "activation_started",
         json!({"activeWatches": [config["symbol"].clone()], "pendingOrders": [], "riskReservations": []}),
     );
-    let Some(market_binding) =
-        selected_capability_value(&capability_revision["graph"], "market_data.bars.read@1")
-    else {
-        return activation_dependency_failure("activation_capability_binding_invalid");
+    let market_binding = if typed::is_typed(&config) {
+        json!({})
+    } else {
+        let Some(market_binding) =
+            selected_capability_value(&capability_revision["graph"], "market_data.bars.read@1")
+        else {
+            return activation_dependency_failure("activation_capability_binding_invalid");
+        };
+        market_binding.clone()
     };
     let watch_id = format!("watch_{}_market", slug(&activation_id));
-    let watch = json!({
+    let mut watch = json!({
         "schemaVersion": "tradeassembly.runtime_watch.v1",
         "kind": "RuntimeWatch",
         "watchId": watch_id,
@@ -1521,6 +1535,9 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "cursor": 0,
         "state": if external_agent(&config) { "externally_managed" } else { "active" },
     });
+    if typed::is_typed(&config) {
+        watch = json!({"kind":"TypedPipelineWatch","watchId":watch_id,"activationId":activation_id,"state":"typed_data_plan_owned","legacyMarketSubscription":false});
+    }
     let reconciliation = json!({
         "schemaVersion": "tradeassembly.execution_reconciliation.v1",
         "kind": "ReconciliationState",
@@ -1532,7 +1549,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "newEntriesPaused": false,
         "lastReconciledAtMs": now_ms,
     });
-    let activation_record = json!({
+    let mut activation_record = json!({
         "schemaVersion": "tradeassembly.activation_record.v1",
         "kind": "ActivationRecord",
         "orchestrator": orchestrator_kind(&config),
@@ -1562,6 +1579,9 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "stateReason": "activation_started",
         "createdAtMs": now_ms,
     });
+    if typed::is_typed(&config) {
+        activation_record["executionContractVersion"] = config["executionContractVersion"].clone();
+    }
     let apf = apf_refs_for_body(
         &body,
         "http",
@@ -1615,6 +1635,16 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
         "replayRefs": [{"replayRef": format!("tradeassembly://execution/{activation_id}/replay"), "deterministic": true}],
         "warnings": [LEGAL_BOUNDARY, "Local-only execution evidence remains on this device unless exported."],
     });
+    if typed::is_typed(&config) {
+        run["startedAt"] = json!(chrono::DateTime::from_timestamp_millis(now_ms)
+            .map(|t| t.to_rfc3339())
+            .ok_or("typed_clock_invalid")
+            .unwrap_or_default());
+        run["executionContractVersion"] = config["executionContractVersion"].clone();
+        run["typedSelectionHead"] = Value::Null;
+        run["orderPlanApprovals"] = json!({});
+        run["managedEntries"] = json!({});
+    }
     run["localLiveAuthority"] = live_authority;
     run["orchestrator"] = json!(orchestrator_kind(&config));
     run["immutableInput"]["orchestrator"] = json!(orchestrator_kind(&config));
@@ -1766,7 +1796,7 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
             "clock",
         ),
     ];
-    if !external_agent(&config) {
+    if !external_agent(&config) && !typed::is_typed(&config) {
         writes.push(write(STATE_NS, "current", scheduler.clone(), "scheduler"));
     }
     let mut expectations = vec![StorageExpectation::new(
@@ -1886,6 +1916,11 @@ pub(crate) fn activate(service: &TradeAssemblyService, body: Value) -> Value {
             return activation_dependency_failure("activation_commit_conflict");
         }
         Err(_) => return activation_dependency_failure("activation_storage_unavailable"),
+    }
+    if typed::is_typed(&config) {
+        let mut response = activation_response(service, run, false);
+        response["scheduler"] = json!({"running":false,"state":"typed_pipeline","entryDecisionRequired":true,"continuousExecution":false});
+        return response;
     }
     if external_agent(&config) {
         let mut response = activation_response(service, run, false);
@@ -3371,6 +3406,9 @@ fn readiness_for_config_with_authority(
     config: &Value,
     mandate_verified: bool,
 ) -> Value {
+    if typed::is_typed(config) {
+        return typed::readiness(service, config);
+    }
     let mode = config["mode"]
         .as_str()
         .unwrap_or("paper")
@@ -4614,6 +4652,9 @@ fn activation_response(service: &TradeAssemblyService, run: Value, duplicate: bo
 }
 
 fn activation_matches_config(run: &Value, config: &Value) -> bool {
+    if run["executionContractVersion"] != config["executionContractVersion"] {
+        return false;
+    }
     if orchestrator_kind(run) != orchestrator_kind(config) {
         return false;
     }

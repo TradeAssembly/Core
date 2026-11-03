@@ -1,0 +1,322 @@
+//! Additive typed execution preparation; normal activation owns the atomic run.
+use super::*;
+use crate::service::{data_plans::PlanScope, order_plans};
+use serde::{Deserialize, Serialize};
+pub(crate) const VERSION: &str = "tradeassembly.typed_execution.v2";
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigCommand {
+    pub scope: PlanScope,
+    pub capability_graph_revision: String,
+    pub broker_requirement_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_execution: Option<super::typed_cycle::AutomaticConfig>,
+}
+pub(crate) fn is_typed(v: &Value) -> bool {
+    v["executionContractVersion"] == VERSION
+}
+fn text<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
+    v[k].as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("typed_execution_{k}_required"))
+}
+fn build(s: &TradeAssemblyService, c: &ConfigCommand) -> Result<Value, String> {
+    if let Some(a) = &c.automatic_execution {
+        a.validate()?;
+    }
+    s.invocation_owner()
+        .ok_or("typed_execution_owner_required")?;
+    s.require_object("strategy", &c.scope.strategy_id)
+        .map_err(|_| "typed_execution_not_available")?;
+    if c.broker_requirement_ref.is_empty() || c.broker_requirement_ref.len() > 128 {
+        return Err("typed_execution_broker_requirement_invalid".into());
+    }
+    let policy = order_plans::published_policy(s, &c.scope)?;
+    let version = crate::service::strategy::strategy_versions(s, &c.scope.strategy_id)
+        .into_iter()
+        .find(|v| {
+            v["id"] == c.scope.strategy_version_id && v["specHash"] == c.scope.strategy_spec_hash
+        })
+        .ok_or("typed_execution_published_version_required")?;
+    if version["immutable"] != true
+        || version["publishedAt"].as_str().is_none_or(|v| v.is_empty())
+        || version["spec"]["stages"]["order_strategy"]["enabled"] != true
+        || !version["spec"]["capability_requirements"]["required"]
+            .as_array()
+            .is_some_and(|rs| {
+                rs.iter().any(|r| {
+                    r["requirement_id"] == c.broker_requirement_ref
+                        && r["stage_refs"]
+                            .as_array()
+                            .is_some_and(|refs| refs.iter().any(|v| v == "order_strategy"))
+                })
+            })
+    {
+        return Err("typed_execution_declared_broker_required".into());
+    }
+
+    let managed_exit_policy = order_plans::management::policy(s, &c.scope)?;
+    if let Some(automatic) = &c.automatic_execution {
+        if let Some(policy) = &managed_exit_policy {
+            if automatic
+                .management
+                .as_ref()
+                .and_then(|m| m.reversal_evaluation.as_ref())
+                .is_none()
+            {
+                order_plans::management::validate_automatic_policy(policy)?;
+            }
+        }
+        if managed_exit_policy.is_some() != automatic.management.is_some() {
+            return Err("typed_automatic_management_policy_required".into());
+        }
+    }
+    let selected_template = super::super::selection_plans::template(s, &c.scope)?;
+    let selected = selected_template.is_some();
+    if c.automatic_execution.is_some() {
+        let entry_only = if let Some((_, template)) = &selected_template {
+            matches!(
+                &template.exit,
+                crate::selection_strategy::RuleTemplate::IsTrue {
+                    value: crate::selection_strategy::OperandTemplate::Boolean { value: false }
+                }
+            )
+        } else {
+            super::super::data_strategy::program(s, &c.scope)?.is_some_and(|program| {
+                matches!(
+                    program.exit,
+                    crate::data_strategy::Rule::IsTrue {
+                        value: crate::data_strategy::Operand::Boolean { value: false }
+                    }
+                )
+            })
+        };
+        if managed_exit_policy.is_none()
+            && (!entry_only || version["spec"]["stages"]["exit_policy"]["enabled"] != false)
+        {
+            return Err("typed_cycle_exit_admission_not_supported".into());
+        }
+    }
+    if !selected && super::super::data_strategy::program(s, &c.scope)?.is_none() {
+        return Err("typed_execution_program_required".into());
+    }
+    let now = s.runtime().clock.trusted_now_ms()?;
+    capability_graph::context::with_current(
+        s,
+        &c.scope,
+        &c.capability_graph_revision,
+        |rev, graph_context| {
+            if rev["strategySpecHash"] != c.scope.strategy_spec_hash || rev["graph"]["ok"] != true {
+                return Err("typed_execution_graph_stale".into());
+            }
+            if let Some(management) = c
+                .automatic_execution
+                .as_ref()
+                .and_then(|a| a.management.as_ref())
+            {
+                order_plans::management::automation::validate_reversal_config_in_context(
+                    s,
+                    &c.scope,
+                    &c.capability_graph_revision,
+                    managed_exit_policy.as_ref(),
+                    management,
+                    graph_context,
+                )?;
+            }
+            if let Some(rollover) = c
+                .automatic_execution
+                .as_ref()
+                .and_then(|automatic| automatic.management.as_ref())
+                .and_then(|management| management.calendar_rollover.as_ref())
+            {
+                crate::service::management_windows::policy_binding_in_context(
+                    s,
+                    &c.scope,
+                    &c.capability_graph_revision,
+                    &rollover.trigger_ref,
+                    graph_context,
+                )?;
+            }
+            let node = rev["graph"]["nodes"]
+                .as_array()
+                .and_then(|ns| ns.iter().find(|n| n["nodeId"] == c.broker_requirement_ref))
+                .ok_or("typed_execution_broker_unresolved")?;
+            let binding = &node["selected"];
+            if binding["operationId"] != crate::broker_submission::v2::SUBMIT_OPERATION
+                || binding["operation"]["capability"]
+                    != crate::broker_submission::v2::SUBMIT_CAPABILITY
+                || binding["operation"]["effect"] != "write"
+            {
+                return Err("typed_execution_v2_broker_required".into());
+            }
+            let witness = crate::broker_submission::account_identity::current(
+                s.runtime().plugins.as_ref(),
+                s.runtime().plugin_packages.as_ref(),
+                s.runtime().credentials.as_ref(),
+                binding,
+                now,
+                "paper",
+            )?;
+            let package = s
+                .runtime()
+                .plugin_packages
+                .get(text(
+                    &s.runtime()
+                        .plugins
+                        .get_instance(text(binding, "pluginInstanceRef")?)?
+                        .ok_or("typed_execution_instance_missing")?,
+                    "activePackageSha256",
+                )?)?
+                .ok_or("typed_execution_package_missing")?;
+            crate::broker_submission::v2::recovery_lookup_binding(
+                &package.manifest,
+                crate::broker_submission::v2::SUBMIT_OPERATION,
+            )
+            .map_err(|_| "typed_execution_lookup_required")?;
+            order_plans::management::validate_unsettled_provider(s, &c.scope, &package.manifest)?;
+            let health_pins = super::automatic_health::bootstrap(s, c, rev)?;
+            let id = config_id(
+                s,
+                c,
+                &serde_json::to_value(&witness.identity)
+                    .map_err(|_| "typed_execution_hash_invalid")?,
+                &witness.binding_sha256,
+                &policy,
+                health_pins.as_ref(),
+            )?;
+            let mut result = json!({"kind":"ExecutionConfig","configId":id,"executionContractVersion":VERSION,"typedExecution":c,"orchestrator":"typed_pipeline","strategyId":c.scope.strategy_id,"strategyVersionId":c.scope.strategy_version_id,"strategySpecHash":c.scope.strategy_spec_hash,"capabilityGraphRevisionId":c.capability_graph_revision,"capabilityGraphFingerprint":rev["graphFingerprint"],"mode":"paper","accountRef":witness.account_ref,"providerRef":binding["pluginRef"],"canonicalAccount":witness.identity,"brokerAccountBindingSha256":witness.binding_sha256,"orderPlanPolicySha256":typed_hash(&policy)?,"orderPlanBrokerNode":c.broker_requirement_ref,"selectionPolicy":if selected{"selected_receipt_head"}else{"published_static"},"symbol":Value::Null,"timeframe":Value::Null,"calendarRef":Value::Null,"dataFreshnessPolicy":{"maxAgeMs":policy.max_snapshot_age_ms},"riskLimits":{"typedPolicySha256":typed_hash(&policy)?},"schedulerIntervalSeconds":60,"warmup":{"source":"typed_data_plan_readiness"},"status":"configured"});
+            if let Some(p) = managed_exit_policy {
+                result["managedExitPolicySha256"] = json!(typed_hash(&p)?);
+            }
+            if let Some(pins) = health_pins {
+                result["accountHealthProviderPins"] =
+                    serde_json::to_value(pins).map_err(|_| "typed_execution_hash_invalid")?;
+            }
+            Ok(result)
+        },
+    )
+}
+pub(super) fn save(s: &TradeAssemblyService, body: &Value) -> Value {
+    let result = (|| {
+        let c: ConfigCommand = serde_json::from_value(body["typedExecution"].clone())
+            .map_err(|_| "typed_execution_config_invalid")?;
+        if body["strategyId"] != c.scope.strategy_id
+            || body["accountMode"] != "paper"
+            || body["mode"] != "paper"
+        {
+            return Err("typed_execution_scope_or_mode_mismatch".into());
+        }
+        let config = build(s, &c)?;
+        let id = text(&config, "configId")?;
+        s.bind_inherited_object("execution_config", id, "strategy", &c.scope.strategy_id)
+            .map_err(|_| "typed_execution_not_available")?;
+        let ctx = control_side_effect_context(body, "typed-config");
+        s.runtime()
+            .storage
+            .put_json_if_absent(CONFIGS_NS, id, config.clone(), &ctx)?;
+        Ok::<_, String>(
+            json!({"configId":id,"id":id,"item":config,"readiness":readiness(s,&config)}),
+        )
+    })();
+    result.unwrap_or_else(|code| json!({"status":"blocked","error":{"code":code}}))
+}
+pub(in crate::service) fn current(
+    s: &TradeAssemblyService,
+    config: &Value,
+) -> Result<Value, String> {
+    let c: ConfigCommand = serde_json::from_value(config["typedExecution"].clone())
+        .map_err(|_| "typed_execution_config_invalid")?;
+    s.require_object("execution_config", text(config, "configId")?)
+        .map_err(|_| "typed_execution_not_available")?;
+    let fresh = build(s, &c)?;
+    if fresh != *config {
+        return Err("typed_execution_config_stale".into());
+    }
+    s.require_object("execution_config", text(config, "configId")?)
+        .map_err(|_| "typed_execution_not_available")?;
+    Ok(fresh)
+}
+pub(super) fn readiness(s: &TradeAssemblyService, config: &Value) -> Value {
+    let result = current(s, config).and_then(|_| {
+        let (issuer, subject) = s
+            .responsible_human_identity()
+            .ok_or("typed_execution_human_required")?;
+        let now = s.runtime().clock.trusted_now_ms()?;
+        let identity = s.runtime().identity.resolve(subject, now)?;
+        if identity.issuer != issuer || identity.expires_at_ms <= now {
+            return Err("typed_execution_human_stale".into());
+        }
+        Ok(())
+    });
+    match result {
+        Ok(()) => {
+            let mut result = json!({"ready":true,"blockedReasons":[],"capabilityGraphRevision":s.runtime().storage.get_json("capability_graph_revisions",config["capabilityGraphRevisionId"].as_str().unwrap_or_default()).ok().flatten(),"executionContractVersion":VERSION,"continuousExecution":false,"entryDecisionRequired":true});
+            if !config["typedExecution"]["automaticExecution"].is_null() {
+                result["scheduledFinancialEntrySupported"] = json!(true);
+                result["observationAcquisition"] = config["typedExecution"]["automaticExecution"]
+                    ["observationAcquisition"]
+                    .as_str()
+                    .map_or_else(|| json!("legacy_single_phase"), |mode| json!(mode));
+                result["observationAcquisitionModes"] =
+                    json!(["legacy_single_phase", "bounded_independent_reads_v1"]);
+                result["observationBatchMaxReads"] = json!(3);
+                result["observationBatchStartBudgetMs"] = json!(10000);
+                result["observationBatchProviderAtomicSnapshot"] = json!(false);
+                let management =
+                    !config["typedExecution"]["automaticExecution"]["management"].is_null();
+                result["automaticExecutionScope"] = json!(if management {
+                    "same_occurrence_entry_and_owned_position_management"
+                } else {
+                    "entry_only"
+                });
+                result["syntheticExitAdmissionSupported"] = json!(management);
+                if management {
+                    result["managementObservationAcquisition"] = config["typedExecution"]
+                        ["automaticExecution"]["management"]["observationAcquisition"]
+                        .clone();
+                    result["managementObservationAcquisitionModes"] =
+                        json!([null, "bounded_independent_reads_v1"]);
+                    result["managementObservationAcquisitionDefault"] = json!("legacy_serial");
+                    result["managementObservationBatchMaxReads"] = json!(4);
+                    result["managementObservationBatchProviderAtomicSnapshot"] = json!(false);
+                }
+
+                result["automaticReversalSupported"] = json!(false);
+                if !config["typedExecution"]["automaticExecution"]["accountHealthRefresh"].is_null()
+                {
+                    result["automaticAccountHealthRefreshSupported"] = json!(true);
+                    result["accountHealthRefreshRequiredAction"] =
+                        json!(super::automatic_health::REQUIRED_ACTION);
+                }
+                result["nextSessionRolloverSupported"] = json!(false);
+                result["localSessionWorkerStartRequired"] = json!(management);
+            }
+            result
+        }
+        Err(code) => {
+            json!({"ready":false,"blockedReasons":[{"code":code}],"executionContractVersion":VERSION})
+        }
+    }
+}
+
+pub(super) fn config_id(
+    s: &TradeAssemblyService,
+    command: &ConfigCommand,
+    account: &Value,
+    broker_binding: &str,
+    policy: &order_plans::Policy,
+    health_pins: Option<&super::automatic_health::Pins>,
+) -> Result<String, String> {
+    let owner = s
+        .invocation_owner()
+        .ok_or("typed_execution_owner_required")?;
+    let mut binding = json!({"command":command,"owner":owner,"account":account,"brokerBinding":broker_binding,"policy":policy});
+    if let Some(pins) = health_pins {
+        binding["accountHealthProviderPins"] =
+            serde_json::to_value(pins).map_err(|_| "typed_execution_hash_invalid")?;
+    }
+    Ok(format!("cfg_typed_{}", typed_hash(&binding)?))
+}
+fn typed_hash<T: Serialize>(v: &T) -> Result<String, String> {
+    crate::data_pipeline::canonical_sha256(v).map_err(|_| "typed_execution_hash_invalid".into())
+}

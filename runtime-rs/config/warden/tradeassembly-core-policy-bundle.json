@@ -118,6 +118,15 @@
       "requires_receipt": true
     },
     {
+      "rule_id": "tradeassembly-selection-plan-prepare",
+      "action": "strategy.selection_plan.prepare",
+      "resource_kind": "strategy_selection_plan",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
       "rule_id": "tradeassembly-data-plan-prepare",
       "action": "strategy.data_plan.prepare",
       "resource_kind": "strategy_data_plan",
@@ -598,6 +607,24 @@
       "rule_id": "tradeassembly-session-schedule-prepare",
       "action": "strategy.session_schedule.prepare",
       "resource_kind": "strategy_session_schedule",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-order-plan-manage",
+      "action": "strategy.order_plan.manage",
+      "resource_kind": "strategy_order_plan",
+      "side_effect_class": "write",
+      "min_pep_coverage": "c3",
+      "required_decision": "allow",
+      "requires_receipt": true
+    },
+    {
+      "rule_id": "tradeassembly-order-plan-submit",
+      "action": "strategy.order_plan.submit",
+      "resource_kind": "strategy_order_plan",
       "side_effect_class": "write",
       "min_pep_coverage": "c3",
       "required_decision": "allow",

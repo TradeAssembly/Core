@@ -568,4 +568,46 @@ mod tests {
         );
         verify_no_private_build_paths(b"/build/tradeassembly/runtime-rs", &root).unwrap();
     }
+
+    #[test]
+    #[ignore = "requires exact current and retained previous Alpaca archives"]
+    fn compiled_alpaca_pin_passes_bundle_privacy_and_rejects_previous_private_binary() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let archive = PathBuf::from(
+            std::env::var_os("TRADEASSEMBLY_ALPACA_PLUGIN_PACKAGE")
+                .expect("explicit current pinned archive required"),
+        );
+        let previous = PathBuf::from(
+            std::env::var_os("TRADEASSEMBLY_ALPACA_PREVIOUS_PRIVATE_PACKAGE")
+                .expect("explicit retained previous archive required"),
+        );
+        let pin: Value = read_json(&root.join("packaging/alpaca.json")).unwrap();
+        let target = string(&pin, "target").unwrap();
+        verify_digest(&archive, string(&pin, "packageSha256").unwrap()).unwrap();
+        verify_alpaca_package(&archive, target, root).unwrap();
+        verify_digest(
+            &previous,
+            "d3f85503e64ff481d4137c8849c66b4ac545830a8c7ef17b7f756976edc3d00e",
+        )
+        .unwrap();
+        assert_eq!(
+            verify_alpaca_package(&previous, target, root).unwrap_err(),
+            "bundle_binary_contains_private_build_path"
+        );
+        if let Some(directory) = std::env::var_os("TRADEASSEMBLY_PIN_PROOF_DIR") {
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                PathBuf::from(directory).join("actual-bundle-alpaca-privacy.json"),
+                serde_json::to_vec_pretty(&json!({
+                    "pin": pin, "currentArchivePrivacy": "passed",
+                    "previousArchiveSha256": digest(&previous).unwrap(),
+                    "previousArchiveRefusal": "bundle_binary_contains_private_build_path",
+                    "guard": "verify_alpaca_package/verify_no_private_build_paths",
+                    "actualFullBundleAssembled": false, "providerCalls": 0
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
 }

@@ -9,7 +9,7 @@ use crate::backtest_contracts::{
     EndOfDataPolicy, EvaluationTiming, ExecutionConfiguration, FillPolicy, FillTiming,
     InstrumentConfiguration, LiquidityConfiguration, MissingDataPolicy, PriceSource,
     StrategyVersionBinding, BACKTEST_ATTEMPT_SCHEMA, BACKTEST_CONFIGURATION_SCHEMA,
-    BACKTEST_MANIFEST_SCHEMA, BACKTEST_RUN_SCHEMA,
+    BACKTEST_MANIFEST_SCHEMA, BACKTEST_MANIFEST_SCHEMA_V2, BACKTEST_RUN_SCHEMA,
 };
 use crate::domain::{BacktestRunCommand, BacktestRunFsm, BacktestRunState, LifecycleFsm};
 use crate::ports::{
@@ -22,6 +22,17 @@ use sha2::{Digest, Sha256};
 const QUEUE: &str = "backtest_runs_v1";
 const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const LEASE_MS: i64 = 30_000;
+// A normal evaluator step has a 45s work budget and may finish an in-flight
+// 15s invocation. This V2-only worker visibility includes bounded verification
+// and evidence sealing; it never alters market-data or financial freshness.
+const TYPED_LEASE_MS: i64 = 120_000;
+fn visibility_ms(typed: bool) -> i64 {
+    if typed {
+        TYPED_LEASE_MS
+    } else {
+        LEASE_MS
+    }
+}
 
 pub type BacktestExecutor<'a> =
     dyn Fn(&BacktestRunManifest, &BacktestAttempt) -> Result<Option<BacktestResult>, String> + 'a;
@@ -61,17 +72,24 @@ pub fn process_run(service: &TradeAssemblyService, worker: &str, run_id: &str) -
         return response;
     }
     let runtime = service.runtime();
-    let deliveries =
-        match runtime
-            .queue
-            .claim_partition(QUEUE, run_id, worker, runtime.clock.now_ms(), LEASE_MS)
-        {
-            Ok(deliveries) => deliveries,
-            Err(code) if code == "queue_partition_claim_unsupported" => {
-                return ServiceResponse::conflict("queue_partition_claim_unsupported");
-            }
-            Err(_) => return ServiceResponse::conflict("backtest_scoped_claim_failed"),
-        };
+    let manifest = match runtime.backtests.get_manifest(run_id) {
+        Ok(Some(manifest)) if manifest.verify().is_ok() => manifest,
+        _ => return ServiceResponse::bad_request("backtest_manifest_invalid"),
+    };
+    let visibility = visibility_ms(manifest.content.configuration.typed_evaluation.is_some());
+    let deliveries = match runtime.queue.claim_partition(
+        QUEUE,
+        run_id,
+        worker,
+        runtime.clock.now_ms(),
+        visibility,
+    ) {
+        Ok(deliveries) => deliveries,
+        Err(code) if code == "queue_partition_claim_unsupported" => {
+            return ServiceResponse::conflict("queue_partition_claim_unsupported");
+        }
+        Err(_) => return ServiceResponse::conflict("backtest_scoped_claim_failed"),
+    };
     let Some(delivery) = deliveries.into_iter().next() else {
         return get(service, run_id);
     };
@@ -96,6 +114,10 @@ fn execute_manifest(
         .dataset_snapshots
         .get(&manifest.content.configuration.dataset.dataset_id)?
         .ok_or_else(|| "backtest_dataset_unavailable".to_string())?;
+    super::dataset_projections::verify_for_research(service, &snapshot)?;
+    if manifest.content.configuration.typed_evaluation.is_some() {
+        return super::typed_backtest::advance(service, manifest, &version, &snapshot);
+    }
     crate::backtest_engine::execute(
         manifest,
         &version,
@@ -123,6 +145,9 @@ pub fn replay(service: &TradeAssemblyService, run_id: &str) -> ServiceResponse {
     if run.state != BacktestRunState::Completed {
         return ServiceResponse::conflict("backtest_not_replayable");
     }
+    if manifest.content.configuration.typed_evaluation.is_some() {
+        return ServiceResponse::conflict("typed_backtest_recompute_command_required");
+    }
     let Some(version) = exact_strategy_version(service, &manifest) else {
         return ServiceResponse::bad_request("backtest_strategy_version_required");
     };
@@ -134,7 +159,11 @@ pub fn replay(service: &TradeAssemblyService, run_id: &str) -> ServiceResponse {
     else {
         return ServiceResponse::bad_request("backtest_dataset_unavailable");
     };
-    match crate::backtest_engine::replay(&manifest, &version, &snapshot, &expected) {
+    if let Err(code) = super::dataset_projections::verify_for_research(service, &snapshot) {
+        return ServiceResponse::conflict(&code);
+    }
+    let replayed = crate::backtest_engine::replay(&manifest, &version, &snapshot, &expected);
+    match replayed {
         Ok(result) => ServiceResponse::ok(json!({
             "runId": run_id,
             "status": "verified",
@@ -182,7 +211,11 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     else {
         return ServiceResponse::bad_request("backtest_strategy_version_required");
     };
-    if strategy_version
+    if configuration.typed_evaluation.is_some() {
+        if let Err(code) = super::typed_backtest::validate_configuration(service, &configuration) {
+            return ServiceResponse::bad_request(&code);
+        }
+    } else if strategy_version
         .get("spec")
         .ok_or(())
         .and_then(|spec| ResearchProgram::compile_json(spec).map_err(|_| ()))
@@ -195,13 +228,25 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
         .dataset_snapshots
         .get(&configuration.dataset.dataset_id)
     {
-        Ok(Some(snapshot)) if snapshot.verify().is_ok() => snapshot,
+        Ok(Some(snapshot))
+            if snapshot.verify().is_ok()
+                && super::dataset_projections::verify_for_research(service, &snapshot).is_ok() =>
+        {
+            snapshot
+        }
         _ => return ServiceResponse::bad_request("backtest_dataset_integrity_failed"),
     };
     if snapshot.snapshot_ref != configuration.dataset.snapshot_ref
         || snapshot.content_hash != configuration.dataset.content_hash
     {
         return ServiceResponse::bad_request("backtest_dataset_integrity_failed");
+    }
+    if configuration.typed_evaluation.is_some() {
+        if let Err(code) =
+            super::typed_backtest::validate_dataset(service, &configuration, &snapshot)
+        {
+            return ServiceResponse::bad_request(&code);
+        }
     }
     let idempotency_key = match body
         .get("idempotencyKey")
@@ -254,7 +299,12 @@ pub fn create(service: &TradeAssemblyService, body: Value) -> ServiceResponse {
     let context = context(&body, idempotency_key.clone());
     let manifest = match BacktestRunManifest::build(
         BacktestRunManifestContent {
-            schema: BACKTEST_MANIFEST_SCHEMA.to_string(),
+            schema: if configuration.typed_evaluation.is_some() {
+                BACKTEST_MANIFEST_SCHEMA_V2
+            } else {
+                BACKTEST_MANIFEST_SCHEMA
+            }
+            .to_string(),
             run_id: run_id.clone(),
             request_hash: request_hash.clone(),
             idempotency_key: idempotency_key.as_str().to_string(),
@@ -324,7 +374,13 @@ pub fn create_from_manifest(
     else {
         return ServiceResponse::bad_request("backtest_strategy_version_required");
     };
-    if strategy_version
+    if manifest.content.configuration.typed_evaluation.is_some() {
+        if let Err(code) =
+            super::typed_backtest::validate_configuration(service, &manifest.content.configuration)
+        {
+            return ServiceResponse::bad_request(&code);
+        }
+    } else if strategy_version
         .get("spec")
         .ok_or(())
         .and_then(|spec| ResearchProgram::compile_json(spec).map_err(|_| ()))
@@ -337,13 +393,27 @@ pub fn create_from_manifest(
         .dataset_snapshots
         .get(&manifest.content.configuration.dataset.dataset_id)
     {
-        Ok(Some(snapshot)) if snapshot.verify().is_ok() => snapshot,
+        Ok(Some(snapshot))
+            if snapshot.verify().is_ok()
+                && super::dataset_projections::verify_for_research(service, &snapshot).is_ok() =>
+        {
+            snapshot
+        }
         _ => return ServiceResponse::bad_request("backtest_dataset_integrity_failed"),
     };
     if snapshot.snapshot_ref != manifest.content.configuration.dataset.snapshot_ref
         || snapshot.content_hash != manifest.content.configuration.dataset.content_hash
     {
         return ServiceResponse::bad_request("backtest_dataset_integrity_failed");
+    }
+    if manifest.content.configuration.typed_evaluation.is_some() {
+        if let Err(code) = super::typed_backtest::validate_dataset(
+            service,
+            &manifest.content.configuration,
+            &snapshot,
+        ) {
+            return ServiceResponse::bad_request(&code);
+        }
     }
     let idempotency_key = match IdempotencyKey::new(&manifest.content.idempotency_key) {
         Ok(key) => key,
@@ -833,6 +903,19 @@ fn process_delivery(
             .acknowledge(&delivery.message_id, delivery.fencing_token);
         return ServiceResponse::conflict("backtest_stale_completion");
     }
+    if manifest.content.configuration.typed_evaluation.is_some()
+        && service.invocation_owner().is_none()
+    {
+        // A claimed queue item is returned, never failed or impersonated. V2
+        // initially requires its actual current owner on every processing turn.
+        let _ = runtime.queue.retry(
+            &delivery.message_id,
+            delivery.fencing_token,
+            now + LEASE_MS,
+            "typed_backtest_current_owner_required",
+        );
+        return ServiceResponse::object_unavailable();
+    }
     let started = match (&run.state, &attempt.state) {
         (BacktestRunState::Queued, BacktestAttemptState::Queued) => {
             let mut replacement = run.clone();
@@ -887,7 +970,13 @@ fn process_delivery(
     {
         return ServiceResponse::conflict("backtest_worker_lease_lost");
     }
-    match executor(&manifest, &attempt) {
+    let outcome = executor(&manifest, &attempt);
+    // An expired worker must not retry, acknowledge, fail, or complete an old
+    // delivery after a newer worker may have claimed its fence.
+    if runtime.clock.now_ms() >= delivery.lease_until_ms {
+        return ServiceResponse::conflict("backtest_worker_lease_lost");
+    }
+    match outcome {
         Ok(Some(result)) => complete(
             service,
             &started,
@@ -904,7 +993,11 @@ fn process_delivery(
             let _ = runtime.queue.retry(
                 &delivery.message_id,
                 delivery.fencing_token,
-                now + LEASE_MS,
+                if manifest.content.configuration.typed_evaluation.is_some() {
+                    runtime.clock.now_ms() + 1
+                } else {
+                    now + LEASE_MS
+                },
                 "backtest_executor_result_required",
             );
             ServiceResponse {
@@ -1309,6 +1402,7 @@ fn compatibility_configuration(
         _ => EndOfDataPolicy::MarkToMarket,
     };
     Ok(BacktestConfiguration {
+        typed_evaluation: None,
         schema: BACKTEST_CONFIGURATION_SCHEMA.to_string(),
         strategy: StrategyVersionBinding {
             strategy_id: strategy_id.to_string(),
@@ -1431,6 +1525,10 @@ fn resolve_capability_graph(
     body: &Value,
     configuration: &mut BacktestConfiguration,
 ) -> Result<(), String> {
+    if configuration.typed_evaluation.is_some() {
+        // V2 binds an already prepared owned backtest plan/graph explicitly.
+        return super::typed_backtest::validate_configuration(service, configuration);
+    }
     let version = service
         .runtime()
         .storage
@@ -1540,7 +1638,7 @@ fn version_matches_binding(version: &Value, binding: &StrategyVersionBinding) ->
         })
 }
 
-fn exact_strategy_version(
+pub(super) fn exact_strategy_version(
     service: &TradeAssemblyService,
     manifest: &BacktestRunManifest,
 ) -> Option<Value> {
@@ -1615,4 +1713,15 @@ fn run_value(
             .unwrap_or_else(|| json!([]));
     }
     value
+}
+
+#[cfg(test)]
+mod typed_backtest_queue_tests {
+    use super::*;
+    #[test]
+    fn typed_backtest_visibility_is_explicit_and_preserves_legacy() {
+        assert_eq!(visibility_ms(false), 30_000);
+        assert_eq!(visibility_ms(true), 120_000);
+        assert!(visibility_ms(true) > 45_000 + 15_000);
+    }
 }

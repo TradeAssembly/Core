@@ -2,12 +2,15 @@
 
 use crate::ports::{
     FailureMode, InstalledPluginPackage, OperationDataSnapshot, PluginPackageInstallRequest,
-    PluginPackagePort, PortDescriptor, PortKind, VersionedPort,
+    PluginPackagePort, PortDescriptor, PortKind, VerifiedPackageMetadataSnapshot, VersionedPort,
 };
 use flate2::read::GzDecoder;
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
 use serde_json::Value;
+#[cfg(not(target_arch = "aarch64"))]
 use sha2::{Digest, Sha256};
+#[cfg(target_arch = "aarch64")]
+use sha2_platform::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -20,6 +23,9 @@ use tradeassembly_plugin_sdk::{
     PluginPackageDescriptor,
 };
 use url::Url;
+
+#[path = "plugin_package_parsing.rs"]
+pub(super) mod parsing;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -53,6 +59,7 @@ impl PackageAddressResolver for SystemPackageAddressResolver {
 pub struct LocalPluginPackageStore {
     root: PathBuf,
     metadata: super::plugin_data_contracts::VerificationCache,
+    parsing: parsing::ParsingCache,
 }
 
 impl LocalPluginPackageStore {
@@ -67,6 +74,7 @@ impl LocalPluginPackageStore {
         Ok(Self {
             root,
             metadata: Default::default(),
+            parsing: Default::default(),
         })
     }
 
@@ -84,53 +92,98 @@ impl LocalPluginPackageStore {
     }
 
     fn load_record(&self, package_root: &Path) -> Result<InstalledPluginPackage, String> {
+        self.load_record_with_metadata(package_root)
+            .map(|(package, _)| package)
+    }
+
+    // The complete existing byte/integrity path returns its already-verified
+    // metadata too; a snapshot must not repeat the artifact closure read.
+    fn load_record_with_metadata(
+        &self,
+        package_root: &Path,
+    ) -> Result<
+        (
+            InstalledPluginPackage,
+            std::sync::Arc<super::plugin_data_contracts::VerifiedMetadata>,
+        ),
+        String,
+    > {
+        let _timing = crate::service::order_plans::financial_timing("package.load_total");
+        let record_timing =
+            crate::service::order_plans::financial_timing("package.record_read_parse");
         let bytes = fs::read(package_root.join(INSTALLED_RECORD))
             .map_err(|_| "plugin_package_record_missing".to_string())?;
-        let mut record: InstalledPluginPackage = serde_json::from_slice(&bytes)
-            .map_err(|_| "plugin_package_record_invalid".to_string())?;
+        let mut record = (*self.parsing.record(&bytes)?).clone();
+        drop(record_timing);
+        let descriptor_read_timing =
+            crate::service::order_plans::financial_timing("package.descriptor_fs");
         let descriptor_bytes = read_metadata_file(
             &package_root.join(PACKAGE_DESCRIPTOR),
             MAX_DESCRIPTOR_BYTES,
             "plugin_package_descriptor_missing",
             "plugin_package_descriptor_too_large",
         )?;
-        let envelope = VersionedPackageDescriptor::decode(&descriptor_bytes)?;
+        drop(descriptor_read_timing);
+        let descriptor_timing =
+            crate::service::order_plans::financial_timing("package.descriptor_semantic");
+        let parsed_descriptor = self.parsing.descriptor(&descriptor_bytes)?;
+        let envelope = parsed_descriptor.envelope();
         let descriptor = envelope.base();
         descriptor
             .validate()
             .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
         let target = target_record(descriptor)?;
+        drop(descriptor_timing);
+        let manifest_read_timing =
+            crate::service::order_plans::financial_timing("package.manifest_fs");
         let manifest_path = package_root.join(&descriptor.manifest.path);
         ensure_within(package_root, &manifest_path)?;
-        let manifest_bytes = read_manifest_file(&manifest_path, &envelope)?;
-        let manifest: Value = serde_yaml::from_slice(&manifest_bytes)
-            .map_err(|_| "plugin_package_manifest_invalid".to_string())?;
+        let manifest_bytes = read_manifest_file(&manifest_path, envelope)?;
+        drop(manifest_read_timing);
+        let manifest_decode_timing =
+            crate::service::order_plans::financial_timing("package.manifest_yaml");
+        let parsed_manifest = self.parsing.manifest(&manifest_bytes)?;
+        let manifest = parsed_manifest.value();
+        drop(manifest_decode_timing);
+        let executable_read_timing =
+            crate::service::order_plans::financial_timing("package.executable_fs");
         let executable_path = package_root.join(&target.binary.path);
         ensure_within(package_root, &executable_path)?;
         let executable_bytes = fs::read(&executable_path)
             .map_err(|_| "plugin_package_executable_missing".to_string())?;
-        let canonical_manifest_sha256 = canonical_sha256(&manifest)?;
-        let descriptor_value: Value = serde_json::from_slice(&descriptor_bytes)
-            .map_err(|_| "plugin_package_descriptor_invalid".to_string())?;
+        drop(executable_read_timing);
+        let integrity_timing =
+            crate::service::order_plans::financial_timing("package.hash_serialize_compare");
+        let canonical_manifest_sha256 = parsed_manifest.canonical_sha256();
+        let descriptor_value = parsed_descriptor.value();
         if descriptor.manifest.sha256 != sha256(&manifest_bytes)
             || target.binary.sha256 != sha256(&executable_bytes)
             || descriptor.plugin.id != record.plugin_ref
             || descriptor.plugin.version != record.version
             || manifest["metadata"]["id"] != record.plugin_ref
             || manifest["metadata"]["version"] != record.version
-            || canonical_manifest_sha256 != record.manifest_sha256
+            || canonical_manifest_sha256 != record.manifest_sha256.as_str()
             || descriptor.compatibility.host_contract.minimum != record.host_contract
             || descriptor.compatibility.host_contract.maximum != record.host_contract
             || descriptor.compatibility.sdk_version != record.sdk_version
-            || descriptor_value != record.descriptor
-            || manifest != record.manifest
+            || descriptor_value != &record.descriptor
+            || manifest != &record.manifest
         {
             return Err("plugin_package_integrity_invalid".to_string());
         }
-        self.verify_metadata(&envelope, package_root, &manifest)?;
+        drop(integrity_timing);
+        let metadata =
+            crate::service::order_plans::measured("package.metadata_closure", || match envelope {
+                VersionedPackageDescriptor::Legacy(_) => {
+                    self.verified_metadata(envelope, package_root, manifest)
+                }
+                _ => self
+                    .metadata
+                    .get_parsed(package_root, &parsed_descriptor, &parsed_manifest),
+            })?;
         record.install_root = package_root.to_path_buf();
         record.executable_path = executable_path;
-        Ok(record)
+        Ok((record, metadata))
     }
 
     fn verify_metadata(
@@ -139,12 +192,24 @@ impl LocalPluginPackageStore {
         root: &Path,
         manifest: &Value,
     ) -> Result<(), String> {
+        self.verified_metadata(envelope, root, manifest).map(|_| ())
+    }
+
+    fn verified_metadata(
+        &self,
+        envelope: &VersionedPackageDescriptor,
+        root: &Path,
+        manifest: &Value,
+    ) -> Result<std::sync::Arc<super::plugin_data_contracts::VerifiedMetadata>, String> {
         match envelope {
             VersionedPackageDescriptor::Legacy(descriptor) => {
-                verify_response_schemas(descriptor, root)
+                verify_response_schemas(descriptor, root)?;
+                // Preserve legacy data_schema/data_recipe semantics: legacy
+                // response schemas are verified but are not V2 data schemas.
+                Ok(Default::default())
             }
             VersionedPackageDescriptor::Data(_) | VersionedPackageDescriptor::Recipes(_) => {
-                self.metadata.get(envelope, root, manifest).map(|_| ())
+                self.metadata.get(envelope, root, manifest)
             }
         }
     }
@@ -560,6 +625,24 @@ impl PluginPackagePort for LocalPluginPackageStore {
         self.load_record(&root).map(Some)
     }
 
+    fn verified_metadata_snapshot(
+        &self,
+        package_sha256: &str,
+    ) -> Result<Option<VerifiedPackageMetadataSnapshot>, String> {
+        validate_digest(package_sha256)?;
+        let root = self.package_root(package_sha256);
+        if !root.is_dir() {
+            return Ok(None);
+        }
+        let (package, metadata) = self.load_record_with_metadata(&root)?;
+        Ok(Some(VerifiedPackageMetadataSnapshot {
+            package,
+            contracts: metadata.contracts.clone(),
+            schemas: metadata.schemas.clone(),
+            recipes: metadata.recipes.clone(),
+        }))
+    }
+
     fn data_contract(
         &self,
         package_sha256: &str,
@@ -744,7 +827,15 @@ fn read_manifest_file(
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    // Keep the same lowercase fixed-width encoding across Digest API versions.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut result = String::with_capacity(64);
+    for &byte in digest.iter() {
+        result.push(HEX[(byte >> 4) as usize] as char);
+        result.push(HEX[(byte & 15) as usize] as char);
+    }
+    result
 }
 
 fn canonical_sha256(value: &Value) -> Result<String, String> {
@@ -1120,3 +1211,22 @@ metadata:
 #[cfg(test)]
 #[path = "plugin_packages_data_tests.rs"]
 pub(crate) mod data_package_tests;
+
+#[cfg(test)]
+mod integrity_digest_compatibility_tests {
+    #[test]
+    fn platform_file_digest_preserves_standard_and_legacy_sha256_identity() {
+        use sha2::Digest as _;
+        assert_eq!(
+            super::sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        for length in [0, 1, 55, 56, 63, 64, 65, 1000, 65536, 1048576] {
+            let bytes = (0..length)
+                .map(|i| ((i * 31 + 7) % 256) as u8)
+                .collect::<Vec<_>>();
+            let legacy = format!("{:x}", sha2::Sha256::digest(&bytes));
+            assert_eq!(super::sha256(&bytes), legacy, "length {length}");
+        }
+    }
+}

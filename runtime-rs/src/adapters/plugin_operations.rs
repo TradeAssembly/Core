@@ -17,6 +17,47 @@ const REQUESTS_NS: &str = "plugin_operation_requests";
 const PREPARED_BINDINGS_NS: &str = "plugin_operation_prepared_bindings";
 const BROKER_DISPATCH_NS: &str = "plugin_broker_dispatch_claims";
 const BROKER_DENIAL_NS: &str = "plugin_broker_submission_denials";
+
+// Private test-profile diagnostic only. Never log an arbitrary port error:
+// implementations may return sensitive context. Public errors and stored denial
+// records retain their established generic contract.
+#[cfg(test)]
+fn profiled_admission_denial(error: &str) {
+    if std::env::var_os("FINANCIAL_PROFILE").is_none() {
+        return;
+    }
+    let code = profiled_admission_denial_code(error);
+    eprintln!("FIN_PROFILE broker.admission_denied code={code}");
+}
+fn profiled_admission_denial_code(error: &str) -> &'static str {
+    match error {
+        "order_plan_observation_stale" => "order_plan_observation_stale",
+        "managed_close_stale" => "managed_close_stale",
+        "managed_reversal_not_current" => "managed_reversal_not_current",
+        "managed_execution_window_closed" => "managed_execution_window_closed",
+        "broker_v2_authority_or_data_expired" => "broker_v2_authority_or_data_expired",
+        "broker_v2_state_changed" => "broker_v2_state_changed",
+        _ => "unclassified_admission_denial",
+    }
+}
+#[cfg(test)]
+#[test]
+fn financial_profile_denial_mapping_is_closed_and_includes_observation_stale() {
+    assert_eq!(
+        profiled_admission_denial_code("order_plan_observation_stale"),
+        "order_plan_observation_stale"
+    );
+    for arbitrary in [
+        "sensitive unknown context",
+        "order_plan_observation_stale:extra",
+        " order_plan_observation_stale",
+    ] {
+        assert_eq!(
+            profiled_admission_denial_code(arbitrary),
+            "unclassified_admission_denial"
+        );
+    }
+}
 const RECOVERY_REQUESTS_NS: &str = "plugin_broker_recovery_requests";
 const RECOVERY_OUTCOMES_NS: &str = "plugin_broker_recovery_outcomes";
 pub(crate) const RESET_NAMESPACES: &[&str] = &[
@@ -242,6 +283,189 @@ impl PluginOperationPort for LocalPluginOperations {
         request: &PluginOperationRequest,
         context: &SideEffectContext,
     ) -> Result<PluginOperationResponse, String> {
+        self.invoke_with_source(request, context, None)
+    }
+    fn reconcile_order_v2(
+        &self,
+        source: &crate::broker_submission::v2::OrderPlanSource,
+        context: &SideEffectContext,
+    ) -> Result<crate::broker_submission::v2::RecoveryResult, String> {
+        use crate::broker_submission::v2::{self, RecoveryKind, RecoveryResult};
+        let boundary = self
+            .broker_boundary
+            .as_ref()
+            .ok_or("broker_submission_boundary_unavailable")?;
+        // Current observer/source checks precede even cached historical results.
+        let plan = boundary.prepare_recovery_v2(source, context)?;
+        let cache_key = context.idempotency_key.as_str();
+        if let Some(raw) = self
+            .storage
+            .get_json("broker_v2_recovery_results", cache_key)?
+        {
+            let result: RecoveryResult =
+                serde_json::from_value(raw).map_err(|_| "broker_v2_recovery_cache_invalid")?;
+            if result.plan_id != source.historical()?.plan_id {
+                return Err("broker_v2_recovery_key_conflict".into());
+            }
+            return Ok(result);
+        }
+        let mut receipt = None;
+        let mut kind = plan.kind;
+        if let Some(lookup) = &plan.lookup {
+            let host = self
+                .external
+                .as_ref()
+                .ok_or("external_broker_host_unavailable")?;
+            let prepared = host.prepare_broker_recovery(lookup, context)?;
+            if prepared.binding != plan.binding {
+                return Err("broker_v2_observer_binding_changed".into());
+            }
+            let current = boundary.prepare_recovery_v2(source, context)?;
+            if current.binding != plan.binding || current.original_key != plan.original_key {
+                return Err("broker_v2_observer_binding_changed".into());
+            }
+            let response = host.execute_prepared(prepared)?;
+            let after = boundary.prepare_recovery_v2(source, context)?;
+            if after.binding != plan.binding || after.original_key != plan.original_key {
+                return Err("broker_v2_observer_binding_changed".into());
+            }
+            let o = v2::observation_from_response(
+                &response,
+                source,
+                source.service().runtime().clock.now_ms(),
+            )?;
+            let original_context = SideEffectContext::new(
+                plan.envelope.authority.clone(),
+                plan.envelope.idempotency_key.clone(),
+            );
+            let unknown = o.status == tradeassembly_plugin_sdk::broker_v2::OrderStatus::Unknown;
+            source.observe(o, &original_context)?;
+            kind = if unknown {
+                RecoveryKind::StillUnknown
+            } else {
+                RecoveryKind::Observed
+            };
+            receipt = Some(response);
+        }
+        let state = source.state()?.ok_or("broker_v2_state_missing")?;
+        // Repair a lost original receipt from a verified stored observation.
+        // Never overwrite an earlier immutable acceptance with a later fill.
+        if !matches!(
+            state.phase,
+            crate::service::order_plans::submission::Phase::Unknown
+        ) {
+            if let Some(o) = &state.observation {
+                let payload =
+                    serde_json::to_value(o).map_err(|_| "broker_v2_observation_invalid")?;
+                let original = PluginOperationResponse {
+                    correlation_id: plan.original.correlation_id.clone(),
+                    schema_ref: tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA.into(),
+                    payload: payload.clone(),
+                    observed_at_ms: o.known_at_ms,
+                    source_event_id: format!("broker-v2-recovery:{}", state.record_sha256),
+                    content_hash: crate::data_pipeline::canonical_sha256(&payload)
+                        .map_err(|_| "broker_v2_observation_invalid")?,
+                    freshness_state: "observed".into(),
+                    evidence_refs: vec![
+                        format!("plugin-receipt:{}", plan.original_key),
+                        format!("broker-reconciliation:{}", state.record_sha256),
+                    ],
+                    deterministic: false,
+                    replayable: false,
+                    provider_outcome_id: o.provider_order_id.clone(),
+                    reconciliation_required: false,
+                };
+                let candidate =
+                    serde_json::to_value(&original).map_err(|_| "broker_v2_observation_invalid")?;
+                let existing = self.storage.get_json(RECEIPTS_NS, &plan.original_key)?;
+                let existing = if existing.is_some() {
+                    existing
+                } else {
+                    match self.storage.put_json_if_absent(
+                        RECEIPTS_NS,
+                        &plan.original_key,
+                        candidate,
+                        context,
+                    ) {
+                        Ok(_) => None,
+                        Err(e) if e == "immutable_storage_conflict" => Some(
+                            self.storage
+                                .get_json(RECEIPTS_NS, &plan.original_key)?
+                                .ok_or("broker_v2_original_receipt_missing")?,
+                        ),
+                        Err(e) => return Err(e),
+                    }
+                };
+                if let Some(raw) = existing {
+                    let historical = validated_stored_response(raw, &plan.original)?;
+                    let observed: tradeassembly_plugin_sdk::broker_v2::OrderObservation =
+                        serde_json::from_value(historical.payload)
+                            .map_err(|_| "broker_v2_original_receipt_invalid")?;
+                    observed.validate(source.service().runtime().clock.now_ms())?;
+                    let p = source.historical()?;
+                    if historical.schema_ref
+                        != tradeassembly_plugin_sdk::broker_v2::OBSERVATION_SCHEMA
+                        || observed.order != p.order
+                        || Some(observed.canonical_account_sha256.as_str())
+                            != p.canonical_account
+                                .as_ref()
+                                .map(|a| a.identity_sha256.as_str())
+                    {
+                        return Err("broker_v2_original_receipt_binding_invalid".into());
+                    }
+                }
+                if receipt.is_none() {
+                    receipt = Some(original)
+                }
+            }
+        }
+        let result = RecoveryResult {
+            schema_version: "tradeassembly.broker_recovery_result.v2".into(),
+            plan_id: state.plan_id,
+            kind,
+            record_sha256: state.record_sha256,
+            receipt,
+        };
+        let raw = serde_json::to_value(&result).map_err(|_| "broker_v2_recovery_result_invalid")?;
+        if self.storage.put_json_if_absent(
+            "broker_v2_recovery_results",
+            cache_key,
+            raw.clone(),
+            context,
+        )? == ImmutablePutOutcome::AlreadyPresent
+            && self
+                .storage
+                .get_json("broker_v2_recovery_results", cache_key)?
+                != Some(raw)
+        {
+            return Err("broker_v2_recovery_key_conflict".into());
+        }
+        Ok(result)
+    }
+    fn invoke_order_v2(
+        &self,
+        request: &PluginOperationRequest,
+        context: &SideEffectContext,
+        source: &crate::broker_submission::v2::OrderPlanSource,
+    ) -> Result<PluginOperationResponse, String> {
+        self.invoke_with_source(request, context, Some(source))
+    }
+}
+impl LocalPluginOperations {
+    fn invoke_with_source(
+        &self,
+        request: &PluginOperationRequest,
+        context: &SideEffectContext,
+        source: Option<&crate::broker_submission::v2::OrderPlanSource>,
+    ) -> Result<PluginOperationResponse, String> {
+        let _timing = crate::service::order_plans::financial_timing(if source.is_some() {
+            "broker.invoke"
+        } else {
+            ""
+        });
+        if crate::broker_submission::v2::is_submission(request) != source.is_some() {
+            return Err("broker_v2_plan_source_required".into());
+        }
         validate_request(request)?;
         // An unavailable boundary has made no attempt. Do not create a
         // dispatch claim that would turn its next retry into an ambiguity.
@@ -355,7 +579,10 @@ impl PluginOperationPort for LocalPluginOperations {
                     .as_ref()
                     .ok_or_else(|| "plugin_operation_unsupported".to_string());
                 match external.and_then(|external| {
-                    let prepared = external.prepare(request, context)?;
+                    let prepared = crate::service::order_plans::measured(
+                        if source.is_some() { "c5.prepare" } else { "" },
+                        || external.prepare(request, context),
+                    )?;
                     let binding = serde_json::to_value(&prepared.binding)
                         .map_err(|_| "plugin_prepared_binding_invalid".to_string())?;
                     if self.storage.put_json_if_absent(
@@ -387,6 +614,21 @@ impl PluginOperationPort for LocalPluginOperations {
             }
         };
 
+        if broker_submission
+            && external_prepared
+                .as_ref()
+                .is_some_and(|p| !p.is_read_only())
+            && !guarded_submission
+        {
+            self.record_terminal_denial(
+                receipt_key,
+                &request_hash,
+                request,
+                "unsupported_broker_write",
+                context,
+            )?;
+            return Err("plugin_order_submission_denied".into());
+        }
         let permit = if guarded_submission {
             let Some(boundary) = self.broker_boundary.as_ref() else {
                 self.record_terminal_denial(
@@ -401,9 +643,32 @@ impl PluginOperationPort for LocalPluginOperations {
             let prepared_binding = external_prepared
                 .as_ref()
                 .ok_or_else(|| "plugin_live_prepared_binding_missing".to_string())?;
-            match boundary.admit(request, context, &prepared_binding.binding) {
+            let admission = if let Some(source) = source {
+                crate::service::order_plans::measured("c5.admit", || {
+                    boundary.admit_v2(request, context, &prepared_binding.binding, source)
+                })
+            } else {
+                boundary.admit(request, context, &prepared_binding.binding)
+            };
+            match admission {
                 Ok(permit) => Some(permit),
-                Err(_) => {
+                Err(_error) => {
+                    #[cfg(test)]
+                    profiled_admission_denial(&_error);
+                    let _denied = crate::service::order_plans::financial_timing(
+                        match profiled_admission_denial_code(&_error) {
+                            "order_plan_observation_stale" => "c5.denied.observation_stale",
+                            "managed_close_stale" => "c5.denied.close_stale",
+                            "managed_reversal_not_current" => "c5.denied.reversal_stale",
+                            "managed_execution_window_closed" => "c5.denied.window_closed",
+                            "broker_v2_authority_or_data_expired" => "c5.denied.expired",
+                            "broker_v2_state_changed" => "c5.denied.state_changed",
+                            _ => "c5.denied.other",
+                        },
+                    );
+                    if let Some(source) = source {
+                        source.denied_before_send(context)?;
+                    }
                     self.record_terminal_denial(
                         receipt_key,
                         &request_hash,
@@ -427,21 +692,55 @@ impl PluginOperationPort for LocalPluginOperations {
                     &request_hash,
                     request,
                 )?;
+                if source.is_none() {
+                    self.broker_boundary
+                        .as_ref()
+                        .ok_or("broker_boundary_missing")?
+                        .revalidate_after_checkpoint(
+                            request,
+                            context,
+                            &external_prepared
+                                .as_ref()
+                                .ok_or("prepared_binding_missing")?
+                                .binding,
+                            permit.as_ref().ok_or("broker_permit_missing")?,
+                        )?;
+                }
+            }
+        }
+
+        if let Some(source) = source {
+            let permit = permit.as_ref().ok_or("broker_v2_permit_missing")?;
+            crate::service::order_plans::measured("c5.before_send", || {
+                source.before_send(context)
+            })?;
+            let recheck = crate::service::order_plans::measured("c5.revalidate", || {
                 self.broker_boundary
                     .as_ref()
                     .ok_or("broker_boundary_missing")?
-                    .revalidate_after_checkpoint(
+                    .revalidate_v2(
                         request,
                         context,
                         &external_prepared
                             .as_ref()
                             .ok_or("prepared_binding_missing")?
                             .binding,
-                        permit.as_ref().ok_or("broker_permit_missing")?,
-                    )?;
+                        permit,
+                        source,
+                    )
+            });
+            if let Err(error) = recheck {
+                source.denied_before_send(context)?;
+                self.record_terminal_denial(
+                    receipt_key,
+                    &request_hash,
+                    request,
+                    "pre_send_refused",
+                    context,
+                )?;
+                return Err(error);
             }
         }
-
         let response = match (request.plugin_ref.as_str(), request.operation_id.as_str()) {
             ("tradeassembly.simbroker", "marketdata.quote.read") => quote(request),
             ("tradeassembly.simbroker", "marketdata.bars.read")
@@ -452,11 +751,15 @@ impl PluginOperationPort for LocalPluginOperations {
             ("tradeassembly.core-runtime", "calendar.session.resolve_v1") => {
                 calendar_session(request)
             }
-            _ => self
-                .external
-                .as_ref()
-                .ok_or_else(|| "plugin_operation_unsupported".to_string())?
-                .execute_prepared(external_prepared.expect("external invocation prepared")),
+            _ => crate::service::order_plans::measured(
+                if source.is_some() { "c5.dispatch" } else { "" },
+                || {
+                    self.external
+                        .as_ref()
+                        .ok_or_else(|| "plugin_operation_unsupported".to_string())?
+                        .execute_prepared(external_prepared.expect("external invocation prepared"))
+                },
+            ),
         };
         let mut response = match response {
             Ok(response) => response,
@@ -473,10 +776,15 @@ impl PluginOperationPort for LocalPluginOperations {
             }
             Err(error) => return Err(error),
         };
-        if !response.reconciliation_required {
+        if !response.reconciliation_required || source.is_some() {
             if let (Some(boundary), Some(permit)) = (self.broker_boundary.as_ref(), permit.as_ref())
             {
-                if let Err(error) = boundary.complete(permit, &response) {
+                let completion = if let Some(source) = source {
+                    boundary.complete_v2(permit, &response, source)
+                } else {
+                    boundary.complete(permit, &response)
+                };
+                if let Err(error) = completion {
                     plugin_submission_failure::record(
                         self.storage.as_ref(),
                         receipt_key,
@@ -550,10 +858,16 @@ fn validated_stored_response(
 fn validate_request(request: &PluginOperationRequest) -> Result<(), String> {
     if matches!(
         request.operation_id.as_str(),
-        "broker.order_lookup" | "broker.order_lookup.paper"
+        "broker.order_lookup"
+            | "broker.order_lookup.paper"
+            | "broker.order_lookup.paper_v2"
+            | "broker.order_lookup.paper_v3"
     ) || matches!(
         request.capability.as_str(),
-        "broker.order_lookup.live" | "broker.order_lookup.paper"
+        "broker.order_lookup.live"
+            | "broker.order_lookup.paper"
+            | "broker.order_lookup.paper@2"
+            | "broker.order_lookup.paper@3"
     ) {
         return Err("broker_order_recovery_plan_required".into());
     }
@@ -632,6 +946,7 @@ fn is_live_submission(request: &PluginOperationRequest) -> bool {
 
 fn is_guarded_submission(request: &PluginOperationRequest) -> bool {
     is_live_submission(request)
+        || crate::broker_submission::v2::is_submission(request)
         || (request.mode == "paper"
             && request.capability == "broker.order_submit.paper"
             && request.operation_id == "broker.paper_order_submit"
@@ -1053,6 +1368,25 @@ mod tests {
             fencing_token: Some(1),
             input: json!({}),
             evidence_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn lookup_v3_cannot_bypass_owned_recovery_through_generic_invocation() {
+        for (operation, capability) in [
+            ("broker.order_lookup.paper_v3", "renamed.read"),
+            ("renamed.read", "broker.order_lookup.paper@3"),
+            (
+                "broker.order_lookup.paper_v3",
+                "broker.order_lookup.paper@3",
+            ),
+        ] {
+            let mut r = request(operation);
+            r.capability = capability.into();
+            assert_eq!(
+                validate_request(&r).unwrap_err(),
+                "broker_order_recovery_plan_required"
+            );
         }
     }
 

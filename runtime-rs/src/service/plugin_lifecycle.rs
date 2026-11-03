@@ -1895,6 +1895,59 @@ mod tests {
     use crate::service::TradeAssemblyService;
 
     #[test]
+    fn contextual_profile_bindings_are_a_closed_optional_manifest_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let service = TradeAssemblyService::test_local(
+            root.join("context-schema.db")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let mut manifest =
+            builtin_manifests(&service).into_iter().next().unwrap()["manifest"].clone();
+        manifest["metadata"]["id"] = json!("example.context-schema");
+        manifest["trust"]["level"] = json!("synthetic-test");
+        let source = json!({"type":"package","locator":"controlled-profile-fixture.tar.gz","package":{"type":"file","locator":"controlled-profile-fixture.tar.gz"}});
+        assert!(validate_manifest(&service, &manifest, &source).is_ok());
+        let binding: Value =
+            serde_json::from_str(include_str!("indicator_context/synthetic-binding.json")).unwrap();
+        manifest["metadata"]["indicatorProfileBindings"] = binding;
+        let result = validate_manifest(&service, &manifest, &source);
+        assert!(result.is_ok(), "{result:?}");
+        for kind in ["version", "unknown_binding", "unknown_metadata", "gate"] {
+            let mut invalid = manifest.clone();
+            match kind {
+                "version" => {
+                    invalid["metadata"]["indicatorProfileBindings"]["schemaVersion"] =
+                        json!("future")
+                }
+                "unknown_binding" => {
+                    invalid["metadata"]["indicatorProfileBindings"]["callerAuthority"] = json!(true)
+                }
+                "unknown_metadata" => invalid["metadata"]["unrecognized"] = json!(true),
+                "gate" => {
+                    invalid["metadata"]["indicatorProfileBindings"]["profiles"][0]["outputs"][0]
+                        ["gates"][0]["kind"] = json!("infer_live_entitlement")
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_manifest(&service, &invalid, &source).is_err(),
+                "{kind}"
+            );
+        }
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../plugin-contracts/schemas/plugin-manifest.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            schema["properties"]["metadata"]["properties"]["indicatorProfileBindings"],
+            crate::service::indicator_context::binding_schema(),
+            "installation and report binding schemas must stay byte-equivalent as parsed JSON"
+        );
+    }
+
+    #[test]
     fn health_observation_is_bound_to_configuration_and_credential_generation() {
         let mut record = json!({
             "instanceRef":"test", "pluginRef":"test.plugin", "enabled":true,

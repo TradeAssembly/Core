@@ -31,6 +31,7 @@ pub mod control_plane;
 mod control_plane_redaction;
 pub mod data_pipeline;
 pub mod data_strategy;
+pub(crate) mod default_free_plugin_policy;
 pub mod demos;
 pub mod derivatives_analysis;
 pub mod domain;
@@ -38,6 +39,7 @@ pub mod domain_store;
 pub mod engine;
 pub mod events;
 pub mod execution_contracts;
+pub mod execution_types;
 pub mod exit;
 pub mod finance_authority;
 pub mod golden;
@@ -55,6 +57,7 @@ pub mod local_install;
 pub mod local_live_authorization;
 pub mod local_owner_identity;
 pub mod option_selection;
+pub mod selection_strategy;
 #[doc(hidden)]
 #[path = "../../platform/workspace_bootstrap.rs"]
 pub mod workspace_bootstrap;

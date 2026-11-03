@@ -5,8 +5,8 @@ use crate::ports::{
     CapabilityGraphEdge, CapabilityGraphNode, CapabilityGraphRequest, CapabilityGraphResolution,
     CapabilityReadiness, CapabilityRequirement, CapabilityRequirementConstraints,
     CapabilityResolution, CapabilityResolverCatalog, CapabilityResolverPort, CapabilitySelection,
-    EntitlementDecision, EntitlementGrant, EntitlementProfile, PluginOperationContract,
-    PluginOperationDependency, PluginOperationTraits,
+    EntitlementDecision, EntitlementGrant, EntitlementProfile, PluginCatalogEntry,
+    PluginOperationContract, PluginOperationDependency, PluginOperationTraits,
 };
 use crate::ports::{PortDescriptor, PortKind, VersionedPort};
 use serde_json::{json, Value};
@@ -65,12 +65,12 @@ pub fn resolve(
     requirement: CapabilityRequirement,
     catalog: CapabilityResolverCatalog,
 ) -> CapabilityResolution {
-    resolve_requirement(requirement, catalog, false, None)
+    resolve_requirement(requirement, &catalog, false, None)
 }
 
 fn resolve_graph_requirement(
     requirement: CapabilityRequirement,
-    catalog: CapabilityResolverCatalog,
+    catalog: &CapabilityResolverCatalog,
     evaluation_epoch: &str,
 ) -> CapabilityResolution {
     resolve_requirement(requirement, catalog, true, Some(evaluation_epoch))
@@ -78,21 +78,14 @@ fn resolve_graph_requirement(
 
 fn resolve_requirement(
     requirement: CapabilityRequirement,
-    catalog: CapabilityResolverCatalog,
+    catalog: &CapabilityResolverCatalog,
     graph_contract: bool,
     evaluation_epoch: Option<&str>,
 ) -> CapabilityResolution {
     let mut candidates = Vec::new();
-    let entitlement_decision =
+    let unbound_entitlement_decision =
         entitlement_decision(&requirement, &catalog.entitlements, evaluation_epoch);
     let mut top_blockers = Vec::new();
-    if entitlement_decision.decision == "deny" {
-        top_blockers.push(blocker(
-            entitlement_blocker_code(&entitlement_decision, graph_contract),
-            entitlement_blocker_message(&entitlement_decision),
-            Some(requirement.capability.clone()),
-        ));
-    }
 
     for plugin in &catalog.plugins {
         if let Some(preferred_instance) = requirement.plugin_instance_ref.as_deref() {
@@ -110,6 +103,12 @@ fn resolve_requirement(
         for operation in plugin.operations.iter().filter(|operation| {
             operation_matches_requirement(operation, &requirement, graph_contract)
         }) {
+            let entitlement_decision = entitlement_decision_for_candidate(
+                &requirement,
+                &catalog.entitlements,
+                evaluation_epoch,
+                Some((plugin, operation)),
+            );
             let mut blockers = Vec::new();
             if !plugin.enabled {
                 blockers.push(blocker(
@@ -164,19 +163,25 @@ fn resolve_requirement(
                     Some(plugin.plugin_ref.clone()),
                 ));
             }
-            if graph_contract {
+            let source_bound_default = entitlement_decision.grant_id.as_ref().is_some_and(|id| {
+                catalog.entitlements.iter().any(|grant| {
+                    grant.grant_id == *id
+                        && grant.source_type == crate::default_free_plugin_policy::SOURCE_TYPE
+                })
+            });
+            if graph_contract || source_bound_default {
                 if let Some(limit_blocker) =
                     entitlement_limit_blocker(&requirement, &entitlement_decision)
                 {
                     blockers.push(limit_blocker);
                 }
-                if !authority_metadata_complete(operation) {
-                    blockers.push(blocker(
-                        "authority_metadata_missing",
-                        "Plugin operation is missing required authority metadata.",
-                        Some(plugin.plugin_ref.clone()),
-                    ));
-                }
+            }
+            if graph_contract && !authority_metadata_complete(operation) {
+                blockers.push(blocker(
+                    "authority_metadata_missing",
+                    "Plugin operation is missing required authority metadata.",
+                    Some(plugin.plugin_ref.clone()),
+                ));
             }
             candidates.push(CapabilityCandidate {
                 plugin_instance_ref: plugin.instance_ref.clone(),
@@ -204,16 +209,29 @@ fn resolve_requirement(
         }
     }
 
+    // Source-bound eligibility belongs to the actual candidate. Preserve the
+    // prior unbound decision shape only when every candidate shares it.
+    if unbound_entitlement_decision.decision == "deny"
+        && candidates
+            .iter()
+            .all(|candidate| candidate.entitlement_decision == unbound_entitlement_decision)
+    {
+        top_blockers.push(blocker(
+            entitlement_blocker_code(&unbound_entitlement_decision, graph_contract),
+            entitlement_blocker_message(&unbound_entitlement_decision),
+            Some(requirement.capability.clone()),
+        ));
+    }
     if candidates.is_empty() {
         let missing_code = if requirement.operation_id.is_some()
-            && catalog_has_capability_with_different_operation(&requirement, &catalog)
+            && catalog_has_capability_with_different_operation(&requirement, catalog)
         {
             if graph_contract {
                 "missing_operation"
             } else {
                 "operation_unsupported"
             }
-        } else if catalog_has_capability_mode_mismatch(&requirement, &catalog) {
+        } else if catalog_has_capability_mode_mismatch(&requirement, catalog) {
             "mode_incompatible"
         } else {
             "missing_plugin"
@@ -250,6 +268,15 @@ fn resolve_requirement(
         }
     }
 
+    let mut entitlement_decisions = Vec::new();
+    for candidate in &candidates {
+        if !entitlement_decisions.contains(&candidate.entitlement_decision) {
+            entitlement_decisions.push(candidate.entitlement_decision.clone());
+        }
+    }
+    if entitlement_decisions.is_empty() {
+        entitlement_decisions.push(unbound_entitlement_decision);
+    }
     CapabilityResolution {
         schema_version: CAPABILITY_RESOLUTION_SCHEMA_VERSION.to_string(),
         ok: has_usable_candidate,
@@ -266,7 +293,7 @@ fn resolve_requirement(
         },
         candidates,
         blockers: top_blockers,
-        entitlement_decisions: vec![entitlement_decision],
+        entitlement_decisions,
         no_silent_fallback: true,
         no_advice: true,
     }
@@ -511,11 +538,8 @@ fn select_node(
     Option<CapabilitySelection>,
     Vec<CapabilityBlocker>,
 ) {
-    let base_resolution = resolve_graph_requirement(
-        requirement.clone(),
-        catalog.clone(),
-        &request.evaluation_epoch,
-    );
+    let base_resolution =
+        resolve_graph_requirement(requirement.clone(), catalog, &request.evaluation_epoch);
     let mut candidates = base_resolution.candidates.clone();
     sort_candidates(&mut candidates);
     let direct_binding = request
@@ -529,7 +553,7 @@ fn select_node(
         let bound_requirement = apply_binding(requirement, binding);
         let resolution = resolve_graph_requirement(
             bound_requirement.clone(),
-            catalog.clone(),
+            catalog,
             &request.evaluation_epoch,
         );
         if let Some(selected) = unique_usable_candidate(&resolution.candidates) {
@@ -575,7 +599,7 @@ fn select_node(
                 let bound_requirement = apply_binding(requirement, binding);
                 let resolution = resolve_graph_requirement(
                     bound_requirement.clone(),
-                    catalog.clone(),
+                    catalog,
                     &request.evaluation_epoch,
                 );
                 if let Some(selected) = unique_usable_candidate(&resolution.candidates) {
@@ -870,9 +894,26 @@ fn entitlement_decision(
     grants: &[EntitlementGrant],
     evaluation_epoch: Option<&str>,
 ) -> EntitlementDecision {
+    entitlement_decision_for_candidate(requirement, grants, evaluation_epoch, None)
+}
+
+fn entitlement_decision_for_candidate(
+    requirement: &CapabilityRequirement,
+    grants: &[EntitlementGrant],
+    evaluation_epoch: Option<&str>,
+    candidate: Option<(&PluginCatalogEntry, &PluginOperationContract)>,
+) -> EntitlementDecision {
     let mut matching = grants
         .iter()
         .filter(|grant| grant.capability == requirement.capability)
+        .filter(|grant| {
+            grant.source_type != crate::default_free_plugin_policy::SOURCE_TYPE
+                || candidate.is_some_and(|(plugin, operation)| {
+                    crate::default_free_plugin_policy::grant_matches_candidate(
+                        grant, plugin, operation,
+                    )
+                })
+        })
         .filter(|grant| grant.revoked_at.is_none())
         .filter(|grant| !grant_is_expired(grant, evaluation_epoch))
         .collect::<Vec<_>>();
@@ -932,12 +973,12 @@ fn grant_is_expired(grant: &EntitlementGrant, evaluation_epoch: Option<&str>) ->
     let Some(expires_at) = grant.expires_at.as_deref() else {
         return false;
     };
-    let Some(expires_at) = normalize_rfc3339_second(expires_at) else {
+    let Some(expires_at) = parse_entitlement_instant(expires_at) else {
         return evaluation_epoch.is_some();
     };
     let evaluated_at = match evaluation_epoch {
-        Some(epoch) => normalize_rfc3339_second(epoch),
-        None => now_rfc3339_second(),
+        Some(epoch) => parse_entitlement_instant(epoch),
+        None => Some(chrono::Utc::now().fixed_offset()),
     };
     evaluated_at.is_none_or(|evaluated_at| expires_at <= evaluated_at)
 }
@@ -1560,15 +1601,8 @@ fn fingerprint(parts: &[&str]) -> String {
     format!("sha256:{hex}")
 }
 
-fn normalize_rfc3339_second(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.len() < 20 || value.as_bytes().get(4).is_none_or(|byte| *byte != b'-') {
-        return None;
-    }
-    if !value.ends_with('Z') {
-        return None;
-    }
-    Some(value[..20].to_string())
+fn parse_entitlement_instant(value: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(value.trim()).ok()
 }
 
 pub(crate) fn now_rfc3339_second() -> Option<String> {
@@ -2045,6 +2079,42 @@ mod tests {
         let mut opaque_request = graph_request(vec![requirement("bars", capability)]);
         opaque_request.evaluation_epoch = "catalog-v1".to_string();
         assert!(!resolve_graph(opaque_request, catalog).ok);
+    }
+
+    #[test]
+    fn entitlement_expiry_compares_rfc3339_offsets_and_fractional_instants() {
+        let mut grant = entitlement_with_capability("test.timestamp", BTreeMap::new());
+        grant.expires_at = Some("2030-01-01T00:00:00.500Z".into());
+        for before in [
+            "2030-01-01T00:00:00.499+00:00",
+            "2029-12-31T19:00:00.499-05:00",
+        ] {
+            assert!(!grant_is_expired(&grant, Some(before)), "fresh {before}");
+        }
+        for expired in [
+            "2030-01-01T00:00:00.500+00:00",
+            "2029-12-31T19:00:00.500-05:00",
+            "2030-01-01T00:00:00.501Z",
+        ] {
+            assert!(grant_is_expired(&grant, Some(expired)), "expired {expired}");
+        }
+        for invalid in [
+            "catalog-v1",
+            "2030-13-01T00:00:00Z",
+            "2030-01-01T00:00:00",
+            "",
+        ] {
+            assert!(
+                grant_is_expired(&grant, Some(invalid)),
+                "invalid epoch {invalid}"
+            );
+            grant.expires_at = Some(invalid.into());
+            assert!(
+                grant_is_expired(&grant, Some("2030-01-01T00:00:00Z")),
+                "invalid expiry {invalid}"
+            );
+            grant.expires_at = Some("2030-01-01T00:00:00.500Z".into());
+        }
     }
 
     #[test]

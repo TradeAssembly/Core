@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "tradeassembly.net_base_inventory_request.v1",
+  "originalEntry": {
+    "schemaVersion": "tradeassembly.broker_lookup.v3",
+    "originalSubmit": {
+      "schemaVersion": "tradeassembly.broker_submit.v2",
+      "planId": "orderplan_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+      "order": {
+        "schemaVersion": "tradeassembly.broker_order.v2",
+        "instrument": {
+          "instrumentId": "host.crypto.one",
+          "providerSymbol": "COIN/USD",
+          "assetClass": "crypto",
+          "instrumentFamily": "crypto_spot",
+          "quantityUnit": "base_asset",
+          "multiplier": "1",
+          "quoteCurrency": "USD"
+        },
+        "positionAction": "buy_to_open",
+        "quantity": "0.1",
+        "pricing": {
+          "kind": "limit",
+          "limitPrice": "100"
+        },
+        "timeInForce": "gtc",
+        "clientOrderId": "fixture.entry.original"
+      }
+    },
+    "expectedAccount": {
+      "brokerNamespace": "fixture.broker",
+      "environment": "paper",
+      "providerAccountId": "fixture-account"
+    }
+  },
+  "hostAccountRef": "account://fixture/fixture-account",
+  "originalOrderReceiptSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "baseAssetId": "host.base.one",
+  "quoteCurrency": {
+    "code": "USD",
+    "decimals": 2
+  },
+  "bounds": {
+    "maxPagesPerType": 8,
+    "pageSize": 100,
+    "maxRowsPerType": 128
+  }
+}

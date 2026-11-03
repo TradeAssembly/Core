@@ -22,6 +22,10 @@ impl VersionedPort for ForwardNative {
     }
 }
 impl PluginOperationPort for ForwardNative {
+    fn verify_broker_boundary(&self)->Result<(),String>{self.0.lock().unwrap().as_ref().ok_or("fixture_host_missing")?.verify_broker_boundary()}
+    fn invoke_order_v2(&self,r:&PluginOperationRequest,c:&SideEffectContext,s:&crate::broker_submission::v2::OrderPlanSource)->Result<PluginOperationResponse,String>{self.0.lock().unwrap().as_ref().ok_or("fixture_host_missing")?.invoke_order_v2(r,c,s)}
+    fn reconcile_order_v2(&self,s:&crate::broker_submission::v2::OrderPlanSource,c:&SideEffectContext)->Result<crate::broker_submission::v2::RecoveryResult,String>{self.0.lock().unwrap().as_ref().ok_or("fixture_host_missing")?.reconcile_order_v2(s,c)}
+
     fn invoke(
         &self,
         r: &PluginOperationRequest,
@@ -46,9 +50,203 @@ fn ctx(key: &str) -> SideEffectContext {
         IdempotencyKey::new(key).unwrap(),
     )
 }
+// Cargo fingerprints, rather than file modification times, bind the fixture's
+// extern crates to the exact owning runtime test build. Never select an arbitrary
+// ABI-compatible-looking artifact from the shared target directory.
+fn native_fixture_dependency_hash(metadata: &Value, name: &str) -> Result<u64, String> {
+    let matches = metadata["deps"]
+        .as_array()
+        .ok_or("native_fixture_owner_dependencies_invalid")?
+        .iter()
+        .filter(|dependency| dependency.get(1).and_then(Value::as_str) == Some(name))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!("native_fixture_owner_dependency_not_unique:{name}"));
+    }
+    matches[0]
+        .get(3)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("native_fixture_owner_dependency_invalid:{name}"))
+}
+fn native_fixture_dependency_for_test(
+    executable: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, String> {
+    let stem = executable
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .and_then(|v| v.strip_prefix("tradeassembly_runtime-"))
+        .filter(|v| {
+            v.len() == 16
+                && v.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        .ok_or("native_fixture_owning_cargo_test_binary_required")?;
+    let deps = executable
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|v| v == "deps"))
+        .ok_or("native_fixture_owning_cargo_deps_directory_required")?;
+    let profile = deps
+        .parent()
+        .ok_or("native_fixture_cargo_profile_required")?;
+    let fingerprint_root = profile.join(".fingerprint");
+    let metadata: Value = serde_json::from_slice(
+        &fs::read(
+            fingerprint_root
+                .join(format!("tradeassembly-runtime-{stem}"))
+                .join("test-lib-tradeassembly_runtime.json"),
+        )
+        .map_err(|_| "native_fixture_owner_fingerprint_missing")?,
+    )
+    .map_err(|_| "native_fixture_owner_fingerprint_invalid")?;
+    let expected = native_fixture_dependency_hash(&metadata, name)?;
+    let encoded = expected
+        .to_le_bytes()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(&fingerprint_root)
+        .map_err(|_| "native_fixture_dependency_fingerprints_unavailable")?
+    {
+        let entry = entry.map_err(|_| "native_fixture_dependency_fingerprint_unavailable")?;
+        let candidate = entry.path().join(format!("lib-{name}"));
+        if !candidate.is_file() {
+            continue;
+        }
+        if fs::read_to_string(&candidate)
+            .map_err(|_| "native_fixture_dependency_fingerprint_unavailable")?
+            .trim()
+            != encoded
+        {
+            continue;
+        }
+        if matches!(
+            name,
+            "tradeassembly_plugin_sdk" | "serde_json_canonicalizer"
+        ) {
+            let dependency_metadata: Value = serde_json::from_slice(
+                &fs::read(entry.path().join(format!("lib-{name}.json")))
+                    .map_err(|_| "native_fixture_dependency_metadata_missing")?,
+            )
+            .map_err(|_| "native_fixture_dependency_metadata_invalid")?;
+            if native_fixture_dependency_hash(&dependency_metadata, "serde_json")?
+                != native_fixture_dependency_hash(&metadata, "serde_json")?
+            {
+                return Err("native_fixture_serde_json_dependency_mismatch".into());
+            }
+        }
+        let directory = entry.file_name();
+        let suffix = directory
+            .to_str()
+            .and_then(|v| v.rsplit_once('-').map(|(_, hash)| hash))
+            .filter(|v| {
+                v.len() == 16
+                    && v.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .ok_or("native_fixture_dependency_artifact_identity_invalid")?;
+        let library = deps.join(format!("lib{name}-{suffix}.rlib"));
+        if !library.is_file() {
+            return Err(format!("native_fixture_dependency_artifact_missing:{name}"));
+        }
+        matches.push(library);
+    }
+    if matches.len() != 1 {
+        return Err(format!(
+            "native_fixture_matching_dependency_not_unique:{name}"
+        ));
+    }
+    Ok(matches.remove(0))
+}
+fn owning_fingerprint_dependency(name: &str) -> std::path::PathBuf {
+    let executable = std::env::current_exe().expect("current owning Cargo test binary");
+    native_fixture_dependency_for_test(&executable, name)
+        .unwrap_or_else(|error| panic!("exact native fixture dependency {name}: {error}"))
+}
+#[test]
+fn native_fixture_dependency_selection_uses_owning_fingerprint_not_directory_order() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("debug");
+    let deps = profile.join("deps");
+    fs::create_dir_all(&deps).unwrap();
+    let executable = deps.join("tradeassembly_runtime-aaaaaaaaaaaaaaaa");
+    let owner = profile.join(".fingerprint/tradeassembly-runtime-aaaaaaaaaaaaaaaa");
+    fs::create_dir_all(&owner).unwrap();
+    let expected = 0x0102030405060708_u64;
+    fs::write(
+        owner.join("test-lib-tradeassembly_runtime.json"),
+        serde_json::to_vec(&json!({"deps":[[1,"serde_json",false,expected]]})).unwrap(),
+    )
+    .unwrap();
+    for (suffix, fingerprint) in [
+        ("bbbbbbbbbbbbbbbb", "ffffffffffffffff"),
+        ("cccccccccccccccc", "0807060504030201"),
+    ] {
+        let directory = profile.join(format!(".fingerprint/serde_json-{suffix}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("lib-serde_json"), fingerprint).unwrap();
+        fs::write(
+            deps.join(format!("libserde_json-{suffix}.rlib")),
+            b"not-executed-test-artifact",
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        native_fixture_dependency_for_test(&executable, "serde_json").unwrap(),
+        deps.join("libserde_json-cccccccccccccccc.rlib")
+    );
+    assert!(native_fixture_dependency_for_test(&executable, "not_declared").is_err());
+    assert!(
+        native_fixture_dependency_for_test(&deps.join("copied-runtime-test"), "serde_json")
+            .is_err()
+    );
+    // An additional exact fingerprint is ambiguous; neither first nor latest is selected.
+    let duplicate = profile.join(".fingerprint/serde_json-dddddddddddddddd");
+    fs::create_dir_all(&duplicate).unwrap();
+    fs::write(duplicate.join("lib-serde_json"), "0807060504030201").unwrap();
+    fs::write(
+        deps.join("libserde_json-dddddddddddddddd.rlib"),
+        b"not-executed-test-artifact",
+    )
+    .unwrap();
+    assert_eq!(
+        native_fixture_dependency_for_test(&executable, "serde_json").unwrap_err(),
+        "native_fixture_matching_dependency_not_unique:serde_json"
+    );
+}
+#[test]
+fn native_fixture_dependency_missing_artifact_and_malformed_owner_refuse() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("debug");
+    let deps = profile.join("deps");
+    fs::create_dir_all(&deps).unwrap();
+    let executable = deps.join("tradeassembly_runtime-aaaaaaaaaaaaaaaa");
+    let owner = profile.join(".fingerprint/tradeassembly-runtime-aaaaaaaaaaaaaaaa");
+    fs::create_dir_all(&owner).unwrap();
+    let metadata = owner.join("test-lib-tradeassembly_runtime.json");
+    fs::write(
+        &metadata,
+        serde_json::to_vec(&json!({"deps":[[1,"serde_json",false,1]]})).unwrap(),
+    )
+    .unwrap();
+    let candidate = profile.join(".fingerprint/serde_json-bbbbbbbbbbbbbbbb");
+    fs::create_dir_all(&candidate).unwrap();
+    fs::write(candidate.join("lib-serde_json"), "0100000000000000").unwrap();
+    assert_eq!(
+        native_fixture_dependency_for_test(&executable, "serde_json").unwrap_err(),
+        "native_fixture_dependency_artifact_missing:serde_json"
+    );
+    fs::write(&metadata, b"not-json").unwrap();
+    assert!(native_fixture_dependency_for_test(&executable, "serde_json").is_err());
+}
+
 fn fixture_executable() -> &'static [u8] {
     static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
+        if let Some(path)=std::env::var_os("CAPTURE_FIXTURE_BINARY"){
+            let path=std::path::PathBuf::from(path);assert!(path.is_absolute());let meta=std::fs::symlink_metadata(&path).unwrap();assert!(meta.is_file()&&!meta.file_type().is_symlink());let bytes=std::fs::read(path).unwrap();assert_eq!(sha256(&bytes),std::env::var("CAPTURE_FIXTURE_SHA256").expect("explicit frozen fixture binary hash"));return bytes;
+        }
         // Compile the Rust-only fixture against this test build's locked
         // dependency artifacts; no nested Cargo command or registry access.
         let deps = std::env::current_exe()
@@ -69,22 +267,8 @@ fn fixture_executable() -> &'static [u8] {
             .arg(format!("dependency={}", deps.display()))
             .arg("-o")
             .arg(&output);
-        for name in ["serde_json", "sha2", "serde_json_canonicalizer"] {
-            let mut libraries = std::fs::read_dir(&deps)
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with(&format!("lib{name}-"))
-                        && e.path().extension().is_some_and(|e| e == "rlib")
-                })
-                .map(|e| e.path())
-                .collect::<Vec<_>>();
-            libraries.sort_by_key(|p| std::fs::metadata(p).unwrap().modified().unwrap());
-            let library = libraries
-                .last()
-                .expect("locked Rust fixture dependency artifact");
+        for name in ["serde_json", "sha2", "serde_json_canonicalizer", "tradeassembly_plugin_sdk"] {
+            let library = owning_fingerprint_dependency(name);
             command
                 .arg("--extern")
                 .arg(format!("{name}={}", library.display()));
@@ -105,11 +289,18 @@ fn install_fixture_with_recipe(
     interval_ms: u64,
     recipe: bool,
 ) -> InstalledPluginPackage {
-    install_fixture_variant(service,root,calculator,interval_ms,recipe,false)
+    install_fixture_variant(service,root,calculator,interval_ms,recipe,false,false)
 }
 fn install_fixture_variant(
     service:&crate::service::TradeAssemblyService,root:&std::path::Path,
-    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,
+    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,versioned_signal:bool,
+)->InstalledPluginPackage {
+    install_fixture_variant_number_series(service,root,calculator,interval_ms,recipe,versioned_acquisition,versioned_signal,false)
+}
+#[allow(clippy::too_many_arguments)]
+fn install_fixture_variant_number_series(
+    service:&crate::service::TradeAssemblyService,root:&std::path::Path,
+    calculator:bool,interval_ms:u64,recipe:bool,versioned_acquisition:bool,versioned_signal:bool,number_series:bool,
 )->InstalledPluginPackage {
     use crate::adapters::plugin_packages::data_package_tests::{archive_files, materials};
     let (mut descriptor, bytes, schema_bytes, _) = materials();
@@ -140,7 +331,7 @@ fn install_fixture_variant(
         .unwrap();
     let mut operation = serde_json::to_value(&template.operation).unwrap();
     operation["id"] = json!(opid);
-    operation["capability"] = json!(format!("test.capture.{opid}"));
+    operation["capability"] = json!(format!("test.capture.{opid}{}",if versioned_signal {"@1"}else{""}));
     operation["protocol"] = json!("stdio");
     operation["traits"] = json!({"modes":["paper"],"instrumentFamilies":["equity"],"inputSchemaRefs":if calculator {vec!["schema://test/series@1"]} else {vec![]},"outputSchemaRefs":["schema://test/series@1",EVALUATION_RESPONSE_SCHEMA],"deterministic":true,"replayable":true});
     if calculator {
@@ -167,8 +358,14 @@ fn install_fixture_variant(
         operation["traits"]["outputSchemaRefs"]=json!([tradeassembly_plugin_sdk::session_calendar::SESSION_CALENDAR_SCHEMA]);
         operations.push(operation);
     }
+    if number_series {
+        assert!(!calculator&&!recipe);
+        contract["outputs"]["value"]["schema"]["schemaRef"]=json!("schema://tradeassembly/number-series@1");
+        descriptor["dataSchemas"][0]["schemaRef"]=json!("schema://tradeassembly/number-series@1");
+        operations[0]["traits"]["outputSchemaRefs"]=json!(["schema://tradeassembly/number-series@1",EVALUATION_RESPONSE_SCHEMA]);
+    }
     let manifest = json!({"metadata":{"id":id,"version":"1","provider":{"id":id,"name":"Local capture fixture"}},"operations":operations,
-        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":"test.capture.replay"},{"id":"test.capture.derive"},{"id":"test.option.chain@1"},{"id":"test.session.calendar@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
+        "capabilities":[{"id":if versioned_acquisition {"test.screen.source@1"}else{"test.capture.acquire"}},{"id":if versioned_signal{"test.capture.replay@1"}else{"test.capture.replay"}},{"id":"test.capture.derive"},{"id":"test.option.chain@1"},{"id":"test.session.calendar@1"}],"permissions":if calculator {vec![]}else{vec!["network.outbound"]},
         "configuration":{"fields":[{"id":"dataApiUrl","inputType":"url","storageClass":"configuration"}]},"health":{"requiredConfiguration":[],"requiredCredentials":[]}});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let contract_bytes = serde_json::to_vec(&contract).unwrap();
@@ -370,6 +567,7 @@ fn rig_configuration(options:bool,recipes:bool)->Rig {
         graph.body
     );
     let command = captures::CaptureCommand {
+        receipt_version: None,
         policy: captures::CapturePolicy {
             scope,
             capability_graph_revision: graph.body["revision"]["revisionId"]
@@ -413,9 +611,21 @@ fn instrument_screen_process_no_match_incomplete_foreign_and_unaccounted_cases()
 }
 #[test]
 fn instrument_screen_atomic_commit_failure_reuses_response_without_new_invocation() {screen_process_fixture("atomic");}
+thread_local! { static NATIVE_EXECUTION_EVIDENCE_CASE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
+struct NativeExecutionEvidenceCase;
+impl NativeExecutionEvidenceCase {
+    fn enter(case: &str) -> Self {
+        NATIVE_EXECUTION_EVIDENCE_CASE.with(|v| { assert!(v.borrow().is_none()); *v.borrow_mut() = Some(case.into()); });
+        Self
+    }
+}
+impl Drop for NativeExecutionEvidenceCase {
+    fn drop(&mut self) { NATIVE_EXECUTION_EVIDENCE_CASE.with(|v| *v.borrow_mut() = None); }
+}
 fn write_screen_interface_evidence(case:&str,name:&str,value:&Value) {
     let Some(root)=std::env::var_os("SCREEN_INTERFACE_EVIDENCE_DIR") else {return;};
-    let directory=std::path::PathBuf::from(root).join(case);fs::create_dir_all(&directory).unwrap();
+    let root=NATIVE_EXECUTION_EVIDENCE_CASE.with(|v| v.borrow().as_ref().map_or_else(||std::path::PathBuf::from(&root),|case|std::path::PathBuf::from(&root).join(case)));
+    let directory=root.join(case);fs::create_dir_all(&directory).unwrap();
     let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(directory.join(name)).unwrap();
     file.write_all(&serde_json::to_vec_pretty(value).unwrap()).unwrap();file.write_all(b"\n").unwrap();
 }
@@ -423,11 +633,31 @@ fn screen_process_fixture(case:&str) {
     use crate::service::{data_collections as collections,instrument_screens as screens};
     use tradeassembly_plugin_sdk::instrument_screen as wire;
     let operations=Arc::new(ForwardNative::default());
-    let (dir,service,original_scope,_)=data_plans::tests::fixture_service(Some(operations.clone()));
+    let (mut dir,service,original_scope,original_request)=data_plans::tests::fixture_service(Some(operations.clone()));
+    // Explicit joint runs retain the synthetic database/identity for outcome
+    // reconciliation after a harness failure. Never retain customer state here.
+    if std::env::var_os("REACH_DATA_TEST_CORE_BINARY").is_some() || std::env::var_os("SESSION_PROCESS_TEST_BINARY").is_some() {dir.disable_cleanup(true);}
+
     let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
-    let complete=case!="incomplete";
+    let complete=!matches!(case,"incomplete"|"session_partial");
+    let session_case=case.starts_with("session_");
+    let closed_case=case=="session_closed";
+    let process_case=case=="session_process";let remote_case=case=="session_remote";
+    let acquisition_expected=!matches!(case,"session_closed"|"session_missed");
+    let calendar_now=service.runtime().clock.now_ms();
     let server=std::thread::spawn(move|| {
-        let (mut stream,_)=listener.accept().unwrap();let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();assert!(String::from_utf8_lossy(&buffer[..n]).starts_with("GET /observations "));
+        for request_index in 0..if session_case && acquisition_expected {2}else{1} {
+        let (mut stream,_)=listener.accept().unwrap();let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();let request=String::from_utf8_lossy(&buffer[..n]);
+        if session_case && request_index==0 {
+            assert!(request.starts_with("GET /options "));
+            // Start the synthetic session window after package/strategy/graph
+            // setup, allowing transport preparation without altering lateness.
+            let calendar_now=if remote_case{chrono::Utc::now().timestamp_millis()}else{calendar_now};
+            let date=chrono::DateTime::from_timestamp_millis(calendar_now).unwrap().date_naive().to_string();
+            let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":calendar_now,"days":[{"sessionDate":date,"session":if closed_case {json!({"status":"closed","reason":"explicit_fixture_holiday"})}else{json!({"status":"open","openAtMs":calendar_now+if remote_case{330000}else if process_case{210000}else{600000},"closeAtMs":calendar_now+3600000,"earlyClose":true})}}]});
+            let bytes=serde_json::to_vec(&document).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();continue;
+        }
+        assert!(request.starts_with("GET /observations "));
         let rows=json!([
             {"id":"B","dte":45,"oi":10,"oiAgeDays":1},
             {"id":"A","dte":60,"oi":10,"oiAgeDays":0},
@@ -438,9 +668,13 @@ fn screen_process_fixture(case:&str) {
             {"id":"STALE","dte":50,"oi":100,"oiAgeDays":2}]);
         let bytes=serde_json::to_vec(&json!({"rows":rows,"coverage":{"complete":complete,"scope":"fixture_candidates"}})).unwrap();
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
+        }
     });
-    let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
+    let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true,false);
     let calculator=install_screen_package(&service,dir.path());
+    let evaluation_calculator=if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_remote"|"session_closed"|"session_missed"){Some(install_fixture_with_recipe(&service,dir.path(),true,86400000,false))}else{None};
+    if let Some(p)=&evaluation_calculator{service.runtime().plugins.put_instance(&p.plugin_ref,json!({"instanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"providerRef":p.plugin_ref,"enabled":true,"activePackageSha256":p.package_sha256,"configuration":{}}),&ctx("selected-evaluation-instance")).unwrap();}
+
     for package in [&source,&calculator] {
         let mut instance=json!({"instanceRef":package.plugin_ref,"pluginRef":package.plugin_ref,"providerRef":package.plugin_ref,"enabled":true,"activePackageSha256":package.package_sha256,"configuration":if package.plugin_ref==source.plugin_ref {json!({"dataApiUrl":format!("http://{address}")})}else{json!({})}});
         if package.plugin_ref==source.plugin_ref {instance["credentialRef"]=json!("screen-fixture-source");}
@@ -451,7 +685,8 @@ fn screen_process_fixture(case:&str) {
     let mut spec:Value=serde_json::from_str(include_str!("../../../examples/strategy-spec/v3/valid/static-equity.json")).unwrap();spec["strategy_id"]=json!(original_scope.strategy_id);
     let mut screen_policy=json!({"version":"tradeassembly.instrument_screen.v1","capability_requirement_ref":"screen","semantics_version":"fixture.screen.v1","inputs":{"contracts":{"capability_requirement_ref":"screen_source","response_schema_ref":"schema://capture-fixture/response@1","query":{"literal":{},"date_bindings":{}},"max_age_ms":300000,"coverage":{"complete_pointer":"/snapshot/coverage/complete","scope_pointer":"/snapshot/coverage/scope","scope_value":"fixture_candidates"}}},"candidate_input":"contracts","candidate_records_pointer":"/snapshot/rows","candidate_id_pointer":"/id","parameters":{"minDte":45,"maxDte":60,"maxOiAgeDays":1},"coverage":"complete_configured_inputs","max_candidates":7,"top_n":1,"ttl_ms":120000});
     if case=="integral" {screen_policy["top_n"]=json!(1.0);}
-    if case=="no_match" {screen_policy["parameters"]["minDte"]=json!(100);screen_policy["parameters"]["maxDte"]=json!(200);}
+    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_remote"|"session_closed"|"session_missed") {screen_policy["ttl_ms"]=json!(300000);}
+    if matches!(case,"no_match"|"selected_empty"|"session_empty") {screen_policy["parameters"]["minDte"]=json!(100);screen_policy["parameters"]["maxDte"]=json!(200);}
     if case=="foreign" {screen_policy["parameters"]["fault"]=json!("foreign_member");}
     if case=="unaccounted" {screen_policy["parameters"]["fault"]=json!("omit_rejections");}
     if case=="undeclared_context" {screen_policy["parameters"]["fault"]=json!("undeclared_context");}
@@ -466,13 +701,28 @@ fn screen_process_fixture(case:&str) {
         spec["capability_requirements"]["required"].as_array_mut().unwrap().push(requirement);
         service.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("screen-grant")).unwrap();
     }
+    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_remote"|"session_closed"|"session_missed") {
+        configure_selected_evaluation_fixture(&service,&mut spec,&original_request);
+    }
+    if session_case {configure_dispatch_calendar_fixture(&service,&mut spec);if matches!(case,"session_background"|"session_resume"|"session_process"|"session_remote"){spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["missed_run"]["max_lateness_ms"]=json!(300000);}}
+    if process_case||remote_case {spec["stages"]["market_clock"]["policy"]["session_triggers"][0]["offset_ms"]=json!(-30000);}
     let report=crate::spec::validate_strategy_spec_report(&spec);assert!(report.valid,"{:?}",report.diagnostics);
     assert!(crate::strategy_kernel::CompiledStrategy::compile_json(&spec).is_err());
     let saved=service.handle_http("POST","/product/strategies/save-draft",json!({"strategyId":original_scope.strategy_id,"spec":spec}));assert_eq!(saved.body["body"]["draftSaved"],true,"{}",saved.body);
     let published=service.handle_http("POST","/product/strategies/publish",json!({"strategyId":original_scope.strategy_id,"expectedDraftHash":saved.body["body"]["draft"]["draftHash"],"actor":{"kind":"user","id":"user.local"}}));assert_eq!(published.body["body"]["published"],true,"{}",published.body);
     let version=&published.body["body"]["version"];let scope=data_plans::PlanScope{strategy_id:original_scope.strategy_id,strategy_version_id:version["id"].as_str().unwrap().into(),strategy_spec_hash:version["specHash"].as_str().unwrap().into()};
-    let graph=service.handle_http("POST","/capability-graph-revisions",json!({"configId":"screen-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"screen_source":{"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"acquire"},"screen":{"pluginInstanceRef":calculator.plugin_ref,"pluginRef":calculator.plugin_ref,"operationId":"screen"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper"}));assert_eq!(graph.body["revision"]["graph"]["ok"],true,"{}",graph.body);
+    let mut graph_command=json!({"configId":"screen-graph","bindings":{"req_bars":{"pluginInstanceRef":"local-data","pluginRef":"tradeassembly.local-data","operationId":"marketdata.bars.read_v1"},"screen_source":{"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"acquire"},"screen":{"pluginInstanceRef":calculator.plugin_ref,"pluginRef":calculator.plugin_ref,"operationId":"screen"}},"strategyId":scope.strategy_id,"strategyVersionId":scope.strategy_version_id,"strategySpecHash":scope.strategy_spec_hash,"mode":"paper"});
+    if let Some(p)=&evaluation_calculator{
+        for capability in ["test.capture.derive","test.capture.replay"] {
+            service.runtime().storage.put_json("entitlement_grants",capability,json!({"grantId":capability,"profile":"local_full","source":"test","capability":capability,"effect":"allow","state":"active","scope":"global","sourceType":"test","sourceRef":null,"precedence":10,"limits":{},"issuedAt":null,"expiresAt":null,"revokedAt":null,"reason":null}),&ctx("selected-native-test-grant")).unwrap();
+        }
+        graph_command["bindings"]["derived"]=json!({"pluginInstanceRef":p.plugin_ref,"pluginRef":p.plugin_ref,"operationId":"derive"});
+        graph_command["additionalRequirements"]=json!([{"requirementId":"derived","capability":"test.capture.derive","mode":"paper","declaration":"required","fallbackPolicy":"none"}]);
+    }
+    if session_case {graph_command["bindings"]["calendar"]=json!({"pluginInstanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"operationId":"calendar"});}
+    let graph=service.handle_http("POST","/capability-graph-revisions",graph_command);assert_eq!(graph.body["revision"]["graph"]["ok"],true,"{}",graph.body);
     let revision=graph.body["revision"]["revisionId"].as_str().unwrap().to_string();
+    if session_case {exercise_session_dispatch_fixture(&service,&scope,&revision,case);server.join().unwrap();return;}
     let collection=collections::acquire(&service,collections::CollectionCommand{scope:scope.clone(),capability_graph_revision:revision.clone(),acquisition_node:"screen_source".into(),mode:"paper".into(),response_schema_ref:"schema://capture-fixture/response@1".into(),input:json!({})},&ctx("screen-source-acquire")).unwrap();server.join().unwrap();
     let command=screens::ScreenCommand{scope,capability_graph_revision:revision,mode:"paper".into(),signal_requirement_ref:"signal_primary".into(),selector_ref:"screened".into(),collections:BTreeMap::from([("contracts".into(),collection.collection_id)]),knowledge_cutoff_ms:service.runtime().clock.now_ms()};
     let body=json!({"screen":command,"idempotencyKey":"screen-select"});
@@ -515,7 +765,7 @@ fn screen_process_fixture(case:&str) {
     assert!(response.body["selection"].get("response").is_none());
     let selection=screens::current(&service,response.body["selection"]["selectionId"].as_str().unwrap()).unwrap();
     assert_eq!(response.body["instrumentSet"],serde_json::to_value(&selection.instrument_set).unwrap());
-    if case!="no_match" {
+    if !matches!(case,"no_match"|"selected_empty"|"session_empty") {
     assert_eq!(selection.instrument_set.members[0].instrument_id,"A");assert_eq!(selection.instrument_set.candidate_count,7);assert_eq!(selection.instrument_set.members[0].context_instruments,["SPY"]);
     assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="below_rank_cutoff" && r.count==2));
     assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="missing_open_interest"));
@@ -527,6 +777,7 @@ fn screen_process_fixture(case:&str) {
         assert_eq!(selection.instrument_set.candidate_count,7);
         assert!(selection.instrument_set.rejection_summary.iter().any(|r|r.reason_code=="expiry_out_of_range" && r.count==7));
     }
+    if matches!(case,"selected_eval"|"selected_empty"|"session_eval"|"session_empty"|"session_partial"|"session_background"|"session_resume"|"session_process"|"session_remote"|"session_closed"|"session_missed") {exercise_selected_evaluation_fixture(&service,&selection,case);return;}
     let duplicate=service.handle_http("POST","/product/strategies/instrument-screens/create",body.clone());
     assert_eq!(duplicate.body["selection"],response.body["selection"]);assert_eq!(duplicate.body["instrumentSet"],response.body["instrumentSet"]);
     let mcp=service.call_mcp_tool("tradeassembly.strategy.instrument_screen.get",json!({"selectionId":selection.selection_id}));assert_eq!(mcp["structuredContent"]["instrumentSet"],response.body["instrumentSet"]);
@@ -1177,6 +1428,7 @@ fn external_provider_admission_fixture(config_env:&str,collection:bool) {
         return;
     }
     let command = captures::CaptureCommand {
+        receipt_version: None,
         policy: captures::CapturePolicy {
             scope: scope.clone(),
             capability_graph_revision: graph.body["revision"]["revisionId"]
@@ -1843,7 +2095,7 @@ fn session_calendar_process_fixture(closed:bool){
  let document=json!({"schemaVersion":"tradeassembly.session_calendar.v1","calendarRef":"fixture.exchange","timeZone":"Etc/UTC","sessionScope":"fixture_primary","revision":"fixture.v1","rangeStart":date,"rangeEnd":date,"knownAtMs":now,"days":[{"sessionDate":date,"session":session}]});
  let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
  let server=std::thread::spawn(move||{let (mut stream,_)=listener.accept().unwrap();eprintln!("calendar fixture closed={closed}: accepted");let mut buffer=[0;8192];let n=stream.read(&mut buffer).unwrap();assert!(String::from_utf8_lossy(&buffer[..n]).starts_with("GET /options "));let bytes=serde_json::to_vec(&document).unwrap();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();stream.shutdown(std::net::Shutdown::Both).unwrap();eprintln!("calendar fixture closed={closed}: response sent");});
- let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true);
+ let source=install_fixture_variant(&service,dir.path(),false,86400000,false,true,false);
  service.runtime().plugins.put_instance(&source.plugin_ref,json!({"instanceRef":source.plugin_ref,"pluginRef":source.plugin_ref,"providerRef":source.plugin_ref,"enabled":true,"activePackageSha256":source.package_sha256,"credentialRef":"calendar-fixture","configuration":{"dataApiUrl":format!("http://{address}")}}),&ctx("calendar-instance")).unwrap();
  service.runtime().credentials.store("calendar-fixture",&BTreeMap::from([("api_key".into(),"fake-calendar-key".into()),("api_secret".into(),"fake-calendar-secret".into())])).unwrap();
  *operations.0.lock().unwrap()=Some(crate::adapters::plugin_operations::LocalPluginOperations::with_external_host(service.runtime().storage.clone(),service.runtime().plugins.clone(),service.runtime().credentials.clone(),service.runtime().plugin_packages.clone(),service.runtime().clock.clone(),Arc::new(TracedFixtureSandbox)));
@@ -1944,6 +2196,10 @@ fn maybe_run_data_runner_process(root:&std::path::Path,command:&crate::service::
  }
 }
 
+include!("external_selection_evaluation_tests.rs");
+#[test]
+fn selected_instrument_set_drives_native_pipeline_warmup_and_signals(){screen_process_fixture("selected_eval");screen_process_fixture("selected_empty");}
+
 include!("external_reach_data_process_tests.rs");
 
 #[test]
@@ -1952,3 +2208,113 @@ fn reach_data_actual_core_relay_process_journey(){
  for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
  session_calendar_process_fixture(false);
 }
+
+#[test]
+#[ignore="explicit pinned Core CLI and V2 local Relay fixture gate"]
+fn reach_data_selected_plan_actual_core_relay_process_journey(){
+ for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH","REACH_DATA_TEST_SRT"]{assert!(std::env::var_os(name).is_some(),"required joint fixture input: {name}");}
+ screen_process_fixture("selected_eval");
+}
+
+include!("external_session_dispatch_tests.rs");
+#[test]
+fn session_occurrence_dispatches_native_selection_and_evaluation_with_restart(){
+ for case in ["session_eval","session_empty","session_partial"] {screen_process_fixture(case);}
+}
+
+#[test]
+fn session_background_wake_competing_lease_closed_and_missed_are_bounded(){
+ for case in ["session_background","session_closed","session_missed"] {screen_process_fixture(case);}
+}
+
+#[test]
+fn session_worker_intent_survives_worker_stop_and_service_recreation(){screen_process_fixture("session_resume");}
+
+include!("external_session_process_tests.rs");
+#[test]
+#[ignore="explicit exact frozen Core CLI, owned process driver and synthetic loopback/SRT gate"]
+fn session_actual_compiled_core_process_restart_and_lost_mcp_response(){
+ for name in ["SESSION_PROCESS_TEST_BINARY","SESSION_PROCESS_TEST_BINARY_SHA256","SESSION_PROCESS_TEST_CORE_REVISION","SESSION_PROCESS_TEST_DRIVER","SESSION_PROCESS_TEST_DRIVER_SHA256","SESSION_PROCESS_TEST_SRT","SESSION_PROCESS_TEST_SRT_SHA256","SCREEN_INTERFACE_EVIDENCE_DIR"]{assert!(std::env::var_os(name).is_some(),"missing process gate input {name}");}
+ screen_process_fixture("session_process");
+}
+
+include!("external_order_plan_tests.rs");
+
+#[test]
+#[ignore="explicit frozen Core V3 consumer and Relay V3 loopback SQL fixture"]
+fn scheduler_v3_actual_core_relay_record_ack_loss_process_journey(){
+ for name in ["REACH_DATA_TEST_CORE_BINARY","REACH_DATA_TEST_CORE_REVISION","REACH_DATA_TEST_RELAY_ORIGIN","REACH_DATA_TEST_HUMAN_AUTH","REACH_DATA_TEST_SRT","REACH_DATA_TEST_SOURCE_REVISION","REACH_DATA_TEST_CASE_ID","SCHEDULER_V3_JOINT_DRIVER"]{assert!(std::env::var_os(name).is_some(),"required joint input: {name}");}
+ screen_process_fixture("session_remote");
+}
+
+include!("external_order_submission_tests.rs");
+
+include!("external_dynamic_execution_tests.rs");
+
+include!("external_financial_joint_tests.rs");
+
+include!("external_financial_resume_tests.rs");
+
+#[test]
+#[ignore = "explicit normal Core V2 input witness/native process/mock-Warden/synthetic HTTP fixture"]
+fn data_capture_v2_real_process_witness_recreation_and_no_version_retrofit() {
+    let r = rig();
+    let mut c = r.command.clone();
+    c.receipt_version = Some(captures::CaptureReceiptVersion::V2);
+    let body =
+        json!({"capture":c,"accountMode":"paper","idempotencyKey":"capture-v2-input-witness"});
+    let first = r.service.handle_http(
+        "POST",
+        "/product/strategies/data-captures/create",
+        body.clone(),
+    );
+    assert_eq!(first.status, 200, "{}", first.body);
+    let receipt: captures::CaptureReceipt =
+        serde_json::from_value(first.body["capture"].clone()).unwrap();
+    assert_eq!(receipt.schema_version, captures::CaptureReceiptVersion::V2);
+    let witness = captures::verified_input_witness(&receipt).unwrap();
+    assert_eq!(witness.input, c.input);
+    assert_eq!(
+        canonical_sha256(&witness.input).unwrap(),
+        receipt.input_sha256
+    );
+    r.server.join().unwrap();
+    let reopened = crate::service::TradeAssemblyService::from_runtime(
+        r.service.db(),
+        r.service.runtime().as_ref().clone(),
+    );
+    let again = reopened.handle_http(
+        "POST",
+        "/product/strategies/data-captures/create",
+        body.clone(),
+    );
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.body["capture"], first.body["capture"]);
+    assert_eq!(
+        captures::current(&reopened, &receipt.capture_id).unwrap(),
+        receipt
+    );
+    let mut changed = body.clone();
+    changed["capture"]["receiptVersion"] = json!("tradeassembly.data_capture_receipt.v1");
+    let refused = reopened.handle_http("POST", "/product/strategies/data-captures/create", changed);
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let mut changed = body;
+    changed["capture"]["input"] = json!({"feed":"different"});
+    assert_eq!(
+        reopened
+            .handle_http("POST", "/product/strategies/data-captures/create", changed)
+            .status,
+        409
+    );
+    assert_eq!(
+        reopened
+            .runtime()
+            .storage
+            .list_json("data_acquisition_receipts_v1")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+include!("external_typed_backtest_tests.rs");

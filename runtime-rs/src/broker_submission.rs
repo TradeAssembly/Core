@@ -21,8 +21,10 @@ use crate::ports::{
 use serde_json::Value;
 use std::sync::Arc;
 
+pub mod account_identity;
 mod admission;
 mod observation;
+pub mod v2;
 pub(crate) use observation::validate_order_identity;
 mod recovery;
 pub use recovery::BrokerOrderRecoveryPlan;
@@ -125,6 +127,32 @@ pub fn build_order_intent(
     validate_prepared_binding(state, prepared)?;
     let order = crate::broker_order_intent::CanonicalBrokerOrder::from_input(&request.input)?;
     validate_order_symbol(&state.config, &order.symbol)?;
+    let quantity = order.canonical_quantity();
+    bound_intent(
+        state,
+        request,
+        context,
+        prepared,
+        serde_json::to_value(&order).map_err(|_| "broker_order_intent_invalid")?,
+        quantity,
+        crate::spec::canonical_hash(&request.input["symbol"])?,
+        "tradeassembly.broker_order_intent.v1",
+    )
+}
+// Shared authority fields preserve the legacy wire exactly; V2 changes only its
+// explicit schema/order/evidence and never converts quantity or pricing to V1.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bound_intent(
+    state: &BrokerCurrentState,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+    prepared: &crate::ports::broker_submission::BrokerPreparedBinding,
+    order: Value,
+    dispatch_quantity: String,
+    instrument_hash: String,
+    schema_version: &str,
+) -> Result<(Value, String), String> {
+    validate_prepared_binding(state, prepared)?;
     let provenance = match &state.provenance {
         BrokerExecutionProvenance::Agent {
             run_id,
@@ -140,7 +168,7 @@ pub fn build_order_intent(
     let mandate = state.mandate.as_ref();
     let config_digest = crate::spec::canonical_hash(&state.config)?;
     let intent = serde_json::json!({
-        "schemaVersion": "tradeassembly.broker_order_intent.v1",
+        "schemaVersion": schema_version,
         "actor": state.actor,
         "executionProvenance": provenance,
         "accountRef": required_value(&state.selected, "accountRef")?,
@@ -171,10 +199,10 @@ pub fn build_order_intent(
             "capabilityGraphRevisionId":request.capability_graph_revision_id,
             "capabilityGraphFingerprint":request.capability_graph_fingerprint,
             "accountRef":request.account_ref, "mode":request.mode,
-            "symbolHash":crate::spec::canonical_hash(&request.input["symbol"])?
+            "symbolHash":instrument_hash
         },
         "order": order,
-        "dispatchQuantity": order.canonical_quantity(),
+        "dispatchQuantity": dispatch_quantity,
         "pendingOriginalCycleDigest": state.pending_original_cycle_digest,
     });
     let digest = crate::spec::canonical_hash(&intent)
@@ -187,6 +215,21 @@ pub fn load_current_state(
     request: &PluginOperationRequest,
     context: &SideEffectContext,
 ) -> Result<BrokerCurrentState, String> {
+    load_current_state_inner(deps, request, context, false)
+}
+pub(crate) fn load_management_state(
+    deps: &BrokerSubmissionDependencies,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+) -> Result<BrokerCurrentState, String> {
+    load_current_state_inner(deps, request, context, true)
+}
+fn load_current_state_inner(
+    deps: &BrokerSubmissionDependencies,
+    request: &PluginOperationRequest,
+    context: &SideEffectContext,
+    management: bool,
+) -> Result<BrokerCurrentState, String> {
     let now_ms = deps.clock.trusted_now_ms()?;
     if !matches!(request.mode.as_str(), "paper" | "live") {
         return Err("broker_submission_mode_invalid".into());
@@ -197,6 +240,11 @@ pub fn load_current_state(
     let activation = read(deps.storage.as_ref(), ACTIVATIONS_NS, activation_id)?;
     let config_id = required_value(&run, "configId")?;
     let config = read(deps.storage.as_ref(), CONFIGS_NS, config_id)?;
+    if config["executionContractVersion"] == "tradeassembly.typed_execution.v2"
+        && !v2::is_submission(request)
+    {
+        return Err("typed_execution_requires_v2".into());
+    }
     let controls = read(deps.storage.as_ref(), CONTROLS_NS, activation_id)?;
     let reconciliation = read(deps.storage.as_ref(), RECONCILIATION_NS, activation_id)?;
     let attempt = if context.agent_execution().is_none() {
@@ -230,11 +278,14 @@ pub fn load_current_state(
     {
         return Err("activation_binding_mismatch".into());
     }
-    if controls_blocked(&controls)
-        || controls["activationId"] != activation_id
+    if (if management {
+        management_controls_blocked(&controls)
+    } else {
+        controls_blocked(&controls)
+    }) || controls["activationId"] != activation_id
         || reconciliation["activationId"] != activation_id
         || reconciliation["state"] != "clear"
-        || reconciliation["newEntriesPaused"] != false
+        || (!management && reconciliation["newEntriesPaused"] != false)
     {
         return Err("execution_controls_blocked".into());
     }
@@ -580,7 +631,19 @@ fn stored_entitlements(
     Ok(grants)
 }
 
-fn controls_blocked(controls: &Value) -> bool {
+pub(crate) fn management_controls_blocked(v: &Value) -> bool {
+    v["paused"] == true
+        || v["stopRequested"] == true
+        || v["emergencyStop"] == true
+        || v["stop"] == "requested"
+        || v["stop"] == "stopped"
+        || v["emergencyStop"] == "requested"
+        || v["emergencyStop"] == "engaged"
+        || v["lastControl"]["action"] == "stop"
+        || v["lastControl"]["action"] == "emergency_stop"
+}
+
+pub(crate) fn controls_blocked(controls: &Value) -> bool {
     controls["paused"] == true
         || controls["stopRequested"] == true
         || controls["emergencyStop"] == true

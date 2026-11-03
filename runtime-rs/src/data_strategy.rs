@@ -92,9 +92,13 @@ pub fn discovery() -> Value {
         "configSchema":schemars::schema_for!(DataStrategy),"signalEvaluationSupported":true,
         "optionSelection":{"schemaVersion":"tradeassembly.option_selection.v1","supportedModes":["paper","live"],"historicalChainReplaySupported":false,"explicitModelAnalyticsSupported":false,"dynamicUnderlyingSelectorsSupported":false,"automaticExecutionSupported":false,"createTool":"tradeassembly.strategy.option_selection.create"},"captureAdmission":{"instrumentIndependentMultiInstrumentReplaySupported":false,"singleInstrumentCaptureSupported":true},"backtestSupported":false,"statelessExecutionSupported":false,"executionAuthorityGranted":false,
         "recipePlans":{"programVersion":"tradeassembly.recipe_plan.v1","packageVersion":"3","compiledPlanVersion":"tradeassembly.compiled_data_plan.v5","prepareTool":"tradeassembly.strategy.data_recipe.prepare","stepTool":"tradeassembly.strategy.data_recipe.step","executionAuthorityGranted":false},
-        "instrumentScreens":{"policyVersion":"tradeassembly.instrument_screen.v1","requestVersion":"tradeassembly.instrument_screen_evaluation.v1","resultVersion":"tradeassembly.instrument_screen_result.v1","setVersion":"tradeassembly.instrument_set.v1","createTool":"tradeassembly.strategy.instrument_screen.create","getTool":"tradeassembly.strategy.instrument_screen.get","supportedInputKinds":["admitted_collection"],"requiresInstalledPureOperation":true,"maxRequestBytes":524288,"maxCandidates":4096,"maxSelected":256,"largeUniversePagingSupported":false,"calendarSchedulingSupported":false,"executionIntegrationSupported":false,"managedPositionEffects":false,"executionAuthorityGranted":false},
+        "instrumentScreens":{"policyVersion":"tradeassembly.instrument_screen.v1","requestVersion":"tradeassembly.instrument_screen_evaluation.v1","resultVersion":"tradeassembly.instrument_screen_result.v1","setVersion":"tradeassembly.instrument_set.v1","createTool":"tradeassembly.strategy.instrument_screen.create","getTool":"tradeassembly.strategy.instrument_screen.get","supportedInputKinds":["admitted_collection"],"requiresInstalledPureOperation":true,"maxRequestBytes":524288,"maxCandidates":4096,"maxSelected":256,"largeUniversePagingSupported":false,"calendarSchedulingSupported":true,"executionIntegrationSupported":false,"managedPositionEffects":false,"executionAuthorityGranted":false},
+        "selectionPlans":{"configKey":crate::selection_strategy::CONFIG_KEY,"schemaVersion":"tradeassembly.selection_strategy.v1","configSchema":schemars::schema_for!(crate::selection_strategy::SelectionStrategy),"prepareTool":"tradeassembly.strategy.selection_plan.prepare","stepTool":"tradeassembly.strategy.data_run.step","supportedSelectorTypes":["normalized_instrument","screened"],"subjectsPerPlan":1,"signalEvaluationSupported":true,"preservesSelectionLineage":true,"automaticRefreshSupported":false,"historicalUniverseReplaySupported":false,"remoteRunnerSupported":true,"remoteRunnerRequiresCoupledVersion":"2","orderExecutionSupported":false,"managedPositionEffects":false,"executionAuthorityGranted":false},
+        "sessionDispatch":{"schemaVersion":"tradeassembly.session_dispatch.v1","tool":"tradeassembly.execution.scheduler.run","argument":"sessionDispatch","operations":["enqueue","advance","inspect","pause","start_worker","stop_worker","resume_workers"],"supportedModes":["paper"],"workerModes":["bounded_explicit_ticks","explicit_local_background_intent"],"calendarRelative":true,"restartRetainsChildRequests":true,"maxSubjects":32,"maxWorkItems":1024,"historicalUniverseReplaySupported":false,"automaticBackgroundSupported":true,"protectedLocalStartupResumeWired":true,"wholeCoreProcessRestartQualified":false,"backgroundAgentDelegationSupported":false,"remoteReachOperationSupported":true,"remoteRunnerRequiresCoupledVersion":"3","remoteOperations":["enqueue","advance","inspect","pause"],"remoteBackgroundAuthoritySupported":false,"orderExecutionSupported":false,"managedPositionEffects":false,"executionAuthorityGranted":false},
+        "typedPaperExecution":{"contractVersion":"tradeassembly.typed_execution.v2","configurationPath":"/product/strategy-execution-configs/save","configurationField":"typedExecution","activationPath":"/product/strategy-execution-activations/activate","decisionTool":"tradeassembly.strategy.order_plan.decide","selectionTool":"tradeassembly.strategy.order_plan.select","submitTool":"tradeassembly.strategy.order_plan.submit","reconcileTool":"tradeassembly.strategy.order_plan.reconcile","settlement":{"tool":"tradeassembly.strategy.order_plan.settle","requiresFinalProviderPosting":true,"requiresCoherentMonotonicAccountRevision":true,"unsupportedProvidersRetainHold":true,"financialTransportV4":false},"supportedModes":["paper"],"usesPublishedSizingPolicy":true,"requiresCanonicalAccount":true,"requiresFreshDataAndReservation":true,"requiresC5AndCurrentLookupPermission":true,"selectedUniverseRefreshPreservesManagement":true,"automaticBrokerDispatchFromSignalStep":false,"executionAuthorityGranted":false},
+        "financialRunner":{"schemaVersion":"tradeassembly.core-data-runner.v4","reachSchema":"tradeassembly.relay.reach-data-command/v4","bindingSchema":"tradeassembly.core-data-mutation-binding.v4","receiptSchema":"tradeassembly.core-data-runner.receipt.v4","operations":["prepare","reserve","release","decide","select","submit","reconcile"],"historicalStatusIsMutation":false,"paperOnly":true,"unknownAcceptanceRetainsCash":true,"brokerResubmissionOnRecovery":false,"executionAuthorityGranted":false},
         "prepareTool":"tradeassembly.strategy.data_plan.prepare","stepTool":"tradeassembly.strategy.data_run.step",
-        "notice":"Signal evidence only. Backtest accounting and activation/tick consumption are not yet integrated. Data context is distinct from trading eligibility."})
+        "notice":"Signal evaluation produces evidence. Typed paper execution requires separate owned configuration, activation, current entry decision, reservation and C5. Automatic signal-to-broker dispatch and backtest accounting remain separate integrations. Data context is distinct from trading eligibility."})
 }
 impl DataStrategy {
     pub fn validate(&self, plan: &CompiledDataPlan) -> Result<(), String> {
@@ -165,7 +169,7 @@ impl DataStrategy {
         };
         let entry = eval_rule(&self.entry, plan, current, previous, time, &mut evidence)?;
         let exit = eval_rule(&self.exit, plan, current, previous, time, &mut evidence)?;
-        if evidence.known > as_of {
+        if evidence.known > as_of || evidence.arrived > as_of {
             return Err("data_strategy_not_yet_known".into());
         }
         Ok(SignalFrame {
@@ -581,6 +585,33 @@ mod tests {
         assert_eq!(
             program.validate(&plan).unwrap_err(),
             "data_strategy_rule_limit"
+        );
+    }
+    #[test]
+    fn data_strategy_previous_arrival_after_cutoff_is_not_yet_known() {
+        let (program, plan) = setup();
+        let day = 86_400_000;
+        let mut prior = frame(PointValue::Ready(json!(5)), day, 50 * day);
+        prior
+            .get_mut("result")
+            .unwrap()
+            .outputs
+            .get_mut("value")
+            .unwrap()
+            .points[0]
+            .provenance
+            .arrived_at_ms = 60 * day;
+        let current = frame(PointValue::Ready(json!(6)), 2 * day, 2 * day);
+        let admitted = program
+            .evaluate(&plan, &current, &prior, 2 * day, 100 * day)
+            .unwrap();
+        assert_eq!(admitted.known_at_ms, 50 * day);
+        assert_eq!(admitted.arrived_at_ms, 60 * day);
+        assert_eq!(
+            program
+                .evaluate(&plan, &current, &prior, 2 * day, 55 * day)
+                .unwrap_err(),
+            "data_strategy_not_yet_known"
         );
     }
 }

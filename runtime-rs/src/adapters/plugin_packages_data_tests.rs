@@ -233,6 +233,18 @@ fn data_package_v3_metadata_is_loaded_without_legacy_downgrade() {
             .unwrap_err(),
         "plugin_data_contract_version_requires_v3"
     );
+    let snapshot = store
+        .verified_metadata_snapshot(&installed.package_sha256)
+        .unwrap()
+        .unwrap();
+    assert!(snapshot.contracts["provide"].v3().is_some());
+    assert_eq!(
+        snapshot.contracts["provide"]
+            .clone()
+            .into_legacy()
+            .unwrap_err(),
+        "plugin_data_contract_version_requires_v3"
+    );
 }
 
 fn oversized_invalid_response_schema() -> Vec<u8> {
@@ -406,6 +418,17 @@ fn data_package_snapshot_is_current_bounded_and_returns_independent_values() {
         .unwrap()
         .unwrap();
     assert_eq!(first.contracts["provide"].operation_id, "provide");
+    let metadata = store
+        .verified_metadata_snapshot(&installed.package_sha256)
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.package, installed);
+    assert_eq!(
+        metadata.schemas["schema://test/series@1"],
+        json!({"type":"array","items":{"type":"number"}})
+    );
+    assert!(metadata.contracts.contains_key("provide"));
+    assert!(metadata.recipes.is_empty());
     let mut changed = first.package.clone();
     changed.manifest["metadata"]["version"] = json!("changed-by-caller");
     assert_eq!(
@@ -426,6 +449,13 @@ fn data_package_snapshot_is_current_bounded_and_returns_independent_values() {
         "plugin_data_snapshot_bounds_invalid"
     );
     fs::write(&installed.executable_path, b"tampered-executable").unwrap();
+    assert_eq!(
+        store
+            .verified_metadata_snapshot(&installed.package_sha256)
+            .err()
+            .unwrap(),
+        "plugin_package_integrity_invalid"
+    );
     assert_eq!(
         store
             .operation_data_snapshot(&installed.package_sha256, &operations)
@@ -473,6 +503,14 @@ fn recipe_package_v3_loads_reopens_and_detects_unrelated_recipe_tampering() {
         .unwrap()
         .unwrap();
     assert_eq!(serde_json::to_value(&loaded).unwrap(), recipe);
+    let snapshot = store
+        .verified_metadata_snapshot(&installed.package_sha256)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&snapshot.recipes["source-alias"]).unwrap(),
+        recipe
+    );
     assert!(store
         .data_recipe(&installed.package_sha256, "missing")
         .unwrap()
@@ -493,6 +531,13 @@ fn recipe_package_v3_loads_reopens_and_detects_unrelated_recipe_tampering() {
     fs::write(installed.install_root.join("recipe.json"), b"{}").unwrap();
     assert_eq!(
         reopened
+            .verified_metadata_snapshot(&installed.package_sha256)
+            .err()
+            .unwrap(),
+        "plugin_data_artifact_digest_mismatch"
+    );
+    assert_eq!(
+        reopened
             .operation_data(&installed.package_sha256, "provide")
             .unwrap_err(),
         "plugin_data_artifact_digest_mismatch"
@@ -502,5 +547,39 @@ fn recipe_package_v3_loads_reopens_and_detects_unrelated_recipe_tampering() {
             .data_recipe(&installed.package_sha256, "source-alias")
             .unwrap_err(),
         "plugin_data_artifact_digest_mismatch"
+    );
+}
+
+#[test]
+fn legacy_verified_metadata_snapshot_keeps_legacy_semantics_and_integrity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (descriptor, contract, schema, manifest) = materials();
+    let (store, installed) = install(
+        dir.path(),
+        &descriptor["package"],
+        contract,
+        schema,
+        &manifest,
+    )
+    .unwrap();
+    let snapshot = store
+        .verified_metadata_snapshot(&installed.package_sha256)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.package, installed);
+    assert!(snapshot.contracts.is_empty());
+    assert!(snapshot.schemas.is_empty());
+    assert!(snapshot.recipes.is_empty());
+    assert!(store
+        .data_schema(&installed.package_sha256, "schema://test/series@1")
+        .unwrap()
+        .is_none());
+    fs::write(&installed.executable_path, b"changed-legacy-executable").unwrap();
+    assert_eq!(
+        store
+            .verified_metadata_snapshot(&installed.package_sha256)
+            .err()
+            .unwrap(),
+        "plugin_package_integrity_invalid"
     );
 }

@@ -42,6 +42,20 @@ pub struct OperationDataSnapshot {
     >,
 }
 
+/// Complete immutable metadata from one successful installed-byte validation.
+/// No owner, credentials, registry, graph, clock or invocation authority is held.
+#[derive(Clone, Serialize)]
+pub struct VerifiedPackageMetadataSnapshot {
+    pub package: InstalledPluginPackage,
+    pub contracts: std::collections::BTreeMap<
+        String,
+        tradeassembly_plugin_sdk::data_history::VersionedOperationData,
+    >,
+    pub schemas: std::collections::BTreeMap<String, Value>,
+    pub recipes:
+        std::collections::BTreeMap<String, tradeassembly_plugin_sdk::data_recipe::DataRecipe>,
+}
+
 pub trait PluginPackagePort: VersionedPort {
     fn install(
         &self,
@@ -49,6 +63,18 @@ pub trait PluginPackagePort: VersionedPort {
     ) -> Result<InstalledPluginPackage, String>;
 
     fn get(&self, package_sha256: &str) -> Result<Option<InstalledPluginPackage>, String>;
+
+    /// Optional optimization for one caller-local pure validation round. A
+    /// successful snapshot verifies the executable, descriptor, manifest and
+    /// ALL declared metadata artifacts, including unrelated operations. None
+    /// means no optimized snapshot (or no package): callers must fall back to
+    /// the original methods. It never waives later dispatch verification.
+    fn verified_metadata_snapshot(
+        &self,
+        _package_sha256: &str,
+    ) -> Result<Option<VerifiedPackageMetadataSnapshot>, String> {
+        Ok(None)
+    }
 
     /// Revalidates installed package bytes before returning pinned metadata.
     fn data_contract(

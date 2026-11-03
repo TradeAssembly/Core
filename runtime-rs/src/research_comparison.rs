@@ -1503,6 +1503,7 @@ impl RunView {
         match input {
             ComparisonInput::Backtest(report) => {
                 verify_report(report)?;
+                let typed = report.verified_typed_series()?;
                 let mut unavailable: BTreeMap<_, _> = report
                     .costs_and_risk
                     .unavailable
@@ -1590,9 +1591,43 @@ impl RunView {
                     report.costs_and_risk.maximum_order_quantity_micros,
                     MetricUnit::QuantityMicros,
                 );
+                let mut equity = Vec::new();
+                let mut drawdown = Vec::new();
+                if let Some(evidence) = typed {
+                    let mut peak = report.overview.starting_equity_micros;
+                    for point in &evidence.equity {
+                        let timestamp = chrono::DateTime::from_timestamp_millis(point.event_end_ms)
+                            .ok_or("comparison_typed_timestamp_invalid")?
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                        equity.push(EquityPoint {
+                            timestamp: timestamp.clone(),
+                            absolute_micros: point.equity_micros,
+                        });
+                        peak = peak.max(point.equity_micros);
+                        drawdown.push(DrawdownPoint {
+                            timestamp,
+                            drawdown_bps: i64::try_from(
+                                i128::from(peak - point.equity_micros) * 10_000 / i128::from(peak),
+                            )
+                            .map_err(|_| "comparison_typed_drawdown_invalid")?,
+                        });
+                    }
+                    insert(
+                        &mut metrics,
+                        "max_drawdown",
+                        evidence.max_drawdown_bps,
+                        MetricUnit::BasisPoints,
+                    );
+                }
                 for key in unavailable.keys() {
                     metrics.remove(key);
                 }
+                let study_semantics = if let Some(evidence) = typed {
+                    json!({"kind":"backtest","evaluatorVersion":report.assumptions.evaluator_version,"compilerVersion":report.assumptions.compiler_version,
+                        "model":"fixed_quantity_long_flat_signal_simulation","knowledgePolicy":evidence.knowledge_policy,"pointInTimeQualified":false})
+                } else {
+                    json!({"kind":"backtest","evaluatorVersion":report.assumptions.evaluator_version,"compilerVersion":report.assumptions.compiler_version})
+                };
                 Ok(Self {
                     run_hash: canonical_hash(&report.run, "comparison_run_hash_failed")?,
                     report_hash: report.report_hash.clone(),
@@ -1606,14 +1641,19 @@ impl RunView {
                     accounting: report.assumptions.account_model.clone(),
                     execution: report.assumptions.execution.clone(),
                     costs: report.assumptions.costs.clone(),
-                    study_semantics: json!({"kind":"backtest","evaluatorVersion":report.assumptions.evaluator_version,"compilerVersion":report.assumptions.compiler_version}),
+                    study_semantics,
                     metrics,
-                    equity: Vec::new(),
-                    drawdown: Vec::new(),
+                    equity,
+                    drawdown,
                     diagnostics: report
                         .diagnostics
                         .iter()
                         .map(|item| format!("{}:{}", item.code, item.detail))
+                        .chain(if typed.is_some() {
+                            report.metadata.warnings.clone()
+                        } else {
+                            Vec::new()
+                        })
                         .chain(unavailable.values().cloned())
                         .collect(),
                     unavailable,
@@ -1706,7 +1746,7 @@ fn validate_scope<'a>(
     Ok(())
 }
 fn verify_report(report: &BacktestReport) -> Result<(), String> {
-    if report.schema != crate::backtest_report::BACKTEST_REPORT_SCHEMA
+    if report.verified_typed_series().is_err()
         || report.report_hash
             != canonical_hash(
                 &report_without_hash(report),

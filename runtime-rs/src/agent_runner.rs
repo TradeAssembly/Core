@@ -2444,7 +2444,7 @@ fn secret_shaped(value: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::service::TradeAssemblyService;
 
@@ -2464,6 +2464,90 @@ mod tests {
             workspace: std::env::temp_dir().display().to_string(),
             runtime_profile: "local-read-only".to_string(),
         }
+    }
+
+    /// Test-only durable runner fixture: the context is issued and resolved by
+    /// the actual opaque capability path, never constructed from trusted fields.
+    pub(crate) fn resolved_report_context_fixture(
+        service: &TradeAssemblyService,
+        mode: &str,
+        tool: &str,
+    ) -> (VerifiedAgentMcpExecutionContext, LeaseClaim) {
+        let mut deployment = deployment();
+        deployment.deployment_id = "indicator-context-agent-fixture".into();
+        deployment.mode = mode.into();
+        deployment.studio_tool_allowlist = vec![tool.into()];
+        put_deployment(&service.runtime(), &deployment).unwrap();
+        let binding_digest = deployment_binding_digest(&deployment);
+        let capability = AgentMcpExecutionCapability::issue();
+        let capability_digest = capability.digest();
+        let record = AgentMcpCapabilityRecord {
+            schema_version: SCHEMA_VERSION.into(),
+            deployment_id: deployment.deployment_id.clone(),
+            run_id: "indicator-context-agent-run".into(),
+            binding_digest: binding_digest.clone(),
+            mode: deployment.mode.clone(),
+            studio_tool_allowlist: deployment.studio_tool_allowlist.clone(),
+            capability_digest: capability_digest.clone(),
+        };
+        let runtime = service.runtime();
+        let lease = runtime
+            .leases
+            .acquire(
+                &format!("agent-deployment:{}", deployment.deployment_id),
+                "controlled-context-supervisor",
+                runtime.clock.trusted_now_ms().unwrap(),
+                60_000,
+            )
+            .unwrap()
+            .unwrap();
+        runtime
+            .storage
+            .put_json(
+                RUNS_NS,
+                &record.run_id,
+                json!({"run":{"runId":record.run_id,"deploymentId":deployment.deployment_id,
+                "state":"running","leaseFence":lease.fencing_token},
+                "bindingDigest":binding_digest,"mcpCapabilityDigest":capability_digest}),
+                &context("context-agent-run"),
+            )
+            .unwrap();
+        runtime
+            .storage
+            .put_json(
+                ACTIVE_RUNS_NS,
+                &deployment.deployment_id,
+                // Keep this pointer valid past the real lease expiry so the HTTP
+                // regression must enforce LeaseRepository expiry, not cached TTL.
+                json!({"runId":record.run_id,"state":"running",
+                "leaseExpiresAtMs":i64::MAX,"leaseFence":lease.fencing_token}),
+                &context("context-agent-active"),
+            )
+            .unwrap();
+        runtime
+            .storage
+            .put_json(
+                MCP_CAPABILITIES_NS,
+                &capability_digest,
+                serde_json::to_value(record).unwrap(),
+                &context("context-agent-capability"),
+            )
+            .unwrap();
+        let resolved = resolve_mcp_execution_context(&runtime, Some(capability.token()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.mode(), mode);
+        assert_eq!(
+            resolved
+                .current_lease(
+                    runtime.storage.as_ref(),
+                    runtime.clock.as_ref(),
+                    runtime.leases.as_ref(),
+                )
+                .unwrap(),
+            lease
+        );
+        (resolved, lease)
     }
 
     #[test]

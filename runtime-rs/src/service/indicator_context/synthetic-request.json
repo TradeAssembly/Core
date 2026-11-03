@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "tradeassembly.indicator_context_request.v1",
+  "scope": {
+    "strategyId": "example-owned",
+    "strategyVersionId": "example-version",
+    "strategySpecHash": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "planRevisionId": "dataplan_8888888888888888888888888888888888888888888888888888888888888888",
+  "recipeInstanceId": "example_instance",
+  "selection": {
+    "pluginInstanceRef": "example-installed",
+    "packageSha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "catalog": {
+      "schemaVersion": "example.publisher.catalog.v1",
+      "byteSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "canonicalSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "canonicalization": "tradeassembly.canonical-json.v1"
+    },
+    "conceptId": "example.average",
+    "profileId": "example.mean.fixed-window",
+    "profileVersion": "1",
+    "recipe": {
+      "recipeId": "example.mean",
+      "semanticsVersion": "example.mean.v1",
+      "canonicalSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "documentSha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "selectedOutputs": [
+      "value"
+    ]
+  },
+  "subjectInstrumentId": "EXAMPLE/USD",
+  "evaluation": {
+    "receiptSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "step": {
+      "runId": "example-evaluation",
+      "planRevisionId": "dataplan_8888888888888888888888888888888888888888888888888888888888888888",
+      "window": {
+        "eventStartMs": 1000,
+        "eventEndMs": 3000,
+        "asOfMs": 4000
+      },
+      "expectedCheckpointSha256": null
+    }
+  },
+  "allowEstimates": false
+}

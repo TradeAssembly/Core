@@ -14,6 +14,7 @@ async-nats = "0.49.1"
 axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+chrono-tz = "=0.10.4"
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = "2"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -46,6 +47,12 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 url = "2"
 webbrowser = "1"
 
+# RustCrypto 0.11 is already locked transitively. Its ARM64 backend detects
+# SHA2 instructions at runtime and retains a software fallback. Other targets
+# keep the existing dependency; the integrity algorithm remains SHA-256.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sha2-platform = { package = "sha2", version = "=0.11.0" }
+
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs", "process"] }
 
@@ -64,3 +71,8 @@ openidconnect = { git = "https://github.com/ramosbugs/openidconnect-rs", rev = "
 rsa = "0.9.8"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+[[example]]
+name = "session-process-driver"
+path = "tests/fixtures/session_process_driver.rs"
+test = true

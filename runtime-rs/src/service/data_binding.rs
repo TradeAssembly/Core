@@ -27,6 +27,45 @@ pub(crate) fn pin(
     })
 }
 
+/// One current validation call's immutable operation metadata. Do not retain this
+/// across calls: later validation and every dispatch must verify package bytes
+/// again. Per-instance ownership/configuration/credential pins stay fresh below.
+#[derive(Default)]
+pub(crate) struct OperationMetadataRound {
+    snapshots: std::collections::BTreeMap<String, crate::ports::OperationDataSnapshot>,
+}
+impl OperationMetadataRound {
+    pub(crate) fn pin_operation(
+        &mut self,
+        service: &TradeAssemblyService,
+        selected: &CapabilitySelection,
+        operations: &[String],
+    ) -> Result<
+        (
+            PinnedOperation,
+            Option<tradeassembly_plugin_sdk::data_history::VersionedOperationData>,
+        ),
+        String,
+    > {
+        let pin = pin_with_package_loader(service, selected, |digest| {
+            if !self.snapshots.contains_key(digest) {
+                let snapshot = service
+                    .runtime()
+                    .plugin_packages
+                    .operation_data_snapshot(digest, operations)?
+                    .ok_or("data_plan_package_missing")?;
+                self.snapshots.insert(digest.to_owned(), snapshot);
+            }
+            Ok(self.snapshots[digest].package.clone())
+        })?;
+        let contract = self.snapshots[&pin.package_sha256]
+            .contracts
+            .get(&selected.operation_id)
+            .cloned();
+        Ok((pin, contract))
+    }
+}
+
 /// Only immutable package data may be reused inside one current-validation call.
 /// Instance, ownership, configuration and credential bindings are always read now.
 pub(crate) fn pin_with_package_loader(
@@ -34,6 +73,8 @@ pub(crate) fn pin_with_package_loader(
     selected: &CapabilitySelection,
     load: impl FnOnce(&str) -> Result<crate::ports::InstalledPluginPackage, String>,
 ) -> Result<PinnedOperation, String> {
+    let _timing = super::order_plans::financial_timing("binding.pin_total");
+    let live_timing = super::order_plans::financial_timing("binding.live_instance_manifest");
     service
         .require_object("plugin_instance", &selected.plugin_instance_ref)
         .map_err(|_| "data_plan_not_available")?;
@@ -61,19 +102,22 @@ pub(crate) fn pin_with_package_loader(
     {
         return Err("data_plan_package_binding_mismatch".into());
     }
-    let package = load(digest)?;
+    drop(live_timing);
+    let package = super::order_plans::measured("binding.package_load", || load(digest))?;
     if package.package_sha256 != digest
         || package.plugin_ref != selected.plugin_ref
         || package.manifest_sha256 != selected.manifest_fingerprint
     {
         return Err("data_plan_package_binding_mismatch".into());
     }
+    let context_timing = super::order_plans::financial_timing("binding.context_hash");
     let context_sha256 = canonical_sha256(
         &json!({"configuration":instance.get("configuration").cloned().unwrap_or_else(||json!({})),
         "accountRef":instance["accountRef"],"credentialRef":instance["credentialRef"],
         "credentialRevision":crate::live_execution_checks::credential_revision(&instance)}),
     )
     .map_err(|_| "data_plan_binding_invalid")?;
+    drop(context_timing);
     Ok(PinnedOperation {
         plugin_instance_ref: selected.plugin_instance_ref.clone(),
         plugin_ref: selected.plugin_ref.clone(),
@@ -84,3 +128,7 @@ pub(crate) fn pin_with_package_loader(
         account_ref: selected.account_ref.clone(),
     })
 }
+
+#[cfg(test)]
+#[path = "data_binding_tests.rs"]
+mod tests;

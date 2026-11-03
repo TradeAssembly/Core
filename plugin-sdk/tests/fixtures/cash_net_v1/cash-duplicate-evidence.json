@@ -1,0 +1,220 @@
+{
+  "schemaVersion": "tradeassembly.cash_capacity_observation.v1",
+  "requestSha256": "eceeda17560d39faba47a911d876f22b22d527bce27f8aac686b4b76365d50a7",
+  "canonicalAccountSha256": "794362c12a3edb69c64643c583b7fe562f0db4fbf1a3028809fd56f8fdd5d7ad",
+  "status": "provisional",
+  "coherence": "non_atomic",
+  "account": {
+    "status": "available",
+    "value": {
+      "providerAccountId": "fixture-account",
+      "hostAccountRef": "account://fixture/fixture-account",
+      "currency": {
+        "code": "USD",
+        "decimals": 2
+      },
+      "cashBalance": {
+        "status": "available",
+        "value": "100"
+      },
+      "nonMarginableBuyingPower": {
+        "status": "available",
+        "value": "80"
+      },
+      "borrowingDebt": {
+        "status": "unavailable",
+        "reason": "debt_not_proven"
+      },
+      "grossExposure": {
+        "status": "available",
+        "value": "0"
+      },
+      "productEnabled": {
+        "status": "available",
+        "value": true
+      },
+      "tradingBlocked": {
+        "status": "available",
+        "value": false
+      },
+      "accountBlocked": {
+        "status": "available",
+        "value": false
+      },
+      "userSuspended": {
+        "status": "available",
+        "value": false
+      },
+      "productActions": {
+        "status": "available",
+        "value": [
+          "buy_to_open",
+          "sell_to_close"
+        ]
+      },
+      "sample": {
+        "startedAtMs": 1000,
+        "completedAtMs": 1100,
+        "evidenceIds": [
+          "a"
+        ]
+      }
+    }
+  },
+  "asset": {
+    "status": "available",
+    "value": {
+      "instrument": {
+        "instrumentId": "host.crypto.one",
+        "providerSymbol": "COIN/USD",
+        "assetClass": "crypto",
+        "instrumentFamily": "crypto_spot",
+        "quantityUnit": "base_asset",
+        "multiplier": "1",
+        "quoteCurrency": "USD"
+      },
+      "baseAssetId": "host.base.one",
+      "tradable": {
+        "status": "available",
+        "value": true
+      },
+      "marginable": {
+        "status": "available",
+        "value": false
+      },
+      "shortable": {
+        "status": "available",
+        "value": false
+      },
+      "minimumQuantity": {
+        "status": "available",
+        "value": "0.0001"
+      },
+      "quantityIncrement": {
+        "status": "available",
+        "value": "0.0001"
+      },
+      "priceIncrement": {
+        "status": "available",
+        "value": "0.01"
+      },
+      "sample": {
+        "startedAtMs": 1110,
+        "completedAtMs": 1120,
+        "evidenceIds": [
+          "m"
+        ]
+      }
+    }
+  },
+  "positions": {
+    "status": "available",
+    "value": {
+      "complete": true,
+      "positions": [],
+      "sample": {
+        "startedAtMs": 1125,
+        "completedAtMs": 1130,
+        "evidenceIds": [
+          "p"
+        ]
+      }
+    }
+  },
+  "openOrders": {
+    "status": "available",
+    "value": {
+      "complete": true,
+      "openOrders": [],
+      "sample": {
+        "startedAtMs": 1140,
+        "completedAtMs": 1150,
+        "evidenceIds": [
+          "o"
+        ]
+      }
+    }
+  },
+  "evidence": [
+    {
+      "id": "a",
+      "kind": "account",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "ead053c056b16a2fc20a4cc37f28895bab6d59335a0fbdbeff3228037322c218",
+      "startedAtMs": 1000,
+      "completedAtMs": 1100
+    },
+    {
+      "id": "m",
+      "kind": "asset",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "d80aaf3fb213693aa33cac108776f119d0d7a654af86a4acf925f6df39b7d0e7",
+      "startedAtMs": 1110,
+      "completedAtMs": 1120
+    },
+    {
+      "id": "p",
+      "kind": "positions",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "db57b68d7e6e3f20528bc6abca2ab460badbf677616998aef3a85408d7538a85",
+      "startedAtMs": 1125,
+      "completedAtMs": 1130
+    },
+    {
+      "id": "o",
+      "kind": "open_orders",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "ca62eec5effe79243d2fda5a1f52df39fb2304c0d16381082ca37d0adaf25105",
+      "startedAtMs": 1140,
+      "completedAtMs": 1150
+    },
+    {
+      "id": "a",
+      "kind": "account",
+      "providerRecordId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "providerOrderId": {
+        "status": "unavailable",
+        "reason": "not_observed"
+      },
+      "hashBasis": "raw_response_bytes",
+      "responseSha256": "ead053c056b16a2fc20a4cc37f28895bab6d59335a0fbdbeff3228037322c218",
+      "startedAtMs": 1000,
+      "completedAtMs": 1100
+    }
+  ]
+}

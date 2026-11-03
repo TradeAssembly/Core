@@ -1,0 +1,241 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "tradeassembly.net_base_inventory_request.v1"
+    },
+    "originalEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "tradeassembly.broker_lookup.v3"
+        },
+        "originalSubmit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schemaVersion": {
+              "const": "tradeassembly.broker_submit.v2"
+            },
+            "planId": {
+              "type": "string",
+              "pattern": "^orderplan_[0-9a-f]{64}$"
+            },
+            "canonicalAccountSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "order": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "schemaVersion": {
+                  "const": "tradeassembly.broker_order.v2"
+                },
+                "instrument": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "instrumentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "providerSymbol": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "assetClass": {
+                      "const": "crypto"
+                    },
+                    "instrumentFamily": {
+                      "const": "crypto_spot"
+                    },
+                    "quantityUnit": {
+                      "const": "base_asset"
+                    },
+                    "multiplier": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                    },
+                    "quoteCurrency": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16
+                    }
+                  },
+                  "required": [
+                    "assetClass",
+                    "instrumentFamily",
+                    "instrumentId",
+                    "multiplier",
+                    "providerSymbol",
+                    "quantityUnit",
+                    "quoteCurrency"
+                  ]
+                },
+                "positionAction": {
+                  "const": "buy_to_open"
+                },
+                "quantity": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                },
+                "pricing": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "limit"
+                    },
+                    "limitPrice": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^-?[0-9]+(\\.[0-9]{1,12})?$"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "limitPrice"
+                  ]
+                },
+                "timeInForce": {
+                  "const": "gtc"
+                },
+                "clientOrderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "clientOrderId",
+                "instrument",
+                "positionAction",
+                "pricing",
+                "quantity",
+                "schemaVersion",
+                "timeInForce"
+              ]
+            }
+          },
+          "required": [
+            "canonicalAccountSha256",
+            "order",
+            "planId",
+            "schemaVersion"
+          ]
+        },
+        "expectedAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "brokerNamespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+            },
+            "environment": {
+              "const": "paper"
+            },
+            "providerAccountId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+            }
+          },
+          "required": [
+            "brokerNamespace",
+            "environment",
+            "providerAccountId"
+          ]
+        }
+      },
+      "required": [
+        "expectedAccount",
+        "originalSubmit",
+        "schemaVersion"
+      ]
+    },
+    "hostAccountRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "originalOrderReceiptSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "baseAssetId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "quoteCurrency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{1,16}$"
+        },
+        "decimals": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12
+        }
+      },
+      "required": [
+        "code",
+        "decimals"
+      ]
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxPagesPerType": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128
+        },
+        "maxRowsPerType": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128
+        }
+      },
+      "required": [
+        "maxPagesPerType",
+        "maxRowsPerType",
+        "pageSize"
+      ]
+    }
+  },
+  "required": [
+    "baseAssetId",
+    "bounds",
+    "hostAccountRef",
+    "originalEntry",
+    "originalOrderReceiptSha256",
+    "quoteCurrency",
+    "schemaVersion"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://tradeassembly/net-base-inventory-request@1"
+}

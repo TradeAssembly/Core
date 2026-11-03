@@ -14,6 +14,17 @@ pub(crate) fn stop(service: &TradeAssemblyService) -> Value {
 }
 
 pub(crate) fn run(service: &TradeAssemblyService, body: Value) -> Value {
+    if let Some(request) = body.get("sessionDispatch") {
+        if body
+            .get("accountMode")
+            .or_else(|| body.get("account_mode"))
+            .and_then(Value::as_str)
+            .is_some_and(|v| v != "paper")
+        {
+            return json!({"ok":false,"error":{"code":"session_dispatch_mode_mismatch"}});
+        }
+        return super::session_dispatch::run(service, request.clone());
+    }
     let response = execution::scheduler_run(service, body);
     if response.get("lease").is_none() {
         return api_result(json!({

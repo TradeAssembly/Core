@@ -8,86 +8,41 @@ pub struct HttpJsonResponse {
     pub body: Value,
 }
 
+/// Dedicated evidence-backed families have their own service handlers. The
+/// generic fallback has no verified source and must never replay placeholders.
+pub(crate) fn requires_verified_report(kind: &str) -> bool {
+    !matches!(
+        kind,
+        "scenario_valuation"
+            | "monte_carlo"
+            | "portfolio_risk"
+            | "fill_quality"
+            | "lifecycle_calendar"
+    )
+}
+
 pub fn report_envelope(
     kind: &str,
     strategy_id: &str,
     backtest_id: &str,
     studio_base_url: &str,
 ) -> Value {
-    let strategy_href = format!("{studio_base_url}/app/strategies/{strategy_id}");
-    let backtest_href = format!("{strategy_href}/research?backtestId={backtest_id}");
-    json!({
-        "schemaVersion": "tradeassembly.report.v1",
-        "bundleSchema": {
-            "families": ["backtest", "monte_carlo", "paper", "live", "journal", "replay"]
-        },
-        "kind": kind,
-        "strategyId": strategy_id,
-        "summary": {
-            "status": "completed",
-            "primaryMetric": {"name": "return_pct", "value": 0.0}
-        },
-        "renderContract": {
-            "preferred": "tradeassembly_ui_deep_links",
-            "userVisible": ["summary", "deepLinks", "views", "warnings"],
-            "agentVisible": ["artifactBundle", "artifactRefs", "exportRefs", "replayRefs", "raw"],
-            "fallbackOrder": [
-                {"capability": "side_by_side_tradeassembly_ui"},
-                {"capability": "single_page_html_artifact"},
-                {"capability": "static_svg_preview"},
-                {"capability": "cli_replay_commands"}
-            ]
-        },
-        "deepLinks": {
-            "strategy": {"href": strategy_href},
-            "research": {"href": format!("{studio_base_url}/app/strategies/{strategy_id}/research")},
-            "backtest": {"href": backtest_href}
-        },
-        "renderTargets": {
-            "tradeassembly": {"href": backtest_href},
-            "htmlArtifact": {"inlineRef": "previews.html"},
-            "staticSvg": {"inlineRef": "previews.svg"}
-        },
-        "previews": {
-            "html": {"content": "<!doctype html><html><body>TradeAssembly report</body></html>"},
-            "svg": {"content": "<svg viewBox=\"0 0 10 10\"></svg>"}
-        },
-        "charts": [
-            {"id": "underlying_with_markers", "formats": ["interactive", "html", "svg"], "data": {"priceSeries": [{"t": "2026-01-01", "close": 1.0}]}},
-            {"id": "equity_curve", "formats": ["interactive", "html", "svg"], "data": {"points": [{"t": "2026-01-01", "equity": 1000.0}]}},
-            {"id": "drawdown", "formats": ["interactive", "html", "svg"], "data": {"points": []}},
-            {"id": "trade_journal", "formats": ["interactive", "html", "svg"], "data": {"rows": []}},
-            {"id": "monte_carlo", "formats": ["interactive", "html", "svg"], "data": {"paths": []}},
-            {"id": "scenario_matrix", "formats": ["interactive", "html", "svg"], "data": {"rows": [{"scenario": "Baseline"}]}}
-        ],
-        "journal": {"rows": []},
-        "exportRefs": {
-            "tradeJournalCsv": {"uri": format!("tradeassembly://artifact/{backtest_id}/trade-journal.csv")}
-        },
-        "artifactRefs": [
-            {"id": "artifact-report", "uri": format!("tradeassembly://artifact/{backtest_id}/report"), "backtestId": backtest_id}
-        ],
-        "artifactBundle": {
-            "refs": [{"id": "artifact-report"}]
-        },
-        "replayRefs": {
-            "commands": [
-                format!("tradeassembly report-envelope --strategy-id {strategy_id} --backtest-id {backtest_id}"),
-                format!("tradeassembly research-artifacts --strategy-id {strategy_id} --backtest-id {backtest_id}")
-            ]
-        },
-        "raw": {
-            "backtest": {"id": backtest_id}
-        },
-        "warnings": [
-            "Descriptive research output only. TradeAssembly did not recommend a trade, position size, or activation decision."
-        ]
-    })
+    // This storage-free facade cannot verify a run or manufacture a completed
+    // report. Dedicated service reports resolve actual owned durable evidence.
+    json!({"schemaVersion":"tradeassembly.report.v1","kind":kind,"strategyId":strategy_id,
+        "ok":false,"status":"unavailable","summary":{"status":"unavailable"},
+        "error":{"code":"durable_backtest_report_required","message":"Read an integrity-verified canonical backtest report. This generic facade cannot verify a run."},
+        "requestedBacktestId":backtest_id,
+        "deepLinks":{"strategy":{"href":format!("{studio_base_url}/app/strategies/{strategy_id}")},
+            "research":{"href":format!("{studio_base_url}/app/strategies/{strategy_id}/research")}},
+        "charts":[],"journal":{"rows":[]},"artifactRefs":[],"exportRefs":{},"replayRefs":{},
+        "nextAction":{"tool":"tradeassembly.backtest.report","requires":["owned_completed_canonical_backtest_id"]},
+        "warnings":["Generic report placeholders are disabled; no research result was generated or verified."]})
 }
 
 pub fn report_envelope_http(kind: &str, strategy_id: &str, backtest_id: &str) -> HttpJsonResponse {
     HttpJsonResponse {
-        status_code: 200,
+        status_code: 501,
         body: report_envelope(kind, strategy_id, backtest_id, "http://127.0.0.1:3001"),
     }
 }
@@ -1241,164 +1196,31 @@ fn escape_html(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn report_envelope_links_studio_and_keeps_agent_artifacts() {
-        let envelope = super::report_envelope(
-            "backtest",
-            "strat_local_btc_demo",
-            "bt-001",
-            "http://127.0.0.1:3001",
-        );
-
-        assert_eq!(envelope["schemaVersion"], "tradeassembly.report.v1");
-        let families = envelope["bundleSchema"]["families"].as_array().unwrap();
-        for family in [
-            "backtest",
-            "monte_carlo",
-            "paper",
-            "live",
-            "journal",
-            "replay",
-        ] {
-            assert!(families.iter().any(|item| item == family));
+    fn generic_report_facades_never_invent_completed_results_or_artifacts() {
+        let http = super::report_envelope_http("backtest", "owned", "legacy-or-missing");
+        let cli = super::report_envelope_cli("owned", "legacy-or-missing");
+        let mcp = super::report_envelope_mcp("owned", "legacy-or-missing");
+        assert_eq!(http.status_code, 501);
+        assert_eq!(http.body, cli);
+        assert_eq!(cli, mcp);
+        assert_eq!(cli["summary"]["status"], "unavailable");
+        assert_eq!(cli["ok"], false);
+        assert_eq!(cli["error"]["code"], "durable_backtest_report_required");
+        assert_eq!(cli["charts"], serde_json::json!([]));
+        assert_eq!(cli["artifactRefs"], serde_json::json!([]));
+        assert_eq!(cli["exportRefs"], serde_json::json!({}));
+        assert_eq!(cli["replayRefs"], serde_json::json!({}));
+        for forbidden in ["primaryMetric", "raw", "previews", "artifactBundle"] {
+            assert!(cli.get(forbidden).is_none());
+            assert!(cli["summary"].get(forbidden).is_none());
         }
-        assert_eq!(envelope["kind"], "backtest");
-        assert_eq!(envelope["strategyId"], "strat_local_btc_demo");
-        assert_eq!(envelope["summary"]["status"], "completed");
-        assert_eq!(envelope["summary"]["primaryMetric"]["name"], "return_pct");
-        assert_eq!(
-            envelope["renderContract"]["preferred"],
-            "tradeassembly_ui_deep_links"
-        );
-        assert_eq!(
-            envelope["renderContract"]["userVisible"],
-            serde_json::json!(["summary", "deepLinks", "views", "warnings"])
-        );
-        assert_eq!(
-            envelope["renderContract"]["fallbackOrder"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|item| item["capability"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            vec![
-                "side_by_side_tradeassembly_ui",
-                "single_page_html_artifact",
-                "static_svg_preview",
-                "cli_replay_commands",
-            ]
-        );
-        assert_eq!(
-            envelope["renderTargets"]["tradeassembly"]["href"],
-            envelope["deepLinks"]["backtest"]["href"]
-        );
-        assert_eq!(
-            envelope["renderTargets"]["htmlArtifact"]["inlineRef"],
-            "previews.html"
-        );
-        assert_eq!(
-            envelope["renderTargets"]["staticSvg"]["inlineRef"],
-            "previews.svg"
-        );
-        assert!(envelope["previews"]["html"]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with("<!doctype html>"));
-        assert!(envelope["previews"]["svg"]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with("<svg"));
-        assert!(envelope["deepLinks"]["strategy"]["href"]
-            .as_str()
-            .unwrap()
-            .ends_with("/app/strategies/strat_local_btc_demo"));
-        assert!(envelope["deepLinks"]["backtest"]["href"]
-            .as_str()
-            .unwrap()
-            .contains("backtestId=bt-001"));
-        let chart_ids = envelope["charts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|chart| chart["id"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        for chart in [
-            "underlying_with_markers",
-            "equity_curve",
-            "drawdown",
-            "trade_journal",
-            "monte_carlo",
-            "scenario_matrix",
-        ] {
-            assert!(chart_ids.contains(&chart));
-        }
-        assert!(!envelope["charts"][0]["data"]["priceSeries"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert_eq!(
-            envelope["charts"][0]["formats"],
-            serde_json::json!(["interactive", "html", "svg"])
-        );
-        assert!(!envelope["charts"][1]["data"]["points"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert_eq!(
-            envelope["charts"][5]["data"]["rows"][0]["scenario"],
-            "Baseline"
-        );
-        assert_eq!(envelope["journal"]["rows"], serde_json::json!([]));
-        assert!(envelope["exportRefs"].get("tradeJournalCsv").is_some());
-        assert!(envelope["artifactRefs"][0]["uri"]
-            .as_str()
-            .unwrap()
-            .starts_with("tradeassembly://artifact/"));
-        assert_eq!(
-            envelope["artifactBundle"]["refs"][0]["id"],
-            envelope["artifactRefs"][0]["id"]
-        );
-        assert!(envelope["replayRefs"]["commands"][0]
-            .as_str()
-            .unwrap()
-            .starts_with("tradeassembly report-envelope"));
-        assert!(envelope["replayRefs"]["commands"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .starts_with("tradeassembly research-artifacts"));
-        assert_eq!(envelope["raw"]["backtest"]["id"], "bt-001");
-        assert_eq!(
-            envelope["warnings"],
-            serde_json::json!(["Descriptive research output only. TradeAssembly did not recommend a trade, position size, or activation decision."])
-        );
-    }
-
-    #[test]
-    fn report_envelope_http_cli_and_mcp_facades_share_payload_shape() {
-        let http = super::report_envelope_http("backtest", "strat_local_btc_demo", "bt-001");
-        let cli = super::report_envelope_cli("strat_local_btc_demo", "bt-001");
-        let mcp = super::report_envelope_mcp("strat_local_btc_demo", "bt-001");
-
-        assert_eq!(http.status_code, 200);
-        assert!(http.body["deepLinks"]["research"]["href"]
-            .as_str()
-            .unwrap()
-            .ends_with("/app/strategies/strat_local_btc_demo/research"));
-        assert_eq!(cli["artifactRefs"][0]["backtestId"], "bt-001");
-        assert_eq!(mcp["raw"]["backtest"]["id"], "bt-001");
-        assert_eq!(
-            mcp["renderContract"]["agentVisible"],
-            serde_json::json!([
-                "artifactBundle",
-                "artifactRefs",
-                "exportRefs",
-                "replayRefs",
-                "raw"
-            ])
-        );
+        assert_eq!(cli["requestedBacktestId"], "legacy-or-missing");
+        assert_eq!(cli["nextAction"]["tool"], "tradeassembly.backtest.report");
+        // Arbitrary family and existing-looking IDs cannot enable placeholders.
+        let other =
+            super::report_envelope("paper", "owned", "bt-existing", "http://127.0.0.1:3001");
+        assert_eq!(other["status"], "unavailable");
+        assert_eq!(other["artifactRefs"], serde_json::json!([]));
     }
 
     #[test]

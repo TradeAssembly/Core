@@ -21,7 +21,7 @@ const INTENTS_NS: &str = "broker_order_intents";
 
 // Renewal extends liveness, not the identity or lifetime of a signed intent.
 // Keep the original deadline; every other authority/input field stays exact.
-fn same_authority_during_renewal(bound: &Value, current: &Value, now_ms: i64) -> bool {
+pub(super) fn same_authority_during_renewal(bound: &Value, current: &Value, now_ms: i64) -> bool {
     let Some(deadline) = bound["leaseExpiresAtMs"].as_i64() else {
         return false;
     };
@@ -264,6 +264,40 @@ impl BrokerSubmissionPort for LocalBrokerSubmissionBoundary {
         Ok(())
     }
 
+    fn prepare_recovery_v2(
+        &self,
+        s: &super::v2::OrderPlanSource,
+        c: &SideEffectContext,
+    ) -> Result<super::v2::RecoveryPlan, String> {
+        super::v2::prepare_recovery(&self.deps, s, c)
+    }
+    fn admit_v2(
+        &self,
+        r: &PluginOperationRequest,
+        c: &SideEffectContext,
+        p: &BrokerPreparedBinding,
+        s: &super::v2::OrderPlanSource,
+    ) -> Result<BrokerSubmissionPermit, String> {
+        super::v2::admit(&self.deps, self.authority.as_ref(), r, c, p, s)
+    }
+    fn revalidate_v2(
+        &self,
+        r: &PluginOperationRequest,
+        c: &SideEffectContext,
+        p: &BrokerPreparedBinding,
+        permit: &BrokerSubmissionPermit,
+        s: &super::v2::OrderPlanSource,
+    ) -> Result<(), String> {
+        super::v2::revalidate(&self.deps, r, c, p, permit, s)
+    }
+    fn complete_v2(
+        &self,
+        permit: &BrokerSubmissionPermit,
+        response: &PluginOperationResponse,
+        s: &super::v2::OrderPlanSource,
+    ) -> Result<(), String> {
+        super::v2::complete(&self.deps, self.authority.as_ref(), permit, response, s)
+    }
     fn complete(
         &self,
         permit: &BrokerSubmissionPermit,

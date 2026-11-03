@@ -4,16 +4,26 @@
 //! exactly one [`PluginResponse`] and exits. Credential grants are ephemeral
 //! request transport data and are redacted from debug output.
 
+pub mod broker_lookup_v3;
+pub mod broker_v2;
 pub mod canonical;
+pub mod cash_capacity_observation;
+pub mod cash_settlement;
+pub mod close_settlement;
 pub mod data_contract;
 pub mod data_evaluation;
 pub mod data_history;
 pub mod data_package;
 pub mod data_recipe;
+pub mod execution;
+pub mod execution_calculation;
+pub mod execution_snapshot;
 pub mod instrument_screen;
 pub mod instrument_set;
 pub mod market_data;
+pub mod net_base_inventory_observation;
 pub mod session_calendar;
+pub mod settlement_observation_v2;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
